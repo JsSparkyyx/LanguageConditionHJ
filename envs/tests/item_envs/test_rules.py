@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
+import yaml
 
 from main.item_envs.items import ItemSpec, entity_of
 from main.item_envs.regions import Region
@@ -13,210 +16,589 @@ from main.item_envs.rules import (
     assign_split,
     enumerate_rules,
     render_phrases,
+    resolve_splits,
 )
 
-PHRASES_CFG = {
-    "colors": ["red", "blue", "purple"],
-    "items": {
-        "bottle": {"names": ["bottle"], "synonyms": ["flask"]},
-        "block": {"names": ["block", "wooden block"], "synonyms": ["cube"]},
-        "beans": {"names": ["beans"], "synonyms": ["beads", "rice"]},
-        "ball": {"names": ["ball", "sphere"], "synonyms": []},
+CONFIGS = Path(__file__).resolve().parents[2] / "main" / "item_envs" / "configs"
+
+OBJECTS_CFG = {
+    "colors": {"train": ["red", "green", "blue"], "heldout": ["purple", "orange", "cyan"]},
+    "categories": {
+        "bottle": {"names": ["bottle"], "synonyms": ["flask"], "mass_range": [0.05, 0.30]},
+        "cup": {"names": ["cup"], "synonyms": ["glass"], "mass_range": [0.05, 0.25]},
+        "box": {"names": ["box"], "synonyms": ["crate"], "mass_range": [0.05, 0.15], "colored": True},
+        "beads": {"names": ["beads"], "synonyms": ["beans", "rice", "grains"], "mass_range": [0.0005, 0.002]},
     },
+    "assets": {"001_bottle": {"category": "bottle"}},
     "regions": {
-        "tray_top": {"names": ["tray"], "synonyms": ["serving tray"]},
         "table_top": {"names": ["table"], "synonyms": ["tabletop"]},
-        "cup_interior": {"names": ["cup"], "synonyms": []},
-        "box_interior": {"names": ["box"], "synonyms": ["container"]},
         "zone": {"names": ["zone", "mat"], "synonyms": [], "colored": True},
+        "bowl_src_interior": {"names": ["source bowl", "bowl"], "synonyms": []},
+        "target_interior": {"names": ["target", "target container"], "synonyms": ["container"]},
     },
 }
 
 SQUARE = np.array([[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]])
 
 
-def make_item(item_id, category, role="constrained_candidate", color=None, kind="rigid", **attrs):
-    item = ItemSpec(item_id=item_id, entity=object(), category=category, color=color, kind=kind, role=role)
+def make_item(item_id, category, role="candidate", color=None, kind="rigid", group=None, **attrs):
+    item = ItemSpec(
+        item_id=item_id, entity=object(), category=category, color=color, kind=kind, role=role, group=group
+    )
     for key, value in attrs.items():
         setattr(item, key, value)
     return item
 
 
-def make_region(region_id, kind="surface"):
+def make_region(region_id, kind="surface", nameable=False, color=None):
     return Region(
-        region_id=region_id, kind=kind, frame_fn=lambda: np.eye(4), polygon=SQUARE, z=0.0, z_band=0.01
+        region_id=region_id,
+        kind=kind,
+        frame_fn=lambda: np.eye(4),
+        polygon=SQUARE,
+        z=0.0,
+        z_band=0.01,
+        nameable=nameable,
+        color=color,
     )
 
 
-def toy_scene():
+def t1_scene():
+    """T1-flavoured scene: four candidates, two sharing a category."""
     items = {
-        "bottle_0": make_item("bottle_0", "bottle", tippable=True),
-        "block_0": make_item("block_0", "block", tippable=False),
-        "mug_0": make_item("mug_0", "mug", role="bystander", tippable=True),
+        "cup_0": make_item("cup_0", "cup"),
+        "cup_1": make_item("cup_1", "cup"),
+        "bottle_0": make_item("bottle_0", "bottle"),
+        "pill_0": make_item("pill_0", "pill_bottle"),
+    }
+    return items, {}
+
+
+def t3_scene():
+    """T3-flavoured scene: two push objects, one bystander, two zones."""
+    items = {
+        "box_0": make_item("box_0", "box", color="red", group="push"),
+        "box_1": make_item("box_1", "box", color="blue", group="push"),
+        "bottle_1": make_item("bottle_1", "bottle", role="bystander"),
     }
     regions = {
-        "tray_top": make_region("tray_top"),
         "table_top": make_region("table_top"),
-        "cup_interior": make_region("cup_interior", kind="container"),
-        "box_interior": make_region("box_interior", kind="container"),
+        "zone_red": make_region("zone_red", kind="zone", nameable=True, color="red"),
+        "zone_green": make_region("zone_green", kind="zone", nameable=True, color="green"),
     }
     return items, regions
 
 
-TOY_TASK_CFG = {
-    "rules": [
-        {"consequence": "inside", "items": {"role": "constrained_candidate"}, "regions": ["tray_top"]},
-        {"consequence": "upright", "items": {"role": "constrained_candidate", "tippable": True}, "theta_max_deg": 45},
-    ]
-}
+def t2_scene():
+    """T2-flavoured scene: one bead particle set, two containers, two zones."""
+    items = {"beads": make_item("beads", "beads", kind="particle_set")}
+    regions = {
+        "bowl_src_interior": make_region("bowl_src_interior", kind="container", nameable=True),
+        "target_interior": make_region("target_interior", kind="container", nameable=True),
+        "zone_red": make_region("zone_red", kind="zone", nameable=True, color="red"),
+        "zone_blue": make_region("zone_blue", kind="zone", nameable=True, color="blue"),
+    }
+    return items, regions
 
 
-def test_enumerate_rules_count_and_ids():
-    items, regions = toy_scene()
-    rules = enumerate_rules(items, regions, TOY_TASK_CFG)
-    # inside: bottle_0, block_0 (mug_0 is a bystander); upright: bottle_0 only
+# ---------------------------------------------------------------------------
+# Consequence / RuleSpec contract
+
+
+def test_consequence_avoid_exists():
+    assert Consequence.AVOID.value == "avoid"
+    assert set(Consequence) == {
+        Consequence.AVOID,
+        Consequence.INSIDE,
+        Consequence.OUTSIDE,
+        Consequence.UPRIGHT,
+        Consequence.STAY,
+        Consequence.PARTICLES_INSIDE,
+        Consequence.PARTICLES_OUTSIDE,
+    }
+
+
+def test_rulespec_item_ids_tuple():
+    rule = RuleSpec(
+        rule_id="avoid|obj_2|-",
+        consequence="avoid",
+        item_ids=["obj_2"],  # lists are coerced
+        region_ids=[],
+        params={"margin": 0.0},
+    )
+    assert rule.item_ids == ("obj_2",)
+    assert rule.region_ids == ()
+    assert rule.consequence is Consequence.AVOID
+    assert rule.phrases == [] and rule.split == "train"
+
+
+# ---------------------------------------------------------------------------
+# enumerate_rules: selectors and set rules
+
+
+def test_enumerate_single_avoid_rules():
+    items, regions = t1_scene()
+    task_cfg = {"rules": [{"consequence": "avoid", "items": {"role": "candidate"}, "margin": 0.0}]}
+    rules = enumerate_rules(items, regions, task_cfg)
     assert [r.rule_id for r in rules] == [
-        "inside|block_0|tray_top",
-        "inside|bottle_0|tray_top",
-        "upright|bottle_0|-",
+        "avoid|bottle_0|-",
+        "avoid|cup_0|-",
+        "avoid|cup_1|-",
+        "avoid|pill_0|-",
     ]
-    assert rules[0].consequence is Consequence.INSIDE
-    assert rules[0].region_ids == ("tray_top",)
-    assert rules[2].region_ids == ()
-    assert np.isclose(rules[2].params["theta_max"], np.deg2rad(45))
-    assert rules[2].params["category"] == "bottle"
+    for rule in rules:
+        assert rule.consequence is Consequence.AVOID
+        assert rule.region_ids == ()
+        assert rule.params["margin"] == 0.0
+        assert len(rule.item_ids) == 1
+        assert rule.params["categories"] == (rule.params["category"],)
 
 
-def test_enumerate_rules_stable_across_input_order():
-    items, regions = toy_scene()
-    shuffled = dict(reversed(list(items.items())))
-    a = [r.rule_id for r in enumerate_rules(items, regions, TOY_TASK_CFG)]
-    b = [r.rule_id for r in enumerate_rules(shuffled, regions, TOY_TASK_CFG)]
-    assert a == b
-
-
-def test_enumerate_rules_particles_single_rule_joined_regions():
-    items = {"beans_0": make_item("beans_0", "beans", kind="particle_set")}
-    _, regions = toy_scene()
+def test_enumerate_set_rule_same_category_min():
+    items, regions = t1_scene()
     task_cfg = {
         "rules": [
-            {
-                "consequence": "particles_inside",
-                "items": {"role": "constrained_candidate", "kind": "particle_set"},
-                "regions": ["cup_interior", "box_interior"],
-            },
-            {"consequence": "stay", "items": {"role": "constrained_candidate"}, "d_tol": 0.05},
-            {"consequence": "outside", "items": {"role": "constrained_candidate"}, "regions": ["zone_red", "table_top"]},
+            {"consequence": "avoid", "items": {"role": "candidate", "same_category_min": 2},
+             "set_rule": True, "margin": 0.0}
+        ]
+    }
+    rules = enumerate_rules(items, regions, task_cfg)
+    # only "cup" has >= 2 members -> one set rule carrying all its members
+    assert [r.rule_id for r in rules] == ["avoid|cup_0+cup_1|-"]
+    rule = rules[0]
+    assert rule.item_ids == ("cup_0", "cup_1")
+    assert rule.params["category"] == "cup"
+    assert rule.params["categories"] == ("cup", "cup")
+    assert "color" not in rule.params  # members have no color
+
+
+def test_enumerate_set_rule_all():
+    items, regions = t1_scene()
+    task_cfg = {
+        "rules": [{"consequence": "avoid", "items": {"role": "candidate"}, "set_rule": "all", "margin": 0.0}]
+    }
+    rules = enumerate_rules(items, regions, task_cfg)
+    assert [r.rule_id for r in rules] == ["avoid|bottle_0+cup_0+cup_1+pill_0|-"]
+    rule = rules[0]
+    assert rule.item_ids == ("bottle_0", "cup_0", "cup_1", "pill_0")
+    assert "category" not in rule.params  # mixed set: no uniform category
+    assert set(rule.params["categories"]) == {"bottle", "cup", "pill_bottle"}
+
+
+def test_enumerate_set_rule_true_defaults_min_two():
+    items, regions = t1_scene()
+    # set_rule: true without same_category_min still requires >= 2 per category
+    task_cfg = {"rules": [{"consequence": "avoid", "items": {"role": "candidate"}, "set_rule": True}]}
+    assert [r.rule_id for r in enumerate_rules(items, regions, task_cfg)] == ["avoid|cup_0+cup_1|-"]
+    # no category repeats -> no set rule at all
+    single = {"bottle_0": items["bottle_0"]}
+    assert enumerate_rules(single, regions, task_cfg) == []
+
+
+def test_enumerate_group_selector_and_region_list():
+    items, regions = t3_scene()
+    task_cfg = {
+        "rules": [
+            {"consequence": "inside", "items": {"role": "candidate", "group": "push"}, "regions": ["table_top"]},
+            {"consequence": "upright", "items": {"role": "bystander"}, "theta_max_deg": 45},
+            {"consequence": "stay", "items": {"role": "bystander"}, "d_tol": 0.03, "theta_tol_deg": 20},
         ]
     }
     rules = enumerate_rules(items, regions, task_cfg)
     assert [r.rule_id for r in rules] == [
-        "particles_inside|beans_0|cup_interior+box_interior",
-        "stay|beans_0|-",
-        "outside|beans_0|table_top",  # zone_red is not in the scene -> skipped
+        "inside|box_0|table_top",
+        "inside|box_1|table_top",
+        "upright|bottle_1|-",
+        "stay|bottle_1|-",
     ]
-    assert rules[0].params["T"] == 0.005
-    assert rules[1].params["d_tol"] == 0.05
-    assert rules[1].params["theta_tol"] == 0.35  # documented default
+    assert np.isclose(rules[2].params["theta_max"], np.deg2rad(45))  # *_deg converted to radians
+    assert rules[3].params["d_tol"] == 0.03
+    assert np.isclose(rules[3].params["theta_tol"], np.deg2rad(20))
 
 
-def test_enumerate_rules_upright_requires_theta_max():
-    items, regions = toy_scene()
+def test_enumerate_region_kind_selector_expands_per_region():
+    items, regions = t3_scene()
+    task_cfg = {
+        "rules": [
+            {"consequence": "outside", "items": {"role": "candidate", "group": "push"}, "regions": {"kind": "zone"}}
+        ]
+    }
+    rules = enumerate_rules(items, regions, task_cfg)
+    # one rule per (push object, zone); zones sorted by region_id
+    assert [r.rule_id for r in rules] == [
+        "outside|box_0|zone_green",
+        "outside|box_0|zone_red",
+        "outside|box_1|zone_green",
+        "outside|box_1|zone_red",
+    ]
+
+
+def test_enumerate_particles_single_joint_region_rule():
+    items, regions = t2_scene()
+    task_cfg = {
+        "rules": [
+            {"consequence": "particles_inside", "items": {"role": "candidate", "kind": "particle_set"},
+             "regions": ["bowl_src_interior", "target_interior"]},
+            {"consequence": "particles_outside", "items": {"role": "candidate", "kind": "particle_set"},
+             "regions": {"kind": "zone"}},
+        ]
+    }
+    rules = enumerate_rules(items, regions, task_cfg)
+    assert [r.rule_id for r in rules] == [
+        "particles_inside|beads|bowl_src_interior+target_interior",
+        "particles_outside|beads|zone_blue+zone_red",
+    ]
+    assert rules[0].region_ids == ("bowl_src_interior", "target_interior")
+    assert rules[0].params["T"] == 0.005  # default soft-min temperature
+    assert rules[1].params["T"] == 0.005
+
+
+def test_enumerate_missing_regions_skips_not_errors():
+    items, _ = t3_scene()
+    regions = {"table_top": make_region("table_top")}  # no zones in this scene
+    task_cfg = {
+        "rules": [
+            {"consequence": "outside", "items": {"role": "candidate"}, "regions": ["zone_red", "table_top"]},
+            {"consequence": "outside", "items": {"role": "candidate"}, "regions": {"kind": "zone"}},
+        ]
+    }
+    rules = enumerate_rules(items, regions, task_cfg)
+    # zone_red is absent from the scene -> skipped; the {kind: zone} entry matches nothing
+    assert [r.rule_id for r in rules] == [
+        "outside|box_0|table_top",
+        "outside|box_1|table_top",
+    ]
+
+
+def test_enumerate_stable_across_input_order():
+    items, regions = t1_scene()
+    task_cfg = {
+        "rules": [
+            {"consequence": "avoid", "items": {"role": "candidate"}, "margin": 0.0},
+            {"consequence": "avoid", "items": {"role": "candidate", "same_category_min": 2}, "set_rule": True},
+            {"consequence": "stay", "items": {"role": "candidate"}, "d_tol": 0.03},
+        ]
+    }
+    shuffled = dict(reversed(list(items.items())))
+    a = [r.rule_id for r in enumerate_rules(items, regions, task_cfg)]
+    b = [r.rule_id for r in enumerate_rules(shuffled, regions, task_cfg)]
+    assert a == b
+
+
+def test_enumerate_config_errors_raise():
+    items, regions = t1_scene()
     with pytest.raises(ValueError):
         enumerate_rules(items, regions, {"rules": [{"consequence": "upright", "items": {}}]})
+    with pytest.raises(ValueError):  # regional consequence without a regions selector
+        enumerate_rules(items, regions, {"rules": [{"consequence": "inside", "items": {}}]})
 
 
-def _rule(consequence, item_id="bottle_0", region_ids=(), params=None, phrases=()):
+def test_stay_default_theta_tol():
+    items, regions = t1_scene()
+    task_cfg = {"rules": [{"consequence": "stay", "items": {"role": "candidate"}, "d_tol": 0.05}]}
+    rules = enumerate_rules(items, regions, task_cfg)
+    assert rules[0].params["theta_tol"] == 0.35  # documented default
+
+
+# ---------------------------------------------------------------------------
+# render_phrases
+
+
+def _rule(consequence, item_ids=("bottle_0",), region_ids=(), params=None, phrases=()):
     return RuleSpec(
-        rule_id=f"{consequence}|{item_id}|{'+'.join(region_ids) if region_ids else '-'}",
+        rule_id=f"{consequence}|{'+'.join(item_ids)}|{'+'.join(region_ids) if region_ids else '-'}",
         consequence=Consequence(consequence),
-        item_id=item_id,
+        item_ids=tuple(item_ids),
         region_ids=tuple(region_ids),
-        params=params or {"category": "bottle"},
+        params=params if params is not None else {"category": "bottle", "categories": ("bottle",), "colors": (None,)},
         phrases=list(phrases),
     )
 
 
 def test_render_phrases_no_digits_all_consequences():
     cases = [
-        _rule("inside", region_ids=("tray_top",)),
+        _rule("avoid"),
+        _rule("inside", region_ids=("table_top",)),
         _rule("outside", region_ids=("zone_red",)),
         _rule("upright"),
         _rule("stay"),
-        _rule("particles_inside", item_id="beans_0", region_ids=("cup_interior", "box_interior"),
-              params={"category": "beans"}),
-        _rule("particles_outside", item_id="beans_0", region_ids=("table_top",), params={"category": "beans"}),
+        _rule("particles_inside", item_ids=("beads",), region_ids=("bowl_src_interior", "target_interior"),
+              params={"category": "beads", "categories": ("beads",), "colors": (None,)}),
+        _rule("particles_outside", item_ids=("beads",), region_ids=("zone_red",),
+              params={"category": "beads", "categories": ("beads",), "colors": (None,)}),
+        _rule("avoid", item_ids=("cup_0", "cup_1"),
+              params={"category": "cup", "categories": ("cup", "cup"), "colors": (None, None)}),  # set rule
     ]
     for rule in cases:
-        phrases = render_phrases(rule, PHRASES_CFG, np.random.RandomState(0), n=3)
+        phrases = render_phrases(rule, OBJECTS_CFG, np.random.RandomState(0), n=3)
         assert phrases, rule.rule_id
         for phrase in phrases:
             assert not any(c.isdigit() for c in phrase), phrase
 
 
-def test_render_phrases_content_and_determinism():
-    rule = _rule("inside", region_ids=("tray_top",))
-    a = render_phrases(rule, PHRASES_CFG, np.random.RandomState(1), n=3)
-    b = render_phrases(rule, PHRASES_CFG, np.random.RandomState(1), n=3)
+def test_render_phrases_avoid_templates_and_determinism():
+    rule = _rule("avoid")
+    a = render_phrases(rule, OBJECTS_CFG, np.random.RandomState(1), n=3)
+    b = render_phrases(rule, OBJECTS_CFG, np.random.RandomState(1), n=3)
     assert a == b
     for phrase in a:
+        assert any(phrase.startswith(p) for p in ("don't touch the", "avoid the", "stay away from the"))
         assert any(nm in phrase for nm in ("bottle", "flask"))
-        assert any(nm in phrase for nm in ("tray", "serving tray"))
 
 
 def test_render_phrases_color_prefix_and_region_color():
-    rule = _rule("outside", params={"category": "ball", "color": "red"}, item_id="ball_0",
-                 region_ids=("zone_blue",))
+    rule = _rule(
+        "outside",
+        item_ids=("box_0",),
+        region_ids=("zone_blue",),
+        params={"category": "box", "categories": ("box",), "colors": ("red",), "color": "red"},
+    )
     seen = set()
     for seed in range(10):
-        seen.update(render_phrases(rule, PHRASES_CFG, np.random.RandomState(seed), n=3))
-    assert any("red ball" in p or "red sphere" in p for p in seen)
+        seen.update(render_phrases(rule, OBJECTS_CFG, np.random.RandomState(seed), n=3))
+    assert any("red box" in p or "red crate" in p for p in seen)
     assert any("blue zone" in p or "blue mat" in p for p in seen)
     assert all(not any(c.isdigit() for c in p) for p in seen)
 
 
-def test_render_phrases_custom_templates_override():
-    cfg = dict(PHRASES_CFG)
-    cfg["templates"] = {"upright": ["please do not tip the {item}"]}
-    rule = _rule("upright")
-    phrases = render_phrases(rule, cfg, np.random.RandomState(0), n=2)
-    assert phrases
-    assert all(p.startswith("please do not tip the") for p in phrases)
-
-
-def test_assign_split():
-    splits = {
-        "heldout_item_categories": ["mug", "sauce_can"],
-        "heldout_colors": ["purple"],
-        "heldout_regions": ["zone"],
-        "heldout_phrase_templates": ["don't let the {item} slide off the {region}"],
-    }
-    assert assign_split(_rule("upright", params={"category": "mug"}, item_id="mug_0"), splits) == "heldout_item"
-    # hyphen in asset ids normalizes to the category alias token
-    assert assign_split(_rule("upright", params={"category": "105_sauce-can"}, item_id="105_sauce-can_0"), splits) == "heldout_item"
-    assert assign_split(_rule("upright", params={"category": "ball", "color": "purple"}, item_id="ball_0"), splits) == "heldout_item"
-    assert assign_split(_rule("outside", region_ids=("zone_red",)), splits) == "heldout_region"
-    assert (
-        assign_split(
-            _rule("inside", region_ids=("tray_top",), phrases=["don't let the bottle slide off the tray"]), splits
-        )
-        == "heldout_phrase"
+def test_render_phrases_set_rule_uses_category_templates():
+    rule = _rule(
+        "avoid",
+        item_ids=("cup_0", "cup_1"),
+        params={"category": "cup", "categories": ("cup", "cup"), "colors": (None, None)},
     )
-    assert assign_split(_rule("inside", region_ids=("tray_top",)), splits) == "train"
-    assert assign_split(_rule("upright"), None) == "train"
+    seen = set()
+    for seed in range(10):
+        seen.update(render_phrases(rule, OBJECTS_CFG, np.random.RandomState(seed), n=3))
+    assert seen  # set templates only
+    assert all(p.startswith("don't touch any ") or p.startswith("avoid all the ") for p in seen)
+    assert any("cup" in p or "glass" in p for p in seen)
+
+
+def test_render_phrases_mixed_set_falls_back_to_generic():
+    rule = _rule(
+        "avoid",
+        item_ids=("bottle_0", "cup_0"),
+        params={"categories": ("bottle", "cup"), "colors": (None, None)},  # no uniform category
+    )
+    seen = set()
+    for seed in range(10):
+        seen.update(render_phrases(rule, OBJECTS_CFG, np.random.RandomState(seed), n=3))
+    assert seen
+    assert all(any(g in p for g in ("object", "item")) for p in seen)
+    assert all(not any(c.isdigit() for c in p) for p in seen)
+
+
+def test_render_phrases_particles_inside_names_no_region():
+    rule = _rule("particles_inside", item_ids=("beads",), region_ids=("bowl_src_interior", "target_interior"),
+                 params={"category": "beads", "categories": ("beads",), "colors": (None,)})
+    phrases = render_phrases(rule, OBJECTS_CFG, np.random.RandomState(0), n=3)
+    assert phrases
+    assert all(p.startswith("don't spill the") for p in phrases)
+    assert any("beans" in p or "rice" in p or "grains" in p or "beads" in p for p in phrases)
+
+
+# ---------------------------------------------------------------------------
+# assign_split / resolve_splits
+
+
+SPLITS = {
+    "heldout_item_categories": ["pill_bottle", "sauce_can", "tea_box"],
+    "heldout_colors": ["purple", "orange", "cyan"],
+    "heldout_regions": ["laptop"],
+    "heldout_phrase_templates": ["stay away from the {item}", "don't get any {item} in the {region}"],
+}
+
+
+def test_assign_split_heldout_item_category():
+    rule = _rule("avoid", item_ids=("pill_0",),
+                 params={"category": "pill_bottle", "categories": ("pill_bottle",), "colors": (None,)})
+    assert assign_split(rule, SPLITS) == "heldout_item"
+    # hyphen in asset-flavoured ids normalizes to the category alias token
+    rule = _rule("avoid", item_ids=("105_sauce-can_0",),
+                 params={"category": "sauce_can", "categories": ("sauce_can",), "colors": (None,)})
+    assert assign_split(rule, SPLITS) == "heldout_item"
+
+
+def test_assign_split_heldout_color():
+    rule = _rule("avoid", item_ids=("box_0",),
+                 params={"category": "box", "categories": ("box",), "colors": ("purple",), "color": "purple"})
+    assert assign_split(rule, SPLITS) == "heldout_item"
+
+
+def test_assign_split_set_rule_any_member_heldout():
+    rule = _rule(
+        "avoid",
+        item_ids=("cup_0", "pill_0"),
+        params={"categories": ("cup", "pill_bottle"), "colors": (None, None)},
+        phrases=["avoid all the objects"],
+    )
+    assert assign_split(rule, SPLITS) == "heldout_item"
+
+
+def test_assign_split_heldout_region_and_precedence():
+    region_rule = _rule("outside", region_ids=("laptop",),
+                        params={"category": "beads", "categories": ("beads",), "colors": (None,)})
+    assert assign_split(region_rule, SPLITS) == "heldout_region"
+    # heldout item wins over heldout region
+    both = _rule("outside", item_ids=("pill_0",), region_ids=("laptop",),
+                 params={"category": "pill_bottle", "categories": ("pill_bottle",), "colors": (None,)})
+    assert assign_split(both, SPLITS) == "heldout_item"
+
+
+def test_assign_split_heldout_phrase_template():
+    rule = _rule("avoid", phrases=["stay away from the bottle"])
+    assert assign_split(rule, SPLITS) == "heldout_phrase"
+    rule = _rule("particles_outside", item_ids=("beads",), region_ids=("zone_red",),
+                 params={"category": "beads", "categories": ("beads",), "colors": (None,)},
+                 phrases=["don't get any beans in the red zone"])
+    assert assign_split(rule, SPLITS) == "heldout_phrase"
+    assert assign_split(_rule("avoid", phrases=["avoid the bottle"]), SPLITS) == "train"
+    assert assign_split(_rule("avoid"), None) == "train"
+
+
+def test_resolve_splits_merges_all_under_task():
+    splits_yaml = {
+        "selective_avoid": {"heldout_item_categories": ["tea_box"], "heldout_colors": ["cyan"]},
+        "all": {"heldout_phrase_templates": ["stay away from the {item}"]},
+    }
+    merged = resolve_splits(splits_yaml, "selective_avoid")
+    assert merged == {
+        "heldout_item_categories": ["tea_box"],
+        "heldout_colors": ["cyan"],
+        "heldout_phrase_templates": ["stay away from the {item}"],
+    }
+    assert resolve_splits(None, "nothing") == {}
 
 
 def test_enumerate_rules_fills_phrases_and_split():
-    items, regions = toy_scene()
-    splits = {"heldout_item_categories": ["block"], "heldout_colors": [], "heldout_regions": [],
-              "heldout_phrase_templates": []}
-    rules = enumerate_rules(items, regions, TOY_TASK_CFG, phrases_cfg=PHRASES_CFG, splits_cfg=splits,
-                            rng=np.random.RandomState(0))
+    items, regions = t1_scene()
+    task_cfg = {"rules": [{"consequence": "avoid", "items": {"role": "candidate"}, "margin": 0.0}]}
+    rules = enumerate_rules(
+        items, regions, task_cfg, objects_cfg=OBJECTS_CFG, splits_cfg=SPLITS, rng=np.random.RandomState(0)
+    )
     by_id = {r.rule_id: r for r in rules}
-    assert by_id["inside|block_0|tray_top"].split == "heldout_item"
-    assert by_id["inside|bottle_0|tray_top"].split == "train"
+    assert by_id["avoid|pill_0|-"].split == "heldout_item"
+    assert by_id["avoid|bottle_0|-"].split in ("train", "heldout_phrase")
     assert all(len(r.phrases) > 0 for r in rules)
     assert all(not any(c.isdigit() for c in p) for r in rules for p in r.phrases)
+
+
+# ---------------------------------------------------------------------------
+# Real configs on disk
+
+
+def test_objects_yaml_structure_and_v3_mass_ranges():
+    cfg = yaml.safe_load((CONFIGS / "objects.yaml").read_text())
+    pool = [
+        "068_boxdrink", "086_woodenblock", "001_bottle", "114_bottle", "021_cup", "039_mug",
+        "071_can", "080_pillbottle", "105_sauce-can", "112_tea-box", "113_coffee-box",
+    ]
+    for asset_id in pool:
+        assert asset_id in cfg["assets"], asset_id
+        assert cfg["assets"][asset_id]["category"] in cfg["categories"], asset_id
+    # nominal mass ranges from PLAN v3 §7
+    assert cfg["categories"]["bottle"]["mass_range"] == [0.05, 0.30]
+    assert cfg["categories"]["cup"]["mass_range"] == [0.05, 0.25]
+    assert cfg["categories"]["mug"]["mass_range"] == [0.05, 0.25]
+    assert cfg["categories"]["can"]["mass_range"] == [0.05, 0.35]
+    assert cfg["categories"]["wooden_block"]["mass_range"] == [0.05, 0.15]
+    for boxed in ("drink_box", "tea_box", "coffee_box"):
+        assert cfg["categories"][boxed]["mass_range"] == [0.05, 0.30], boxed
+    assert cfg["categories"]["beads"]["mass_range"] == [0.0005, 0.002]
+    assert set(cfg["categories"]["beads"]["synonyms"]) == {"beans", "rice", "grains"}
+    # 6 training colors + 3 heldout
+    assert len(cfg["colors"]["train"]) == 6
+    assert set(cfg["colors"]["heldout"]) == {"purple", "orange", "cyan"}
+    # names/synonyms never contain digits
+    for key, entry in cfg["categories"].items():
+        for nm in list(entry.get("names", [])) + list(entry.get("synonyms", [])):
+            assert not any(c.isdigit() for c in nm), (key, nm)
+
+
+def test_splits_yaml_is_v3_excerpt():
+    cfg = yaml.safe_load((CONFIGS / "splits.yaml").read_text())
+    assert cfg == {
+        "selective_avoid": {
+            "heldout_item_categories": ["pill_bottle", "sauce_can", "tea_box"],
+            "heldout_colors": ["purple", "orange", "cyan"],
+        },
+        "granular_pour": {
+            "heldout_regions": ["laptop"],
+            "heldout_colors": ["purple", "orange", "cyan"],
+        },
+        "push_zone": {
+            "heldout_colors": ["purple", "orange", "cyan"],
+            "heldout_item_categories": ["tea_box"],
+        },
+        "all": {
+            "heldout_phrase_templates": ["stay away from the {item}", "don't get any {item} in the {region}"],
+        },
+    }
+
+
+def test_task_yamls_parse_and_rule_entries_enumerate():
+    objects_cfg = yaml.safe_load((CONFIGS / "objects.yaml").read_text())
+    splits_yaml = yaml.safe_load((CONFIGS / "splits.yaml").read_text())
+
+    # T1: avoid singles + category set rules + the CrossSafe-baseline all-set + stay
+    t1 = yaml.safe_load((CONFIGS / "tasks" / "T1_selective_avoid.yaml").read_text())
+    assert t1["task"] == "selective_avoid"
+    items, _ = t1_scene()
+    rules = enumerate_rules(
+        items, {}, t1, objects_cfg=objects_cfg,
+        splits_cfg=resolve_splits(splits_yaml, "selective_avoid"), rng=np.random.RandomState(0),
+    )
+    ids = [r.rule_id for r in rules]
+    assert "avoid|cup_0+cup_1|-" in ids  # same_category_min set rule
+    assert "avoid|bottle_0+cup_0+cup_1+pill_0|-" in ids  # set_rule: all baseline
+    assert "stay|cup_0|-" in ids
+    assert len(ids) == 4 + 1 + 1 + 4
+    by_id = {r.rule_id: r for r in rules}
+    assert by_id["avoid|pill_0|-"].split == "heldout_item"
+    assert by_id["avoid|bottle_0+cup_0+cup_1+pill_0|-"].split == "heldout_item"  # pill_0 is a member
+    assert all(r.phrases and not any(c.isdigit() for c in p) for r in rules for p in r.phrases)
+
+    # T2: one joint particles_inside + one joint particles_outside over the zones
+    t2 = yaml.safe_load((CONFIGS / "tasks" / "T2_granular_pour.yaml").read_text())
+    assert t2["task"] == "granular_pour"
+    assert t2["bimanual"] is False
+    items, regions = t2_scene()
+    rules = enumerate_rules(
+        items, regions, t2, objects_cfg=objects_cfg,
+        splits_cfg=resolve_splits(splits_yaml, "granular_pour"), rng=np.random.RandomState(0),
+    )
+    assert [r.rule_id for r in rules] == [
+        "particles_inside|beads|bowl_src_interior+target_interior",
+        "particles_outside|beads|zone_blue+zone_red",
+    ]
+    assert all(r.phrases and not any(c.isdigit() for c in p) for r in rules for p in r.phrases)
+
+    # T3: group: push selector, {kind: zone} expansion, bystander upright/stay
+    t3 = yaml.safe_load((CONFIGS / "tasks" / "T3_push_zone.yaml").read_text())
+    assert t3["task"] == "push_zone"
+    items, regions = t3_scene()
+    rules = enumerate_rules(
+        items, regions, t3, objects_cfg=objects_cfg,
+        splits_cfg=resolve_splits(splits_yaml, "push_zone"), rng=np.random.RandomState(0),
+    )
+    ids = [r.rule_id for r in rules]
+    assert ids == [
+        "inside|box_0|table_top",
+        "inside|box_1|table_top",
+        "outside|box_0|zone_green",
+        "outside|box_0|zone_red",
+        "outside|box_1|zone_green",
+        "outside|box_1|zone_red",
+        "upright|bottle_1|-",
+        "stay|bottle_1|-",
+    ]
+    assert all(r.phrases and not any(c.isdigit() for c in p) for r in rules for p in r.phrases)
+    # a tea-box push object would be held out
+    items = {**items, "tea_0": make_item("tea_0", "tea_box", group="push")}
+    rules = enumerate_rules(items, regions, t3, splits_cfg=resolve_splits(splits_yaml, "push_zone"))
+    by_id = {r.rule_id: r for r in rules}
+    assert by_id["inside|tea_0|table_top"].split == "heldout_item"
 
 
 def test_entity_of_duck_typing():

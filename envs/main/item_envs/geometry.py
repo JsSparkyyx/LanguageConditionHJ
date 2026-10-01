@@ -106,6 +106,20 @@ def signed_dist_inside_polygon(pts_xy: np.ndarray, poly: np.ndarray) -> np.ndarr
     return np.where(inside, dist, -dist)
 
 
+def circle_polygon(radius: float, n: int = 16) -> np.ndarray:
+    """CCW n-gon approximation of a circle in the xy plane, centered at the origin.
+
+    Returns [n, 2]; vertex k at angle 2*pi*k/n (counterclockwise seen from +z).
+    """
+    radius = float(radius)
+    if radius <= 0:
+        raise ValueError("radius must be positive")
+    if int(n) < 3:
+        raise ValueError("need at least 3 vertices")
+    theta = 2.0 * np.pi * np.arange(int(n)) / int(n)
+    return radius * np.stack([np.cos(theta), np.sin(theta)], axis=1)
+
+
 def tilt_angle(world_T_item: np.ndarray, up_local: np.ndarray) -> float:
     """Angle between the item's up axis and world +z, radians."""
     world_T_item = np.asarray(world_T_item, dtype=np.float64)

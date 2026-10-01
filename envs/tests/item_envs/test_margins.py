@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from main.item_envs.margins import (
+    m_avoid,
     m_inside,
     m_outside,
     m_particles_inside,
     m_particles_outside,
     m_stay,
     m_upright,
+    set_rule_margin,
     softmin,
 )
 from main.item_envs.regions import Region
@@ -87,6 +90,23 @@ def test_m_outside():
     assert np.isclose(m_outside(footprint_xy(1.3, 0.5), region), 0.295)
     assert np.isclose(m_outside(footprint_xy(0.5, 0.5), region), -0.495)
     assert np.isclose(m_outside(footprint_xy(1.0, 0.5), region), -0.005)  # straddling
+
+
+def test_m_avoid():
+    assert m_avoid(0.10) == 0.10  # margin defaults to 0 (T1 setting)
+    assert np.isclose(m_avoid(0.10, margin=0.02), 0.08)
+    assert np.isclose(m_avoid(0.02, margin=0.02), 0.0)  # zero at the boundary
+    assert m_avoid(0.01, margin=0.02) < 0  # closer than the margin violates
+    assert m_avoid(np.inf) == np.inf  # no item / nothing reachable stays safe
+
+
+def test_set_rule_margin():
+    assert set_rule_margin([0.10, 0.02, 0.30]) == 0.02  # min over the items
+    assert set_rule_margin([-0.01, 0.02]) == -0.01  # one violating item fails the rule
+    assert set_rule_margin(np.array([0.05])) == 0.05
+    assert set_rule_margin(0.05) == 0.05  # scalar tolerated
+    with pytest.raises(ValueError):
+        set_rule_margin([])
 
 
 def test_m_upright_zero_at_theta_max():

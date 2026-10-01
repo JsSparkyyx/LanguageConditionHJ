@@ -1,0 +1,19 @@
+task: granular_pour
+robotwin_task: granular_pour
+embodiments: [ur5-wsg, franka-panda]     # first is the default
+bimanual: false                          # true: second arm holds the target container during the pour
+bowl: {model: 002_bowl, ids: [1, 2, 3, 5]}   # ids subject to probe P2 containment
+beads: {n: 60, radius: 0.006, mass: [0.0005, 0.002]}   # default from P2; masses in kg
+target: {pool: [002_bowl, 062_plasticbox], static: true}
+zones: {n: 2, distinct_colors: true, near_target: true}  # one may be replaced by a static 015_laptop
+risk:
+  time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}
+  safe_time_scale: 0.6
+  task:
+    tilt_rate: {dist: uniform, range: [1.0, 4.0]}        # rad/s
+    pour_height: {dist: uniform, range: [0.05, 0.20]}    # m above the target rim
+    pour_offset: {dist: uniform, range: [0.0, 0.05]}     # m, lateral, toward one of the zones
+rules:
+  - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior, target_interior]}
+  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: {kind: zone}}
+risk_collect: null                       # filled by calibration

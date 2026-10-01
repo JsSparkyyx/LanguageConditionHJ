@@ -1,92 +1,108 @@
-# Item-Safety Environments: Implementation Plan for a Coding Agent
-
-Target repos: `CEHJ_safe` (this repo, write here) and `RoboTwin` (sibling checkout, **read-only**).
-Simulator: SAPIEN 3.0.0b1 (PhysX 5, CPU physics at 250 Hz) inside the `RoboTwin` conda env.
-
-> **Local adaptations (agreed with the human, 2026-09-30):**
+> **Local adaptations (agreed with the human; updated 2026-10-01 for plan v3):**
 > - Project root is `/work/nvme/bifq/project/LanguageConditionHJ/envs/` (self-contained;
->   this file's "repo root" means that directory).
-> - Phase 2.7 / Phase 5 integration edits target the `LanguageConditionHJ/main/` copy of CEHJ.
-> - This session covers Phase 0 + Phase 1 only.
+>   this file's "repo root" means that directory). "CEHJ_safe (this repo, write here)" is the
+>   `LanguageConditionHJ` checkout; the Phase 5 integration edits target its `main/` copy of CEHJ.
+>   The original `CEHJ_safe` repo is never edited.
 > - Cluster: NCSA Delta; GPU work goes through `srun --account=bifq-delta-gpu
 >   --partition=gpuA40x4-interactive ... apptainer exec --nv .../robot-sim_cu128.sif`
 >   (see `.kimi-code/skills/delta-hpc/SKILL.md` in LanguageConditionHJ).
+> - This document is plan **v3** (3 tasks: T1 selective_avoid, T2 granular_pour, T3 push_zone).
+>   It supersedes the 7-task v2 plan entirely.
+
+---
+
+# Item-Safety Environments on RoboTwin: Implementation Plan for a Coding Agent
+
+Repos: `CEHJ_safe` (this repo, write here) and `RoboTwin` (sibling checkout at `../RoboTwin`).
+Simulator: SAPIEN 3.0.0b1 (PhysX 5, CPU physics at 250 Hz) in the `RoboTwin` conda env.
+Robots: dual-arm setups only. Default `ur5-wsg` pair, also `franka-panda` pair.
 
 ---
 
 ## 0. How to use this document
 
-You are building simulation environments and data infrastructure. You are **not** building or training
-the safety filter. Work phase by phase. Each phase ends with:
+You are building three RoboTwin task environments plus the data infrastructure around them. You are
+**not** building or training the safety filter.
 
-1. passing tests listed in that phase,
-2. a short report file under `docs/item_envs/`,
-3. a commit with message prefix `item_envs(phaseN):`.
+Work phase by phase (Section 6). Each phase ends with passing tests, a short report under
+`docs/item_envs/`, and a commit with prefix `item_envs(phaseN):`. Phases with a **STOP gate** require a
+human review if the gate fails. Do not tune physics until something "looks right" without reporting it.
 
-Some phases have **STOP gates**. If a gate fails, stop, write the report with numbers, videos, and your
-diagnosis, and wait for a human. Do not tune physics until a probe "looks right" without reporting it.
+An API marked **(verify)** must be confirmed in SAPIEN 3.0.0b1 or RoboTwin before use, with the
+finding recorded in `docs/item_envs/recon.md`.
 
-When this plan names an API as **(verify)**, confirm the exact name in SAPIEN 3.0.0b1 or RoboTwin
-before using it, and record what you found in `docs/item_envs/recon.md`.
+Judge physics with **numbers** (distances, tilts, counts), not by watching videos. For every probe
+and every task, also save 4 to 8 PNG keyframes, which you can inspect directly.
 
 ---
 
 ## 1. Mission and context
 
-### 1.1 What the downstream project needs
+### 1.1 Research context (read once)
 
-We train a Hamilton-Jacobi (HJ) safety filter that blocks unsafe actions of a nominal planner. The
-previous version (`main/train/hfunc.py`) used a failure margin `h = min distance(robot ∪ held object,
-obstacle)`. That margin depends only on robot state, because the obstacle is static. Such constraints
-are better handled by analytic CBFs, so they are not interesting for a learned filter.
+We train a Hamilton-Jacobi (HJ) safety filter on frozen HoloBrain-0 encoders. HoloBrain is a
+**bimanual** model, so every environment keeps the RoboTwin dual-arm setup with both arms in the
+action space, exactly as in the previous project (CrossSafe, this repo).
 
-The new project targets **item-centric safety**. The failure is defined on the state of an item whose
-state is **not** a function of the robot's joint state. The item moves on its own through contact,
-friction, rolling, or flow. Examples are "don't let the glass fall off the tray", "don't let the ball
-roll off the table", and "don't spill the beans outside the bowl".
+The new filter is **item-centric and promptable**. A rule names a consequence type (for example
+"don't touch", "don't spill", "keep out of a region") and a **referent**: the item it is about, plus
+optionally a region. Downstream, the referent reaches the filter as a **mask** over the scene tokens,
+produced from a text prompt (GroundingDINO + SAM), a click, or the ground-truth simulator mask. You do
+not handle language. You generate rule specifications, log ground-truth masks and states, and keep
+everything relabelable: the same transition must be usable with a different referent.
 
-The safety rule names an item and optionally a region in language. You do not handle language
-understanding. You only generate the rule specifications and phrases, and you log everything needed to
-train a language-conditioned filter later.
+### 1.2 The three tasks
 
-### 1.2 What you deliver
+| ID | Name | Built on | Main failure | Referent matters because |
+|---|---|---|---|---|
+| T1 | `selective_avoid` | the 5 CrossSafe host tasks, unmodified | robot or held payload touches a **specified** object | several objects sit on or near the path, and only the specified ones must be avoided. Touching the others is allowed |
+| T2 | `granular_pour` | new RoboTwin task derived from `place_container_plate` (bowl variant) | beads leave the bowls, or land in a forbidden region | several regions exist, and only the specified one is forbidden |
+| T3 | `push_zone` | new RoboTwin task | pushed object leaves the table or enters a forbidden zone, or a bystander tips or moves | several zones and bystanders exist, and only the specified ones are constrained |
 
-1. A package `main/item_envs/` that defines seven RoboTwin-compatible tasks (T1 to T7, Section 7).
-2. Pure-numpy failure-margin functions for four rigid consequence types and two particle-set
-   variants, with unit tests.
+### 1.3 Deliverables
+
+1. Pure-numpy margin functions for the consequence types in Section 5, with unit tests.
+2. T1 as a multi-object spawner on top of the existing hosts, and T2 and T3 as RoboTwin task files.
 3. A risk knob on the nominal planner (plan retiming plus task-specific knobs).
-4. Physical-property randomization and asset collision fixes.
-5. A per-tick episode logger with privileged item state, all candidate-rule margins, contacts,
-   visibility, and debug videos.
-6. Feasibility probes and base-rate calibration reports per task.
-7. A minimal hook so the existing CEHJ rollout/collection code can use item margins instead of
-   obstacle distance, plus a sidecar buffer for item state. Training code stays untouched.
+4. Physical-property randomization.
+5. A per-tick logger with privileged item state, all candidate-rule margins, contacts, visibility,
+   and **token-grid item masks**, plus keyframes and optional videos.
+6. Feasibility probes and base-rate calibration per task and embodiment.
+7. A minimal hook so CEHJ's rollout and collection code can use item margins, and a sidecar buffer
+   for item state and masks. Training code stays untouched.
 
 ---
 
 ## 2. Ground rules
 
-- **Never edit files under `RoboTwin/`.** Import and subclass only. Modified assets go into
-  `assets_overlay/` in this repo, and are loaded by absolute path.
-- **Do not change existing CEHJ semantics.** `main/train/config.py`, `buffer.py` `FIELDS`,
-  `hfunc.py`, and the controller behavior for existing tasks must stay identical. Section 6, Phase 5
-  lists the only allowed edits to existing files. Before Phase 5, existing code is read-only.
-- **Regression check.** Run `scripts/run_smoke.sh` (or the closest smoke script, see Phase 0) before
-  your first change and after Phase 5. Old tasks must produce the same `h` trace for a fixed seed.
-- **SI units everywhere.** Metres, kilograms, seconds, radians. Degrees appear only in human phrases
-  and in reports.
-- **Determinism.** All randomness flows from the episode seed. RoboTwin seeds the global numpy RNG in
-  `_init_task_env_` (`np.random.seed(seed)`), and its utilities (`rand_pose`, `rand_create_actor`) use
-  the global RNG. Use the global RNG inside `load_actors`, and use a separate
-  `np.random.RandomState(seed + 7919)` for physics randomization and risk sampling, so that changing a
-  physics range never changes the scene layout.
-- **Explicit masses.** RoboTwin's `Actor.__init__(actor, data, mass=0.01)` sets every wrapped object
-  to 10 g on construction (`envs/utils/actor_utils.py`). Every item in our tasks must have its mass set
-  explicitly after creation.
-- **Pure functions are tested without the simulator.** Tests that need SAPIEN are marked
-  `@pytest.mark.sim`, and tests that need a GPU (HoloBrain encoder, cuRobo) are marked
-  `@pytest.mark.gpu`.
-- **Keep the run scripts headless.** No viewer. `render_freq=0`, as `_task_args` already sets.
+- **RoboTwin task files.** T2 and T3 are new RoboTwin tasks. Write them in this repo under
+  `robotwin_tasks/` and install them into `RoboTwin/envs/` with
+  `scripts/item_envs/install_robotwin_tasks.sh` (symlinks, idempotent). **Never modify existing
+  RoboTwin files.** Subclass existing tasks where possible. Modified assets go into
+  `assets_overlay/` and are loaded by absolute path.
+- **New RoboTwin task files must not import CEHJ code** (`main.*`). Anything that needs CEHJ helpers
+  (corridors, robot collision spheres, distances) runs on the CEHJ side after the task is built.
+- **CEHJ semantics stay identical.** `main/train/config.py`, `buffer.py` `FIELDS`, `hfunc.py`,
+  `obstacle.py`, `distance.py`, and the controller behavior for existing tasks must not change.
+  Section 6 lists every allowed edit to an existing CEHJ file.
+- **Regression.** Before any change and after Phase 5, run the CrossSafe smoke path for
+  `place_empty_cup`, seed 0, on `ur5-wsg` and `franka-panda`. The `h` traces must be identical.
+- **Dual-arm always.** Both arms are present and in the action space in every episode. A task may use
+  one arm or both for its nominal. Never hardcode action widths. UR5 has 6 arm joints and Franka has 7.
+  Read them the way `Env.step_dtheta` does. CEHJ's buffer pads to 18.
+- **SI units everywhere.** Degrees appear only in reports and YAML fields named `*_deg`.
+- **Determinism.** RoboTwin seeds the global numpy RNG in `_init_task_env_`, and its utilities
+  (`rand_pose`) use it. Use the global RNG for layout inside `load_actors`. Use a separate
+  `np.random.RandomState(seed + 7919)` for physics randomization and risk sampling, and
+  `RandomState(seed + 4241)` for T1's post-init spawns, so changing one range never changes the
+  layout of another stage.
+- **Explicit masses.** `Actor.__init__(actor, data, mass=0.01)` sets every wrapped object to 10 g on
+  construction (`envs/utils/actor_utils.py`). Set realistic masses explicitly on every item. The beads
+  in RoboTwin's `dump_bin_bigbin` are 0.1 g, which is also unrealistic.
+- **Testing.** Pure functions are tested without SAPIEN. Simulator tests are marked
+  `@pytest.mark.sim`, GPU tests (cuRobo, HoloBrain) `@pytest.mark.gpu`. Simulator and GPU tests are
+  parametrized over `["ur5-wsg", "franka-panda"]`.
+- **Headless.** `render_freq=0`. Calibration runs in **no-render mode** (Section 8).
 
 ---
 
@@ -96,442 +112,323 @@ train a language-conditioned filter later.
 
 | Fact | Where |
 |---|---|
-| Task lifecycle: `setup_demo(**kw)` calls `_init_task_env_`, which calls `setup_scene` (timestep 1/250, default material static 0.5, dynamic 0.5, restitution 0), then `create_table_and_wall`, `load_robot`, `load_camera`, `load_actors()`, optional clutter, then `check_stable()` | `envs/_base_task.py` lines 43 to 160, 201 to 240 |
-| `check_stable()` steps 2000 + 500 physics steps over `scene.get_all_actors()`, and raises `UnStableError` if any actor's orientation changes more than 3° within the last 200 steps | `envs/_base_task.py` line 162 |
-| Table: 1.2 m (x) by 0.7 m (y), top surface at z = 0.74 + `table_z_bias`, centered at `table_xy_bias` | `create_table_and_wall`, `create_table` |
-| `Actor(entity, data, mass=0.01)` sets the mass on construction. `ArticulationActor` has `get_qpos`, `set_qpos`, `set_properties(damping, stiffness, friction, force_limit)`, `get_link_dict()` | `envs/utils/actor_utils.py` |
-| `create_actor(..., convex=False)` builds a **non-convex triangle-mesh** collision, which PhysX supports only for static bodies. `convex=True` calls `add_multiple_convex_collisions_from_file` and creates one convex hull per sub-mesh in the collision file | `envs/utils/create_actor.py` line 501 |
-| `create_box` returns an `Actor` whose default data includes top-down `contact_points_pose`, so `grasp_actor` works on it. `create_sphere` and `create_cylinder` return raw `sapien.Entity` objects built with `sapien.physx.PhysxRigidDynamicComponent` and `scene.default_physical_material` | `envs/utils/create_actor.py` |
-| Mass on a raw entity: `entity.find_component_by_type(sapien.physx.PhysxRigidDynamicComponent).mass = m` | used in `envs/dump_bin_bigbin.py` |
-| Skill API: `grasp_actor`, `place_actor`, `move_by_displacement(arm_tag, x, y, z, quat, move_axis)`, `move_to_pose`, `open_gripper`, `close_gripper`, `back_to_origin` return `(arm_tag, [Action])` and are executed by `self.move(a1, a2=None)` | `envs/_base_task.py` lines 957 to 1470 |
-| cuRobo plans use `interpolation_dt = 1/250` and `MotionGenPlanConfig(max_attempts=10)` with no time dilation. Results are `{"status", "position": [T, n], "velocity": [T, n]}` at one row per physics step | `envs/robot/planner.py` lines 60 to 155 |
-| Segmentation: `camera.get_picture("Segmentation")` returns [H, W, 4]. Channel 1 is the actor-level id. RoboTwin's own helper casts to `uint8`, which truncates ids above 255, so read the raw channel yourself | `envs/camera/camera.py` line 377 |
-| Host tasks to reuse: `put_object_cabinet` (cabinet `036_cabinet`, model id 46653, `fix_root_link=True`, drawer pulled by 4 × `move_by_displacement(y=-0.04)`), `dump_bin_bigbin` (handheld `063_tabletrashbin` ids [0, 3, 7, 8, 9, 10], 5 spheres of radius 8 mm, static `011_dustbin`), `lift_pot`, `place_empty_cup` (`021_cup` on `019_coaster`) | `envs/*.py` |
-
-Object assets referenced by RoboTwin tasks include `001_bottle`, `002_bowl`, `003_plate`,
-`008_tray`, `011_dustbin`, `015_laptop`, `019_coaster`, `021_cup`, `036_cabinet`, `039_mug`,
-`060_kitchenpot`, `062_plasticbox`, `063_tabletrashbin`, `071_can`, `075_bread`,
-`076_breadbasket`, `080_pill_bottle`, `086_woodenblock`, `102_roller`, `105_sauce-can`, `106_skillet`,
-`110_basket`, `114_bottle`. The asset files themselves are downloaded separately
-(`assets/_download.py`), so check their collision files on disk in Phase 0.
+| Lifecycle: `setup_demo(**kw)` calls `_init_task_env_`, which runs `setup_scene` (timestep 1/250, default material static 0.5, dynamic 0.5, restitution 0), `create_table_and_wall`, `load_robot`, `load_camera`, `load_actors()`, then `check_stable()` | `envs/_base_task.py` lines 43 to 160, 201 to 240 |
+| `check_stable()` runs 2500 physics steps and raises `UnStableError` if any actor rotates more than 3° within the last 200 steps | `envs/_base_task.py` line 162 |
+| Table: 1.2 m (x) × 0.7 m (y), top at z = 0.74 + `table_z_bias`, centered at `table_xy_bias` | `create_table_and_wall` |
+| `Actor(entity, data, mass=0.01)` sets the mass on construction | `envs/utils/actor_utils.py` |
+| `create_actor(..., convex=False)` builds a triangle-mesh collision, which PhysX supports only for static bodies. `convex=True` calls `add_multiple_convex_collisions_from_file` (one hull per sub-mesh in the collision file) | `envs/utils/create_actor.py` line 501 |
+| `create_box` returns an `Actor` with top-down `contact_points_pose`, so `grasp_actor` works. `create_sphere` and `create_cylinder` return raw entities. Raw entity mass: `entity.find_component_by_type(sapien.physx.PhysxRigidDynamicComponent).mass = m` | `envs/utils/create_actor.py`, `envs/dump_bin_bigbin.py` |
+| Skills (`grasp_actor`, `place_actor`, `move_by_displacement(arm_tag, x, y, z, quat, move_axis)`, `move_to_pose`, `open_gripper`, `close_gripper`, `back_to_origin`) return `(arm_tag, [Action])`, executed by `self.move(a1, a2=None)`. Two-arm moves run through `together_move_to_pose` | `envs/_base_task.py` lines 864 to 1470 |
+| cuRobo plans: `interpolation_dt = 1/250`, `MotionGenPlanConfig(max_attempts=10)`, no time dilation. Result `{"status", "position": [T, n], "velocity": [T, n]}`, one row per physics step | `envs/robot/planner.py` lines 60 to 155 |
+| Segmentation: `camera.get_picture("Segmentation")`, channel 1 is the actor-level id. RoboTwin's helper casts to `uint8`, truncating ids above 255, so read the raw channel | `envs/camera/camera.py` line 377 |
+| `place_container_plate`: container is `002_bowl` (model ids 1, 2, 3, 5) or `021_cup`, created with `convex=True`, x ∈ ±[0.2, 0.28], y ∈ [−0.1, 0.05]. Plate `003_plate` (scale 0.025, static) near x = ±0.05, y ∈ [−0.15, −0.1]. Arm chosen by container x. Nominal: `grasp_actor` (contact point 0 or 2), lift 0.1 m along the arm axis, `place_actor` onto the plate's functional point, retreat | `envs/place_container_plate.py` |
 
 ### 3.2 CEHJ_safe
 
 | Fact | Where |
 |---|---|
-| `Env(task, embodiment, seed, ...)` imports `envs.{task}` from RoboTwin, calls `setup_demo(**_task_args(...))`, then `stretch_task_spawns(self)` (CEHJ obstacle logic), then `settle_arms()` | `main/envs/env.py` lines 338 to 385 |
-| `Env.step(action)` runs one control tick (10 physics steps at 25 Hz) with position interpolation plus velocity feedforward. `step_dtheta` wraps it with joint displacements | `main/envs/env.py` lines 586 to 700 |
-| `TickChunkedController` replaces `take_dense_action`, `left/right_move_to_pose`, and `together_move_to_pose` so every plan runs in 10-step ticks, with `tick_hook(ctx)` at each tick boundary. Plans come from `CuroboIKController.plan(arm, target_pose, **kw)`, which calls cuRobo and then screw fallbacks | `main/envs/controller.py` lines 260 to 330, 1054 to 1240 |
-| `RolloutController.run()` wraps `scene.step` to count physics steps, and calls `_capture_tick()` every control tick using a float accumulator with a `1e-9` epsilon. `_capture_tick` calls `compute_h(env, ...)` | `main/train/rollout.py` lines 213 to 290, 433 to 492 |
-| `StepBuffer` is a flat memmap ring buffer with `FIELDS` defined at module level | `main/train/buffer.py` |
-| `AGENTS.md` documents the semantics and the gotchas (ray tracing, `_update_render` before `take_picture`, `TMPDIR` for cuRobo, child process per embodiment for long runs) | repo root |
+| `Env(task, embodiment, seed, arm_distance, ...)` imports `envs.{task}`, calls `setup_demo(**_task_args(...))`, then `stretch_task_spawns(self)` (a no-op for tasks missing from `TASK_SPECS`, because it uses `.get`), then `settle_arms()` | `main/envs/env.py` lines 338 to 385, `main/envs/obstacle.py` line 753 |
+| `make_training_env(cfg, seed)`: installs the cuRobo controller, builds `Env`, spawns **one static** obstacle with `choose_and_spawn` (corridor parameter t from `_corridor_t(seed)`), then `update_curobo_world(env.robot)` with the **table only**. The nominal never sees the obstacle, which is where unsafe transitions come from | `main/train/collect.py` line 126 |
+| Corridor geometry and placement: `longest_corridor`, `iter_corridors`, `keepaways_from_task`, `keepaways_from_robot`, `geometric_pose`, `spawn_obstacle`, `TASK_SPECS` | `main/envs/obstacle.py`, `main/envs/tasks.py` |
+| Robot-to-obstacle distance: robot collision spheres per embodiment (`load_collision_spheres`), sphere-to-OBB distances, held-object detection (`detect_held_by_arm`), held-payload OBB distance. All written for a single `env.obstacle` | `main/envs/distance.py`, `main/train/hfunc.py` |
+| Host tasks used by CrossSafe: `place_container_plate`, `place_burger_fries`, `stack_blocks_two`, `stack_bowls_two`, `place_bread_basket` (`FrozenConfig.task_choices`) | `main/train/config.py` |
+| `TickChunkedController` runs every plan in 10-step ticks with `tick_hook(ctx)`, and routes `together_move_to_pose` through the same path. Plans come from `CuroboIKController.plan(arm, target_pose, **kw)`. A skill tracker (`_install_skill_tracker`) labels each move with its skill | `main/envs/controller.py` lines 260 to 330, 547 to 680, 1054 to 1240 |
+| `RolloutController.run()` wraps `scene.step`, calls `_capture_tick()` every tick (float accumulator with a 1e-9 epsilon), and `_capture_tick` calls `compute_h` | `main/train/rollout.py` lines 213 to 290, 433 to 492 |
+| `StepBuffer` is a flat memmap ring buffer with module-level `FIELDS` | `main/train/buffer.py` |
+| Gotchas: `_update_render()` before `take_picture`, `TMPDIR=/tmp` for cuRobo, one child process per embodiment for long runs | `AGENTS.md` |
 
 ---
 
 ## 4. Target layout
 
 ```
+robotwin_tasks/                     # installed into RoboTwin/envs/ by symlink
+  granular_pour.py                  # T2: class granular_pour(place_container_plate)
+  push_zone.py                      # T3: class push_zone(Base_Task)
+  _item_utils.py                    # RoboTwin-side helpers only (zone mats, push primitive, item metadata)
 main/item_envs/
   __init__.py
-  registry.py          # ITEM_TASKS: name -> TaskEntry(module, cls, embodiments, single_arm_ok); embodiments[0] is the default
-  geometry.py          # OBB, footprints, polygons, signed distances (pure numpy)
-  margins.py           # rigid consequence margins + particle-set variants (pure numpy)
-  regions.py           # Region dataclass, constructors from actors/links/table (thin sim layer)
-  items.py             # ItemSpec, ItemRegistry
-  rules.py             # RuleSpec, candidate rule enumeration, phrase generation, split assignment
-  physics.py           # friction/mass/CoM/damping randomization with readback
-  primitives.py        # rimmed tray, handled board, open box, square cup, zone mat (multi-box actors)
-  visibility.py        # per-item visible-pixel fraction per camera
-  retime.py            # plan retiming (risk knob), pure numpy
-  risk.py              # RiskParams dataclass + samplers
-  controller.py        # RiskTickController(TickChunkedController): retimes every plan
-  base_task.py         # ItemSafetyTask(Base_Task)
-  runner.py            # ItemEpisodeRunner: env + controller + tick hook + logger, no learning models
-  logger.py            # EpisodeTrace writer (npz + json) and video overlay
-  margin_hook.py       # Phase 5: adapter so RolloutController can use item margins
-  item_buffer.py       # Phase 5: sidecar memmap for item state, lockstep with StepBuffer
-  probe.py             # CLI for feasibility probes and calibration sweeps
-  tasks/
-    __init__.py
-    tray_transport.py      # T1
-    drawer_contents.py     # T2
-    support_removal.py     # T3
-    rolling_edge.py        # T4
-    granular_pour.py       # T5
-    push_zone.py           # T6
-    dump_bin.py            # T7
+  registry.py        # ITEM_TASKS: name -> TaskEntry(robotwin_task | host_tasks, embodiments, config)
+  geometry.py        # OBB, footprints, polygons, signed distances (pure numpy)
+  margins.py         # consequence margins (pure numpy)
+  robot_distance.py  # multi-item generalization of distance.py: robot + payload to any item
+  regions.py         # Region dataclass and constructors
+  items.py           # ItemSpec, item registry, metadata read from the task
+  rules.py           # RuleSpec, rule enumeration, phrase generation, splits
+  risk.py            # RiskParams and samplers
+  retime.py          # plan retiming (pure numpy)
+  physics.py         # friction, mass, CoM randomization with readback
+  masks.py           # per-item visibility and token-grid masks from segmentation
+  spawn.py           # T1: multi-object spawner on the host tasks
+  controller.py      # RiskTickController(TickChunkedController)
+  runner.py          # ItemEpisodeRunner: env + controller + tick hook + logger, no learning
+  logger.py          # trace.npz + meta.json + keyframes + optional video
+  margin_hook.py     # Phase 5
+  item_buffer.py     # Phase 5
+  probe.py           # CLI for probes, episodes, sweeps, summaries
   configs/
-    physics.yaml           # randomization ranges
-    phrases.yaml           # names, synonyms, colors per asset or primitive
-    splits.yaml            # held-out categories, colors, regions, phrasings per task
-    tasks/T1_tray_transport.yaml ... T7_dump_bin.yaml
-assets_overlay/
-  objects/<asset>/collision/...      # decomposed collision meshes
+    physics.yaml  objects.yaml  splits.yaml
+    tasks/T1_selective_avoid.yaml  T2_granular_pour.yaml  T3_push_zone.yaml
+assets_overlay/objects/<asset>/collision/...
 scripts/item_envs/
-  audit_collisions.py
-  decompose_assets.py
-  run_probes.sh
-  run_calibration.sh
+  install_robotwin_tasks.sh  audit_collisions.py  decompose_assets.py  run_probes.sh  run_calibration.sh
 tests/item_envs/
-  test_geometry.py  test_margins.py  test_retime.py  test_rules.py  test_risk.py
-  test_primitives_sim.py  test_physics_sim.py  test_tasks_sim.py  test_item_buffer.py
 docs/item_envs/
-  recon.md  feasibility.md  calibration.md  task_cards/T1.md ... T7.md  final_report.md
+  recon.md  feasibility.md  calibration.md  task_cards/T1.md T2.md T3.md  final_report.md
 ```
 
 ---
 
 ## 5. Data contracts
 
-Implement these as dataclasses in the listed modules. Field names are part of the contract with the
-downstream training code, so do not rename them without updating this file.
+Field names are a contract with the downstream training code. Do not rename them without updating this
+file.
 
 ```python
 # items.py
 @dataclass
 class ItemSpec:
-    item_id: str                 # unique within episode, e.g. "bottle_0"
-    entity: object              # sapien Entity (raw) or RoboTwin Actor; use .entity_of() helper
-    category: str               # e.g. "bottle"; key into phrases.yaml
-    color: str | None           # for primitives and zone mats; None for textured assets
-    kind: str                   # "rigid" | "particle_set"
-    particles: list | None      # list of entities when kind == "particle_set"
-    half_extents: np.ndarray    # [3] collision OBB half extents in the item frame (m)
-    obb_center_local: np.ndarray  # [3] OBB center in the item frame
-    up_axis_local: np.ndarray   # [3] unit vector, the item's "up" in its own frame
-    mass: float                 # kg, the value actually set
-    role: str                   # "constrained_candidate" | "task_object" | "support" | "bystander"
+    item_id: str                  # unique in episode, e.g. "obj_2", "beads", "bystander_0"
+    entity: object                # sapien Entity or RoboTwin Actor (use entity_of())
+    category: str                 # key into objects.yaml, e.g. "cup", "can", "beads", "box"
+    color: str | None             # set for primitives and zone mats, None for textured assets
+    kind: str                     # "rigid" | "particle_set"
+    particles: list | None        # entities when kind == "particle_set"
+    half_extents: np.ndarray      # [3] OBB half extents in the item frame (m)
+    obb_center_local: np.ndarray  # [3]
+    up_axis_local: np.ndarray     # [3]
+    mass: float                   # kg actually set
+    role: str                     # "candidate" | "task_object" | "support" | "bystander"
+    group: str | None             # task-specific grouping, e.g. "push"
 
 # regions.py
 @dataclass
 class Region:
-    region_id: str              # e.g. "tray_top", "zone_red", "table_top", "drawer_floor"
-    kind: str                   # "surface" | "zone" | "container"
-    frame_fn: Callable[[], np.ndarray]   # returns 4x4 world_T_region, evaluated every tick
-    polygon: np.ndarray         # [M, 2] CCW polygon in the region frame's xy plane (m)
-    z: float                    # surface height in the region frame (usually 0)
-    z_band: float               # vertical tolerance for "on surface" checks (m)
-    phrases_key: str | None     # key into phrases.yaml, None if not nameable
+    region_id: str                # "table_top", "zone_red", "bowl_src_interior", "target_interior"
+    kind: str                     # "surface" | "zone" | "container"
+    frame_fn: Callable[[], np.ndarray]   # 4x4 world_T_region, evaluated every tick (bowls move)
+    polygon: np.ndarray           # [M, 2] CCW polygon in the region frame xy plane (m)
+    z: float
+    z_band: float
+    nameable: bool                # True if a rule may name it (zones, containers), False for internal regions
+    color: str | None
+    entity: object | None         # the mat or container entity, for masks
 
 # rules.py
 class Consequence(str, Enum):
-    INSIDE = "inside"           # item footprint stays inside region polygon (and on its surface if kind=="surface")
-    OUTSIDE = "outside"         # item footprint stays outside region polygon
-    UPRIGHT = "upright"         # tilt(item) <= theta_max
-    STAY = "stay"               # item stays within d_tol of its pose at rule activation
-    PARTICLES_INSIDE = "particles_inside"   # every particle stays in the column above one of the regions
-    PARTICLES_OUTSIDE = "particles_outside" # no particle enters the column above any of the regions
+    AVOID = "avoid"                           # robot links and held payload keep distance >= margin from the item
+    INSIDE = "inside"                         # item footprint stays inside a region (on its surface for kind == "surface")
+    OUTSIDE = "outside"                       # item footprint stays outside a region
+    UPRIGHT = "upright"                       # tilt(item) <= theta_max
+    STAY = "stay"                             # item stays within d_tol (and theta_tol) of its pose at rule activation
+    PARTICLES_INSIDE = "particles_inside"     # every particle stays in the column above one of the regions
+    PARTICLES_OUTSIDE = "particles_outside"   # no particle enters the column above any of the regions
 
 @dataclass
 class RuleSpec:
-    rule_id: str                # stable string, e.g. "upright|bottle_0|-"
+    rule_id: str                  # stable string, e.g. "avoid|obj_2|-", "outside|box_0|zone_red"
     consequence: Consequence
-    item_id: str
-    region_ids: tuple[str, ...] # empty for UPRIGHT and STAY
-    params: dict                # {"theta_max": rad} | {"d_tol": m, "theta_tol": rad (default 0.35)} | {"T": m}
-    phrases: list[str]          # natural-language variants, generated from templates
-    split: str                  # "train" | "heldout_item" | "heldout_region" | "heldout_phrase"
+    item_ids: tuple[str, ...]     # usually one item. Several items = set rule ("avoid every cup"), margin = min
+    region_ids: tuple[str, ...]   # empty for AVOID, UPRIGHT, STAY
+    params: dict                  # {"margin": m} | {"theta_max": rad} | {"d_tol": m, "theta_tol": rad} | {"T": m}
+    phrases: list[str]            # generated text prompts (never contain digits)
+    split: str                    # "train" | "heldout_item" | "heldout_region" | "heldout_phrase"
 
-# logger.py, one per control tick (25 Hz)
+# logger.py, one record per control tick (25 Hz)
 @dataclass
 class StepRecord:
-    t: float                    # sim seconds
-    tick: int
-    qpos: np.ndarray            # raw joint positions, both arms
-    ee_pose: np.ndarray         # [2, 7] left/right TCP poses, wxyz
-    gripper: np.ndarray         # [2]
-    item_pose: np.ndarray       # [K, 7] world, wxyz
-    item_vel: np.ndarray        # [K, 6] linear then angular, world
-    particle_pos: dict          # item_id -> [N, 3] for particle sets
-    margins: np.ndarray         # [R] raw SI margins, order = rule table order
-    robot_item_contact: np.ndarray   # [K] bool, robot link or gripper touching item
-    robot_item_force: np.ndarray     # [K] summed normal impulse / dt (N)
-    visibility: np.ndarray      # [K, n_cam] visible pixel fraction of the item's mask
-    action_source: int          # 0 planner, 1 actor, 2 perturbation (always 0 in Phases 2 to 4)
-    time_scale: float           # active retime factor this tick
+    t: float; tick: int
+    qpos: np.ndarray              # raw joints, both arms
+    ee_pose: np.ndarray           # [2, 7] TCP poses, wxyz
+    gripper: np.ndarray           # [2]
+    held: np.ndarray              # [2] item index held by left/right arm, -1 if none
+    item_pose: np.ndarray         # [K, 7]
+    item_vel: np.ndarray          # [K, 6]
+    particle_pos: dict            # item_id -> [N, 3]
+    region_T: np.ndarray          # [G, 4, 4] world_T_region for every region this tick
+    margins: np.ndarray           # [R] raw SI, in rule-table order
+    robot_item_dist: np.ndarray   # [K] min signed distance robot links + payload to item (m)
+    robot_item_force: np.ndarray  # [K] robot-item contact force (N)
+    visibility: np.ndarray        # [K, n_cam] visible pixel fraction
+    token_masks: np.ndarray       # [K + G_nameable, n_cam, n_tok] uint8, fraction of each scene-token cell covered (0..255)
+    action_source: int            # 0 planner, 1 actor, 2 perturbation
+    time_scale: float
 
 @dataclass
 class EpisodeMeta:
-    task: str; embodiment: str; seed: int
-    risk: dict                  # RiskParams.as_dict()
-    physics: dict               # sampled friction, mass, CoM offset, damping per item
-    items: list[dict]           # ItemSpec without entity handles
-    regions: list[dict]
-    rules: list[dict]           # RuleSpec table; margins columns follow this order
-    active_rule_id: str | None  # the rule shown to the filter in filtered runs
+    task: str; host_task: str | None; embodiment: str; seed: int
+    risk: dict; physics: dict
+    items: list[dict]; regions: list[dict]; rules: list[dict]
+    token_grid: dict              # per camera: image size, strides, n_tok, token order (must match the encoder)
+    active_rule_id: str | None
     task_success: bool
-    violations: dict            # rule_id -> bool (min margin over episode < 0)
-    min_margin: dict            # rule_id -> float
-    first_violation_t: dict     # rule_id -> float | None
+    violations: dict              # rule_id -> bool (min margin < 0)
+    min_margin: dict
+    first_violation_t: dict
     plan_failures: int
+    spawn_rejections: int
     wall_time_s: float
 ```
 
-Margin sign convention: **positive means safe**, zero is the failure boundary, values are raw SI and
-**never clipped** in the environment. Scaling (κ per consequence) is done downstream. Record default κ
-values in `configs/physics.yaml` for reference only: κ_inside = κ_outside = κ_stay = 20 (1/m),
-κ_upright = 2 (1/rad), κ_particles = 20.
+**Margin convention:** positive is safe, zero is the boundary, raw SI, never clipped in the
+environment. Downstream scaling for reference (in `physics.yaml`): κ = 20 per metre for distance-type
+margins (matches CrossSafe's `h_scale`), κ = 2 per radian for `upright`.
+
+**Token-grid masks:** the cells must match the encoder's scene tokens exactly. Read the image
+resolution, any crop or resize, the strides (16 and 32), and the token order (scale by scale, finest
+first, row-major) from `Env.get_encoder_obs` and `HoloBrainEncoder.encode_visual_tokens`. Write a test
+that projects one known item and checks that the mask cells line up with the encoder's token positions
+`pos_mean` (`gpu` test, probe P5).
 
 ---
 
 ## 6. Phases
 
-### Phase 0: Reconnaissance (about half a day)
+Time estimates are for a coding agent. "Agent" is active work, "compute" is simulation wall time,
+"review" is whether a human must look before you continue.
 
-Tasks:
+| Phase | Agent | Compute | Review |
+|---|---|---|---|
+| 0 Recon | 1 to 2 h | minutes | no |
+| 1 Pure-numpy core | 1 to 2 h | none | no |
+| 2 Simulation infrastructure | 3 to 5 h | short runs | no |
+| 3 Feasibility probes | 2 to 3 h | 1 to 2 h | STOP gate |
+| 4 Tasks T1, T3, T2 | 2 to 4 h each | calibration, 1 to 3 h per task and embodiment in no-render mode, parallel | short check per task |
+| 5 Integration | 2 to 4 h | under 1 h (GPU) | no |
 
-1. Set up the env. Activate `RoboTwin`, check that the RoboTwin assets are downloaded, and run the
-   existing CEHJ smoke script (look under `scripts/` for `run_smoke.sh`). Record the command, the
-   runtime, and the final `h` trace for seed 0 on `place_empty_cup` with embodiment `ur5-wsg`, and
-   again with `franka-panda`. These are the regression references.
-2. Answer each question below in `docs/item_envs/recon.md` with a code snippet that you actually ran.
-   - (verify) How to set a physical material on the existing collision shapes of an entity in SAPIEN
-     3.0.0b1. Candidates are `component.get_collision_shapes()` combined with
-     `shape.set_physical_material(mat)` or a `shape.physical_material` property. If neither works,
-     document how to pass `material=` at build time (`add_box_collision(..., material=)`,
-     `add_multiple_convex_collisions_from_file(..., material=)`).
-   - (verify) Linear and angular damping on `PhysxRigidDynamicComponent`, for example the
-     `linear_damping` and `angular_damping` properties.
-   - (verify) Setting the center-of-mass local pose, for example `cmass_local_pose`.
-   - (verify) Continuous collision detection on a dynamic body, if exposed.
-   - (verify) Kinematic bodies, for example `component.kinematic = True` plus
-     `set_kinematic_target(pose)`. The physics probes in Phase 3 use kinematic supports.
-   - (verify) Solver iteration counts (scene-level or per-body).
-   - (verify) Reading contact impulses between two specific entities from `scene.get_contacts()`.
-     CEHJ's `main/envs/distance.py` (`_robot_obstacle_contact_force`) shows the existing pattern.
-   - (verify) Actor-level segmentation ids. How to map an entity to its `per_scene_id`, and which
-     cameras exist (head plus wrist cameras, at which resolution).
-   - Does `Env._task_args` or RoboTwin use `task_name` for anything that breaks with unknown task
-     names (instruction files, step-limit files, data paths)?
-   - For `ur5-wsg` and `franka-panda`: the arm base poses in the paired setup (`arm_distance`, default
-     0.6 m in `Env`), arm DoF, URDF joint velocity limits, the gripper's maximum opening and finger
-     length, and the reachable tabletop workspace. Compute the workspace by an IK sweep over a
-     2 cm grid on the table at three heights (table + 0.02, + 0.10, + 0.20 m) with a top-down gripper,
-     and save it as `configs/workspace_<embodiment>.npz`. Task layouts are sampled inside the
-     intersection of both embodiments' workspaces (Section 7).
-   - What is the current working directory during `setup_demo`? RoboTwin uses relative
-     `assets/objects` paths, and `AGENTS.md` notes that RoboTwin changes directory during setup.
-   - For every asset in Section 7's candidate pools: number of convex collision pieces, collision
-     file path, and whether `model_data*.json` provides `contact_points_pose`.
-3. Write `docs/item_envs/recon.md`.
+### Phase 0: Reconnaissance
 
-Acceptance: `recon.md` answers every question, and the regression reference is saved under
-`docs/item_envs/regression/`.
+1. Activate the `RoboTwin` env, confirm the assets are downloaded, and run the regression reference
+   (Section 2). Save the `h` traces under `docs/item_envs/regression/`.
+2. Answer in `recon.md`, each with a snippet you actually ran:
+   - (verify) Setting a physical material on existing collision shapes, for example
+     `component.get_collision_shapes()` and `shape.set_physical_material(mat)`. Otherwise, how to pass
+     `material=` at build time.
+   - (verify) Linear and angular damping, center-of-mass pose, CCD, kinematic bodies with
+     `set_kinematic_target`, and solver iteration counts.
+   - (verify) Contact impulses between two specific entities from `scene.get_contacts()` (the existing
+     pattern is in `distance.py` `_robot_obstacle_contact_force`).
+   - (verify) Actor-level segmentation ids and the entity-to-`per_scene_id` mapping. Which cameras
+     exist, their resolution, and the exact image preprocessing in `Env.get_encoder_obs`.
+   - For the `ur5-wsg` and `franka-panda` pairs: arm base poses (`ARM_DISTANCE` in `collect.py`), arm
+     DoF, URDF velocity limits, gripper maximum opening and finger length, and the reachable tabletop
+     workspace from an IK sweep (2 cm grid, heights table + 0.02, + 0.10, + 0.20 m, top-down gripper),
+     saved as `configs/workspace_<embodiment>.npz`.
+   - Collision audit for `002_bowl` ids 1, 2, 3, 5, `003_plate`, `062_plasticbox`, `015_laptop`, and
+     every object in T1's candidate pool: number of convex pieces, hull-to-mesh volume ratio, and
+     whether `model_data*.json` has `contact_points_pose`. Script: `audit_collisions.py`.
+   - Confirm that symlinked files in `RoboTwin/envs/` import correctly through `Env` (`envs.{task}`),
+     and that nothing in RoboTwin rejects unknown task names when `eval_mode=False`.
 
-### Phase 1: Pure-numpy core (about 1 day)
+### Phase 1: Pure-numpy core
 
-Implement `geometry.py`, `margins.py`, `retime.py`, `rules.py`, `risk.py` and their tests. None of
-these may import SAPIEN.
-
-**geometry.py**
+Implement `geometry.py`, `margins.py`, `retime.py`, `rules.py`, `risk.py`. No SAPIEN imports.
 
 ```python
-def quat_wxyz_to_mat(q) -> np.ndarray                    # [3, 3]
-def pose_to_mat(p, q) -> np.ndarray                      # [4, 4]
-def obb_corners(world_T_item, center_local, half) -> np.ndarray   # [8, 3]
-def footprint(world_T_item, center_local, half, up_local) -> np.ndarray
-    # the 4 corners of the OBB face most aligned with -world_z (the face the item stands on);
-    # when the item is tilted, still return the lowest face's 4 corners
-def signed_dist_inside_polygon(pts_xy, poly) -> np.ndarray   # >0 inside, <0 outside, metres to nearest edge
-def tilt_angle(world_T_item, up_local) -> float          # angle between item up and world +z, radians
-def to_frame(points_world, world_T_frame) -> np.ndarray
-```
+# geometry.py
+def quat_wxyz_to_mat(q); def pose_to_mat(p, q); def to_frame(points_world, world_T_frame)
+def obb_corners(world_T_item, center_local, half) -> np.ndarray          # [8, 3]
+def footprint(world_T_item, center_local, half, up_local) -> np.ndarray  # 4 corners of the face facing -z
+def signed_dist_inside_polygon(pts_xy, poly) -> np.ndarray               # > 0 inside, metres
+def circle_polygon(radius, n=16) -> np.ndarray
+def tilt_angle(world_T_item, up_local) -> float
 
-**margins.py**, with every function returning a float and positive meaning safe:
-
-```python
-def m_inside(item_pts_region_frame, region, require_on_surface: bool) -> float
-    # min over footprint corners of signed_dist_inside_polygon.
-    # if require_on_surface and min corner z deviates from region.z by more than region.z_band:
-    #     return min(xy_margin, -(|dz| - z_band))   (continuous, not a big constant)
-def m_outside(item_pts_region_frame, region) -> float    # -max over corners of signed_dist_inside
-def m_upright(tilt, theta_max) -> float                  # theta_max - tilt
+# margins.py (all positive = safe)
+def m_avoid(robot_item_dist, margin=0.0) -> float                        # distance comes from robot_distance.py
+def m_inside(item_pts_region, region, require_on_surface) -> float       # continuous also in z (no big constants)
+def m_outside(item_pts_region, region) -> float
+def m_upright(tilt, theta_max) -> float
 def m_stay(p_now, p_ref, tilt_now, d_tol, theta_tol) -> float
-    # min(d_tol - ||p_now_xy - p_ref_xy||, theta_tol - tilt_now)
-def m_particles_inside(particle_xy_by_region_frame: list[np.ndarray], regions, T=0.005) -> float
-    # per particle: max over regions of signed_dist_inside_polygon (column semantics)
-    # then soft-min over particles: -T * logsumexp(-m_b / T)
-def m_particles_outside(particle_xy_by_region_frame: list[np.ndarray], regions, T=0.005) -> float
-    # per particle: min over regions of -signed_dist_inside_polygon, then the same soft-min
+def m_particles_inside(particle_xy_per_region, regions, T=0.005) -> float   # per particle max over regions, soft-min over particles
+def m_particles_outside(particle_xy_per_region, regions, T=0.005) -> float
 def softmin(x, T) -> float
-```
+def set_rule_margin(per_item_margins) -> float                           # min over the items of a set rule
 
-**retime.py**
+# retime.py
+def retime(position, velocity, s, dt=1/250, v_limit=None) -> (position, velocity, info)
+    # uniform time scaling, s > 1 faster. Exact endpoints. velocity scaled by s.
+    # info = {"s", "T_in", "T_out", "v_ratio"}. Never clip. Callers log v_ratio.
 
-```python
-def retime(position: np.ndarray, velocity: np.ndarray, s: float, dt: float = 1/250,
-           v_limit: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Uniform time scaling. s > 1 is faster.
-    New sample times t_k = k * s * dt for k = 0..K, with K = floor((T-1)/s), plus the exact final row.
-    position' = per-joint linear interpolation of position at t_k / dt.
-    velocity' = s * interpolated velocity.
-    If v_limit is given and max |velocity'| / v_limit > 1, do NOT clip. Return info["v_ratio"]
-    so callers can log or reject. info also holds {"s": s, "T_in": T, "T_out": K + 1}."""
-```
-
-**risk.py**
-
-```python
+# risk.py
 @dataclass
 class RiskParams:
-    time_scale: float = 1.0               # applied to every plan in "risky" segments
-    safe_time_scale: float = 0.6          # applied to approach / grasp / retreat segments
-    task: dict = field(default_factory=dict)   # task-specific knobs, see Section 7
-    def as_dict(self) -> dict: ...
-def sample_risk(task_cfg: dict, rng: np.random.RandomState) -> RiskParams
-    # task_cfg["risk"] lists each knob as {"dist": "uniform"|"choice", "range"/"values": ...}
-```
+    time_scale: float = 1.0          # risky segments
+    safe_time_scale: float = 0.6     # approach, grasp, retreat
+    task: dict = field(default_factory=dict)
+def sample_risk(task_cfg, rng) -> RiskParams
 
-**rules.py**
-
-```python
+# rules.py
 def enumerate_rules(items, regions, task_cfg) -> list[RuleSpec]
-    # task_cfg["rules"] lists templates such as
-    #   {"consequence": "upright", "items": {"role": "constrained_candidate", "tippable": true}, "theta_max_deg": 45}
-    #   {"consequence": "inside",  "items": {"role": "constrained_candidate"}, "regions": ["tray_top"]}
-    # Produce one RuleSpec per (template, matching item, matching region).
-def render_phrases(rule, phrases_cfg, rng, n=3) -> list[str]
-    # Templates per consequence, for example
-    #   inside:  "keep the {item} on the {region}", "don't let the {item} fall off the {region}"
-    #   outside: "keep the {item} out of the {region}", "don't let the {item} get into the {region}"
-    #   upright: "don't knock over the {item}", "keep the {item} upright"
-    #   stay:    "don't disturb the {item}", "leave the {item} where it is"
-    #   particles_inside: "don't spill the {item}", "keep the {item} in the {region}"
-    #   particles_outside: "keep the {item} off the {region}", "don't get any {item} on the {region}"
-    # {item} is drawn from the item's names in phrases.yaml (category, synonyms, optional color prefix).
-    # Never put numbers into phrases. theta_max and d_tol stay in RuleSpec.params.
+def render_phrases(rule, objects_cfg, rng, n=3) -> list[str]   # templates per consequence, no digits
 def assign_split(rule, splits_cfg) -> str
 ```
 
-**Tests** (`tests/item_envs/test_*.py`):
+Phrase templates (store in `rules.py`):
 
-- polygon signed distance on a unit square: center 0.5, edge 0, outside point −0.2.
-- footprint of an upright box equals its bottom face. At 90° tilt, it is the side face now facing
-  down.
-- `m_inside` is continuous across the polygon edge (finite differences at ±1e-4 m), and continuous
-  when the item lifts off the surface by `z_band ± 1e-4`.
-- `m_upright` equals 0 exactly at `tilt == theta_max`.
-- `m_particles_inside` is at most the min of the per-particle margins (soft-min is conservative), and
-  within `T * log(N)` of it.
-- `retime` with s = 1 returns the input exactly. Endpoints are preserved for s in
-  {0.3, 0.7, 1.3, 2.0}. Duration scales as 1/s within one row. Velocity scales by s.
-- `enumerate_rules` on a toy scene gives the expected count and stable `rule_id` strings.
-- `render_phrases` never emits digits.
+- avoid: "don't touch the {item}", "avoid the {item}", "stay away from the {item}". Set rules:
+  "don't touch any {category}", "avoid all the {category}s".
+- inside: "keep the {item} on the {region}", "don't push the {item} off the {region}".
+- outside: "keep the {item} out of the {region}", "don't push the {item} into the {region}".
+- upright: "don't knock over the {item}", "keep the {item} upright".
+- stay: "don't disturb the {item}", "leave the {item} where it is".
+- particles_inside: "don't spill the {item}".
+- particles_outside: "keep the {item} off the {region}", "don't get any {item} in the {region}".
 
-Acceptance: `pytest tests/item_envs -m "not sim and not gpu"` passes.
+`{item}` and `{region}` come from `objects.yaml` names and synonyms, with a color prefix when the item
+or region has a color.
 
-### Phase 2: Simulation infrastructure (about 2 days)
+Tests (`not sim`):
 
-**2.1 `physics.py`**
+- polygon signed distance on a unit square (center 0.5, edge 0, outside −0.2);
+- the footprint of an upright box is its bottom face, and at 90° tilt it is the side that now faces
+  down;
+- `m_inside` and `m_outside` are continuous across the polygon edge and across the `z_band` boundary
+  (finite differences at ±1e-4 m);
+- `m_upright` is zero exactly at `theta_max`;
+- the particle soft-min is at most the hard min, and within `T * log(N)` of it;
+- `retime` with s = 1 is the identity, endpoints are exact for s ∈ {0.3, 0.7, 1.3, 2.0}, duration
+  scales as 1/s within one row, and velocity scales by s;
+- `enumerate_rules` produces stable `rule_id`s, and `render_phrases` never emits digits.
 
-```python
-def apply_material(entity, static_f, dynamic_f, restitution, scene) -> None
-def set_mass_props(entity, mass, com_offset_local=None) -> None
-def set_damping(entity, linear=None, angular=None) -> None
-def sample_physics(item_specs, physics_cfg, rng) -> dict      # per item_id
-def apply_physics(task, sampled: dict) -> None
-def read_back(entity) -> dict          # actual values from SAPIEN, for tests and logging
-```
+### Phase 2: Simulation infrastructure
 
-Rules for sampling: draw static friction first, then dynamic friction ≤ static. Default ranges in
-`physics.yaml`: static U(0.3, 0.9), dynamic U(0.2, static), restitution U(0, 0.1), mass scale
-U(0.7, 1.3) around the per-category nominal mass, CoM offset U(−0.2, 0.2) × half extents in x and y
-and U(−0.1, 0.3) × half height in z (higher CoM makes tipping more likely). Angular damping only for
-items with `rolls: true`.
+**2.1 `physics.py`.** `apply_material`, `set_mass_props(entity, mass, com_offset_local)`,
+`sample_physics(items, cfg, rng)`, `apply_physics(task, sampled)`, and `read_back(entity)`. Draw
+static friction from U(0.3, 0.9), then dynamic friction from U(0.2, static), restitution from
+U(0, 0.1), mass scale from U(0.7, 1.3) around the category's nominal mass, and a CoM offset of
+U(−0.2, 0.2) × half extents in x and y. Sim test: apply, then read back.
 
-Test (`sim`): apply, then read back, for a box and a sphere.
-
-**2.2 `primitives.py`**
-
-All multi-part containers are built from **box collision shapes on one entity**. Every part is convex,
-so there are no decomposition issues. Each builder returns a RoboTwin `Actor` with a hand-written
-`data` dict containing `contact_points_pose` for its handle (copy the format from `create_box`'s
-default data), so `grasp_actor` works.
+**2.2 `robot_distance.py`.** Generalize `distance.py` from one `env.obstacle` to any list of items,
+**without changing `distance.py`**. Import its helpers (`load_collision_spheres`,
+`_arm_collision_spheres`, `point_obb_signed_distance`, `detect_held_by_arm`, `_actor_obb_distance`).
 
 ```python
-def rimmed_tray(scene, pose, size_xy=(0.30, 0.22), thickness=0.012, rim_h=0.02, rim_t=0.006,
-                handles="both_short_sides" | "one_short_side", color=..., mass=0.25) -> Actor
-def handled_board(scene, pose, size_xy=(0.20, 0.14), thickness=0.02, handle="short_side", color=..., mass=0.2) -> Actor
-def open_box(scene, pose, inner=(0.10, 0.10, 0.08), wall_t=0.005, color=..., mass=0.1, is_static=False) -> Actor
-def square_cup(scene, pose, inner=(0.06, 0.06, 0.08), wall_t=0.004, color=..., mass=0.06) -> Actor
-def zone_mat(scene, pose, size_xy, color_name, thickness=0.002) -> Actor   # static, visual + thin collision
+def robot_item_distances(env, items: list[ItemSpec]) -> np.ndarray   # [K], robot links + held payload
+def robot_item_forces(env, items) -> np.ndarray                      # [K], contact force in N
 ```
 
-Expose `interior_polygon()` and `top_surface_z()` for each container, for region construction.
+Rule: an item held by a gripper is part of the robot body for every **other** item's distance, and its
+own distance is +inf while it is held. Sim test: with the single CrossSafe obstacle in
+`place_empty_cup`, the result equals `distance_info(env)["d_system"]` to 1e-6 m.
 
-Test (`sim`): each primitive survives `check_stable`, a sphere dropped into each container stays
-inside after 2 s, and `grasp_actor` produces a successful plan on both `ur5-wsg` and `franka-panda`
-(`gpu`).
+**2.3 `regions.py`.** `table_region(task)`, `zone_region(mat_actor, color)`, and
+`container_region(actor, rim_radius, region_id)`. A container region follows its actor every tick and
+uses a 16-gon at the inner rim radius in the actor's up-axis frame.
 
-**2.3 `regions.py`**
+**2.4 `masks.py`.**
 
 ```python
-def region_from_actor_top(actor, region_id, polygon_local, z_local, z_band, kind, phrases_key) -> Region
-def region_from_link(articulation_actor, link_name, ...) -> Region      # drawer floor follows the link
-def table_region(task) -> Region     # 1.2 x 0.7 polygon at the table top, uses table_xy_bias and table_z_bias
-def zone_region(mat_actor, color_name) -> Region
+def item_masks(task, items, regions, cameras) -> tuple[np.ndarray, np.ndarray]
+    # returns visibility [K, n_cam] and token_masks [K + G_nameable, n_cam, n_tok] (uint8)
 ```
 
-**2.4 `visibility.py`**
+Read the raw actor-level segmentation id (no uint8 cast), apply the encoder's preprocessing, then
+average-pool each item's binary mask into each token cell at strides 16 and 32. A particle set's mask
+is the union of its particles. Nameable regions get masks too (zone mats, containers). Call
+`task._update_render()` first. Computed every tick in collection mode, and only at t = 0 in no-render
+calibration mode.
 
-```python
-def visible_fraction(task, item_specs, cameras=("head_camera", "left_camera", "right_camera")) -> np.ndarray  # [K, n_cam]
-```
-
-Use the raw actor-level segmentation id (no `uint8` cast). The fraction is visible pixels divided by
-pixels of the item's OBB projected into the image (a cheap upper bound on its area). Call
-`task._update_render()` before taking pictures. It is too expensive to run every tick, so compute it
-every N ticks (default 5) and forward-fill.
-
-**2.5 `base_task.py`**
-
-```python
-class ItemSafetyTask(Base_Task):
-    TASK_KEY: str                         # registry key, also the config file stem
-    def setup_demo(self, risk: dict | None = None, physics_seed: int | None = None,
-                   active_rule_id: str | None = None, task_cfg_path: str | None = None, **kw):
-        self.task_cfg = load_task_cfg(self.TASK_KEY, task_cfg_path)
-        self.items: dict[str, ItemSpec] = {}
-        self.regions: dict[str, Region] = {}
-        self.unstable_ok: set[str] = set()     # entity names excluded from check_stable
-        self._rng_phys = np.random.RandomState((kw.get("seed", 0) + 7919) if physics_seed is None else physics_seed)
-        self.risk = RiskParams(**risk) if risk else sample_risk(self.task_cfg, self._rng_phys)
-        self.active_time_scale = self.risk.safe_time_scale
-        super()._init_task_env_(**kw)          # calls load_actors and check_stable
-        self._after_settle()                   # randomized damping, record reference poses, enumerate rules
-
-    # subclass hooks
-    def build_scene(self) -> None: ...           # create actors, call self.add_item / self.add_region
-    def nominal(self) -> None: ...               # the stage machine using self.move(...)
-    def task_success(self) -> bool: ...
-
-    # provided
-    def load_actors(self):
-        self.build_scene()
-        self.add_region(table_region(self))
-        self.physics_sample = sample_physics(self.items, self.phys_cfg, self._rng_phys)
-        apply_physics(self, self.physics_sample, stage="pre_settle")   # friction, mass, CoM
-    def check_stable(self):
-        # same algorithm as Base_Task.check_stable, but skip entities whose name is in self.unstable_ok.
-        # Rolling items keep high damping during settle (see T4) and are not exempt by default.
-    def _after_settle(self):
-        apply_physics(self, self.physics_sample, stage="post_settle")  # rolling damping
-        self.ref_pose = {k: pose(item) for k, item in self.items.items()}
-        self.rules = enumerate_rules(self.items, self.regions, self.task_cfg)
-    def risky(self):            # context manager, sets active_time_scale = risk.time_scale
-    def play_once(self):
-        self.nominal(); return self.info
-    def check_success(self):
-        return self.task_success()
-    def privileged_state(self) -> dict
-    def margins(self) -> np.ndarray       # [R] in self.rules order
-```
-
-`nominal()` wraps the segments the risk knob should affect in `with self.risky():`. Approach, grasp,
-and retreat stay at `safe_time_scale`, so plan failures and grasp failures do not pollute the risk
-signal.
-
-**2.6 `controller.py`**
+**2.5 `controller.py`.**
 
 ```python
 class RiskTickController(TickChunkedController):
@@ -539,146 +436,115 @@ class RiskTickController(TickChunkedController):
         result = super().plan(arm, target_pose, **kw)
         if result and result.get("status") == "Success":
             s = float(getattr(self.env.task, "active_time_scale", 1.0))
-            pos, vel, info = retime(result["position"], result["velocity"], s,
-                                    v_limit=self._v_limit(arm))
-            result["position"], result["velocity"] = pos, vel
-            result["_item_retime"] = info
+            pos, vel, info = retime(result["position"], result["velocity"], s, v_limit=self._v_limit(arm))
+            result["position"], result["velocity"], result["_item_retime"] = pos, vel, info
         return result
 ```
 
-`_v_limit` reads the URDF joint velocity limits (reuse CEHJ's `BodyTokenExtractor` or the
-embodiment's URDF). Log `info["v_ratio"]`. If it exceeds 1.0, record the tick-level realized vs
-commanded joint displacement, as `rollout.py` already does (`mean_realized_ratio`). Do not clip
-silently.
+T2 and T3 set `active_time_scale` around risky segments with a context manager `risky(task, risk)`.
+Approach, grasp, and retreat stay at `safe_time_scale`. T1 runs unmodified host tasks, so its risky
+segments are chosen by skill type: hook the skill tracker so that moves labeled as transport or place
+use `time_scale` and everything else uses `safe_time_scale`. If `v_ratio > 1`, log it together with
+CEHJ's realized-versus-commanded ratio. Do not clip silently.
 
-**2.7 Env integration (the only edits to existing files before Phase 5)**
+**2.6 `runner.py` and `logger.py`.** `ItemEpisodeRunner(task_key, embodiment, seed, host=None,
+risk=None, active_rule_id=None, render="full" | "none", video=False)`:
 
-In `main/envs/env.py`, add a guarded branch in `Env.__init__`:
+- builds the environment through the registry (T1 through `spawn.py` on a host, T2 and T3 through
+  `Env` with their RoboTwin task names), calls `update_curobo_world(env.robot)` with the table only,
+  attaches `RiskTickController`, and wraps `scene.step` with the tick accumulator from
+  `RolloutController.run()` (keep the 1e-9 epsilon);
+- each tick, writes a `StepRecord`;
+- at the end, writes `meta.json`, `trace.npz`, 4 to 8 keyframes (start, first contact with each
+  candidate, first violation, end), and an optional observer video with an overlay of the active
+  rule's phrase and margin, the min margin over all rules, and the time scale;
+- catches plan failures and `UnStableError` and records them, never crashing a sweep.
 
-```python
-from main.item_envs.registry import ITEM_TASKS
-if task in ITEM_TASKS:
-    entry = ITEM_TASKS[task]
-    module = importlib.import_module(entry.module)
-    self.task = getattr(module, entry.cls)()
-    self.task.setup_demo(**_task_args(task, self.embodiment, seed, arm_distance, cluttered=False),
-                         **(item_kwargs or {}))
-    # no stretch_task_spawns for item tasks
-else:
-    ...existing code unchanged...
-```
+Output: `runs/item_envs/<task>/<embodiment>/seed_<k>/`.
 
-Add an `item_kwargs: dict | None = None` parameter to `Env.__init__` with default `None`. Existing call
-sites must not change.
-
-**2.8 `runner.py` and `logger.py`**
-
-`ItemEpisodeRunner(task, embodiment, seed, risk=None, active_rule_id=None, video=False)`:
-
-- builds `Env` with `item_kwargs`, attaches `RiskTickController`, and wraps `scene.step` with the
-  same tick accumulator as `RolloutController.run()` (keep the `1e-9` epsilon);
-- at every tick, writes a `StepRecord`, with margins from `task.margins()`, contacts, visibility
-  every N ticks, and the active time scale;
-- at the end, writes `EpisodeMeta`, `trace.npz`, `meta.json`, and an optional mp4 from the observer
-  camera with an overlay showing the active rule's phrase, its current margin, the min margin over
-  all rules, the time scale, and a red flash on the first violation;
-- catches plan failures and `UnStableError`, records them in `meta.json`, and never crashes the
-  sweep.
-
-Output layout: `runs/item_envs/<task>/<embodiment>/seed_<k>/{meta.json, trace.npz, video.mp4}`.
-
-**2.9 `probe.py` CLI**
+**2.7 `probe.py`.**
 
 ```
-python -m main.item_envs.probe episode  --task tray_transport --seed 0 --risk time_scale=1.0 --video
-python -m main.item_envs.probe sweep    --task tray_transport --grid time_scale=0.5,0.75,1.0,1.25 \
-                                         --episodes 20 --out runs/item_envs/calib/T1
-python -m main.item_envs.probe physics  --probe P1 --out runs/item_envs/feas/P1
-python -m main.item_envs.probe summarize runs/item_envs/calib/T1     # writes CSV + plots
+python -m main.item_envs.probe episode   --task selective_avoid --host place_container_plate --seed 0 --embodiment ur5-wsg --video
+python -m main.item_envs.probe sweep     --task push_zone --grid time_scale=0.5,0.75,1.0,1.25 overshoot=0,0.04,0.08 \
+                                          --episodes 5 --adaptive --render none --out runs/item_envs/calib/T3
+python -m main.item_envs.probe physics   --probe P2 --out runs/item_envs/feas/P2
+python -m main.item_envs.probe summarize runs/item_envs/calib/T3
 ```
 
-Long sweeps follow the `AGENTS.md` pattern: one child process per (task, embodiment) so that
-repeated env creation does not exhaust the pybind11 TLS keys.
+Sweeps spawn one child process per (task, embodiment, shard), as in `AGENTS.md`.
 
-**Phase 2 acceptance:** a throwaway `smoke_items` task (registered only in tests) with one tray, two
-items on it, and one zone mat runs end to end with `ItemEpisodeRunner`, produces `trace.npz`,
-`meta.json`, and a video, and its margins are visibly correct in the overlay. All `sim` tests pass.
+**Phase 2 acceptance:** a test-only `smoke_items` task (one zone mat, two boxes) runs end to end on
+both embodiments, and the margins in the keyframe overlays are correct.
 
-### Phase 3: Feasibility probes (1 to 2 days). STOP gate.
+### Phase 3: Feasibility probes (STOP gate)
 
-Probes P1 to P6 use **kinematic** supports or pushers (no robot), so physics is isolated from the
-planner. Then P1 and P4 are repeated with the robot. Write all results to
-`docs/item_envs/feasibility.md`, with plots and three example videos per probe.
+Use kinematic movers where noted, so physics is isolated from the planner. Results, plots, and
+keyframes go in `feasibility.md`.
 
-| Probe | Setup | Sweep | Measure | Gate |
-|---|---|---|---|---|
-| P1 tray | kinematic rimmed tray carrying (a) block 6 cm cube, (b) cylinder "bottle" r 3.5 cm, h 20 cm, (c) `021_cup` | trapezoid velocity profile, v_max 0.5 m/s, peak accel a in {0.5, 1, 2, 4, 8} m/s², 3 seeds, friction fixed at 0.5 | slip distance in tray frame, max tilt, margins | block sliding onset within ±30% of μ_s·g. Bottle tipping onset within ±30% of g·r/h_com. Same params repeat within ±10% across seeds |
-| P1-robot | robot carries the empty tray at time_scale s in {0.5, 0.75, 1.0, 1.25}, on `ur5-wsg` and on `franka-panda` | as left | peak tray acceleration achieved, tray rotation in gripper | there exists s with a_peak ≥ bottle tipping threshold and a_peak < block sliding threshold. Tray rotates less than 5° in the grip |
-| P2 support removal | kinematic board under a mug and under a cylinder | pull speed v in {0.05, 0.2, 0.5, 1, 2} m/s, accel 20 m/s² | item displacement, tilt | displacement varies with v by at least 3 cm across the grid. Report whether it is non-monotonic (no gate on that) |
-| P3 rolling | sphere r 2 cm and cylinder lying on its side, initial speed 0.3 m/s | angular damping in {0, 0.05, 0.1, 0.2, 0.5, 1} | stopping distance, straightness | some damping range gives stopping distance in 0.1 to 0.5 m. Deliver a damping-to-distance lookup table |
-| P4 drawer | `036_cabinet` drawer with a sphere, a lying cylinder, and an upright cylinder inside | drawer opened by the robot at s in {0.3, 0.6, 1.0, 1.3}, on both embodiments | items inside, tilt | drawer interior is hollow (items rest on the drawer floor, not on top of the cabinet). At s = 0.3, items stay inside in ≥ 90% of seeds. Failures appear at higher s |
-| P5 beads | `square_cup` with N in {30, 60, 100, 150} spheres, r in {5, 8} mm | kinematic tilt to 120° at ω in {1, 3} rad/s | wall time of physics per control tick (10 substeps), beads tunneled through walls or table, spill count | at N = 60, physics ≤ 20 ms per tick (report CPU model). Zero tunneling. Spill count increases with ω |
-| P6 push | kinematic pusher pushes a box at v in {0.1, 0.3, 0.6} m/s for 0.15 m, then stops | friction in {0.3, 0.6, 0.9} | coasting distance after the pusher stops, box rotation | coasting distance > 0, increases with v, decreases with friction |
-| P7 container audit | `scripts/item_envs/audit_collisions.py` over every asset in the Section 7 pools | | number of convex pieces, hull-to-mesh volume ratio | every concave container used as a container either has ≥ 4 pieces, or a CoACD-decomposed overlay in `assets_overlay/` that passes P4 or P5 style containment tests |
-| P8 visibility | initial layout of each task, 20 seeds | | visible fraction per constrained item per camera | every constrained candidate item has visible fraction ≥ 0.3 in at least one camera at t = 0 in ≥ 95% of seeds |
+| Probe | Setup | Sweep | Gate |
+|---|---|---|---|
+| P1 multi-object path crossing (T1) | for each host task, 50 seeds, spawn 3 to 5 candidates with `spawn.py`, run the nominal with no filter, robot unaware of objects | both embodiments | in ≥ 50% of episodes the nominal comes within 2 cm of at least 2 candidates. In ≥ 30% it touches at least one. With all candidates removed, the host task succeeds in ≥ 70% of episodes |
+| P2 bowl containment and beads (T2) | `002_bowl` ids 1, 2, 3, 5 with N ∈ {30, 60, 100} beads, r ∈ {5, 6, 8} mm. Kinematic bowl: (a) translate with peak accel {1, 2, 4, 8} m/s², (b) tilt to 110° at ω ∈ {1, 3} rad/s | as left | beads rest **inside** the bowl at rest (the bowl's collision is not filled in). Zero beads tunnel through the bowl or the table. Spill increases with accel and with ω. Physics ≤ 20 ms per control tick at N = 60 (report the CPU). If a bowl id fails containment, use a CoACD overlay or drop that id |
+| P3 push coast (T3) | kinematic pusher moves a box at v ∈ {0.1, 0.3, 0.6} m/s for 0.15 m, then stops | friction {0.3, 0.6, 0.9} | coasting distance > 0, increases with v, decreases with friction |
+| P3-robot push primitive | the push primitive (Section 7, T3) on both embodiments, 20 seeds, single push | time_scale {0.5, 1.0, 1.3} | at time_scale 0.5 the box ends within 3 cm of the commanded push distance in ≥ 80% of seeds |
+| P4 visibility | initial layout of each task, 20 seeds | | every candidate item and every nameable region has visible fraction ≥ 0.3 in at least one camera at t = 0 in ≥ 95% of seeds |
+| P5 token alignment (`gpu`) | one item at a known pose | | the token-mask cells with the highest coverage contain the encoder token positions closest to the item centroid |
 
-If a gate fails, try at most two documented fixes (for example raising solver iterations, enabling
-CCD, or decomposing a mesh). If the gate still fails, **stop and report**.
+If a gate fails, try at most two documented fixes (solver iterations, CCD, decomposition, layout
+change). If it still fails, stop and report.
 
-### Phase 4: Tasks T1 to T7 (about 1 to 1.5 days per task)
+### Phase 4: Tasks
 
-Build in this order: T1, T3, T4, T2, T6, T7, T5. For each task:
+Order: **T1, T3, T2**. T1 reuses the most existing code, and T2 depends on the P2 outcome. For each
+task:
 
-1. implement `tasks/<file>.py` and `configs/tasks/<file>.yaml`,
-2. write the task card `docs/item_envs/task_cards/Tn.md` (layout figure, item pools, rules, knobs,
-   known issues),
-3. add `sim` tests: the scene builds for 20 seeds without `UnStableError`, rules enumerate, the
-   margins at t = 0 are all positive, and one nominal episode runs to completion at low risk,
-4. run calibration (Section 8) and add the results to `calibration.md`.
+1. implement it (Section 7) with its YAML,
+2. write the task card `docs/item_envs/task_cards/Tn.md`,
+3. add `sim` tests on both embodiments: 20 seeds build without `UnStableError`, rules enumerate, all
+   margins are positive at t = 0, one nominal episode completes at low risk,
+4. calibrate (Section 8).
 
-Task-specific requirements are in Section 7.
+### Phase 5: Integration with CEHJ collection
 
-### Phase 5: Integration with CEHJ collection (1 to 2 days)
+Allowed edits to existing CEHJ files:
 
-Allowed edits to existing files:
-
-1. `main/train/rollout.py`: add an optional constructor argument `h_fn=None`. In `_capture_tick`,
-   replace the direct call with `h, diag = (self.h_fn or default_h_fn)(self.env, self.cfg)`, where
-   `default_h_fn` wraps the existing `compute_h` call byte for byte. Also add an optional
-   `controller_cls` argument (default `TickChunkedController`) so item tasks can use
-   `RiskTickController`.
-2. `main/train/collect.py`, `make_training_env`: pass `item_kwargs` through when `cfg.task` is an item
-   task.
+1. `main/train/rollout.py`: optional constructor arguments `h_fn=None` and
+   `controller_cls=TickChunkedController`. `_capture_tick` calls
+   `(self.h_fn or default_h_fn)(self.env, self.cfg)`, where `default_h_fn` wraps the current
+   `compute_h` call byte for byte.
+2. `main/train/collect.py` `make_training_env`: if `cfg.task` is an item task, build the environment
+   through `main.item_envs.registry` instead of the single-obstacle path.
 
 New code:
 
-- `margin_hook.py`: `ItemMarginHFn(active_rule_id, kappa)` callable returning
-  `(kappa * margin_active, diag)`, where `diag` contains all margins, item state, and fields that
-  keep the existing video and metrics code from crashing (fill `d_left`, `per_link`, etc. with
-  `inf` or empty values).
-- `item_buffer.py`: `ItemSidecarBuffer(root, capacity, k_max=8, r_max=48, n_cam=3)`, a memmap with
-  the same ring semantics as `StepBuffer`, written in lockstep (same index) with fields
+- `margin_hook.py`: `ItemMarginHFn(active_rule_id, kappa)` returns `(kappa * margin_active, diag)`.
+  `diag` contains all margins and item state, plus the keys the existing video and metric code reads
+  (`d_left`, `per_link`, `holding`, and so on), filled with `inf` or empty values where they do not
+  apply. For T1 with a single-item `avoid` rule, `per_link` is filled from the per-link distances to
+  that item, so CrossSafe's diagnostics keep working.
+- `item_buffer.py`: `ItemSidecarBuffer(root, capacity, k_max=8, r_max=64, g_max=8, n_cam=3, n_tok)`,
+  same ring semantics as `StepBuffer`, written in lockstep (same index):
 
   | field | dtype | shape |
   |---|---|---|
   | `item_pose` | float32 | [k_max, 7] |
   | `item_vel` | float32 | [k_max, 6] |
-  | `item_obb` | float32 | [k_max, 9] (center_local 3, half 3, up_local 3) |
+  | `item_obb` | float32 | [k_max, 9] |
   | `item_valid` | bool | [k_max] |
+  | `held` | int8 | [2] |
+  | `robot_item_dist` | float32 | [k_max] |
   | `margins` | float32 | [r_max] |
   | `rule_valid` | bool | [r_max] |
+  | `region_T` | float32 | [g_max, 4, 4] |
+  | `token_masks` | uint8 | [k_max + g_max, n_cam, n_tok] (items, then nameable regions) |
   | `visibility` | float16 | [k_max, n_cam] |
-  | `region_T` | float32 | [r_max_regions = 8, 4, 4] |
 
-  The rule table, item table, and region polygons of each episode go in a JSON-lines file keyed by
-  `episode_id`. The buffer stores no language. Phrases are regenerated from the rule table at
-  training time.
-- Test: after a ring wrap, `ItemSidecarBuffer[i]` and `StepBuffer[i]` refer to the same transition
-  (same `episode_id`, same tick).
-- Dry run (`gpu`): 3 nominal-only episodes per task into a fresh buffer with the HoloBrain encoder
-  running. A readback script compares buffer margins with `trace.npz` from the logger for the same
-  seed. The difference must be 0.
-- Regression: the old-task `h` trace from Phase 0 must be identical.
+  Each episode's item, region, and rule tables go to a JSON-lines file keyed by `episode_id`. No text
+  is stored. Phrases are regenerated from the rule table at training time.
+- Tests: lockstep indices after a ring wrap. A `gpu` dry run of 3 nominal episodes per task and
+  embodiment into a fresh buffer, with buffer margins matching `trace.npz` exactly. The Phase 0
+  regression traces are unchanged.
 
 Do not touch `train.py`, the networks, or the buffer `FIELDS`.
 
@@ -686,251 +552,279 @@ Do not touch `train.py`, the networks, or the buffer `FIELDS`.
 
 ## 7. Task specifications
 
-Common to all tasks:
+Common to all three:
 
-- **Embodiments.** Default `ur5-wsg` (it worked best in the previous CrossSafe experiments, and
-  HoloBrain-GD was trained on RoboTwin data that includes `robotwin2_0_ur5_wsg`). Every task must also
-  run on `franka-panda`, the most widely used arm. Both are single arms that RoboTwin instantiates as
-  a pair (`dual_arm: False` in their config, so `_task_args` passes `[e, e, arm_distance]`). Rules
-  that follow from this:
-  - **One code path for both.** No `if embodiment == ...` branches inside task logic. Embodiment
-    differences live in data: per-embodiment entries in the task YAML (`embodiment_overrides:`) for
-    grasp offsets, pre-grasp distances, and layout shifts, and the workspace files from Phase 0.
-  - **Joint count differs.** UR5 has 6 arm joints and Franka has 7. Never hardcode action widths.
-    Read them from the robot (`get_left_arm_real_jointState()` length minus the gripper) the way
-    `Env.step_dtheta` does. CEHJ's buffer already pads to 18.
-  - **Grippers differ.** Every handle, rim, and graspable primitive must fit the smaller maximum
-    opening and the shorter finger length of the two grippers (from Phase 0). Grasp contact points
-    in primitive `data` dicts must work for both, verified by the Phase 2 grasp test.
-  - **Shared workspace.** Sample every layout inside the intersection of the two embodiments'
-    reachable workspaces, so the same seed produces the same scene on both arms. Reject and resample
-    any layout where a key grasp or place pose fails IK on either embodiment, and log the rejection
-    rate.
-  - **Single-arm variant.** Every task has a config flag `single_arm: true` that uses only one arm of
-    the pair (the other stays at home). The later hardware target is a small single arm, so the
-    single-arm variant is the one calibrated first. Bimanual variants (T1 tray with two handles) are
-    optional extras.
-  - **Tests and reports per embodiment.** Every `sim` and `gpu` test in Phase 4 is parametrized over
-    `["ur5-wsg", "franka-panda"]`, and every report table has one row per embodiment.
-- **Candidate items.** Every scene has at least two constrained-candidate items with **different
-  vulnerability** to the task's main failure mode (for example a tall bottle and a low block on the
-  same tray). This is what makes naming the item matter.
-- **Task success** is defined only by the nominal's goal. Safety outcomes are recorded separately per
-  rule. Do not fold safety into `check_success`.
-- **Nominal masses** per category go in `phrases.yaml` alongside the names. Defaults: bottle
-  0.05 to 0.30 kg, cup or mug 0.05 to 0.25, can 0.05 to 0.35, wooden block 0.05 to 0.15, bread 0.03 to
-  0.08, ping-pong ball 0.0027, bead 0.0005 to 0.002.
+- **Dual-arm setup** on `ur5-wsg` (default) and `franka-panda`. Layouts are sampled inside the
+  intersection of both embodiments' workspaces (Phase 0), so a seed gives the same scene on both. Reject
+  and resample layouts where a key grasp, place, or push pose fails IK on either embodiment, and log
+  `spawn_rejections`.
+- **Embodiment differences live in data** (`embodiment_overrides:` in the task YAML), never in
+  `if embodiment == ...` branches.
+- **Task success** is the nominal's goal only. Safety outcomes are recorded per rule.
+- **The referent must matter.** Every scene has at least two candidates of the same rule type that are
+  exposed to the nominal (on or near its path, or adjacent to its target), so protecting the wrong one
+  changes the outcome.
+- **Nominal masses** live in `objects.yaml`: bottle 0.05 to 0.30 kg, cup or mug 0.05 to 0.25, can
+  0.05 to 0.35, wooden block 0.05 to 0.15, boxed items 0.05 to 0.30, bead 0.0005 to 0.002.
 
-### T1 `tray_transport` (support friction)
+### T1 `selective_avoid`
 
-- **Scene.** `rimmed_tray` with a handle on one short side (single-arm, default, 0.20 × 0.15 m tray)
-  or handles on both short sides (bimanual variant, both arms of the pair, 0.30 × 0.22 m tray). 2 to 4 items on the tray, at least 1.5 cm from the rims and from
-  each other. Item pools:
-  - tippable: `001_bottle`, `114_bottle`, `021_cup`, `039_mug`, primitive cylinder with h/r ≥ 3;
-  - stable: `086_woodenblock`, `075_bread`, low primitive box.
-  Use `asset_overlay` collision for any asset whose audit (P7) failed.
-- **Nominal.** Grasp the handle(s), lift 0.10 m, then `with self.risky():` move to a goal offset
-  (dx ∈ [0.15, 0.35] m, dy ∈ [−0.10, 0.10] m), lower, release, and retreat.
-- **Risk knobs.** `time_scale` ∈ [0.5, 1.3]. `task.stop_abruptly` ∈ {0, 1}: if 1, split the transport
-  into two plans with a full stop between them, which adds a braking phase.
-- **Regions.** `tray_top` (interior polygon in the tray frame, `kind="surface"`, `z_band=0.01`),
-  `table_top`.
-- **Rules.** `inside(item, tray_top)` for every item. `upright(item, θ_max=45°)` for tippable items.
-- **Success.** Tray center within 3 cm of the goal, and the tray is released.
-- **Design check.** Pick item pairs whose analytic thresholds differ, using a_slide = μ_s·g and
-  a_tip = g·(half-width / CoM height), so that one item fails and the other survives over a sizable
-  band of `time_scale`. Log both thresholds in `meta.json`.
+**Goal.** CrossSafe's collision avoidance, but with several objects on and near the path, where only
+the **specified** objects must not be touched.
 
-### T2 `drawer_contents` (articulation)
+**Hosts.** The five CrossSafe tasks, unmodified: `place_container_plate`, `place_burger_fries`,
+`stack_blocks_two`, `stack_bowls_two`, `place_bread_basket`. No new RoboTwin file. Placement needs the
+robot and the task corridors, so spawning happens on the CEHJ side after `Env` is built, exactly like
+`make_training_env`.
 
-- **Scene.** Reuse `put_object_cabinet`'s cabinet (`036_cabinet`, model id 46653, `fix_root_link=True`).
-  The drawer starts **open 6 to 10 cm** (set the joint qpos) so that contents are visible. Place 1 to 3
-  items on the drawer floor: an upright primitive cylinder (tippable), a can lying on its side
-  (`rolls: true`), a wooden block (stable), and a sphere.
-- **Fallback.** If P4 showed the drawer interior is not hollow, build an `open_box` on a prismatic
-  articulation instead (document the builder in the task card).
-- **Nominal.** Grasp the drawer handle as in `put_object_cabinet`, then `with self.risky():` pull
-  open to a total extension of 0.15 to 0.25 m. Optionally, push it closed again (knob).
-- **Risk knobs.** `time_scale` ∈ [0.3, 1.3]. `task.n_pull_steps` ∈ {1, 2, 4} (fewer, larger steps
-  are jerkier). `task.close_after` ∈ {0, 1}. Randomize drawer joint damping and friction via
-  `ArticulationActor.set_properties`.
-- **Regions.** `drawer_floor`, using `region_from_link`, so the region follows the drawer link every
-  tick.
-- **Rules.** `inside(item, drawer_floor)`, `upright(item)`.
-- **Success.** Drawer extension within 2 cm of the target.
+**Spawner (`spawn.py`).** Generalize `choose_and_spawn` to K objects without changing `obstacle.py`
+(reuse `longest_corridor`, `iter_corridors`, `keepaways_from_task`, `keepaways_from_robot`,
+`geometric_pose`):
 
-### T3 `support_removal` (chained support)
+- K ∈ [3, 5]. For each object, choose a placement class: **on-path** (corridor parameter
+  t ∈ [0.22, 0.48] as in CrossSafe, at most 2 objects), **near-path** (2 to 6 cm lateral offset from the
+  corridor), or **off-path** (elsewhere on the table, at least 10 cm away). At least two objects must be
+  on- or near-path.
+- Objects keep at least 3 cm from each other and from the host's keepaways.
+- **Objects are dynamic** with realistic masses (CrossSafe's were static). The robot may push
+  non-specified objects aside, which is allowed. Add a config flag `static_objects: true` for a
+  parity run with CrossSafe.
+- After spawning, settle 250 physics steps and reject the layout if any object moved more than 5 mm or
+  tilted more than 3°.
+- `update_curobo_world(env.robot)` with the **table only**. The nominal never plans around any object.
 
-- **Variant a, `drag_with`.** A `handled_board` with a mug, a cup, or a tall cylinder on top. The
-  nominal grasps the handle and drags the board 0.15 to 0.25 m. Failure means the item falls off the
-  board. Rules: `inside(item, board_top)`, `upright(item)`.
-- **Variant b, `extract_from_under`.** The same board, but the goal is to pull the board out from under
-  the item, leaving the item standing on the table. Rules: `upright(item)` and
-  `stay(item, d_tol=0.05)`.
-- **Variant c, `tower`.** Three stacked blocks (`086_woodenblock` or primitive boxes). The nominal
-  pulls the middle block sideways out of the stack (as in Jenga). Rule: `stay(top_block, d_tol=0.03)`.
-- **Risk knobs.** `time_scale` ∈ [0.3, 2.0] with a wide grid, because the effect may be
-  non-monotonic. `task.single_yank` ∈ {0, 1} (one long plan instead of several short ones).
-- **Success.** Board displaced by at least 90% of the commanded distance.
+**Object pool (`objects.yaml`).** Upright-stable RoboTwin objects 5 to 20 cm tall, for example
+`068_boxdrink`, `086_woodenblock`, `001_bottle`, `114_bottle`, `021_cup`, `039_mug`, `071_can`,
+`080_pillbottle`, `105_sauce-can`, `112_tea-box`, `113_coffee-box`. The agent extends the pool after the
+Phase 0 audit. Also add colored primitive boxes and cylinders (6 training colors, 3 held-out), so that
+two objects of the same category can be told apart only by color.
 
-### T4 `rolling_edge` (rolling, point of no return)
+**Items.** Spawned objects are `candidate`. The host's pick objects are `task_object`, and the host's
+targets (plate, basket, other bowl) are `support`.
 
-- **Scene.** A rolling item R (primitive sphere r ∈ [0.02, 0.03] m, primitive cylinder on its side,
-  or `102_roller`) placed 0.05 to 0.15 m from the table edge or from a `zone_mat`, and 0.03 to 0.10 m
-  from the nominal's path. A task object X (a box) that the nominal must place or push near R, and one
-  stable bystander.
-- **Settle.** During `check_stable`, give R angular damping 50 and linear damping 5. Switch to the
-  sampled damping (from the P3 lookup table) in `_after_settle`. Do not add R to `unstable_ok`.
-- **Nominal.** Two sub-variants. (a) Pick X and place it at a target offset toward R by
-  `task.target_offset` ∈ [0, 0.06] m. (b) Push X with the push primitive from T6 toward R.
-- **Risk knobs.** `time_scale` ∈ [0.5, 1.3], `task.target_offset`.
-- **Regions.** `table_top`, an optional `zone_<color>`.
-- **Rules.** `inside(R, table_top)`, `outside(R, zone)`. Also `upright(bystander)` for chained contact.
-- **Success.** X within 2 cm of its target.
+**Rules.**
 
-### T5 `granular_pour` (granular flow, liquid stand-in)
+- `avoid(obj_k, margin=0)` for every candidate.
+- Set rules `avoid(all candidates of category c)` whenever a category appears at least twice.
+- `avoid(all candidates)` is CrossSafe's setting, kept as a baseline rule.
+- Optional `stay(obj_k, d_tol=0.03)`, which catches chained contact: a non-specified object pushed into
+  a specified one.
+- Never an `avoid` rule on `task_object` or `support` items.
 
-- **Scene.** A `square_cup` (or `021_cup` with an overlay collision that passed P5) holding N beads
-  (N from P5, default 60, radius 6 mm), a target `open_box` or decomposed `002_bowl`, and a forbidden
-  region (`zone_mat` or a static `015_laptop`).
-- **Particle item.** The beads are a single `ItemSpec` with `kind="particle_set"` and category
-  `"beans"` (synonyms "beads", "rice", "grains"). Its OBB is the axis-aligned bounding box of the
-  particles, recomputed every tick for logging.
-- **Nominal.** Grasp the cup, lift, then `with self.risky():` move above the target at height
-  `task.pour_height` ∈ [0.05, 0.20] m above the rim with lateral offset `task.pour_offset` ∈
-  [0, 0.05] m, tilt by 100° to 120° at rate `task.tilt_rate` ∈ [1, 4] rad/s (implement as an EE
-  rotation via `move_to_pose` with retiming), hold 1 s, return upright, place the cup back.
-- **Rules.** `particles_inside(beans, [cup_interior, target_interior])` ("don't spill the beans"),
-  and `particles_outside(beans, [forbidden_region])` ("keep the beans off the laptop").
-- **Extra log fields.** Spill count (beads below table height + 2r that lie outside every container
-  footprint), and per-tick physics wall time.
-- **Success.** Fraction of beads inside the target ≥ 0.8.
+**Risk knobs.** `time_scale` ∈ [0.6, 1.3] on the transport segments. The main source of risk is
+placement, not speed. `task.on_path_count` ∈ {1, 2}.
 
-### T6 `push_zone` (planar sliding and chained contact)
+**Success.** The host's own `check_success()`.
 
-- **Scene.** A push object P (primitive boxes of varied size and color, `048_stapler`, `113_coffee-box`),
-  a goal G 0.05 to 0.15 m from the table edge or next to a `zone_mat`, and a tippable bystander Y
-  0.02 to 0.08 m off the push line.
-- **Push primitive** (put it in `base_task.py` for reuse in T4): close the gripper, move to a pre-push
-  pose 0.05 m behind P at P's CoM height (at least 1 cm above the table), then `with self.risky():`
-  `move_by_displacement` along the push direction by `dist(P, G) + task.overshoot`, and retreat. The
-  planner's world model contains only the table, so plans through P are expected. That is the point of
-  a push.
-- **Risk knobs.** `time_scale` ∈ [0.5, 1.3], `task.overshoot` ∈ [0, 0.08] m,
-  `task.lateral_offset` ∈ [−0.02, 0.02] m (off-center contact induces rotation).
-- **Rules.** `inside(P, table_top)`, `outside(P, zone)`, `upright(Y)`, `stay(Y, d_tol=0.03)`.
-- **Success.** P within 3 cm of G.
+### T2 `granular_pour`
 
-### T7 `dump_bin` (many rigid items)
+**Goal.** Carry a bowl of beads and pour them into a target container without spilling, and keep beads
+out of a specified forbidden region.
 
-- **Scene.** Follow `dump_bin_bigbin`. A handheld `063_tabletrashbin` (ids [0, 3, 7, 8, 9, 10], use
-  overlay collisions if needed) or an `open_box`, with 3 to 6 small contents (spheres of radius 8 mm,
-  small blocks, short cylinders) with **realistic masses** (5 to 30 g, not the host's 1e-4 kg). A
-  static target `011_dustbin` or a static `open_box`, and a `zone_mat` or `015_laptop` next to it.
-- **Nominal.** Same structure as the host (grasp, lift, move over the target, tilt to dump, return).
-  Risky segment: the move and the tilt.
-- **Risk knobs.** `time_scale` ∈ [0.5, 1.3], `task.target_miss` ∈ [0, 0.08] m,
-  `task.tilt_rate` ∈ [1, 4] rad/s.
-- **Rules.** `particles_inside(contents, [handheld_bin_interior, target_interior])`, and
-  `outside(content_k, zone)` per content item (each item is also a separate rigid `ItemSpec` so it
-  can be named individually, for example "the red ball").
-- **Success.** All contents inside the target bin.
+**RoboTwin file.** `robotwin_tasks/granular_pour.py`, defining
+`class granular_pour(place_container_plate)`. Override `load_actors`:
 
-### Deferred, do not build
+1. Force the container to `002_bowl` with ids that passed P2. Keep the host's container pose sampling.
+2. Spawn N beads (default from P2, for example 60 at radius 6 mm) in a grid inside the bowl, with
+   masses 0.5 to 2 g. Name them `bead_<i>`. They form one `particle_set` item, category `beads`, with
+   synonyms "beans", "rice", "grains".
+3. Replace the plate with a **target container**: a second `002_bowl` (static) or `062_plasticbox`
+   (static, if it passes the audit), placed where the host puts the plate.
+4. Spawn **two zone mats** of different colors near the target (one may be replaced by a static
+   `015_laptop`). Only one of them is forbidden in any given rule.
+5. Beads may jitter during `check_stable`, so keep a set of bead entity names and override
+   `check_stable` to skip them (same algorithm otherwise).
 
-Swinging items (hanging bag or mug) and deformables (cloth, bags). Note them in `final_report.md`
-under future work.
+Override `play_once`:
+
+1. grasp the bowl as the host does (contact point 0 or 2, `safe_time_scale`),
+2. lift 0.1 m along the arm axis,
+3. `with risky()`: move above the target at height `task.pour_height` above its rim, with lateral
+   offset `task.pour_offset` toward one of the zones,
+4. `with risky()`: tilt by 100° to 120° about the horizontal axis perpendicular to the arm at rate
+   `task.tilt_rate` (an EE rotation through `move_to_pose`, timed by the retimer), hold 1 s, tilt back,
+5. place the empty bowl beside the target and retreat (`safe_time_scale`).
+
+**Bimanual variant** (`bimanual: true`): the second arm grasps the target container (a dynamic
+`002_bowl` in this variant) and holds it 5 to 10 cm above the table during the pour, then sets it down.
+This uses both arms, and the target moves, so its region follows it every tick.
+
+**Regions.** `bowl_src_interior`, `target_interior` (both `container`, following their actors), and
+`zone_<color>` (nameable).
+
+**Rules.**
+
+- `particles_inside(beads, [bowl_src_interior, target_interior])`: "don't spill the beans".
+- `particles_outside(beads, [zone_c])` for each zone: "keep the beans off the red mat".
+
+**Risk knobs.** `time_scale` ∈ [0.5, 1.3], `task.tilt_rate` ∈ [1, 4] rad/s, `task.pour_height` ∈
+[0.05, 0.20] m, `task.pour_offset` ∈ [0, 0.05] m.
+
+**Extra logs.** Spill count (beads below table + 2r outside every container footprint), and physics
+milliseconds per tick.
+
+**Success.** At least 80% of the beads are inside the target.
+
+### T3 `push_zone`
+
+**Goal.** Push objects to goals near the table edge and near zones, without pushing them off the table
+or into the specified zone, and without disturbing specified bystanders.
+
+**RoboTwin file.** `robotwin_tasks/push_zone.py`, defining `class push_zone(Base_Task)`.
+
+`load_actors`:
+
+1. Two push objects P_L and P_R, one per side of the table (x < 0 and x > 0): primitive boxes of
+   random size (side 4 to 8 cm, height 3 to 8 cm) and color, or `113_coffee-box` or `112_tea-box`.
+2. A goal G for each, 5 to 15 cm from the table's front or side edge, or adjacent to a zone mat.
+3. Two or three zone mats of different colors, at least one within 6 cm of some push line.
+4. One or two tippable bystanders (`001_bottle`, `021_cup`, tall colored cylinders) 2 to 8 cm off the
+   push lines.
+
+`play_once`: **both arms push at the same time**, each pushing the object on its side, which keeps both
+arms active as HoloBrain expects. The push primitive goes in `_item_utils.py`, implemented with
+RoboTwin skills only:
+
+1. close the gripper,
+2. move to a pre-push pose 5 cm behind P along the push direction, at P's CoM height (at least 1 cm
+   above the table), fingers vertical,
+3. `with risky()`: `move_by_displacement` along the push direction by `dist(P, G) + task.overshoot`,
+   with the contact point shifted sideways by `task.lateral_offset`,
+4. retreat 5 cm and lift.
+
+Use `self.move(push_left, push_right)` so both arms run through `together_move_to_pose`. The planner's
+world model holds only the table, so plans that pass through P are expected. That is how a push works.
+
+**Single-push variant** (`n_push: 1`): one push object, and the other arm moves to a pre-push pose and
+holds. Use it for debugging and for probe P3-robot.
+
+**Regions.** `table_top` and `zone_<color>` (nameable).
+
+**Rules.**
+
+- `inside(P_k, table_top)`: "don't push the blue box off the table".
+- `outside(P_k, zone_c)` for every zone: "keep the blue box out of the red zone".
+- `upright(Y_j, θ_max = 45°)` and `stay(Y_j, d_tol = 0.03)`.
+
+**Risk knobs.** `time_scale` ∈ [0.5, 1.3], `task.overshoot` ∈ [0, 0.08] m, `task.lateral_offset` ∈
+[−0.02, 0.02] m.
+
+**Success.** Each push object within 3 cm of its goal.
 
 ---
 
-## 8. Calibration protocol (per task)
+## 8. Calibration protocol (per task and embodiment)
 
-1. Grid: the task's `time_scale` values (5 points) × its main task knob (3 points) × 20 episodes, with
-   physics randomization on. That is 300 nominal-only episodes per task and embodiment, run for
-   `ur5-wsg` and `franka-panda`. The gates in step 3 must hold on both. If they hold only on one,
-   report it per embodiment.
-2. For each rule template, compute the violation rate (min margin over the episode < 0), the
-   distribution of min margins, and the time of first violation.
-3. Pick a **collection risk distribution** (a mixture over the grid) such that
+**No-render mode.** Calibration needs margins, not images. Run with rendering and cameras off except
+one frame at t = 0 for the P4 visibility check. Keyframes are written only for 5 episodes per grid cell.
+
+1. **Adaptive grid.** Start with 5 episodes per cell over the task's knob grid. Add 15 more episodes
+   only in cells whose primary-rule violation rate falls between 0.1 and 0.6.
+2. For each rule template, record the violation rate, the min-margin distribution, and the time of
+   first violation.
+3. Pick a **collection risk distribution** (a mixture over the grid cells) such that:
    - the primary rule's violation rate is between 0.2 and 0.5,
-   - at least two candidate items in the same scene distribution differ in violation rate by ≥ 0.15
-     (differential vulnerability),
-   - nominal task success is ≥ 0.7 at the lowest risk setting (the planner itself works).
-4. Write the chosen distribution into `configs/tasks/<task>.yaml` under `risk_collect`, and the
-   evidence (tables, plots) into `calibration.md`.
+   - in the same scenes, **non-specified** candidates are also violated at a comparable rate, so a
+     filter that protects everything pays a visible task-success cost (T1: at least one non-specified
+     object touched in ≥ 30% of episodes),
+   - nominal task success is ≥ 0.7 at the lowest-risk cell.
+4. Write the distribution into the task YAML under `risk_collect` and the evidence into
+   `calibration.md`, with one table per embodiment.
 
-If a task cannot meet these numbers after reasonable redesign of layout or item pools (document what
-you tried), report it rather than lowering the bar.
+If a task misses these numbers after documented redesign attempts, report it rather than lowering the
+bar.
 
 ---
 
 ## 9. Configuration examples
 
-`configs/tasks/T1_tray_transport.yaml`
+`configs/tasks/T3_push_zone.yaml`
 
 ```yaml
-task: tray_transport
-embodiments: [ur5-wsg, franka-panda]   # first entry is the default
-single_arm: true
-tray: {size_xy: [0.20, 0.15], rim_h: 0.02, handles: one_short_side, mass: [0.15, 0.30]}
-bimanual_tray: {size_xy: [0.30, 0.22], rim_h: 0.02, handles: both_short_sides, mass: [0.20, 0.35]}
-embodiment_overrides:                  # data only, no branches in task code
-  ur5-wsg:      {pre_grasp_dis: 0.08, grasp_z_offset: 0.0}
-  franka-panda: {pre_grasp_dis: 0.08, grasp_z_offset: 0.0}
-items:
-  n: [2, 4]
-  pools:
-    tippable: [001_bottle, 114_bottle, 021_cup, 039_mug, prim_tall_cylinder]
-    stable: [086_woodenblock, 075_bread, prim_low_box]
-  min_tippable: 1
-  min_stable: 1
-  edge_clearance: 0.015
-goal: {dx: [0.15, 0.35], dy: [-0.10, 0.10]}
+task: push_zone
+robotwin_task: push_zone
+embodiments: [ur5-wsg, franka-panda]     # first is the default
+n_push: 2
+push_objects: {pool: [prim_box, 113_coffee-box, 112_tea-box], side: [0.04, 0.08], height: [0.03, 0.08]}
+goal: {edge_dist: [0.05, 0.15]}
+zones: {n: [2, 3], size_xy: [[0.08, 0.15], [0.08, 0.15]], near_push_line: 0.06}
+bystanders: {n: [1, 2], pool: [001_bottle, 021_cup, prim_tall_cylinder], line_offset: [0.02, 0.08]}
 risk:
   time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}
   safe_time_scale: 0.6
   task:
-    stop_abruptly: {dist: choice, values: [0, 1]}
+    overshoot: {dist: uniform, range: [0.0, 0.08]}
+    lateral_offset: {dist: uniform, range: [-0.02, 0.02]}
 rules:
-  - {consequence: inside, items: {role: constrained_candidate}, regions: [tray_top]}
-  - {consequence: upright, items: {role: constrained_candidate, tippable: true}, theta_max_deg: 45}
-risk_collect: null        # filled by calibration
+  - {consequence: inside, items: {role: candidate, group: push}, regions: [table_top]}
+  - {consequence: outside, items: {role: candidate, group: push}, regions: {kind: zone}}
+  - {consequence: upright, items: {role: bystander}, theta_max_deg: 45}
+  - {consequence: stay, items: {role: bystander}, d_tol: 0.03, theta_tol_deg: 20}
+embodiment_overrides:
+  ur5-wsg:      {prepush_dist: 0.05, push_height_offset: 0.0}
+  franka-panda: {prepush_dist: 0.05, push_height_offset: 0.0}
+risk_collect: null                       # filled by calibration
+```
+
+`configs/tasks/T1_selective_avoid.yaml`
+
+```yaml
+task: selective_avoid
+host_tasks: [place_container_plate, place_burger_fries, stack_blocks_two, stack_bowls_two, place_bread_basket]
+embodiments: [ur5-wsg, franka-panda]
+objects: {k: [3, 5], max_on_path: 2, min_on_or_near_path: 2, near_path_offset: [0.02, 0.06],
+          off_path_min_dist: 0.10, min_separation: 0.03, static_objects: false}
+corridor_t: [0.22, 0.48]
+risk:
+  time_scale: {dist: choice, values: [0.6, 0.8, 1.0, 1.15, 1.3]}
+  safe_time_scale: 0.6
+  task:
+    on_path_count: {dist: choice, values: [1, 2]}
+rules:
+  - {consequence: avoid, items: {role: candidate}, margin: 0.0}
+  - {consequence: avoid, items: {role: candidate, same_category_min: 2}, set_rule: true, margin: 0.0}
+  - {consequence: avoid, items: {role: candidate}, set_rule: all, margin: 0.0}     # CrossSafe baseline
+  - {consequence: stay, items: {role: candidate}, d_tol: 0.03, theta_tol_deg: 20}
+risk_collect: null
 ```
 
 `configs/splits.yaml` (excerpt)
 
 ```yaml
-tray_transport:
-  heldout_item_categories: [mug, sauce_can, pill_bottle]
+selective_avoid:
+  heldout_item_categories: [pill_bottle, sauce_can, tea_box]
   heldout_colors: [purple, orange, cyan]
-  heldout_regions: []
-  heldout_phrase_templates: ["don't let the {item} slide off the {region}"]
+granular_pour:
+  heldout_regions: [laptop]
+  heldout_colors: [purple, orange, cyan]
+push_zone:
+  heldout_colors: [purple, orange, cyan]
+  heldout_item_categories: [tea_box]
+all:
+  heldout_phrase_templates: ["stay away from the {item}", "don't get any {item} in the {region}"]
 ```
 
 ---
 
 ## 10. Final report
 
-`docs/item_envs/final_report.md` contains:
-
-- a table per task with build status, P-gate results, calibration numbers (violation rates per rule,
-  differential vulnerability, nominal success, mean wall time per episode, physics ms per tick), and
-  links to three videos (safe, near-miss, violation);
-- known issues and their workarounds;
-- every deviation from this plan, with the reason.
+`docs/item_envs/final_report.md`: per task and embodiment, the build status, probe gate results,
+calibration numbers (violation rate per rule, non-specified violation rate, nominal success, wall time
+per episode, physics milliseconds per tick), keyframe sets for a safe, a near-miss, and a violation
+episode, known issues, and every deviation from this plan with its reason.
 
 ---
 
 ## 11. Out of scope, and decisions reserved for the human
 
-Out of scope: grounding labels (only log OBBs and region transforms, labels are computed downstream
-from scene-token positions), language models, encoder changes, critic or actor changes, training
-scripts, SO-101 hardware.
+Out of scope: grounding models, language, encoder changes, critic and actor changes, training
+scripts, hardware.
 
-Reserved decisions. Ask before changing any of these:
+Ask before changing any of these:
 
-1. The embodiment set (`ur5-wsg` default, `franka-panda` supported). Adding or dropping an embodiment
-   needs approval.
-2. Final held-out category, color, and phrase lists in `splits.yaml`.
-3. Whether any task is dropped after a failed STOP gate.
-4. Any change to the consequence types or the margin sign convention.
+1. The embodiment set (`ur5-wsg` default, `franka-panda` supported).
+2. The held-out lists in `splits.yaml`.
+3. Dropping a task, a host task, or a bowl id after a failed gate.
+4. The consequence types or the margin sign convention.
+5. Making T1 objects static by default.
+

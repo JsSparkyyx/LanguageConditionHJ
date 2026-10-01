@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from main.item_envs.geometry import (
+    circle_polygon,
     footprint,
     obb_corners,
     pose_to_mat,
@@ -128,6 +129,38 @@ def test_signed_dist_orientation_independent():
     pts = np.array([[0.5, 0.5], [1.2, 0.5]])
     cw = UNIT_SQUARE[::-1]
     assert np.allclose(signed_dist_inside_polygon(pts, UNIT_SQUARE), signed_dist_inside_polygon(pts, cw))
+
+
+def test_circle_polygon_vertices_and_ccw():
+    poly = circle_polygon(0.05)
+    assert poly.shape == (16, 2)
+    assert np.allclose(np.linalg.norm(poly, axis=1), 0.05)  # vertices on the circle
+    # shoelace signed area is positive for CCW
+    x, y = poly[:, 0], poly[:, 1]
+    signed_area = 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+    assert signed_area > 0
+    assert np.isclose(signed_area, 0.5 * 16 * 0.05**2 * np.sin(2 * np.pi / 16))  # regular 16-gon area
+
+
+def test_circle_polygon_n_and_signed_dist():
+    poly = circle_polygon(1.0, n=8)
+    assert poly.shape == (8, 2)
+    # center is ~1 inside (nearest edge is the apothem for a coarse n-gon)
+    apothem = np.cos(np.pi / 8)
+    assert np.isclose(signed_dist_inside_polygon(np.array([[0.0, 0.0]]), poly)[0], apothem)
+    # vertex angle (2, 0) is 1 outside along x
+    assert np.isclose(signed_dist_inside_polygon(np.array([[2.0, 0.0]]), poly)[0], -1.0)
+    # usable as a container rim (16-gon at the inner rim radius, PLAN v3 §2.3)
+    rim = circle_polygon(0.06, n=16)
+    d = signed_dist_inside_polygon(np.array([[0.0, 0.0], [0.06, 0.0], [0.10, 0.0]]), rim)
+    assert d[0] > 0 and np.isclose(d[1], 0.0, atol=1e-12) and d[2] < 0
+
+
+def test_circle_polygon_bad_inputs():
+    with pytest.raises(ValueError):
+        circle_polygon(0.0)
+    with pytest.raises(ValueError):
+        circle_polygon(0.05, n=2)
 
 
 def test_tilt_angle():

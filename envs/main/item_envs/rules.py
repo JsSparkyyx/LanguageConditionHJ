@@ -1,16 +1,29 @@
 """RuleSpec, candidate rule enumeration, phrase generation, split assignment.
 
-Templates in task_cfg["rules"] look like:
-    {"consequence": "upright", "items": {"role": "constrained_candidate", "tippable": true},
-     "theta_max_deg": 45}
-    {"consequence": "inside",  "items": {"role": "constrained_candidate"}, "regions": ["tray_top"]}
-One RuleSpec is produced per (template, matching item, matching region).
+Phrase templates live here (PLAN v3 §6), not in a YAML. Task-YAML rule entries
+(PLAN v3 §9) look like:
+
+    {consequence: avoid, items: {role: candidate}, margin: 0.0}
+    {consequence: avoid, items: {role: candidate, same_category_min: 2}, set_rule: true, margin: 0.0}
+    {consequence: avoid, items: {role: candidate}, set_rule: all, margin: 0.0}
+    {consequence: inside, items: {role: candidate, group: push}, regions: [table_top]}
+    {consequence: outside, items: {role: candidate, group: push}, regions: {kind: zone}}
+    {consequence: upright, items: {role: bystander}, theta_max_deg: 45}
+    {consequence: stay, items: {role: bystander}, d_tol: 0.03, theta_tol_deg: 20}
+
+Item selectors match key/value pairs against item attributes; the directive
+same_category_min keeps only items whose category has at least that many
+members. set_rule: true emits one rule per qualifying category (item_ids = all
+members), set_rule: all a single rule over every matched item. Region
+selectors are a list of region ids or a dict matched against region
+attributes (e.g. {kind: zone} expands to every zone region).
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -18,143 +31,161 @@ import numpy as np
 
 
 class Consequence(str, Enum):
-    INSIDE = "inside"  # item footprint stays inside region polygon (and on its surface if kind=="surface")
-    OUTSIDE = "outside"  # item footprint stays outside region polygon
+    AVOID = "avoid"  # robot links and held payload keep distance >= margin from the item
+    INSIDE = "inside"  # item footprint stays inside a region (on its surface for kind == "surface")
+    OUTSIDE = "outside"  # item footprint stays outside a region
     UPRIGHT = "upright"  # tilt(item) <= theta_max
-    STAY = "stay"  # item stays within d_tol of its pose at rule activation
+    STAY = "stay"  # item stays within d_tol (and theta_tol) of its pose at rule activation
     PARTICLES_INSIDE = "particles_inside"  # every particle stays in the column above one of the regions
     PARTICLES_OUTSIDE = "particles_outside"  # no particle enters the column above any of the regions
 
 
 @dataclass
 class RuleSpec:
-    rule_id: str  # stable string, e.g. "upright|bottle_0|-"
+    rule_id: str  # stable string, e.g. "avoid|obj_2|-", "outside|box_0|zone_red"
     consequence: Consequence
-    item_id: str
-    region_ids: tuple[str, ...]  # empty for UPRIGHT and STAY
-    params: dict  # {"theta_max": rad} | {"d_tol": m, "theta_tol": rad} | {"T": m}
+    item_ids: tuple[str, ...]  # usually one item. Several items = set rule ("avoid every cup"), margin = min
+    region_ids: tuple[str, ...]  # empty for AVOID, UPRIGHT, STAY
+    params: dict  # {"margin": m} | {"theta_max": rad} | {"d_tol": m, "theta_tol": rad} | {"T": m}
     phrases: list[str] = field(default_factory=list)
     split: str = "train"  # "train" | "heldout_item" | "heldout_region" | "heldout_phrase"
 
+    def __post_init__(self):
+        self.consequence = Consequence(self.consequence)
+        self.item_ids = tuple(self.item_ids)
+        self.region_ids = tuple(self.region_ids)
 
-# Default phrase templates per consequence. Never contain digits.
+
+# Phrase templates per consequence (PLAN v3 §6). Never contain digits.
 TEMPLATES: dict[Consequence, list[str]] = {
-    Consequence.INSIDE: ["keep the {item} on the {region}", "don't let the {item} fall off the {region}"],
-    Consequence.OUTSIDE: ["keep the {item} out of the {region}", "don't let the {item} get into the {region}"],
+    Consequence.AVOID: ["don't touch the {item}", "avoid the {item}", "stay away from the {item}"],
+    Consequence.INSIDE: ["keep the {item} on the {region}", "don't push the {item} off the {region}"],
+    Consequence.OUTSIDE: ["keep the {item} out of the {region}", "don't push the {item} into the {region}"],
     Consequence.UPRIGHT: ["don't knock over the {item}", "keep the {item} upright"],
     Consequence.STAY: ["don't disturb the {item}", "leave the {item} where it is"],
-    Consequence.PARTICLES_INSIDE: ["don't spill the {item}", "keep the {item} in the {region}"],
-    Consequence.PARTICLES_OUTSIDE: ["keep the {item} off the {region}", "don't get any {item} on the {region}"],
+    Consequence.PARTICLES_INSIDE: ["don't spill the {item}"],
+    Consequence.PARTICLES_OUTSIDE: ["keep the {item} off the {region}", "don't get any {item} in the {region}"],
 }
 
-# Templates for consequences that name regions.
+# Templates for set rules (item_ids names several items). {category} is filled
+# from the shared category's names/synonyms, or a generic word for mixed sets.
+SET_TEMPLATES: dict[Consequence, list[str]] = {
+    Consequence.AVOID: ["don't touch any {category}", "avoid all the {category}s"],
+}
+
+# Fallback names when a category is missing from objects.yaml or a set mixes categories.
+_GENERIC_NAMES = ["object", "item"]
+
+# Consequences that name regions.
 _REGIONAL = {Consequence.INSIDE, Consequence.OUTSIDE, Consequence.PARTICLES_INSIDE, Consequence.PARTICLES_OUTSIDE}
 # Consequences whose regions together form ONE rule (vs one rule per region).
 _REGION_SET = {Consequence.PARTICLES_INSIDE, Consequence.PARTICLES_OUTSIDE}
 
-_TEMPLATE_RESERVED = {"consequence", "items", "regions"}
+_TEMPLATE_RESERVED = {"consequence", "items", "regions", "set_rule"}
 
 
-def enumerate_rules(items, regions, task_cfg, *, phrases_cfg=None, splits_cfg=None, rng=None) -> list[RuleSpec]:
-    """One RuleSpec per (template, matching item, matching region).
+def enumerate_rules(items, regions, task_cfg, *, objects_cfg=None, splits_cfg=None, rng=None) -> list[RuleSpec]:
+    """RuleSpecs from the task_cfg["rules"] entries.
 
-    items / regions: mappings id -> spec (or iterables of specs). Item matching
-    is by template["items"] key/value pairs against item attributes (role plus
-    arbitrary attributes such as tippable). Template keys other than
-    consequence/items/regions go into RuleSpec.params; *_deg keys are converted
-    to radians. params also carry the item's "category" and "color" so
-    render_phrases / assign_split work from the rule alone.
+    items / regions: mappings id -> spec (or iterables of specs). Enumeration
+    is deterministic: entries are processed in order, items sorted by item_id,
+    regions by region_id. params carry the entry's margin knobs (*_deg keys
+    converted to radians) plus naming metadata for render_phrases /
+    assign_split: "categories"/"colors" (per member, aligned with item_ids)
+    and, when uniform across members, "category"/"color".
 
-    When phrases_cfg is given, rule.phrases are rendered (n=3); rng defaults to
-    a per-rule deterministic stream. split comes from assign_split when
-    splits_cfg is given, else "train".
+    When objects_cfg is given, rule.phrases are rendered (n=3); rng defaults
+    to a per-rule deterministic stream. split comes from assign_split when
+    splits_cfg is given (a task section merged with "all", see
+    resolve_splits), else "train".
     """
     item_map = _as_id_map(items, "item_id")
     region_map = _as_id_map(regions, "region_id")
     rules: list[RuleSpec] = []
-    for template in task_cfg.get("rules", []) or []:
-        consequence = Consequence(template["consequence"])
-        match = template.get("items", {}) or {}
-        matched_items = [it for iid, it in sorted(item_map.items()) if _matches(it, match)]
-        matched_regions = [region_map[rid] for rid in template.get("regions", []) or [] if rid in region_map]
-        params_base = _template_params(template, consequence)
-        for item in matched_items:
-            params = {**params_base, "category": item.category}
-            if getattr(item, "color", None):
-                params["color"] = item.color
-            if consequence in _REGION_SET:
-                groups = [tuple(rid for rid in template.get("regions", []) or [] if rid in region_map)]
-                groups = [g for g in groups if g]
-            elif consequence in _REGIONAL:
-                groups = [(r.region_id,) for r in matched_regions]
-            else:
-                groups = [()]
-            for region_ids in groups:
-                rule_id = f"{consequence.value}|{item.item_id}|{'+'.join(region_ids) if region_ids else '-'}"
+    for entry in task_cfg.get("rules", []) or []:
+        consequence = Consequence(entry["consequence"])
+        item_groups = _item_groups(entry, item_map)
+        region_groups = _region_groups(entry, region_map, consequence)
+        params_base = _entry_params(entry, consequence)
+        for members in item_groups:
+            params = {**params_base, **_naming_meta(members)}
+            for region_ids in region_groups:
+                rule_id = _rule_id(consequence, [it.item_id for it in members], region_ids)
                 rule = RuleSpec(
                     rule_id=rule_id,
                     consequence=consequence,
-                    item_id=item.item_id,
+                    item_ids=tuple(it.item_id for it in members),
                     region_ids=tuple(region_ids),
                     params=params,
                 )
-                if phrases_cfg is not None:
+                if objects_cfg is not None:
                     rule_rng = rng if rng is not None else _rng_for(rule_id)
-                    rule.phrases = render_phrases(rule, phrases_cfg, rule_rng)
+                    rule.phrases = render_phrases(rule, objects_cfg, rule_rng)
                 if splits_cfg is not None:
                     rule.split = assign_split(rule, splits_cfg)
                 rules.append(rule)
     return rules
 
 
-def render_phrases(rule: RuleSpec, phrases_cfg: dict, rng: np.random.RandomState, n: int = 3) -> list[str]:
+def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState, n: int = 3) -> list[str]:
     """Up to n natural-language variants for a rule. Never contain digits.
 
-    Templates come from phrases_cfg["templates"][<consequence>] when present,
-    else the module defaults. {item} draws on the item category's names and
-    synonyms (with optional color prefix), {region} on the regions' names.
+    Templates come from the module-level TEMPLATES (SET_TEMPLATES for set
+    rules). {item}/{category} draw on the category's names and synonyms in
+    objects.yaml (with a color prefix when the item has a color), {region} on
+    the regions' names (with a color prefix from the region id, e.g.
+    "zone_red" -> "red zone").
     """
+    objects_cfg = objects_cfg or {}
     consequence = Consequence(rule.consequence)
-    templates = (phrases_cfg.get("templates", {}) or {}).get(consequence.value) or TEMPLATES[consequence]
+    is_set = len(rule.item_ids) > 1
+    templates = list((SET_TEMPLATES.get(consequence) if is_set else None) or TEMPLATES[consequence])
     if not rule.region_ids:
         templates = [t for t in templates if "{region}" not in t]
     templates = [t for t in templates if not _has_digit(t)]
-    item_names = _item_names(rule, phrases_cfg)
-    region_names = [_region_names(rid, phrases_cfg) for rid in rule.region_ids]
+    item_names = _item_names(rule, objects_cfg)
+    category_names = _category_names(rule, objects_cfg)
+    region_names = [nm for rid in rule.region_ids for nm in _region_names(rid, objects_cfg)]
     phrases: list[str] = []
     attempts = 0
     while len(phrases) < n and attempts < 20 * max(n, 1) and templates:
         attempts += 1
         template = templates[int(rng.randint(len(templates)))]
-        phrase = template.replace("{item}", item_names[int(rng.randint(len(item_names)))])
+        if "{item}" in template:
+            template = template.replace("{item}", item_names[int(rng.randint(len(item_names)))])
+        if "{category}" in template:
+            template = template.replace("{category}", category_names[int(rng.randint(len(category_names)))])
         if "{region}" in template:
-            candidates = [nm for names in region_names for nm in names] if region_names else []
-            if not candidates:
+            if not region_names:
                 continue
-            phrase = phrase.replace("{region}", candidates[int(rng.randint(len(candidates)))])
-        if not _has_digit(phrase) and phrase not in phrases:
-            phrases.append(phrase)
+            template = template.replace("{region}", region_names[int(rng.randint(len(region_names)))])
+        if not _has_digit(template) and template not in phrases:
+            phrases.append(template)
     return phrases
 
 
 def assign_split(rule: RuleSpec, splits_cfg: dict) -> str:
-    """Split for a rule from the task's section of splits.yaml.
+    """Split for a rule from the task's section of splits.yaml merged with "all".
 
-    Precedence: heldout_item (category or color) > heldout_region >
-    heldout_phrase > "train". Category/color match against the item's injected
-    params and fall back to tokens of the item_id ("-" normalized to "_").
-    heldout_phrase matches when a rule phrase could have been rendered from a
-    heldout template ({item}/{region} are wildcards).
+    Precedence: heldout_item (any member category or color) > heldout_region >
+    heldout_phrase > "train". Category/color match against the per-member
+    naming metadata in params and fall back to tokens of each item_id ("-"
+    normalized to "_"). heldout_phrase matches when a rule phrase could have
+    been rendered from a heldout template ({item}/{region} are wildcards).
     """
     splits_cfg = splits_cfg or {}
-    category = str(rule.params.get("category") or _strip_item_index(rule.item_id))
-    tokens = {t.replace("-", "_") for t in rule.item_id.split("_")} | {category, category.replace("-", "_")}
-    color = rule.params.get("color")
+    categories = [str(c) for c in (rule.params.get("categories") or [rule.params.get("category") or ""])]
+    colors = [c for c in (rule.params.get("colors") or [rule.params.get("color")]) if c]
+    tokens = set()
+    for iid in rule.item_ids:
+        tokens |= {t.replace("-", "_") for t in iid.split("_")}
+    for cat in categories:
+        tokens |= {cat, cat.replace("-", "_")}
     heldout_categories = set(splits_cfg.get("heldout_item_categories", []) or [])
     if heldout_categories & tokens:
         return "heldout_item"
     heldout_colors = set(splits_cfg.get("heldout_colors", []) or [])
-    if (color is not None and color in heldout_colors) or (heldout_colors & tokens):
+    if heldout_colors & set(colors) or heldout_colors & tokens:
         return "heldout_item"
     heldout_regions = set(splits_cfg.get("heldout_regions", []) or [])
     for rid in rule.region_ids:
@@ -170,10 +201,55 @@ def assign_split(rule: RuleSpec, splits_cfg: dict) -> str:
     return "train"
 
 
-def _template_params(template: dict, consequence: Consequence) -> dict:
-    """Margin params from a template: *_deg converted to radians, the rest raw SI."""
+def resolve_splits(splits_yaml: dict, task: str) -> dict:
+    """The task's split section merged over the shared "all" section."""
+    splits_yaml = splits_yaml or {}
+    return {**(splits_yaml.get("all") or {}), **(splits_yaml.get(task) or {})}
+
+
+def _item_groups(entry: dict, item_map: dict) -> list[tuple]:
+    """Matched items grouped per the entry's set_rule mode."""
+    match = dict(entry.get("items", {}) or {})
+    min_per_cat = match.pop("same_category_min", None)
+    set_rule = entry.get("set_rule")
+    if set_rule is True and min_per_cat is None:
+        min_per_cat = 2  # a set rule over a singleton is not a set
+    matched = [it for iid, it in sorted(item_map.items()) if _matches(it, match)]
+    if min_per_cat is not None:
+        counts = Counter(it.category for it in matched)
+        matched = [it for it in matched if counts[it.category] >= int(min_per_cat)]
+    if set_rule in (None, False):
+        return [(it,) for it in matched]
+    if set_rule is True:
+        by_cat: dict[str, list] = {}
+        for it in matched:
+            by_cat.setdefault(it.category, []).append(it)
+        return [tuple(by_cat[cat]) for cat in sorted(by_cat)]
+    if set_rule == "all":
+        return [tuple(matched)] if matched else []
+    raise ValueError(f"unknown set_rule mode: {set_rule!r}")
+
+
+def _region_groups(entry: dict, region_map: dict, consequence: Consequence) -> list[tuple[str, ...]]:
+    """Region id groups per consequence: one rule per region, or one joint rule."""
+    if consequence not in _REGIONAL:
+        return [()]
+    if "regions" not in entry:
+        raise ValueError(f"{consequence.value} rule entry needs a regions selector: {entry}")
+    selector = entry["regions"]
+    if isinstance(selector, dict):
+        ids = [rid for rid, r in sorted(region_map.items()) if _matches(r, selector)]
+    else:
+        ids = [rid for rid in (selector or []) if rid in region_map]
+    if consequence in _REGION_SET:
+        return [tuple(ids)] if ids else []
+    return [(rid,) for rid in ids]
+
+
+def _entry_params(entry: dict, consequence: Consequence) -> dict:
+    """Margin params from an entry: *_deg converted to radians, the rest raw SI."""
     params: dict = {}
-    for key, value in template.items():
+    for key, value in entry.items():
         if key in _TEMPLATE_RESERVED:
             continue
         if key.endswith("_deg"):
@@ -181,7 +257,7 @@ def _template_params(template: dict, consequence: Consequence) -> dict:
         else:
             params[key] = value
     if consequence is Consequence.UPRIGHT and "theta_max" not in params:
-        raise ValueError(f"upright template needs theta_max_deg: {template}")
+        raise ValueError(f"upright entry needs theta_max_deg: {entry}")
     if consequence is Consequence.STAY:
         params.setdefault("theta_tol", 0.35)
     if consequence in _REGION_SET:
@@ -189,18 +265,42 @@ def _template_params(template: dict, consequence: Consequence) -> dict:
     return params
 
 
-def _matches(item, match: dict) -> bool:
-    """All key/value pairs match item attributes; a missing attribute never matches."""
+def _naming_meta(members: tuple) -> dict:
+    """Per-member category/color lists (+ uniform singulars) for phrases and splits."""
+    categories = tuple(str(it.category) for it in members)
+    colors = tuple(getattr(it, "color", None) for it in members)
+    meta: dict = {"categories": categories, "colors": colors}
+    if len(set(categories)) == 1:
+        meta["category"] = categories[0]
+    if len(set(colors)) == 1 and colors[0]:
+        meta["color"] = colors[0]
+    return meta
+
+
+def _rule_id(consequence: Consequence, item_ids: list[str], region_ids) -> str:
+    items_part = "+".join(item_ids) if item_ids else "-"
+    regions_part = "+".join(region_ids) if region_ids else "-"
+    return f"{consequence.value}|{items_part}|{regions_part}"
+
+
+def _matches(obj, match: dict) -> bool:
+    """All key/value pairs match the object's attributes; a missing attribute never matches."""
     for key, value in match.items():
-        if getattr(item, key, None) != value:
+        if getattr(obj, key, None) != value:
             return False
     return True
 
 
-def _item_names(rule: RuleSpec, phrases_cfg: dict) -> list[str]:
+def _category_entry(rule: RuleSpec, objects_cfg: dict) -> tuple[str, dict]:
+    """The rule's shared category key and its objects.yaml categories entry (may be empty)."""
+    category = str(rule.params.get("category") or _strip_item_index(rule.item_ids[0]))
+    entry = (objects_cfg.get("categories", {}) or {}).get(category, {}) or {}
+    return category, entry
+
+
+def _item_names(rule: RuleSpec, objects_cfg: dict) -> list[str]:
     """Candidate spoken names for the rule's item (color prefix mixed in)."""
-    category = str(rule.params.get("category") or _strip_item_index(rule.item_id))
-    entry = (phrases_cfg.get("items", {}) or {}).get(category, {}) or {}
+    category, entry = _category_entry(rule, objects_cfg)
     names = [str(nm) for nm in list(entry.get("names", [])) + list(entry.get("synonyms", []))]
     color = rule.params.get("color")
     if color:
@@ -208,15 +308,25 @@ def _item_names(rule: RuleSpec, phrases_cfg: dict) -> list[str]:
     names = [nm for nm in names if not _has_digit(nm)]
     if not names:
         fallback = re.sub(r"[\d_]+", " ", category).strip()
-        names = [fallback if fallback else "object"]
+        names = [fallback] if fallback else list(_GENERIC_NAMES)
     return names
 
 
-def _region_names(region_id: str, phrases_cfg: dict) -> list[str]:
+def _category_names(rule: RuleSpec, objects_cfg: dict) -> list[str]:
+    """Spoken names for a set rule's shared category; generic words for mixed sets."""
+    if not rule.params.get("category"):
+        return list(_GENERIC_NAMES)
+    _, entry = _category_entry(rule, objects_cfg)
+    names = [str(nm) for nm in list(entry.get("names", [])) + list(entry.get("synonyms", []))]
+    names = [nm for nm in names if not _has_digit(nm)]
+    return names or list(_GENERIC_NAMES)
+
+
+def _region_names(region_id: str, objects_cfg: dict) -> list[str]:
     """Candidate spoken names for a region; strips trailing tokens (e.g. a color
-    like in "zone_red") until the id matches a phrases.yaml regions key."""
-    regions_cfg = phrases_cfg.get("regions", {}) or {}
-    colors = set(phrases_cfg.get("colors", []) or [])
+    like in "zone_red") until the id matches an objects.yaml regions key."""
+    regions_cfg = objects_cfg.get("regions", {}) or {}
+    colors = set(_all_colors(objects_cfg))
     tokens = region_id.split("_")
     for end in range(len(tokens), 0, -1):
         key = "_".join(tokens[:end])
@@ -231,6 +341,14 @@ def _region_names(region_id: str, phrases_cfg: dict) -> list[str]:
         if names:
             return names
     return [re.sub(r"[\d_]+", " ", region_id).strip() or "region"]
+
+
+def _all_colors(objects_cfg: dict) -> list[str]:
+    """Training + heldout color words, from either a flat list or a train/heldout dict."""
+    colors = objects_cfg.get("colors", []) or []
+    if isinstance(colors, dict):
+        return [str(c) for c in list(colors.get("train", []) or []) + list(colors.get("heldout", []) or [])]
+    return [str(c) for c in colors]
 
 
 def _strip_item_index(item_id: str) -> str:

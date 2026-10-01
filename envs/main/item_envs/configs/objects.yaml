@@ -1,0 +1,62 @@
+# Object categories, T1 asset pool, nominal masses, and colors (PLAN v3 §7).
+#
+# categories: key = ItemSpec.category. names/synonyms feed render_phrases and
+# must never contain digits. mass_range is the nominal kg range (v3 §7:
+# bottle 0.05-0.30, cup/mug 0.05-0.25, can 0.05-0.35, wooden block 0.05-0.15,
+# boxed items 0.05-0.30, bead 0.0005-0.002; categories v3 does not list carry
+# plausible defaults). colored: true means a color word prefixes the name
+# (primitive boxes/cylinders, zone mats).
+# assets: RoboTwin model id (or primitive name) -> category. The eleven
+# textured assets are the T1 object pool (v3 §7).
+# regions: spoken names for Region ids; render_phrases strips trailing id
+# tokens (e.g. a color in "zone_red") until a key here matches.
+
+colors:
+  train: [red, green, blue, yellow, white, black]   # 6 training colors
+  heldout: [purple, orange, cyan]                   # splits.yaml heldout_colors
+
+categories:
+  bottle:       {names: [bottle], synonyms: [flask, water bottle], mass_range: [0.05, 0.30]}
+  pill_bottle:  {names: [pill bottle], synonyms: [pill jar, small bottle], mass_range: [0.05, 0.30]}
+  cup:          {names: [cup], synonyms: [glass], mass_range: [0.05, 0.25]}
+  mug:          {names: [mug], synonyms: [cup, coffee mug], mass_range: [0.05, 0.25]}
+  can:          {names: [can], synonyms: [tin, tin can], mass_range: [0.05, 0.35]}
+  sauce_can:    {names: [sauce can], synonyms: [can, jar], mass_range: [0.05, 0.35]}
+  wooden_block: {names: [wooden block, block], synonyms: [cube], mass_range: [0.05, 0.15]}
+  drink_box:    {names: [drink box], synonyms: [juice box, carton], mass_range: [0.05, 0.30]}
+  tea_box:      {names: [tea box], synonyms: [tea carton, carton], mass_range: [0.05, 0.30]}
+  coffee_box:   {names: [coffee box], synonyms: [coffee carton, coffee bag], mass_range: [0.05, 0.30]}
+  box:          {names: [box], synonyms: [crate], mass_range: [0.05, 0.15], colored: true}
+  cylinder:     {names: [cylinder, tall cylinder], synonyms: [], mass_range: [0.05, 0.20], colored: true}
+  beads:        {names: [beads], synonyms: [beans, rice, grains], mass_range: [0.0005, 0.002]}  # per particle
+  bowl:         {names: [bowl], synonyms: [], mass_range: [0.10, 0.40]}
+  plastic_box:  {names: [plastic box], synonyms: [container, tub], mass_range: [0.05, 0.30]}
+  laptop:       {names: [laptop], synonyms: [laptop computer], mass_range: [1.20, 2.20]}
+
+assets:
+  # --- T1 object pool (PLAN v3 §7) ---
+  068_boxdrink:    {category: drink_box}
+  086_woodenblock: {category: wooden_block}
+  001_bottle:      {category: bottle}
+  114_bottle:      {category: bottle}
+  021_cup:         {category: cup}
+  039_mug:         {category: mug}
+  071_can:         {category: can}
+  080_pillbottle:  {category: pill_bottle}
+  105_sauce-can:   {category: sauce_can}
+  112_tea-box:     {category: tea_box}
+  113_coffee-box:  {category: coffee_box}
+  # --- containers / targets / zone props for T2 and T3 ---
+  002_bowl:        {category: bowl}
+  062_plasticbox:  {category: plastic_box}
+  015_laptop:      {category: laptop}
+  # --- colored primitives ---
+  prim_box:           {category: box, colored: true}
+  prim_tall_cylinder: {category: cylinder, colored: true}
+
+regions:
+  table_top:         {names: [table], synonyms: [tabletop]}
+  zone:              {names: [zone, mat], synonyms: [marked area], colored: true}
+  laptop:            {names: [laptop], synonyms: [laptop computer]}
+  bowl_src_interior: {names: [source bowl, bowl], synonyms: []}
+  target_interior:   {names: [target, target container], synonyms: [container]}

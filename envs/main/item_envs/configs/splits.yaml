@@ -1,50 +1,20 @@
-# Held-out splits per task (PLAN §9). The tray_transport section is the §9
-# excerpt; the other six are plausible drafts — final lists are approved by the
-# human (PLAN §11, reserved decision 2).
+# Held-out splits per task (PLAN v3 §9 excerpt, verbatim). Final lists are a
+# decision reserved for the human (PLAN §11, reserved decision 2).
 #
-# heldout_item_categories match the plain `category` aliases in phrases.yaml.
-# heldout_regions match region ids or their phrases.yaml region keys
-# (e.g. "zone" covers "zone_red"). heldout_phrase_templates are matched against
-# rendered phrases with {item}/{region} as wildcards.
+# heldout_item_categories match category keys in objects.yaml. heldout_regions
+# match region ids or their objects.yaml region keys (e.g. "zone" covers
+# "zone_red"). heldout_phrase_templates are matched against rendered phrases
+# with {item}/{region} as wildcards. A task's section is merged over "all"
+# (rules.resolve_splits).
 
-tray_transport:
-  heldout_item_categories: [mug, sauce_can, pill_bottle]
+selective_avoid:
+  heldout_item_categories: [pill_bottle, sauce_can, tea_box]
   heldout_colors: [purple, orange, cyan]
-  heldout_regions: []
-  heldout_phrase_templates: ["don't let the {item} slide off the {region}"]
-
-drawer_contents:
-  heldout_item_categories: [pill_bottle, sauce_can]
-  heldout_colors: [purple, orange]
-  heldout_regions: []
-  heldout_phrase_templates: ["don't let the {item} tip over in the {region}"]
-
-support_removal:
-  heldout_item_categories: [mug, pot]
-  heldout_colors: [cyan, purple]
-  heldout_regions: []
-  heldout_phrase_templates: ["leave the {item} untouched"]
-
-rolling_edge:
-  heldout_item_categories: [roller]
-  heldout_colors: [orange, cyan]
-  heldout_regions: [zone]
-  heldout_phrase_templates: ["don't let the {item} roll off the {region}"]
-
 granular_pour:
-  heldout_item_categories: []
-  heldout_colors: [purple, orange]
   heldout_regions: [laptop]
-  heldout_phrase_templates: ["keep the {item} away from the {region}"]
-
+  heldout_colors: [purple, orange, cyan]
 push_zone:
-  heldout_item_categories: [stapler, coffee_box]
-  heldout_colors: [purple, cyan]
-  heldout_regions: [zone]
-  heldout_phrase_templates: ["don't push the {item} into the {region}"]
-
-dump_bin:
-  heldout_item_categories: [pill_bottle]
-  heldout_colors: [orange, purple]
-  heldout_regions: [laptop]
-  heldout_phrase_templates: ["don't drop the {item} on the {region}"]
+  heldout_colors: [purple, orange, cyan]
+  heldout_item_categories: [tea_box]
+all:
+  heldout_phrase_templates: ["stay away from the {item}", "don't get any {item} in the {region}"]

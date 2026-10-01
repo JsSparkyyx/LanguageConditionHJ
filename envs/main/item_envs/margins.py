@@ -20,17 +20,23 @@ def softmin(x: np.ndarray, T: float) -> float:
     return a - T * float(np.log(np.exp(-(x - a) / T).sum()))
 
 
-def m_inside(item_pts_region_frame: np.ndarray, region, require_on_surface: bool) -> float:
+def m_avoid(robot_item_dist: float, margin: float = 0.0) -> float:
+    """robot_item_dist - margin (metres). The distance comes from robot_distance.py
+    (robot links + held payload to the item); it is not computed here."""
+    return float(robot_item_dist) - float(margin)
+
+
+def m_inside(item_pts_region: np.ndarray, region, require_on_surface: bool) -> float:
     """Item footprint inside the region polygon (optionally resting on its surface).
 
-    item_pts_region_frame: [4, 3] footprint corners in the region frame.
+    item_pts_region: [4, 3] footprint corners in the region frame.
     xy margin = min over corners of the polygon signed distance. When
     require_on_surface, the margin also accounts for the vertical offset of the
     lowest corner from region.z: m = min(xy_margin, z_band - |dz|). This equals
     min(xy_margin, -(|dz| - z_band)) once |dz| > z_band (the violation branch in
     the plan) and stays continuous at the band edge.
     """
-    pts = np.asarray(item_pts_region_frame, dtype=np.float64).reshape(-1, 3)
+    pts = np.asarray(item_pts_region, dtype=np.float64).reshape(-1, 3)
     xy_margin = float(signed_dist_inside_polygon(pts[:, :2], region.polygon).min())
     if not require_on_surface:
         return xy_margin
@@ -38,9 +44,9 @@ def m_inside(item_pts_region_frame: np.ndarray, region, require_on_surface: bool
     return min(xy_margin, float(region.z_band) - dz)
 
 
-def m_outside(item_pts_region_frame: np.ndarray, region) -> float:
+def m_outside(item_pts_region: np.ndarray, region) -> float:
     """Item footprint outside the region polygon: -max over corners of signed_dist_inside."""
-    pts = np.asarray(item_pts_region_frame, dtype=np.float64).reshape(-1, 3)
+    pts = np.asarray(item_pts_region, dtype=np.float64).reshape(-1, 3)
     return float(-signed_dist_inside_polygon(pts[:, :2], region.polygon).max())
 
 
@@ -57,34 +63,42 @@ def m_stay(p_now: np.ndarray, p_ref: np.ndarray, tilt_now: float, d_tol: float, 
     return min(float(d_tol) - d, float(theta_tol) - float(tilt_now))
 
 
-def m_particles_inside(particle_xy_by_region_frame: list[np.ndarray], regions, T: float = 0.005) -> float:
+def m_particles_inside(particle_xy_per_region: list[np.ndarray], regions, T: float = 0.005) -> float:
     """Every particle stays in the column above one of the regions.
 
     Per particle: max over regions of the polygon signed distance; then a
     soft-min over particles with temperature T (metres).
     """
-    per_region = _per_region_signed_dist(particle_xy_by_region_frame, regions)  # [R, N]
+    per_region = _per_region_signed_dist(particle_xy_per_region, regions)  # [R, N]
     per_particle = per_region.max(axis=0)
     return softmin(per_particle, T)
 
 
-def m_particles_outside(particle_xy_by_region_frame: list[np.ndarray], regions, T: float = 0.005) -> float:
+def m_particles_outside(particle_xy_per_region: list[np.ndarray], regions, T: float = 0.005) -> float:
     """No particle enters the column above any of the regions.
 
     Per particle: min over regions of -signed_dist_inside; then the same soft-min.
     """
-    per_region = _per_region_signed_dist(particle_xy_by_region_frame, regions)  # [R, N]
+    per_region = _per_region_signed_dist(particle_xy_per_region, regions)  # [R, N]
     per_particle = (-per_region).min(axis=0)
     return softmin(per_particle, T)
 
 
-def _per_region_signed_dist(particle_xy_by_region_frame: list[np.ndarray], regions) -> np.ndarray:
+def set_rule_margin(per_item_margins) -> float:
+    """min over the per-item margins of a set rule (the rule holds iff every item does)."""
+    vals = np.asarray(per_item_margins, dtype=np.float64).ravel()
+    if vals.size == 0:
+        raise ValueError("set_rule_margin of an empty set")
+    return float(vals.min())
+
+
+def _per_region_signed_dist(particle_xy_per_region: list[np.ndarray], regions) -> np.ndarray:
     """[R, N] polygon signed distances of the particles expressed in each region frame."""
-    if len(particle_xy_by_region_frame) != len(regions):
+    if len(particle_xy_per_region) != len(regions):
         raise ValueError("need one particle xy array per region")
     cols = []
     n_particles = None
-    for pts, region in zip(particle_xy_by_region_frame, regions):
+    for pts, region in zip(particle_xy_per_region, regions):
         pts = np.atleast_2d(np.asarray(pts, dtype=np.float64))
         if n_particles is None:
             n_particles = pts.shape[0]

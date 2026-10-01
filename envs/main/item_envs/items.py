@@ -19,17 +19,18 @@ class ItemSpec:
     templates match on them via getattr.
     """
 
-    item_id: str  # unique within episode, e.g. "bottle_0"
+    item_id: str  # unique within episode, e.g. "obj_2", "beads", "bystander_0"
     entity: object  # sapien Entity (raw) or RoboTwin Actor; use entity_of()
-    category: str  # e.g. "bottle"; key into phrases.yaml
-    color: str | None = None  # for primitives and zone mats; None for textured assets
+    category: str  # key into objects.yaml, e.g. "cup", "can", "beads", "box"
+    color: str | None = None  # set for primitives and zone mats, None for textured assets
     kind: str = "rigid"  # "rigid" | "particle_set"
-    particles: list | None = None  # list of entities when kind == "particle_set"
+    particles: list | None = None  # entities when kind == "particle_set"
     half_extents: np.ndarray = field(default_factory=lambda: np.zeros(3))  # [3] OBB half extents (m)
     obb_center_local: np.ndarray = field(default_factory=lambda: np.zeros(3))  # [3] OBB center, item frame
     up_axis_local: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 1.0]))  # [3] unit
     mass: float = 0.0  # kg, the value actually set
-    role: str = "constrained_candidate"  # "constrained_candidate" | "task_object" | "support" | "bystander"
+    role: str = "candidate"  # "candidate" | "task_object" | "support" | "bystander"
+    group: str | None = None  # task-specific grouping, e.g. "push"
 
     def __post_init__(self):
         self.half_extents = np.asarray(self.half_extents, dtype=np.float64).reshape(3)
