@@ -1,0 +1,21 @@
+# Physical-property randomization ranges (PLAN §2.1) and margin scaling
+# reference values (PLAN §5, κ is applied downstream, never in the env).
+#
+# Sampling rules (§2.1): draw static friction first, then dynamic ≤ static.
+# Angular damping is sampled only for items with `rolls: true`.
+
+static_friction: [0.3, 0.9]        # U(lo, hi), drawn first
+dynamic_friction: [0.2, static]    # U(lo, sampled static); "static" refers to the drawn value
+restitution: [0.0, 0.1]
+mass_scale: [0.7, 1.3]             # × per-category nominal mass (phrases.yaml mass_range midpoint)
+com_offset_xy: [-0.2, 0.2]         # × half extents, applied in x and y
+com_offset_z: [-0.1, 0.3]          # × half height; positive (higher CoM) makes tipping likelier
+angular_damping: [0.0, 1.0]        # rolls-only items; refined per task from the P3 lookup table
+
+# κ per consequence (reference only; downstream scaling, margins stay raw SI here).
+kappa:
+  inside: 20                       # 1/m
+  outside: 20                      # 1/m
+  stay: 20                         # 1/m
+  upright: 2                       # 1/rad
+  particles: 20                    # 1/m (particles_inside / particles_outside)
