@@ -1,0 +1,211 @@
+{
+  "embodiment": "ur5-wsg",
+  "swept_arm": "left",
+  "task": "place_empty_cup",
+  "env_seed": 0,
+  "task_grasp_arm_seed0": "right",
+  "dual_arm_config": false,
+  "arm_distance_m": 0.8,
+  "arm_base_pose_scene": {
+    "left": {
+      "p": [
+        -0.4000000059604645,
+        -0.6499999761581421,
+        0.6499999761581421
+      ],
+      "q_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "right": {
+      "p": [
+        0.4000000059604645,
+        -0.6499999761581421,
+        0.75
+      ],
+      "q_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "arm_base_pose_configured": {
+    "left": {
+      "p": [
+        -0.4000000059604645,
+        -0.6499999761581421,
+        0.6499999761581421
+      ],
+      "q_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "right": {
+      "p": [
+        0.4000000059604645,
+        -0.6499999761581421,
+        0.75
+      ],
+      "q_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "arm_dof": 6,
+  "arm_joint_names": [
+    "shoulder_pan_joint",
+    "shoulder_lift_joint",
+    "elbow_joint",
+    "wrist_1_joint",
+    "wrist_2_joint",
+    "wrist_3_joint"
+  ],
+  "joint_vel_limits": {
+    "shoulder_pan_joint": 3.15,
+    "shoulder_lift_joint": 3.15,
+    "elbow_joint": 3.15,
+    "wrist_1_joint": 3.2,
+    "wrist_2_joint": 3.2,
+    "wrist_3_joint": 3.2
+  },
+  "joint_pos_limits": {
+    "shoulder_pan_joint": [
+      -3.142,
+      3.142
+    ],
+    "shoulder_lift_joint": [
+      -3.142,
+      0.0
+    ],
+    "elbow_joint": [
+      -3.142,
+      3.142
+    ],
+    "wrist_1_joint": [
+      -1.75,
+      1.75
+    ],
+    "wrist_2_joint": [
+      -3.141592653589793,
+      3.141592653589793
+    ],
+    "wrist_3_joint": [
+      -3.141592653589793,
+      3.141592653589793
+    ]
+  },
+  "urdf_path_sim": "/work/nvme/bifq/project/RoboTwin/assets/embodiments/ur5-wsg/ur5_wsg_gripper.urdf",
+  "urdf_path_sim_exists": true,
+  "curobo_yml_path": "/work/nvme/bifq/project/RoboTwin/assets/embodiments/ur5-wsg/curobo.yml",
+  "curobo_yml_urdf_path": "/work/nvme/bifq/project/RoboTwin/assets/embodiments/ur5-wsg/ur5_wsg_gripper.urdf",
+  "curobo_yml_urdf_exists": true,
+  "curobo_frame_bias": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "curobo_max_acceleration": 15.0,
+  "curobo_max_jerk": 500.0,
+  "planner_class": "CuroboPlanner",
+  "gripper": {
+    "joints": [
+      {
+        "name": "base_joint_gripper_left",
+        "lower": -0.055,
+        "upper": -0.0027,
+        "velocity": 1.0
+      },
+      {
+        "name": "base_joint_gripper_right",
+        "lower": 0.0027,
+        "upper": 0.055,
+        "velocity": 1.0
+      }
+    ],
+    "opening_min_m": 0.0054,
+    "opening_max_m": 0.11,
+    "gripper_bias": 0.11,
+    "gripper_scale": [
+      0.01,
+      -0.06
+    ]
+  },
+  "table": {
+    "xy_bias": [
+      0.0,
+      0.0
+    ],
+    "top_z_m": 0.74,
+    "size_xy_m": [
+      1.2,
+      0.7
+    ]
+  },
+  "target_quat_wxyz": [
+    -0.5,
+    0.5,
+    -0.5,
+    -0.5
+  ],
+  "z_mode": "gripper",
+  "approach_to_tcp_m": 0.12,
+  "grid": {
+    "dx_m": 0.02,
+    "x": [
+      -0.6,
+      0.6000000000000011,
+      61
+    ],
+    "y": [
+      -0.35,
+      0.35000000000000064,
+      36
+    ],
+    "z_m": [
+      0.76,
+      0.84,
+      0.94
+    ],
+    "n_cells": 6588
+  },
+  "layers": [
+    {
+      "height_above_table_m": 0.02,
+      "z_m": 0.76,
+      "n_feasible": 1324,
+      "n_cells": 2196,
+      "frac_feasible": 0.6029143897996357,
+      "n_planner_exceptions": 0
+    },
+    {
+      "height_above_table_m": 0.1,
+      "z_m": 0.84,
+      "n_feasible": 1289,
+      "n_cells": 2196,
+      "frac_feasible": 0.586976320582878,
+      "n_planner_exceptions": 0
+    },
+    {
+      "height_above_table_m": 0.2,
+      "z_m": 0.94,
+      "n_feasible": 1190,
+      "n_cells": 2196,
+      "frac_feasible": 0.5418943533697632,
+      "n_planner_exceptions": 0
+    }
+  ],
+  "wall_time_s": 550.5696819549994,
+  "wall_setup_s": 27.78630067999984,
+  "wall_sweep_s": 522.7735502020005
+}

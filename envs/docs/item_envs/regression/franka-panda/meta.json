@@ -1,0 +1,39 @@
+{
+  "cmd": "/work/nvme/bifq/conda/envs/RoboTwin/bin/python envs/scripts/item_envs/regression_trace.py --embodiment franka-panda --task place_empty_cup --seed 0 --out envs/docs/item_envs/regression",
+  "cwd_at_start": "/work/nvme/bifq/project/LanguageConditionHJ",
+  "embodiment": "franka-panda",
+  "task": "place_empty_cup",
+  "seed_base": 0,
+  "task_idx": 0,
+  "emb_idx": 1,
+  "ep": 0,
+  "seed": 10000,
+  "used_seed": 10000,
+  "h_scale": 20.0,
+  "h_units_note": "trace stores h*h_scale; min/mean/max below are metres",
+  "obstacle_mode": "on_path",
+  "obstacle_model": "068_boxdrink",
+  "max_steps_physics": 7500,
+  "wall_time_s": 94.16524114899948,
+  "wall_setup_s": 20.516250189000857,
+  "wall_rollout_s": 73.64898482900026,
+  "n_ticks": 149,
+  "min_h_m": -0.038802501591121336,
+  "mean_h_m": 0.0011059022137560495,
+  "max_h_m": 0.04172069022456571,
+  "success": false,
+  "n_physics": 1490,
+  "mean_realized_ratio": NaN,
+  "trace_npz": "/work/nvme/bifq/project/LanguageConditionHJ/envs/docs/item_envs/regression/franka-panda/trace.npz",
+  "planner_class": "CuroboPlanner",
+  "obstacle_xyz": [
+    0.19119861053809575,
+    -0.1301593025876276,
+    0.8191840295864882
+  ],
+  "obstacle_half": [
+    0.05500323964947712,
+    0.07718402958648815,
+    0.057970924608247876
+  ]
+}

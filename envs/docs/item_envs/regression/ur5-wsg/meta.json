@@ -1,0 +1,39 @@
+{
+  "cmd": "/work/nvme/bifq/conda/envs/RoboTwin/bin/python envs/scripts/item_envs/regression_trace.py --embodiment ur5-wsg --task place_empty_cup --seed 0 --out envs/docs/item_envs/regression",
+  "cwd_at_start": "/work/nvme/bifq/project/LanguageConditionHJ",
+  "embodiment": "ur5-wsg",
+  "task": "place_empty_cup",
+  "seed_base": 0,
+  "task_idx": 0,
+  "emb_idx": 3,
+  "ep": 0,
+  "seed": 30000,
+  "used_seed": 30000,
+  "h_scale": 20.0,
+  "h_units_note": "trace stores h*h_scale; min/mean/max below are metres",
+  "obstacle_mode": "on_path",
+  "obstacle_model": "068_boxdrink",
+  "max_steps_physics": 7500,
+  "wall_time_s": 88.55243380499996,
+  "wall_setup_s": 20.57321647599929,
+  "wall_rollout_s": 67.97921039600078,
+  "n_ticks": 143,
+  "min_h_m": -0.027704498137897965,
+  "mean_h_m": 0.07303911552614929,
+  "max_h_m": 0.16888859742504625,
+  "success": false,
+  "n_physics": 1430,
+  "mean_realized_ratio": NaN,
+  "trace_npz": "/work/nvme/bifq/project/LanguageConditionHJ/envs/docs/item_envs/regression/ur5-wsg/trace.npz",
+  "planner_class": "CuroboPlanner",
+  "obstacle_xyz": [
+    -0.18996455826074815,
+    -0.1121964966468513,
+    0.8191840295864882
+  ],
+  "obstacle_half": [
+    0.05500323964947712,
+    0.07718402958648815,
+    0.057970924608247876
+  ]
+}

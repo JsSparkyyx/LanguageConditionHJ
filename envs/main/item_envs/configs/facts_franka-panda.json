@@ -1,0 +1,217 @@
+{
+  "embodiment": "franka-panda",
+  "swept_arm": "left",
+  "task": "place_empty_cup",
+  "env_seed": 0,
+  "task_grasp_arm_seed0": "right",
+  "dual_arm_config": false,
+  "arm_distance_m": 0.6,
+  "arm_base_pose_scene": {
+    "left": {
+      "p": [
+        -0.30000001192092896,
+        -0.6499999761581421,
+        0.75
+      ],
+      "q_wxyz": [
+        0.7071067690849304,
+        0.0,
+        5.122274160385132e-09,
+        0.7071067690849304
+      ]
+    },
+    "right": {
+      "p": [
+        0.30000001192092896,
+        -0.6499999761581421,
+        0.75
+      ],
+      "q_wxyz": [
+        0.7071067690849304,
+        0.0,
+        5.122274160385132e-09,
+        0.7071067690849304
+      ]
+    }
+  },
+  "arm_base_pose_configured": {
+    "left": {
+      "p": [
+        -0.30000001192092896,
+        -0.6499999761581421,
+        0.75
+      ],
+      "q_wxyz": [
+        0.7070000171661377,
+        0.0,
+        0.0,
+        0.7070000171661377
+      ]
+    },
+    "right": {
+      "p": [
+        0.30000001192092896,
+        -0.6499999761581421,
+        0.75
+      ],
+      "q_wxyz": [
+        0.7070000171661377,
+        0.0,
+        0.0,
+        0.7070000171661377
+      ]
+    }
+  },
+  "arm_dof": 7,
+  "arm_joint_names": [
+    "panda_joint1",
+    "panda_joint2",
+    "panda_joint3",
+    "panda_joint4",
+    "panda_joint5",
+    "panda_joint6",
+    "panda_joint7"
+  ],
+  "joint_vel_limits": {
+    "panda_joint1": 2.175,
+    "panda_joint2": 2.175,
+    "panda_joint3": 2.175,
+    "panda_joint4": 2.175,
+    "panda_joint5": 2.61,
+    "panda_joint6": 2.61,
+    "panda_joint7": 2.61
+  },
+  "joint_pos_limits": {
+    "panda_joint1": [
+      -2.8973,
+      2.8973
+    ],
+    "panda_joint2": [
+      -1.7628,
+      1.7628
+    ],
+    "panda_joint3": [
+      -2.8973,
+      2.8973
+    ],
+    "panda_joint4": [
+      -3.0718,
+      -0.0698
+    ],
+    "panda_joint5": [
+      -2.8973,
+      2.8973
+    ],
+    "panda_joint6": [
+      -0.0175,
+      3.7525
+    ],
+    "panda_joint7": [
+      -2.8973,
+      2.8973
+    ]
+  },
+  "urdf_path_sim": "/work/nvme/bifq/project/RoboTwin/assets/embodiments/franka-panda/panda.urdf",
+  "urdf_path_sim_exists": true,
+  "curobo_yml_path": "/work/nvme/bifq/project/RoboTwin/assets/embodiments/franka-panda/curobo.yml",
+  "curobo_yml_urdf_path": "/work/nvme/bifq/project/RoboTwin/assets/embodiments/franka-panda/panda.urdf",
+  "curobo_yml_urdf_exists": true,
+  "curobo_frame_bias": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "curobo_max_acceleration": 15.0,
+  "curobo_max_jerk": 500.0,
+  "planner_class": "CuroboPlanner",
+  "gripper": {
+    "joints": [
+      {
+        "name": "panda_finger_joint1",
+        "lower": 0.0,
+        "upper": 0.04,
+        "velocity": 0.2
+      },
+      {
+        "name": "panda_finger_joint2",
+        "lower": 0.0,
+        "upper": 0.04,
+        "velocity": 0.2
+      }
+    ],
+    "opening_min_m": 0.0,
+    "opening_max_m": 0.08,
+    "gripper_bias": 0.08,
+    "gripper_scale": [
+      -0.01,
+      0.05
+    ]
+  },
+  "table": {
+    "xy_bias": [
+      0.0,
+      0.0
+    ],
+    "top_z_m": 0.74,
+    "size_xy_m": [
+      1.2,
+      0.7
+    ]
+  },
+  "target_quat_wxyz": [
+    -0.5,
+    0.5,
+    -0.5,
+    -0.5
+  ],
+  "z_mode": "gripper",
+  "approach_to_tcp_m": 0.12,
+  "grid": {
+    "dx_m": 0.02,
+    "x": [
+      -0.6,
+      0.6000000000000011,
+      61
+    ],
+    "y": [
+      -0.35,
+      0.35000000000000064,
+      36
+    ],
+    "z_m": [
+      0.76,
+      0.84,
+      0.94
+    ],
+    "n_cells": 6588
+  },
+  "layers": [
+    {
+      "height_above_table_m": 0.02,
+      "z_m": 0.76,
+      "n_feasible": 966,
+      "n_cells": 2196,
+      "frac_feasible": 0.43989071038251365,
+      "n_planner_exceptions": 0
+    },
+    {
+      "height_above_table_m": 0.1,
+      "z_m": 0.84,
+      "n_feasible": 1038,
+      "n_cells": 2196,
+      "frac_feasible": 0.4726775956284153,
+      "n_planner_exceptions": 0
+    },
+    {
+      "height_above_table_m": 0.2,
+      "z_m": 0.94,
+      "n_feasible": 1098,
+      "n_cells": 2196,
+      "frac_feasible": 0.5,
+      "n_planner_exceptions": 0
+    }
+  ],
+  "wall_time_s": 609.0560611399997,
+  "wall_setup_s": 28.568565572997613,
+  "wall_sweep_s": 580.4703979869955
+}
