@@ -62,3 +62,61 @@ def test_as_dict_roundtrip_types():
     d = rp.as_dict()
     assert set(d) == {"time_scale", "safe_time_scale", "task"}
     assert all(type(v) in (float, int, str) for v in d["task"].values())
+
+
+COLLECT_CFG = {
+    **TASK_CFG,
+    "risk_collect": {
+        "safe_time_scale": 0.55,
+        "cells": [
+            {"weight": 1.0, "time_scale": 1.0, "task": {"tilt_rate": 2.0}},
+            {"weight": 3.0, "time_scale": 1.3, "task": {"tilt_rate": 4.0}},
+        ],
+    },
+}
+
+
+def test_risk_collect_cells_mixture_weights():
+    rng = np.random.RandomState(0)
+    draws = [sample_risk(COLLECT_CFG, rng).time_scale for _ in range(4000)]
+    frac_fast = sum(1 for s in draws if s == 1.3) / len(draws)
+    assert 0.70 <= frac_fast <= 0.80  # expected 0.75
+    assert set(draws) == {1.0, 1.3}
+
+
+def test_risk_collect_cell_pins_and_fallbacks():
+    rng = np.random.RandomState(3)
+    for _ in range(200):
+        rp = sample_risk(COLLECT_CFG, rng)
+        assert rp.safe_time_scale == 0.55  # from risk_collect, not the risk section
+        assert rp.task["tilt_rate"] == (4.0 if rp.time_scale == 1.3 else 2.0)  # pinned by cell
+        assert rp.task["stop_abruptly"] in {0, 1}  # unlisted knob still sampled from risk section
+        assert rp.task["note"] == "constant"
+
+
+def test_risk_collect_deterministic_per_seed():
+    a = sample_risk(COLLECT_CFG, np.random.RandomState(11))
+    b = sample_risk(COLLECT_CFG, np.random.RandomState(11))
+    assert a.as_dict() == b.as_dict()
+
+
+def test_risk_collect_null_or_empty_falls_back_to_risk_section():
+    for collect in (None, {}, {"cells": []}, {"cells": None}):
+        cfg = {**TASK_CFG, "risk_collect": collect}
+        a = sample_risk(cfg, np.random.RandomState(5))
+        b = sample_risk(TASK_CFG, np.random.RandomState(5))
+        assert a.as_dict() == b.as_dict()
+
+
+def test_risk_collect_invalid_weights_raise():
+    for cells in (
+        [{"weight": 0.0, "time_scale": 1.0}],
+        [{"weight": -1.0, "time_scale": 1.0}, {"weight": 2.0, "time_scale": 1.1}],
+    ):
+        cfg = {**TASK_CFG, "risk_collect": {"cells": cells}}
+        try:
+            sample_risk(cfg, np.random.RandomState(0))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for cells={cells}")
