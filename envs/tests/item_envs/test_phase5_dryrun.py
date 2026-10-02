@@ -9,6 +9,19 @@ For each episode an ItemEpisodeRunner run with the SAME seed (render="none",
 its own out dir) produces the reference trace.npz; the sidecar's margins
 for that episode's rows must equal the trace's margins EXACTLY (difference
 0), at the same slot indices as the StepBuffer's episode rows.
+
+Nondeterminism exposure (measured 2026-10-02, jobs 22624018 / 22624498 —
+see test_phase5_regression.py's docstring): this comparison is one process
+but crosses TWO Env constructions (collection RolloutController vs a fresh
+ItemEpisodeRunner), and cuRobo planning is not run-deterministic even on a
+single node — identical back-to-back episodes split at tick ~30 and can
+differ in tick count. So the strict equality below can fail on planner
+noise alone (late-onset / +-few-ticks mismatches, as in p5-verify
+22611951's 133-vs-134). It is kept strict because that is also exactly how
+wiring bugs present — a margins-column/order or scene-parity bug produces
+tick-0 or ~100% mismatches (e.g. granular_pour/franka-panda 462/462 in
+22611951, still unexplained), which noise cannot. Read failures by their
+signature before assuming noise.
 """
 
 from __future__ import annotations

@@ -7,9 +7,13 @@
 #SBATCH -o /work/nvme/bifq/project/tmp/logs/p5verify_%A.out
 
 # Phase 5 GPU verification (PLAN v3 §6 Phase 5):
-# - test_phase5_regression.py: Phase-0 h traces must be byte-identical
-#   (place_empty_cup seed 0, ur5-wsg 143 ticks min_h=-0.0277 m;
-#   franka-panda 149 ticks min_h=-0.0388 m).
+# - test_phase5_regression.py: Phase-0 h traces must reproduce the
+#   reference's reproducible contract — scene EXACT, 0.04 s cadence,
+#   tick count +-2, deterministic head (>=15 ticks within 50 µm),
+#   min/mean h within 3/1 cm, success parity (ur5-wsg 143 ticks
+#   min_h=-0.0277 m; franka-panda 149 ticks min_h=-0.0388 m). NOT
+#   byte-identity: same-node planner reruns diverge at tick ~30
+#   (job 22624498, see the test docstring).
 # - test_phase5_dryrun.py: 3 nominal episodes per item task x embodiment
 #   through the real collect wiring; sidecar margins == trace.npz exactly.
 

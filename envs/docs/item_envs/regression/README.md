@@ -3,7 +3,31 @@
 Fixed-seed nominal references for `place_empty_cup`, produced by
 `envs/scripts/item_envs/regression_trace.py` (replaces the stale
 `scripts/run_smoke.sh`, whose `ROOT=` points at a dead autodl path). Re-run
-after the Phase 5 edits: the old-task `h` traces must be IDENTICAL.
+after the Phase 5 edits: the old-task episode must reproduce the
+reference's REPRODUCIBLE CONTRACT (scene exact, cadence, deterministic
+head, episode statistics — see below), NOT a byte-identical `h` trace.
+
+## Nondeterminism (measured 2026-10-02)
+
+Byte-identity is unachievable — not across nodes, not across two
+back-to-back processes on ONE node:
+
+- p5-regdiag 22624018 (gpub001, worktree at 14c6180 = the exact
+  reference-generation code): ur5 92/143 h mismatches (max 1.25 cm),
+  franka 119/149 (max 4.42 cm) vs these references.
+- p5-determ 22624498 (gpub001, one job, 14c6180, two separate processes):
+  every h pairing splits at tick 30 (>50 µm by ticks 31-34); ur5 run-vs-run
+  max 6.35 cm; franka run-vs-run even changes tick count (149 vs 150).
+- The scene is NOT the source: obstacle xyz/half + used_seed are
+  bit-identical across all runs and nodes. cuRobo's plans differ
+  run-to-run from plan #1 (ur5 n_wp 75/76/77) — GPU planner
+  nondeterminism; execution+h stays bit-identical for 30 ticks (1.2 s).
+
+`test_phase5_regression.py` therefore asserts: obstacle xyz/half EXACT,
+uniform 0.04 s cadence, tick count ±2, first >50 µm divergence at tick
+>=15, min h ±0.03 m (chaotic for franka: 4 samples span 2.2 cm; ur5
+2.2 mm), mean h ±0.01 m (observed <=4.7 mm), success parity. These `trace.npz` files remain the
+anchor; regenerate them only if the task/scene setup itself changes.
 
 ## 1. h traces — `ur5-wsg/`, `franka-panda/`
 
