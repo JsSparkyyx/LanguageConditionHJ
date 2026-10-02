@@ -77,6 +77,10 @@ def test_item_collection_dryrun(task, host, embodiment, tmp_path):
         wire_item_episode(ro, sidecar)
         trace = ro.run()
         assert trace["h"], f"{task}/{embodiment}/ep{ep}: no ticks captured"
+        # teardown: the done-flush must have finalized the last capture —
+        # a row left queued here means the rollout dropped the final tick
+        n_step, n_side = ro.buf.end_episode()
+        assert n_step == n_side
 
         # reference episode: the runner's own trace.npz at the same seed
         runner = ItemEpisodeRunner(

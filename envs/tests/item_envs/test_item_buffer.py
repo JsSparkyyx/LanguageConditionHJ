@@ -147,9 +147,10 @@ def test_lockstep_append_without_row_raises(tmp_path):
     lock = LockstepItemWriter(buf, sidecar)
     with pytest.raises(RuntimeError, match="no queued item row"):
         lock.append(make_entry(0))
-    # the StepBuffer append already happened (write-first protocol) — the
-    # pair is now knowingly misaligned, which is why this is a hard error
-    assert len(buf) == 1 and len(sidecar) == 0
+    # validate-first protocol: the raise happens BEFORE either ring moves,
+    # so the pair is still aligned (a step entry with no paired item row
+    # would be unrecoverable)
+    assert len(buf) == 0 and len(sidecar) == 0
 
 
 def test_for_step_buffer_gates(tmp_path):
@@ -202,3 +203,54 @@ def test_write_episode_jsonl(tmp_path):
     assert [d["item_id"] for d in rec["items"]] == ["obj_0"]
     assert [d["rule_id"] for d in rec["rules"]] == ["avoid|obj_0|-"]
     assert "entity" not in rec["items"][0]  # no handles in the tables
+
+
+def test_episode_lifecycle_counts_match(tmp_path):
+    """The rollout's exact capture pattern — initial capture offers a row,
+    each later capture finalizes the previous entry, the done-flush
+    finalizes the last — leaves both rings with identical row counts, and
+    end_episode confirms nothing is left queued."""
+    buf, sidecar = make_pair(tmp_path, capacity=16)
+    lock = LockstepItemWriter(buf, sidecar)
+    n = 5
+    lock.offer(make_row(0))  # initial _capture_tick: the h_fn offers row 0
+    for i in range(1, n):  # each later capture finalizes the previous entry
+        lock.append(make_entry(i - 1))
+        lock.offer(make_row(i))
+    lock.append(make_entry(n - 1))  # done-flush finalizes the last entry
+    assert len(buf) == len(sidecar) == n
+    assert lock.end_episode() == (n, n)
+    # slot i of either ring is the same transition
+    np.testing.assert_array_equal(
+        np.asarray(buf.arrays["h"][:n]),
+        np.asarray(sidecar.arrays["margins"][:n, 0]),
+    )
+
+
+def test_end_episode_raises_on_bypassed_done_flush(tmp_path):
+    """The p5-verify death point reproduced at the seam: the final capture's
+    entry reaches the StepBuffer DIRECTLY (done-flush bypassing the writer),
+    so its offered row never lands in the sidecar — end_episode must raise
+    instead of letting the surplus row die silently with the writer."""
+    buf, sidecar = make_pair(tmp_path, capacity=16)
+    lock = LockstepItemWriter(buf, sidecar)
+    lock.offer(make_row(0))
+    lock.append(make_entry(0))
+    lock.offer(make_row(1))
+    buf.append(make_entry(1))  # the final entry, appended around the writer
+    assert len(buf) == 2 and len(sidecar) == 1
+    with pytest.raises(RuntimeError, match="never appended"):
+        lock.end_episode()
+
+
+def test_append_validates_row_before_step_write(tmp_path):
+    """A malformed row raises BEFORE either ring advances and stays queued
+    for diagnosis — previously the StepBuffer moved +1 and the row was
+    popped and lost, leaving the pair silently misaligned."""
+    buf, sidecar = make_pair(tmp_path, capacity=16)
+    lock = LockstepItemWriter(buf, sidecar)
+    lock.offer(make_row(0, k=DIMS["k_max"] + 1))  # over the item maximum
+    with pytest.raises(ValueError, match="does not fit"):
+        lock.append(make_entry(0))
+    assert len(buf) == len(sidecar) == 0
+    assert len(lock._rows) == 1  # the row was not silently dropped

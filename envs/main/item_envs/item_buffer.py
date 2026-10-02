@@ -14,16 +14,19 @@ StepBuffer (margin_hook.wire_item_episode). RolloutController appends
 exactly one buffer entry per captured tick, in tick order (the pending
 entry finalized at the next tick, plus the done-flush at episode end); the
 h_fn is called once per capture and ``offer``s one sidecar row per call.
-``LockstepItemWriter.append`` writes the StepBuffer entry FIRST, then pops
-the oldest queued row into the sidecar — each ring advances its own head
-once per append, so slot i of either ring is the same transition. Rows
-queued but never appended (episode aborted mid-tick) die with the
-per-episode writer; the rings can never hold unpaired rows. An append with
-no queued row raises — a misaligned pair is worse than a crashed sweep.
-Both rings must start empty together: ``for_step_buffer`` refuses to pair a
-fresh sidecar with a non-empty StepBuffer (non-item episodes have no item
-rows to pair with), and a reopened sidecar must match the StepBuffer's
-capacity AND head/n (resume parity).
+``LockstepItemWriter.append`` validates the oldest queued row FIRST — a
+malformed row raises before either ring moves and stays queued — then
+writes the StepBuffer entry and the sidecar row, so each ring advances its
+own head once per append and slot i of either ring is the same transition.
+An append with no queued row also raises before either ring moves: a
+misaligned pair is worse than a crashed sweep. Rows still queued at
+episode end (the final capture was never finalized — the done-flush path
+was bypassed) are caught by ``LockstepItemWriter.end_episode``, which
+raises; call it when the episode's rollout returns. Both rings must start
+empty together: ``for_step_buffer`` refuses to pair a fresh sidecar with a
+non-empty StepBuffer (non-item episodes have no item rows to pair with),
+and a reopened sidecar must match the StepBuffer's capacity AND head/n
+(resume parity).
 
 Per-episode item/region/rule tables go to ``episodes.jsonl`` keyed by
 episode_id (one JSON line per episode, logger's spec dicts). NO text in the
@@ -196,6 +199,16 @@ class ItemSidecarBuffer:
         self.header["n"] = self.n
         self.header["head"] = self.head
 
+    def validate_row(self, row: dict) -> None:
+        """Raise on any field missing from ``row`` or not fitting its array
+        shape, WITHOUT writing anything. ``LockstepItemWriter`` runs this
+        before touching either ring, so a malformed row can never put the
+        pair out of lockstep."""
+        for name in self.arrays:
+            if name not in row:
+                raise KeyError(f"sidecar row is missing field {name!r}")
+            self._padded(name, np.asarray(row[name]))
+
     def _padded(self, name: str, value: np.ndarray) -> np.ndarray:
         shape = self._shape(name, **self.dims)
         if value.shape == shape:
@@ -276,11 +289,15 @@ class LockstepItemWriter:
     (margin_hook.wire_item_episode). Not a StepBuffer — only ``append`` is
     part of RolloutController's protocol.
 
-    ``offer`` queues one sidecar row per h_fn call (one per captured tick);
-    ``append`` writes the StepBuffer entry FIRST, then pops the oldest
-    queued row into the sidecar. RolloutController finalizes entries in
-    tick order, so queue order == append order == capture order. See the
-    module docstring for the crash semantics.
+    ``offer`` queues one sidecar row per h_fn call (one per captured
+    tick); ``append`` validates the oldest queued row FIRST — a malformed
+    row raises before either ring advances and stays queued — then writes
+    the StepBuffer entry and the sidecar row. RolloutController finalizes
+    entries in tick order, so queue order == append order == capture
+    order. ``end_episode`` is the teardown check: rows still queued at
+    episode end mean the last capture was never appended (the done-flush
+    path was bypassed) and raise. See the module docstring for the crash
+    semantics.
     """
 
     def __init__(self, step_buf, sidecar: ItemSidecarBuffer):
@@ -292,13 +309,28 @@ class LockstepItemWriter:
         self._rows.append(row)
 
     def append(self, entry: dict) -> None:
-        self.step_buf.append(entry)
         if not self._rows:
             raise RuntimeError(
                 "lockstep: StepBuffer append with no queued item row — "
                 "the h_fn must offer exactly one row per captured tick"
             )
-        self.sidecar.append(self._rows.pop(0))
+        row = self._rows[0]
+        self.sidecar.validate_row(row)  # raise before either ring moves
+        self.step_buf.append(entry)
+        self.sidecar.append(row)
+        self._rows.pop(0)
+
+    def end_episode(self) -> tuple[int, int]:
+        """Teardown check, call when the episode's rollout returns: every
+        offered row must have been paired with a StepBuffer append.
+        Returns (len(step_buf), len(sidecar)) — equal by construction."""
+        if self._rows:
+            raise RuntimeError(
+                f"lockstep: {len(self._rows)} queued item row(s) never "
+                "appended at episode end — the last capture was not "
+                "finalized (check the rollout's done-flush path)"
+            )
+        return len(self.step_buf), len(self.sidecar)
 
     @property
     def capacity(self) -> int:
