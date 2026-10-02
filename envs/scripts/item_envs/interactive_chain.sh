@@ -17,6 +17,8 @@ touch "$STATE/done.txt" "$STATE/failed.txt"
 
 log() { echo "$(date '+%F %T') $*" >> "$PIPE/chain.log"; }
 log "START — queue: $(grep -cv '^#\|^$' "$QUEUE") stages"
+echo $$ > "$STATE/orchestrator.pid"
+QMTIME=$(stat -c %Y "$QUEUE" 2>/dev/null || echo 0)
 
 while IFS='|' read -r name cmd; do
   case "$name" in ''|\#*) continue ;; esac
@@ -41,6 +43,11 @@ while IFS='|' read -r name cmd; do
   else
     echo "$name|$jid" >> "$STATE/failed.txt"
     log "FAIL $name ($jid) — will retry; see $LOGS/chain_${name}_${jid}.out"
+  fi
+  # hot-reload: the queue may have been edited while the stage ran
+  if [ "$(stat -c %Y "$QUEUE" 2>/dev/null || echo 0)" != "$QMTIME" ]; then
+    log "QUEUE CHANGED — restarting pass"
+    exec "$0" "$@"
   fi
 done < "$QUEUE"
 log "CHAIN COMPLETE"
