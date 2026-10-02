@@ -1,5 +1,7 @@
 task: selective_avoid
 host_tasks: [place_container_plate, place_burger_fries, stack_blocks_two, stack_bowls_two, place_bread_basket]
+                                        # allowed hosts; an episode with no explicit --host
+                                        # ROTATES round-robin by seed (seed k -> host_tasks[k % 5])
 embodiments: [ur5-wsg, franka-panda]
 # F5: restrict off_path candidates to the empirically-visible table band
 # (main/item_envs/configs/visibility_band_<embodiment>.npz, built by

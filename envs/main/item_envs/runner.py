@@ -93,6 +93,21 @@ class ItemTimeout(Exception):
     """Raised from the scene.step hook when max_steps physics steps pass."""
 
 
+def resolve_host(entry, host: str | None, seed: int) -> str | None:
+    """T1 host resolution: an explicit ``host``, else round-robin over
+    ``entry.host_tasks`` by episode seed (the task rotates through the 5
+    CrossSafe hosts so collection and sweeps cover them uniformly)."""
+    if entry.kind != "host":
+        return None
+    resolved = host or entry.host_tasks[int(seed) % len(entry.host_tasks)]
+    if resolved not in entry.host_tasks:
+        raise ValueError(
+            f"{resolved!r} is not an allowed host for the task; "
+            f"entry.host_tasks = {list(entry.host_tasks)}"
+        )
+    return resolved
+
+
 class ItemEpisodeRunner:
     """One nominal item-safety episode with full per-tick logging."""
 
@@ -118,15 +133,7 @@ class ItemEpisodeRunner:
         self.task_name = task
         self.embodiment = embodiment or self.entry.default_embodiment
         self.seed = int(seed)
-        if self.entry.kind == "host":
-            resolved = host or self.entry.host_tasks[0]
-            if resolved not in self.entry.host_tasks:
-                raise ValueError(
-                    f"{resolved!r} is not an allowed host for {task!r}; "
-                    f"entry.host_tasks = {list(self.entry.host_tasks)}"
-                )
-            host = resolved
-        self.host = host
+        self.host = resolve_host(self.entry, host, self.seed)
         self.risk_override = risk
         self.active_rule_id = active_rule_id
         self.render = render

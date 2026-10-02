@@ -5,7 +5,7 @@ kind is "robotwin" for tasks with their own RoboTwin task file
 T2 granular_pour, T3 push_zone, and the test-only smoke_items) and "host"
 for T1 selective_avoid, which spawns candidates on top of an unmodified
 CrossSafe host task (``host_tasks`` = the allowed hosts, chosen per episode
-via the runner's ``host`` argument). Registered: smoke_items (Phase 2,
+via the runner's ``host`` argument or, when omitted, round-robin by seed). Registered: smoke_items (Phase 2,
 test-only) plus the three Phase 4 deliverable tasks T1-T3.
 
 Importing the registry never imports a task module, never imports sapien,

@@ -338,10 +338,13 @@ def test_enumerate_rules_splits():
 # ---------------------------------------------------------------------------
 
 
-def test_runner_host_defaults_to_first_host_task():
-    runner = ItemEpisodeRunner("selective_avoid", seed=0, render="none", out_root="/tmp/t1")
-    assert runner.host == "place_container_plate"
-    assert runner.task_cfg_path.name == "T1_selective_avoid.yaml"
+def test_runner_host_rotates_over_host_tasks_by_seed():
+    # no explicit host -> round-robin over the 5 CrossSafe hosts by episode seed
+    hosts = get_task_entry("selective_avoid").host_tasks
+    for seed, expected in [(0, hosts[0]), (4, hosts[-1]), (5, hosts[0]), (7, hosts[2])]:
+        runner = ItemEpisodeRunner("selective_avoid", seed=seed, render="none", out_root="/tmp/t1")
+        assert runner.host == expected
+        assert runner.task_cfg_path.name == "T1_selective_avoid.yaml"
 
 
 @pytest.mark.parametrize("host", HOSTS)
