@@ -1025,8 +1025,9 @@ def test_covered_at_nearest_cell():
 
 
 def test_find_xy_near_path_covered_only():
-    """F5b (a): with near_path_visible_only, near placements land only in
-    covered cells — the +y mask forces sign=+1 draws, no fallback needed."""
+    """F5b (a): with near_path_visible_only, the first ok()+covered draw in the
+    ORIGINAL candidate sequence wins — the +y mask makes sign=-1 draws
+    uncovered, so accepted placements all land in +y covered cells."""
     cfg = dict(CFG, near_path_visible_only=True)
     vis_cov = _vis_cov(_mask_pos_y())
     rng = np.random.RandomState(2)
@@ -1040,8 +1041,55 @@ def test_find_xy_near_path_covered_only():
         assert xy[1] > 0.005  # only +y cells are covered
         assert lat > 0.0
         assert spawn._covered_at(vis_cov, xy)
-        assert vis_out == {}  # covered pass succeeded -> no fallback
+        assert vis_out == {}  # covered draw accepted -> no fallback
         assert fb is False
+
+
+def test_find_xy_near_path_covered_preference_keeps_feasible():
+    """F5b (fused): when the first ok() draw is uncovered but a LATER draw in
+    the same sequence is covered, the covered one wins (preference, not a
+    hard gate) — and no extra rng draws are consumed beyond the winner."""
+    cfg = dict(CFG, near_path_visible_only=True)
+    vis_cov = _vis_cov(_mask_pos_y())
+    # count how often the fused pass skips an uncovered first-ok for a later
+    # covered draw: it must still return a covered cell whenever one exists
+    # in the 40-draw sequence
+    rng = np.random.RandomState(21)
+    n_covered = 0
+    for _ in range(30):
+        vis_out = {}
+        xy, t, lat, fb = spawn._find_xy(
+            "near_path", P0, P1, [], [], GEO.world_half, cfg, rng, [0.22, 0.48],
+            XYLIM, vis_cov=vis_cov, vis_out=vis_out,
+        )
+        assert xy is not None and fb is False
+        if spawn._covered_at(vis_cov, xy):
+            n_covered += 1
+            assert vis_out == {}
+        else:
+            assert vis_out == {"vis_fallback": True}
+    assert n_covered > 0
+
+
+def test_find_xy_near_path_fused_stream_matches_flagoff_when_covered_first():
+    """F5b (fused): when the first ok() draw is already covered, the fused
+    pass consumes EXACTLY the flag-off rng draws (returns at the same draw)."""
+    cfg = dict(CFG, near_path_visible_only=True)
+    vis_cov = _vis_cov(np.ones((len(COV_YS), len(COV_XS)), dtype=bool))
+    for seed in (0, 1, 2, 3):
+        rng_a = np.random.RandomState(seed)
+        xy, t, lat, fb = spawn._find_xy(
+            "near_path", P0, P1, [], [], GEO.world_half, cfg, rng_a, [0.22, 0.48],
+            XYLIM, vis_cov=vis_cov, vis_out={},
+        )
+        rng_b = np.random.RandomState(seed)
+        xy0, t0_, lat0, fb0 = spawn._find_xy(
+            "near_path", P0, P1, [], [], GEO.world_half, CFG, rng_b, [0.22, 0.48], XYLIM
+        )
+        np.testing.assert_allclose(xy, xy0, atol=0.0)
+        assert (t, lat, fb) == (t0_, lat0, fb0)
+        # same rng stream position -> the fused pass consumed the flag-off draws
+        assert rng_a.get_state()[2] == rng_b.get_state()[2]
 
 
 def test_find_xy_on_path_covered_segment():
@@ -1067,20 +1115,28 @@ def test_find_xy_on_path_covered_segment():
 
 
 def test_find_xy_vis_fallback_when_no_covered_cell():
-    """F5b (c): no covered cell anywhere -> each class falls back to the
-    ORIGINAL logic and flags vis_fallback. on_path's covered pass consumes no
-    rng, so its fallback placement is byte-identical to the no-vis_cov run."""
+    """F5b (c): no covered cell anywhere -> each class keeps the ORIGINAL
+    first-ok placement and flags vis_fallback. The fused near_path pass keeps
+    the FIRST ok() draw, so its fallback placement is byte-identical to the
+    no-vis_cov run; on_path's covered pass consumes no rng either."""
     vis_cov = _vis_cov(np.zeros((len(COV_YS), len(COV_XS)), dtype=bool))
 
     cfg_near = dict(CFG, near_path_visible_only=True)
-    rng = np.random.RandomState(4)
-    vis_out = {}
-    xy, t, lat, fb = spawn._find_xy(
-        "near_path", P0, P1, [], [], GEO.world_half, cfg_near, rng, [0.22, 0.48],
-        XYLIM, vis_cov=vis_cov, vis_out=vis_out,
-    )
-    assert xy is not None  # the old unrestricted loop still places
-    assert vis_out == {"vis_fallback": True}
+    for seed in (4, 5, 6):
+        vis_out = {}
+        xy, t, lat, fb = spawn._find_xy(
+            "near_path", P0, P1, [], [], GEO.world_half, cfg_near,
+            np.random.RandomState(seed), [0.22, 0.48], XYLIM,
+            vis_cov=vis_cov, vis_out=vis_out,
+        )
+        xy0, t0_, lat0, fb0 = spawn._find_xy(
+            "near_path", P0, P1, [], [], GEO.world_half, CFG,
+            np.random.RandomState(seed), [0.22, 0.48], XYLIM,
+        )
+        assert xy is not None  # the old unrestricted placement is kept
+        assert vis_out == {"vis_fallback": True}
+        np.testing.assert_allclose(xy, xy0, atol=0.0)
+        assert (t, lat, fb) == (t0_, lat0, fb0)
 
     cfg_on = dict(CFG, on_path_visible_only=True)
     for seed in (5, 6, 7):

@@ -99,17 +99,24 @@ Layout (all draws from the CALLER's rng — ``np.random.RandomState(seed +
   restricted off_path, and single cells inside the rect can still be
   occluded (robot body, frustum notches). When
   ``objects.near_path_visible_only`` / ``objects.on_path_visible_only``
-  are set (T1 yaml), near/on-path candidates are restricted to the
-  npz's measured per-cell ``covered`` mask (vis_max >= 0.3 at that cell —
+  are set (T1 yaml), near/on-path candidates PREFER the npz's measured
+  per-cell ``covered`` mask (vis_max >= 0.3 at that cell —
   ``_vis_covered_for`` / ``_covered_at``, nearest-cell lookup), NOT the
-  inset band rect off_path uses. Each class runs a bounded covered-only
-  pass FIRST (near: ``NEAR_PATH_VIS_TRIES`` draws; on: the t0 + 9-point
-  base scan plus the 25-point fallback window); when no covered candidate
-  is feasible the class falls back to the ORIGINAL unrestricted logic
-  verbatim and the Placement records ``vis_fallback=True`` (the gate
-  tolerates 5% — e.g. corridors whose on-window has no covered cell).
-  Resolution order and labels mirror fix 3 (own embodiment npz, else
-  ``shared-fallback``, else None); the counters
+  inset band rect off_path uses. The preference runs INSIDE the original
+  candidate sequence: near_path keeps its single 40-draw loop and takes
+  the first ok()+covered draw; when no covered cell appears, the FIRST
+  ok() draw is kept — byte-identical to the pre-F5b placement — and
+  flagged ``vis_fallback=True``. on_path scans its usual t sequence (t0 +
+  9-point base window, then the 25-point fallback window) for the first
+  covered ok() — zero extra rng draws — else takes the original first-ok
+  hit, also flagged. (An earlier two-loop near_path version that re-rolled
+  the fallback from a shifted stream was A/B-measured on ur5 to REGRESS
+  near visibility 0.959 -> 0.897: it discarded good first-ok placements,
+  and the empty-table probe sweep cannot see occlusion by sibling items —
+  tall bottles/cans dominated the failures. The fused pass keeps the
+  covered preference where it is free and never trades a feasible
+  placement for a mask cell.) Resolution order and labels mirror fix 3
+  (own embodiment npz, else ``shared-fallback``, else None); the counters
   ``report["near_path_vis_fallbacks"]`` / ``report["on_path_vis_fallbacks"]``
   describe the FINAL kept layout, and ``report["vis_cov"]`` labels the
   mask applied. With both flags off or the npz missing every branch is
@@ -158,7 +165,6 @@ SETTLE_STEPS = 250
 MOVE_TOL_M = 0.005
 TILT_TOL_RAD = float(np.deg2rad(3.0))
 NEAR_PATH_TRIES = 40
-NEAR_PATH_VIS_TRIES = 40  # fix 5 (F5b): covered-only draws before the unrestricted pass
 DRAW_CAP_TRIES = 24
 ON_PATH_FALLBACK_T = (0.10, 0.75)  # fix 2.1: second scan window (corridor t)
 ON_PATH_FALLBACK_N = 25  # fix 2.1: grid points in the fallback scan
@@ -531,14 +537,15 @@ def _find_xy(
     byte-identical to the unfiltered scan. on/near_path ignore it.
     vis_cov (fix 5 / F5b): (xs, ys, covered) measured per-cell coverage from
     the same npz. With the class's flag set (``near_path_visible_only`` /
-    ``on_path_visible_only``) the class runs a covered-only pass FIRST —
-    near: NEAR_PATH_VIS_TRIES draws accepting ``ok() and _covered_at``; on:
-    the same t0 + 9-point sequence accepting the first covered ok() (the
-    pass consumes NO rng draws — t0 is already drawn — so the rng stream
-    matches the flag-off run). When no covered candidate is feasible the
-    class falls through to the ORIGINAL logic verbatim and
-    ``vis_out["vis_fallback"]`` is set True (the caller records it on the
-    Placement). vis_cov=None skips both passes byte-identically; off_path
+    ``on_path_visible_only``) the class prefers covered cells within the
+    ORIGINAL candidate sequence — near: one pass, first ``ok()+covered``
+    draw wins, and when no covered cell appears the FIRST ``ok()`` draw is
+    kept (byte-identical to the pre-F5b placement) and flagged via
+    ``vis_out["vis_fallback"]``; on: the t0 + 9-point base scan then the
+    25-point fallback window accept the first covered ``ok()`` (the pass
+    consumes NO rng draws — t0 is already drawn — so the rng stream matches
+    the flag-off run), else the original first-``ok()`` scan runs and is
+    flagged. vis_cov=None skips both preferences byte-identically; off_path
     never reads it.
     """
     xylim = ob.TABLE_XYLIM if xylim is None else np.asarray(xylim, dtype=np.float64)
@@ -595,25 +602,35 @@ def _find_xy(
     if cls == "near_path":
         t_near_lo, t_near_hi = (float(v) for v in cfg.get("near_path_t", [0.05, 0.95]))
         off_lo, off_hi = (float(v) for v in cfg.get("near_path_offset", [0.02, 0.06]))
-        if vis_cov is not None and cfg.get("near_path_visible_only", False):
-            # fix 5 (F5b): covered-only draws first; on exhaustion the original
-            # loop below runs verbatim (its draw stream continues, unchanged)
-            for _ in range(NEAR_PATH_VIS_TRIES):
-                t = float(np.clip(rng.uniform(t_near_lo, t_near_hi), t_near_lo, t_near_hi))
-                off = float(rng.uniform(off_lo, off_hi))
-                sign = 1.0 if rng.rand() < 0.5 else -1.0
-                cand = p0 + t * delta + sign * off * perp
-                if ok(cand) and _covered_at(vis_cov, cand):
-                    return cand, t, sign * off, False
-            if vis_out is not None:
-                vis_out["vis_fallback"] = True
+        # fix 5 (F5b, fused after the ur5 A/B): ONE pass over the original
+        # candidate sequence. The first ok()+covered draw wins; when no
+        # covered cell appears in NEAR_PATH_TRIES draws, the FIRST ok() draw
+        # is kept — byte-identical to the pre-F5b placement — and flagged
+        # vis_fallback. The earlier two-loop version re-rolled the fallback
+        # from a shifted stream and discarded good first-ok placements;
+        # measured on ur5 it REGRESSED near_path visibility (0.959 -> 0.897,
+        # tall thin items occluded by siblings the empty-table probe sweep
+        # cannot see).
+        vis_checked = vis_cov is not None and cfg.get("near_path_visible_only", False)
+        first_ok = None
         for _ in range(NEAR_PATH_TRIES):
             t = float(np.clip(rng.uniform(t_near_lo, t_near_hi), t_near_lo, t_near_hi))
             off = float(rng.uniform(off_lo, off_hi))
             sign = 1.0 if rng.rand() < 0.5 else -1.0
             cand = p0 + t * delta + sign * off * perp
-            if ok(cand):
+            if not ok(cand):
+                continue
+            if not vis_checked:
                 return cand, t, sign * off, False
+            if first_ok is None:
+                first_ok = (cand, t, sign * off)
+            if _covered_at(vis_cov, cand):
+                return cand, t, sign * off, False
+        if first_ok is not None:
+            if vis_out is not None:
+                vis_out["vis_fallback"] = True
+            cand, t, lat = first_ok
+            return cand, t, lat, False
         return None, None, None, False
 
     # off_path
@@ -663,7 +680,7 @@ def _layout_plan(
     F5) is the off_path visibility-band rect, passed through to _find_xy;
     None keeps the historical unrestricted off_path scan. ``vis_cov`` (fix 5
     / F5b) is the (xs, ys, covered) measured coverage mask for the
-    near/on_path covered-first passes; None keeps the historical
+    near/on_path covered preference; None keeps the historical
     unrestricted draws byte-identically.
 
     Fix 2.2 (degradation chain): an object whose drawn class cannot be
@@ -1067,12 +1084,12 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
     ``objects.on_path_visible_only`` are set, the measured per-cell coverage
     (``_vis_covered_for``) is loaded ONCE here and threaded into every
     ``_layout_plan`` call; ``report["vis_cov"]`` records which mask was
-    applied (embodiment name | "shared-fallback" | None — None means both
-    covered passes were skipped and the layout is byte-identical to the
+    applied (embodiment name | "shared-fallback" | None — None means the
+    covered preference was skipped and the layout is byte-identical to the
     historical behavior). The counters ``near_path_vis_fallbacks`` /
-    ``on_path_vis_fallbacks`` describe the FINAL kept layout: objects whose
-    covered-only pass found no feasible cell and that were placed by the
-    original unrestricted logic (``vis_fallback=True`` on their placement
+    ``on_path_vis_fallbacks`` describe the FINAL kept layout: objects that
+    kept the original first-ok placement because no covered cell appeared
+    in their candidate sequence (``vis_fallback=True`` on their placement
     records). off_path is unaffected (fix 3 owns it).
     """
     spec = TASK_SPECS.get(getattr(env, "task_name", ""))

@@ -32,7 +32,8 @@ Band-rectangle algorithm (keep in sync with spawn.py's docstring):
 setup-only episodes (build env -> ``spawn.spawn_candidates`` with the band
 active via the T1 yaml's ``off_path_visible_only: true``), t=0
 ``masks.item_masks`` over the spawned specs. One JSONL row per item
-{host, embodiment, seed, item_id, cls, vis_max, ...}; a per-class summary
+{host, embodiment, seed, item_id, cls, xyz, corridor_t, lateral,
+t_fallback, vis_fallback, vis_max, ...}; a per-class summary
 (fraction with vis_max >= 0.3) prints at the end. Resumable: rows keyed
 (host, embodiment, seed, item_id) are skipped on rerun. The spawn side
 mirrors probes/p1.py exactly (rng = RandomState(seed + 4241)); the
@@ -273,24 +274,31 @@ def validate_embodiment(embodiment: str, seeds: list[int], out_path: Path,
                 rng = np.random.RandomState(int(seed) + 4241)  # p1 parity
                 specs, report = spawn_candidates(env, task_cfg, rng)
                 visibility, _tok = masks.item_masks(task, specs, [])
-                cls_of = {p["item_id"]: p.get("cls") for p in report.get("placements", [])}
+                pl_of = {p["item_id"]: p for p in report.get("placements", [])}
                 for i, spec in enumerate(specs):
                     key = (host, embodiment, seed, spec.item_id)
                     if key in done:
                         continue
                     vis = [float(v) for v in visibility[i]] if visibility.size else []
+                    pl = pl_of.get(spec.item_id) or {}
                     append_row(out_path, {
                         "host": host, "embodiment": embodiment, "seed": int(seed),
                         "item_id": spec.item_id, "category": spec.category,
-                        "cls": cls_of.get(spec.item_id),
+                        "cls": pl.get("cls"),
                         "vis_band": report.get("vis_band"),
+                        "vis_cov": report.get("vis_cov"),
+                        "xyz": pl.get("xyz"),
+                        "corridor_t": pl.get("corridor_t"),
+                        "lateral": pl.get("lateral"),
+                        "t_fallback": pl.get("t_fallback"),
+                        "vis_fallback": pl.get("vis_fallback"),
                         "n_cam": len(vis), "vis": vis,
                         "vis_max": max(vis) if vis else 0.0,
                     })
                     done.add(key)
                 ran += 1
                 print(f"[validate] {host}/{embodiment}/s{seed}: k={len(specs)} "
-                      f"band={report.get('vis_band')}")
+                      f"band={report.get('vis_band')} cov={report.get('vis_cov')}")
             except Exception as exc:
                 print(f"[validate] {host}/{embodiment}/s{seed} FAILED: "
                       f"{type(exc).__name__}: {exc}")

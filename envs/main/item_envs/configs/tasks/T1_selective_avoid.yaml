@@ -5,10 +5,13 @@ embodiments: [ur5-wsg, franka-panda]
 # (main/item_envs/configs/visibility_band_<embodiment>.npz, built by
 # scripts/item_envs/visibility_band.py) — far-corner cells sit outside every
 # camera frustum (P4-T1 off_path vis gate 0.642 < 0.95).
-# F5b: restrict near/on_path candidates to the same npz's measured per-cell
+# F5b: near/on_path candidates PREFER the same npz's measured per-cell
 # `covered` mask (vis_max >= 0.3 at the cell) — the band rerun still gated
-# near_path 0.947 / on_path 0.948 < 0.95. Bounded covered-first pass, then
-# the original logic with vis_fallback=True recorded (gate tolerates 5%).
+# near_path 0.947 / on_path 0.948 < 0.95. Covered preference inside the
+# original candidate sequence; when no covered cell appears the original
+# first-ok placement is kept and vis_fallback=true recorded (gate tolerates
+# 5%). Fused single pass after the ur5 A/B showed the two-loop version
+# regressed near_path (0.959 -> 0.897); Bridges re-validation pending.
 objects: {k: [3, 5], max_on_path: 2, min_on_or_near_path: 2, near_path_offset: [0.02, 0.06],
           off_path_min_dist: 0.10, min_separation: 0.03, static_objects: false,
           on_path_max_r_xy: 0.035, near_path_max_r_xy: 0.035,
