@@ -16,11 +16,13 @@ mkdir -p "$STATE" "$LOGS"
 touch "$STATE/done.txt" "$STATE/failed.txt"
 
 log() { echo "$(date '+%F %T') $*" >> "$PIPE/chain.log"; }
+log "START — queue: $(grep -cv '^#\|^$' "$QUEUE") stages"
 
 while IFS='|' read -r name cmd; do
   case "$name" in ''|\#*) continue ;; esac
-  grep -qx "$name" "$STATE/done.txt" && continue
-  tries=$(grep -c "^$name|" "$STATE/failed.txt" 2>/dev/null || echo 0)
+  grep -qx "$name" "$STATE/done.txt" 2>/dev/null && continue
+  tries=$(grep -c "^$name|" "$STATE/failed.txt" 2>/dev/null)
+  tries=${tries:-0}
   if [ "$tries" -ge "$MAX_TRIES" ]; then
     log "SKIP $name — $tries tries >= MAX_TRIES=$MAX_TRIES"
     continue
