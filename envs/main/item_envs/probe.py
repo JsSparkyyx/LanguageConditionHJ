@@ -27,6 +27,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from ._bootstrap import ensure_main_path
 
@@ -216,6 +217,18 @@ def _sweep_child(args) -> int:
 
 def _run_one(args, cell: dict, tag: str, seed: int):
     from .runner import ItemEpisodeRunner
+
+    # Resume: reuse a finished episode so chained/partitioned runs can rerun
+    # the same command; corrupt or partial metas (killed mid-write) fall
+    # through and are recomputed.
+    meta_path = Path(args.out) / tag / args.task / args.embodiment / f"seed_{seed}" / "meta.json"
+    if meta_path.exists():
+        try:
+            meta = SimpleNamespace(**json.loads(meta_path.read_text()))
+            print(f"[sweep] {tag} seed={seed} resume: meta.json exists, skipping")
+            return meta, None, None
+        except Exception:
+            pass
 
     base_risk = _parse_kv(args.risk)
     runner = ItemEpisodeRunner(
