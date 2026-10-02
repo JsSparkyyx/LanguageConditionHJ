@@ -1,8 +1,10 @@
 # Feasibility probes — results and gate evaluation (plan v3 §6 Phase 3, STOP gate)
 
 Date: 2026-10-02. Status: **all probes complete. P1 gate PASSES on the Fix-1 rerun
-(near2 63.8%, touch 62.8%, baseline 94.3%). P3-robot PASS. P4(T1) still FAIL
-(off_path visibility, finding F5 — its own documented fix pending).** Outputs
+(near2 63.8%, touch 62.8%, baseline 94.3%). P3-robot PASS. P4(T1): ACCEPTED below
+gate after fixes F5+F5b — fresh full grid: off_path 0.995 PASS; on_path 0.948,
+near_path 0.947, one item short of 0.95 each; residual mechanism is sibling
+occlusion of tall items (human decision 2026-10-02, see F5).** Outputs
 under `runs/item_envs/feas/` (rows JSONL + `summary.json` + `keyframes/`; the
 pre-Fix-1 P1 sweep is archived at `runs/item_envs/feas/P1_pre_fix1/`); run logs
 under `/work/nvme/bifq/project/tmp/logs/`.
@@ -15,7 +17,7 @@ Gate summary:
 | P2 bowl containment + beads (T2) | rest inside: PASS (default cell) / FAIL (r=8 overflow cells, expected) · zero tunneling: **PASS** · spill ↑ with accel: **FAIL (finding F2)** · spill ↑ with ω: **FAIL as stated (finding F3)** · physics ≤ 20 ms/tick @ N=60: **PASS** | partial, findings below |
 | P3 push coast (T3) | coasting > 0, ↑ with v, ↓ with friction | **PASS** |
 | P3-robot push primitive | ≤ 3 cm of commanded in ≥ 80% of seeds at time_scale 0.5 | **PASS** (ur5-wsg 1.00, franka-panda 0.95) |
-| P4 visibility | visible fraction ≥ 0.3 in ≥ 1 camera in ≥ 95% of seeds | T2: **PASS** (bowl_src exactly 0.95 — borderline) · T1: **FAIL** (rerun: near_path 0.951, on_path 0.917, off_path 0.642 — finding F5, fix pending) |
+| P4 visibility | visible fraction ≥ 0.3 in ≥ 1 camera in ≥ 95% of seeds | T2: **PASS** (bowl_src exactly 0.95 — borderline) · T1: **ACCEPTED below gate** (fresh grid post-F5b: off_path 0.995 PASS; on_path 0.948, near_path 0.947 — one item short each; human decision, see F5) |
 | P5 token alignment (gpu) | highest-coverage token cells contain the encoder token positions closest to the item | **PASS** (overlap 0.5 — borderline) |
 
 ---
@@ -191,14 +193,27 @@ positions": PASS at exactly 0.5 — **borderline**; overlay keyframe in
 - **F4 (borderline passes).** P4 bowl_src = 0.95 (exactly at gate) and P5
   overlap = 0.5 (exactly at gate) — both pass as written; noted for the
   record, no action required.
-- **F5 (P4-T1 visibility) — CONFIRMED on the rerun, fix pending (its own
-  documented-fix budget).** Rerun: on_path 0.917, near_path 0.951, off_path
-  0.642 per item (gate 0.95). The deficit is off_path items in the far table
-  corners (outside the camera rig's useful frustum). Fix candidates:
-  (a) restrict off_path sampling to the empirically visible table band;
-  (b) shift the off_path class fraction toward near_path. Scheduled before
-  T1 calibration (spawn placement feeds it), validated by a layout+render-only
-  visibility probe — no full-episode sweep needed.
+- **F5 (P4-T1 visibility) — RESOLVED as accepted-below-gate (human decision
+  2026-10-02).** History: the first rerun gated on_path 0.917 / near_path 0.951 /
+  off_path 0.642 per item (gate 0.95). Fix **F5** restricted off_path sampling to
+  the empirically measured visibility band (`visibility_band_<emb>.npz`) —
+  validated off_path 0.995. Fix **F5b** added covered-cell preference for
+  near/on_path (fused single pass, first-ok fallback flagged `vis_fallback`);
+  the first F5b variant regressed near_path (0.897, redraw-stream artifact) and
+  was reworked (d69c1e0). **Final fresh-grid validation (481 rows, both
+  embodiments, Delta job 22630716): off_path 0.9954 (217 rows, PASS),
+  on_path 0.9483 (58 rows, 3 below), near_path 0.9466 (206 rows, 11 below) —
+  each failing class one item short of 0.95.** Residual mechanism, per the A/B
+  analysis: the coverage mask was swept with one 12 cm probe on an empty table,
+  so it cannot see **sibling occlusion** — the failures are tall thin items
+  (bottle/can/pill_bottle) with left-wrist visibility exactly 0.0 behind a
+  neighbor. The plan's two-documented-fix budget was spent (F5, F5b); with the
+  miss at one item per class and the mechanism understood, the human accepted
+  the deviation. Downstream caveat: ~5% of T1 near/on-path candidates have
+  vis < 0.3 at t = 0 — grounding masks for those referents should fall back to
+  simulator state. Deferred lever if this ever needs to pass strictly:
+  visibility-aware spacing (larger `min_separation` vs tall items) or a
+  per-height probe sweep, NOT more cell masking.
 
 ## Infra notes (probe-platform lessons, for the record)
 
