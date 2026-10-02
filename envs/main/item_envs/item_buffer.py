@@ -1,0 +1,305 @@
+"""ItemSidecarBuffer (PLAN v3 §5, Phase 5): per-tick item/rule state in a
+flat memmap ring, written in LOCKSTEP with main.train.buffer.StepBuffer.
+
+Ring semantics mirror StepBuffer exactly (read its docstring): header.json
+with capacity + field shapes + n/head, head persistence, the oldest row
+overwritten at capacity, ``discard_to`` valid only before the first wrap,
+atomic header republish on flush (tmp + replace), lazy nothing — the field
+shapes are fixed by the constructor maxima, so the memmaps are created
+eagerly.
+
+Lockstep protocol (who advances head, when, crash semantics): collect.py
+hands RolloutController a ``LockstepItemWriter`` instead of the raw
+StepBuffer (margin_hook.wire_item_episode). RolloutController appends
+exactly one buffer entry per captured tick, in tick order (the pending
+entry finalized at the next tick, plus the done-flush at episode end); the
+h_fn is called once per capture and ``offer``s one sidecar row per call.
+``LockstepItemWriter.append`` writes the StepBuffer entry FIRST, then pops
+the oldest queued row into the sidecar — each ring advances its own head
+once per append, so slot i of either ring is the same transition. Rows
+queued but never appended (episode aborted mid-tick) die with the
+per-episode writer; the rings can never hold unpaired rows. An append with
+no queued row raises — a misaligned pair is worse than a crashed sweep.
+Both rings must start empty together: ``for_step_buffer`` refuses to pair a
+fresh sidecar with a non-empty StepBuffer (non-item episodes have no item
+rows to pair with), and a reopened sidecar must match the StepBuffer's
+capacity AND head/n (resume parity).
+
+Per-episode item/region/rule tables go to ``episodes.jsonl`` keyed by
+episode_id (one JSON line per episode, logger's spec dicts). NO text in the
+ring — phrases are regenerated from the rule table at training time.
+``item_obb`` packs the item-frame OBB: [obb_center_local(3),
+half_extents(3), up_axis_local(3)]. Rule order is the episode's rules list
+order (stable rule_ids); item order is the episode's items list order;
+region rows follow the episode's regions list (table_top first), token_mask
+rows are items then nameable regions (masks.item_masks row order).
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+
+# name -> (dtype, shape in terms of the instance maxima)
+# k_max covers T1's K <= 5 candidates + host items; r_max the rule table;
+# g_max the regions (table + zones/containers)
+_FIELD_SHAPES = {
+    "item_pose": ("k_max", 7),
+    "item_vel": ("k_max", 6),
+    "item_obb": ("k_max", 9),
+    "item_valid": ("k_max",),
+    "held": (2,),
+    "robot_item_dist": ("k_max",),
+    "margins": ("r_max",),
+    "rule_valid": ("r_max",),
+    "region_T": ("g_max", 4, 4),
+    "token_masks": ("k_max+g_max", "n_cam", "n_tok"),
+    "visibility": ("k_max", "n_cam"),
+}
+_FIELD_DTYPES = {
+    "item_pose": np.float32,
+    "item_vel": np.float32,
+    "item_obb": np.float32,
+    "item_valid": np.bool_,
+    "held": np.int8,
+    "robot_item_dist": np.float32,
+    "margins": np.float32,
+    "rule_valid": np.bool_,
+    "region_T": np.float32,
+    "token_masks": np.uint8,
+    "visibility": np.float16,
+}
+# padding fill for rows shorter than the maxima (distances read +inf —
+# "nothing there is closer than anything" — everything else reads 0/False)
+_PAD_FILL = {"robot_item_dist": np.inf}
+
+
+class ItemSidecarBuffer:
+    def __init__(self, root: str | Path, capacity: int | None = None,
+                 k_max: int = 8, r_max: int = 64, g_max: int = 8,
+                 n_cam: int = 3, n_tok: int | None = None):
+        # resolve NOW: RoboTwin chdirs during env setup (StepBuffer parity)
+        self.root = Path(root).resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+        header_path = self.root / "header.json"
+        if capacity is not None:
+            if n_tok is None:
+                raise ValueError("n_tok is required when creating a sidecar buffer")
+            old = json.loads(header_path.read_text()) if header_path.exists() else {}
+            header = {
+                "capacity": int(capacity),
+                "k_max": int(k_max), "r_max": int(r_max), "g_max": int(g_max),
+                "n_cam": int(n_cam), "n_tok": int(n_tok),
+            }
+            for key, value in header.items():
+                if old and old.get(key) != value:
+                    raise ValueError(
+                        f"{self.root}: header mismatch on {key}: "
+                        f"{old.get(key)} on disk vs {value} requested"
+                    )
+            header["shapes"] = {
+                name: list(self._shape(name, **header)) for name in _FIELD_SHAPES
+            }
+            header["n"] = int(old.get("n", 0))
+            header["head"] = int(old.get("head", 0))
+            header_path.write_text(json.dumps(header, indent=2))
+        self.header = json.loads(header_path.read_text()) if header_path.exists() else {}
+        if capacity is None:
+            capacity = self.header.get("capacity")
+            if capacity is None:
+                raise ValueError(
+                    f"{self.root}: no capacity given and no header.json found"
+                )
+        self.capacity = int(capacity)
+        self.k_max = int(self.header.get("k_max", k_max))
+        self.r_max = int(self.header.get("r_max", r_max))
+        self.g_max = int(self.header.get("g_max", g_max))
+        self.n_cam = int(self.header.get("n_cam", n_cam))
+        self.n_tok = int(self.header.get("n_tok", n_tok))
+        self.dims = {
+            "k_max": self.k_max, "r_max": self.r_max, "g_max": self.g_max,
+            "n_cam": self.n_cam, "n_tok": self.n_tok,
+        }
+        self.arrays: dict[str, np.ndarray] = {}
+        for name in _FIELD_SHAPES:
+            p = self.root / f"{name}.npy"
+            shape = (self.capacity, *self._shape(name, **self.dims))
+            if p.exists():
+                arr = np.load(p, mmap_mode="r+")
+                if arr.shape != shape:
+                    raise ValueError(
+                        f"{self.root}: {name}.npy has shape {arr.shape}, "
+                        f"expected {shape} (capacity/dims mismatch)"
+                    )
+                self.arrays[name] = arr
+            else:
+                self.arrays[name] = np.lib.format.open_memmap(
+                    p, mode="w+", dtype=_FIELD_DTYPES[name], shape=shape
+                )
+        self.n = int(self.header.get("n", 0))
+        self.head = int(self.header.get("head", self.n))  # next write position
+
+    @staticmethod
+    def _shape(name: str, **dims) -> tuple:
+        out = []
+        for part in _FIELD_SHAPES[name]:
+            if isinstance(part, str):
+                out.append(sum(int(dims[term]) for term in part.split("+")))
+            else:
+                out.append(int(part))
+        return tuple(out)
+
+    @classmethod
+    def for_step_buffer(cls, step_buf, root: str | Path | None = None, **dims):
+        """The lockstep pair for a StepBuffer: same capacity, same start.
+
+        A FRESH sidecar pairs only with a fresh (n == 0) StepBuffer — rows
+        already in the StepBuffer have no item rows to pair with. A
+        pre-existing sidecar reopens and must match the StepBuffer's
+        capacity AND n/head (resume parity: collection appends to both).
+        """
+        root = Path(root) if root is not None else step_buf.root.parent / "item_buffer"
+        if (root / "header.json").exists():
+            sidecar = cls(root)
+            if sidecar.capacity != step_buf.capacity:
+                raise ValueError(
+                    f"{root}: sidecar capacity {sidecar.capacity} != "
+                    f"StepBuffer capacity {step_buf.capacity}"
+                )
+            if (sidecar.n, sidecar.head) != (step_buf.n, step_buf.head):
+                raise ValueError(
+                    f"{root}: sidecar at n={sidecar.n} head={sidecar.head} but "
+                    f"the StepBuffer is at n={step_buf.n} head={step_buf.head} — "
+                    "the pair is out of lockstep; use a fresh pair"
+                )
+            return sidecar
+        if step_buf.n > 0:
+            raise ValueError(
+                f"cannot pair a fresh sidecar with a StepBuffer holding "
+                f"{step_buf.n} rows (non-item episodes have no item rows); "
+                "use a fresh buffer pair"
+            )
+        return cls(root, capacity=step_buf.capacity, **dims)
+
+    def append(self, row: dict) -> None:
+        """Ring semantics (StepBuffer parity): at capacity the OLDEST row is
+        overwritten. Rows may be short in the item/rule/region leading dims —
+        padded to the maxima (robot_item_dist with +inf, the rest 0/False).
+        """
+        for name, arr in self.arrays.items():
+            value = np.asarray(row[name])
+            arr[self.head] = self._padded(name, value)
+        self.head = (self.head + 1) % self.capacity
+        self.n = min(self.n + 1, self.capacity)
+        self.header["n"] = self.n
+        self.header["head"] = self.head
+
+    def _padded(self, name: str, value: np.ndarray) -> np.ndarray:
+        shape = self._shape(name, **self.dims)
+        if value.shape == shape:
+            return value.astype(_FIELD_DTYPES[name], copy=False)
+        if value.ndim != len(shape) or any(
+            v > s for v, s in zip(value.shape, shape)
+        ):
+            raise ValueError(
+                f"{name}: row shape {tuple(value.shape)} does not fit {shape}"
+            )
+        fill = _PAD_FILL.get(name, 0)
+        out = np.full(shape, fill, dtype=_FIELD_DTYPES[name])
+        slices = tuple(slice(0, v) for v in value.shape)
+        out[slices] = value
+        return out
+
+    def flush(self) -> None:
+        for arr in self.arrays.values():
+            arr.flush()
+        # atomic header write (StepBuffer parity): a concurrent reader must
+        # never see a partially-written n
+        tmp = self.root / "header.json.tmp"
+        tmp.write_text(json.dumps(self.header, indent=2))
+        tmp.replace(self.root / "header.json")
+
+    def refresh(self) -> int:
+        """Re-read n/head from the header (StepBuffer parity for async pairs)."""
+        header_path = self.root / "header.json"
+        try:
+            header = json.loads(header_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return self.n  # mid-rename or partially written; keep last n
+        self.n = int(header.get("n", self.n))
+        self.head = int(header.get("head", self.head))
+        return self.n
+
+    def discard_to(self, n: int) -> None:
+        """Roll back to n rows (success-only rollback, StepBuffer parity).
+        Only valid before the ring has ever wrapped."""
+        n = int(n)
+        assert 0 <= n <= self.n, f"discard_to({n}) with only {self.n} rows"
+        assert self.head == self.n, "discard_to after the ring wrapped"
+        self.n = n
+        self.head = n
+        self.header["n"] = n
+        self.header["head"] = n
+
+    def __len__(self) -> int:
+        return self.n
+
+    def write_episode(self, episode_id: int, runner) -> None:
+        """Append the episode's item/region/rule tables to episodes.jsonl,
+        keyed by episode_id (logger's spec dicts; margins columns and item
+        rows follow these orders). Rolled-back episodes (success-only
+        retries) leave stale lines — readers key on episode_id present in
+        the ring."""
+        from .logger import item_spec_dict, region_dict, rule_spec_dict
+
+        record = {
+            "episode_id": int(episode_id),
+            "task": runner.task_name,
+            "host_task": runner.host if runner.entry.kind == "host" else None,
+            "embodiment": runner.embodiment,
+            "seed": runner.seed,
+            "active_rule_id": runner.active_rule_id,
+            "items": [item_spec_dict(s) for s in runner.items],
+            "regions": [region_dict(r) for r in runner.regions],
+            "rules": [rule_spec_dict(r) for r in runner.rules],
+        }
+        from .logger import _jsonable
+
+        with open(self.root / "episodes.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(_jsonable(record)) + "\n")
+
+
+class LockstepItemWriter:
+    """Per-episode lockstep pair handed to RolloutController as ``buf``
+    (margin_hook.wire_item_episode). Not a StepBuffer — only ``append`` is
+    part of RolloutController's protocol.
+
+    ``offer`` queues one sidecar row per h_fn call (one per captured tick);
+    ``append`` writes the StepBuffer entry FIRST, then pops the oldest
+    queued row into the sidecar. RolloutController finalizes entries in
+    tick order, so queue order == append order == capture order. See the
+    module docstring for the crash semantics.
+    """
+
+    def __init__(self, step_buf, sidecar: ItemSidecarBuffer):
+        self.step_buf = step_buf
+        self.sidecar = sidecar
+        self._rows: list[dict] = []
+
+    def offer(self, row: dict) -> None:
+        self._rows.append(row)
+
+    def append(self, entry: dict) -> None:
+        self.step_buf.append(entry)
+        if not self._rows:
+            raise RuntimeError(
+                "lockstep: StepBuffer append with no queued item row — "
+                "the h_fn must offer exactly one row per captured tick"
+            )
+        self.sidecar.append(self._rows.pop(0))
+
+    @property
+    def capacity(self) -> int:
+        return self.step_buf.capacity

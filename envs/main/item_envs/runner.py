@@ -149,14 +149,19 @@ class ItemEpisodeRunner:
         self._spawn_report: dict | None = None  # T1: spawn_candidates' info dict
         self._stay_ref: dict[str, np.ndarray] = {}
         self._item_psids: dict[int, str] = {}
-        self._side_psids: dict[int, str] | None = None
-        self._held_latch: dict[str, str | None] = {"left": None, "right": None}
+        self._held_tracker = None  # robot_distance.HeldTracker, built on first use
         self._held_warned = False
         self._held_error: str | None = None
 
     # ----------------------------------------------------------------- setup ----
-    def setup(self) -> None:
-        """Build env + items + regions + rules + controller. May raise (recorded by run())."""
+    def setup(self, build_controller: bool = True) -> None:
+        """Build env + items + regions + rules + controller. May raise (recorded by run()).
+
+        build_controller=False (Phase 5 collection): skip the
+        RiskTickController — RolloutController attaches its own. The task
+        time-scale attributes and risk_knobs are still installed (plan()
+        reads them whoever owns the controller).
+        """
         rng = np.random.RandomState(self.seed + 7919)
         self.task_cfg = _load_yaml(self.task_cfg_path)
         self.risk_params = sample_risk(self.task_cfg, rng)
@@ -262,13 +267,12 @@ class ItemEpisodeRunner:
 
         # held detection keys on per_scene_id (C++-assigned, wrapper-stable)
         self._item_psids = {int(entity_of(s).per_scene_id): s.item_id for s in self.items}
-        self._side_psids = None
-        self._held_latch = {"left": None, "right": None}
 
-        self.ctrl = RiskTickController(
-            env, risky_skill_labels=tuple(self.task_cfg.get("risky_skill_labels", ()) or ())
-        )
-        self.ctrl.attach()
+        if build_controller:
+            self.ctrl = RiskTickController(
+                env, risky_skill_labels=tuple(self.task_cfg.get("risky_skill_labels", ()) or ())
+            )
+            self.ctrl.attach()
         # time-scale convention (see robotwin_tasks/_item_utils.py): the runner
         # installs the scales; risky(task) / the T1 skill path switch between them
         task._time_scale_safe = float(self.risk_params.safe_time_scale)
@@ -535,157 +539,35 @@ class ItemEpisodeRunner:
     # --------------------------------------------------------------- margins ----
     def _rule_margins(self, dists: np.ndarray | None = None) -> np.ndarray:
         """[R] margins in rule-table order, raw SI, positive = safe."""
-        if dists is None:
-            dists = robot_distance.robot_item_distances(self.env, self.items)
-        item_map = {s.item_id: (k, s) for k, s in enumerate(self.items)}
-        region_map = {r.region_id: r for r in self.regions}
-        values = []
-        for rule in self.rules:
-            indexed = [item_map[iid] for iid in rule.item_ids]
-            regs = [region_map[rid] for rid in rule.region_ids]
-            values.append(self._one_margin(rule, indexed, regs, dists))
-        return np.asarray(values, dtype=np.float64)
+        return rule_margins(
+            self.env, self.items, self.regions, self.rules, self._stay_ref, dists
+        )
 
     def _one_margin(self, rule, indexed, regs, dists) -> float:
-        consequence = rule.consequence
-        params = rule.params
-        if consequence is Consequence.AVOID:
-            per_item = [
-                margin_fns.m_avoid(dists[k], margin=params.get("margin", 0.0))
-                for k, _spec in indexed
-            ]
-            return margin_fns.set_rule_margin(per_item)
-        if consequence in (Consequence.INSIDE, Consequence.OUTSIDE):
-            region = regs[0]
-            world_T_region = region.world_T()
-            per_item = []
-            for _k, spec in indexed:
-                pts_world = geometry.footprint(
-                    _world_T(spec), spec.obb_center_local, spec.half_extents, spec.up_axis_local
-                )
-                pts_region = geometry.to_frame(pts_world, world_T_region)
-                if consequence is Consequence.INSIDE:
-                    per_item.append(
-                        margin_fns.m_inside(
-                            pts_region, region, require_on_surface=region.kind == "surface"
-                        )
-                    )
-                else:
-                    per_item.append(margin_fns.m_outside(pts_region, region))
-            return margin_fns.set_rule_margin(per_item)
-        if consequence is Consequence.UPRIGHT:
-            per_item = [
-                margin_fns.m_upright(
-                    geometry.tilt_angle(_world_T(spec), spec.up_axis_local), params["theta_max"]
-                )
-                for _k, spec in indexed
-            ]
-            return margin_fns.set_rule_margin(per_item)
-        if consequence is Consequence.STAY:
-            per_item = []
-            for _k, spec in indexed:
-                p_ref = self._stay_ref.get(rule.rule_id)
-                if p_ref is None:
-                    p_ref = _item_position(spec)
-                    self._stay_ref[rule.rule_id] = p_ref
-                per_item.append(
-                    margin_fns.m_stay(
-                        _item_position(spec),
-                        p_ref,
-                        geometry.tilt_angle(_world_T(spec), spec.up_axis_local),
-                        params["d_tol"],
-                        params["theta_tol"],
-                    )
-                )
-            return margin_fns.set_rule_margin(per_item)
-        if consequence in (Consequence.PARTICLES_INSIDE, Consequence.PARTICLES_OUTSIDE):
-            spec = indexed[0][1]
-            pos = _particle_positions(spec)
-            xy_per_region = [
-                geometry.to_frame(pos, region.world_T())[:, :2] for region in regs
-            ]
-            if consequence is Consequence.PARTICLES_INSIDE:
-                return margin_fns.m_particles_inside(xy_per_region, regs, T=params.get("T", 0.005))
-            return margin_fns.m_particles_outside(xy_per_region, regs, T=params.get("T", 0.005))
-        raise ValueError(f"unknown consequence: {consequence!r}")
-
-    def _robot_side_psids(self, env) -> dict[int, str]:
-        """per_scene_id -> left/right for every robot link entity (cached per env).
-
-        per_scene_id is a C++-assigned int, stable across pybind wrappers.
-        distance.py's ``_entity_side_lookup`` keys on ``id()`` of temporary
-        link wrappers that are garbage-collected, so contact-time entities
-        never match it in this process (held stayed -1 despite closed-gripper
-        contact with box_0 for ~90 ticks) — hence the local lookup.
-        """
-        if self._side_psids is None:
-            m: dict[int, str] = {}
-            for side, art in (("left", env.robot.left_entity), ("right", env.robot.right_entity)):
-                for link in art.get_links():
-                    ent = getattr(link, "entity", None)
-                    if ent is not None:
-                        m[int(ent.per_scene_id)] = side
-            self._side_psids = m
-        return self._side_psids
-
-    def _contact_held_sides(self, env, cehj_distance) -> dict[str, str]:
-        """side -> item_id for items touched by a CLOSED gripper link this tick."""
-        item_psids = self._item_psids
-        side_psids = self._robot_side_psids(env)
-        found: dict[str, str] = {}
-        try:
-            contacts = env.task.scene.get_contacts()
-        except Exception:
-            contacts = []  # transient (e.g. before the first step), same guard as distance.py
-        for contact in contacts:
-            bodies = contact.bodies
-            for i in range(2):
-                item_id = item_psids.get(int(bodies[1 - i].entity.per_scene_id))
-                if item_id is None:
-                    continue
-                grip_ent = bodies[i].entity
-                if not cehj_distance._is_gripper_entity(env, grip_ent):
-                    continue
-                side = side_psids.get(int(grip_ent.per_scene_id))
-                if side is None or side in found or not cehj_distance._arm_is_holding(env, side):
-                    continue
-                found[side] = item_id
-        return found
+        return one_margin(rule, indexed, regs, dists, self._stay_ref)
 
     def _held_indices(self, env) -> np.ndarray:
         """[2] item index held by left/right arm, -1 if none (contact latch).
 
-        CEHJ latch semantics: a closed-gripper contact STARTS the latch; it
-        holds while the arm stays closed and the item remains near the
-        TCP/fingers (``_hold_metrics``), and releases otherwise. Failures
-        warn ONCE and land in meta.diag["held_error"] — never silently -1.
+        CEHJ latch semantics (robot_distance.HeldTracker): a closed-gripper
+        contact STARTS the latch; it holds while the arm stays closed and the
+        item remains near the TCP/fingers (``_hold_metrics``), and releases
+        otherwise. Failures warn ONCE and land in meta.diag["held_error"] —
+        never silently -1.
         """
-        held = np.array([-1, -1], dtype=np.int64)
         if not self._item_psids:
-            return held
-        from main.envs import distance as cehj_distance
-
+            return np.array([-1, -1], dtype=np.int64)
         try:
-            found = self._contact_held_sides(env, cehj_distance)
-            index = {s.item_id: k for k, s in enumerate(self.items)}
-            by_id = {s.item_id: s for s in self.items}
-            for side, slot in (("left", 0), ("right", 1)):
-                item_id = found.get(side)
-                if item_id is None:
-                    prev = self._held_latch.get(side)
-                    if prev is not None and cehj_distance._arm_is_holding(env, side):
-                        if cehj_distance._hold_metrics(env, by_id[prev].entity, side)["near"]:
-                            item_id = prev
-                self._held_latch[side] = item_id
-                if item_id is not None:
-                    held[slot] = index[item_id]
+            if self._held_tracker is None:
+                self._held_tracker = robot_distance.HeldTracker(self.items)
+            return self._held_tracker.held_indices(env)
         except Exception as exc:
             if not self._held_warned:
                 self._held_warned = True
                 self._held_error = f"{type(exc).__name__}: {exc}"
                 print(f"[runner] held detection failed (held stays -1): {self._held_error}")
                 traceback.print_exc()
-        return held
+        return np.array([-1, -1], dtype=np.int64)
 
     # --------------------------------------------------------------- sidecar ----
     def _write_retime_sidecar(self) -> None:
@@ -728,6 +610,91 @@ class _TickState:
 def _load_yaml(path) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
+
+# ---------------------------------------------------------------------------
+# margin evaluation (ItemEpisodeRunner._rule_margins' core, shared with
+# margin_hook.ItemMarginHFn — Phase 5. stay_ref is mutated for STAY rules:
+# the reference pose is latched at first evaluation, runner semantics)
+# ---------------------------------------------------------------------------
+
+
+def rule_margins(env, items, regions, rules, stay_ref, dists=None) -> np.ndarray:
+    """[R] margins in rule-table order, raw SI, positive = safe."""
+    if dists is None:
+        dists = robot_distance.robot_item_distances(env, items)
+    item_map = {s.item_id: (k, s) for k, s in enumerate(items)}
+    region_map = {r.region_id: r for r in regions}
+    values = []
+    for rule in rules:
+        indexed = [item_map[iid] for iid in rule.item_ids]
+        regs = [region_map[rid] for rid in rule.region_ids]
+        values.append(one_margin(rule, indexed, regs, dists, stay_ref))
+    return np.asarray(values, dtype=np.float64)
+
+
+def one_margin(rule, indexed, regs, dists, stay_ref) -> float:
+    consequence = rule.consequence
+    params = rule.params
+    if consequence is Consequence.AVOID:
+        per_item = [
+            margin_fns.m_avoid(dists[k], margin=params.get("margin", 0.0))
+            for k, _spec in indexed
+        ]
+        return margin_fns.set_rule_margin(per_item)
+    if consequence in (Consequence.INSIDE, Consequence.OUTSIDE):
+        region = regs[0]
+        world_T_region = region.world_T()
+        per_item = []
+        for _k, spec in indexed:
+            pts_world = geometry.footprint(
+                _world_T(spec), spec.obb_center_local, spec.half_extents, spec.up_axis_local
+            )
+            pts_region = geometry.to_frame(pts_world, world_T_region)
+            if consequence is Consequence.INSIDE:
+                per_item.append(
+                    margin_fns.m_inside(
+                        pts_region, region, require_on_surface=region.kind == "surface"
+                    )
+                )
+            else:
+                per_item.append(margin_fns.m_outside(pts_region, region))
+        return margin_fns.set_rule_margin(per_item)
+    if consequence is Consequence.UPRIGHT:
+        per_item = [
+            margin_fns.m_upright(
+                geometry.tilt_angle(_world_T(spec), spec.up_axis_local), params["theta_max"]
+            )
+            for _k, spec in indexed
+        ]
+        return margin_fns.set_rule_margin(per_item)
+    if consequence is Consequence.STAY:
+        per_item = []
+        for _k, spec in indexed:
+            p_ref = stay_ref.get(rule.rule_id)
+            if p_ref is None:
+                p_ref = _item_position(spec)
+                stay_ref[rule.rule_id] = p_ref
+            per_item.append(
+                margin_fns.m_stay(
+                    _item_position(spec),
+                    p_ref,
+                    geometry.tilt_angle(_world_T(spec), spec.up_axis_local),
+                    params["d_tol"],
+                    params["theta_tol"],
+                )
+            )
+        return margin_fns.set_rule_margin(per_item)
+    if consequence in (Consequence.PARTICLES_INSIDE, Consequence.PARTICLES_OUTSIDE):
+        spec = indexed[0][1]
+        pos = _particle_positions(spec)
+        xy_per_region = [
+            geometry.to_frame(pos, region.world_T())[:, :2] for region in regs
+        ]
+        if consequence is Consequence.PARTICLES_INSIDE:
+            return margin_fns.m_particles_inside(xy_per_region, regs, T=params.get("T", 0.005))
+        return margin_fns.m_particles_outside(xy_per_region, regs, T=params.get("T", 0.005))
+    raise ValueError(f"unknown consequence: {consequence!r}")
 
 
 def _merge_risk_override(params: RiskParams, override: dict) -> None:

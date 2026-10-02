@@ -33,7 +33,16 @@ import torch
 from main.network.body_features import BodyTokenExtractor  # noqa: E402
 from main.train.collect import make_training_env  # noqa: E402
 from main.train.hfunc import compute_h  # noqa: E402
+from main.envs.controller import TickChunkedController  # noqa: E402
 from main.envs.distance import obstacle_contact  # noqa: E402
+
+
+def default_h_fn(env, cfg):
+    """The pre-Phase-5 h path: compute_h on the spawned obstacle, byte for
+    byte. RolloutController calls this when no h_fn is injected (item tasks
+    inject ItemMarginHFn instead — see envs/main/item_envs/margin_hook.py).
+    """
+    return compute_h(env, cfg.table_margin, cfg.table_height)
 
 
 class RolloutTimeout(Exception):
@@ -53,8 +62,8 @@ class RolloutController:
                  policy_enc=None, actor=None, critics=None,
                  filter_active: bool = True,
                  buf=None, episode_id: int = 0, perturb_prob: float = 0.0,
-                 rng=None, video=None, max_steps: int = 4500):
-        from main.envs.controller import TickChunkedController
+                 rng=None, video=None, max_steps: int = 4500,
+                 h_fn=None, controller_cls=TickChunkedController):
         from main.train.filter import SafetyFilter
 
         self.cfg = cfg
@@ -64,7 +73,12 @@ class RolloutController:
         self.kin = kin
         self.policy_enc = policy_enc
         self.mode = mode
-        self.ctrl = TickChunkedController(self.env)
+        # Phase 5 hooks: h_fn replaces compute_h (item tasks); controller_cls
+        # swaps the tick controller (RiskTickController for item tasks) —
+        # both instantiated with the same args as before
+        self.h_fn = h_fn
+        self.controller_cls = controller_cls
+        self.ctrl = self.controller_cls(self.env)
         self.ctrl.attach()
         self.ctrl.tick_hook = self._tick_hook
         self.buf = buf
@@ -212,7 +226,7 @@ class RolloutController:
     # ---------------- capture ----------------
     def _capture_tick(self):
         obs = self.env.get_encoder_obs(self.kin)
-        h, diag = compute_h(self.env, self.cfg.table_margin, self.cfg.table_height)
+        h, diag = (self.h_fn or default_h_fn)(self.env, self.cfg)
         # h is trained/evaluated in h*h_scale units (config keeps metres
         # for physical margins; see FrozenConfig.h_scale)
         h = float(h) * float(getattr(self.cfg, "h_scale", 1.0))

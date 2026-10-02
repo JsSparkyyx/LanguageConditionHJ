@@ -123,15 +123,47 @@ def make_kinematics(ckpt_dir: Path, embodiment: str = "piper"):
 ARM_DISTANCE = {"ur5-wsg": 0.8}  # ckpt dual-ur5 URDF mounts the arms 0.8 m apart
 
 
+def is_item_task(task: str) -> bool:
+    """True when task is a registered main.item_envs task (Phase 5).
+
+    CEHJ-side cwd makes ``main`` = ``<repo>/main``; append
+    ``<repo>/envs/main`` to ``main.__path__`` BEFORE importing
+    ``main.item_envs.*`` — the envs/main/item_envs/_bootstrap.py idiom. A
+    checkout without envs/main (plain CEHJ_safe) always returns False, so
+    the obstacle path below stays byte-identical there.
+    """
+    import main
+
+    item_main = CEHJ_ROOT / "envs" / "main"
+    if not item_main.is_dir():
+        return False
+    existing = {str(p) for p in getattr(main, "__path__", [])}
+    if str(item_main) not in existing:
+        main.__path__.append(str(item_main))
+    from main.item_envs.registry import ITEM_TASKS
+
+    return task in ITEM_TASKS
+
+
 def make_training_env(cfg: FrozenConfig, seed: int, control_freq: float = 25.0):
     """Env built exactly like run.py's: controller install, on-path obstacle
     present in the scene, cuRobo world refreshed. The expert/nominal ignores
     the obstacle in planning but plays through it physically — that is where
     the unsafe transitions (h < 0) come from.
+
+    Item tasks (Phase 5): built through main.item_envs.registry with the
+    runner's machinery instead of the single-obstacle choose_and_spawn path
+    (RolloutController attaches the RiskTickController; env.obstacle becomes
+    the totality marker — None when the episode has no rules).
     """
     from main.envs.controller import CuroboIKController
     from main.envs.env import Env
     from main.envs.obstacle import choose_and_spawn, update_curobo_world
+
+    if is_item_task(cfg.task):
+        from main.item_envs.margin_hook import build_item_training_env
+
+        return build_item_training_env(cfg, seed, control_freq=control_freq)
 
     CuroboIKController.install()
     env = Env(cfg.task, cfg.embodiment, seed,
@@ -259,6 +291,14 @@ def collect(cfg: FrozenConfig, out_root: Path, buf: StepBuffer | None = None,
     record_video=True: write a panel video per ATTEMPT to
     out_root/videos/ (ep<slot>_a<attempt>_...mp4) — failed attempts are
     kept on disk too, so warmup retries can be debugged visually.
+
+    Item tasks (Phase 5, cfg.task registered in main.item_envs): episodes
+    build through the registry/runner machinery, run on the
+    RiskTickController with h = kappa * margin_active (ItemMarginHFn), and
+    write an ItemSidecarBuffer in lockstep with the StepBuffer
+    (item_buffer/ next to it — same capacity, same indices; rollback and
+    flush are mirrored). A fresh sidecar pairs only with a fresh
+    StepBuffer.
     """
     from main.train.rollout import RolloutController  # lazy: rollout imports us
 
@@ -296,6 +336,7 @@ def collect(cfg: FrozenConfig, out_root: Path, buf: StepBuffer | None = None,
     follow_path = Path(follow) if follow else None
     follow_mtime = None
     built = None  # lazily-built model modules for --follow reloads
+    sidecar = None  # ItemSidecarBuffer, created with the first item episode
 
     ep = 0          # schedule slot (advances per KEPT episode)
     attempt = 0     # every rollout attempt (drives the scene seed)
@@ -329,8 +370,11 @@ def collect(cfg: FrozenConfig, out_root: Path, buf: StepBuffer | None = None,
         task_ep, emb_ep = schedule[ep % len(schedule)]
         # total spawn guarantee: with h = d_block only, an obstacle-free
         # episode would store h = +inf and NaN the Bellman target — re-draw
-        # the slot (keeping the SAME task/embodiment) instead
+        # the slot (keeping the SAME task/embodiment) instead. Item tasks:
+        # the same gate reads env.obstacle as the has-rules marker (a
+        # layout-infeasible T1 seed has no rules and is re-drawn).
         ro = None
+        item_ep = is_item_task(task_ep)
         for _retry in range(5):
             cfg_ep = sample_scene(cfg, rng, task_ep, emb_ep) \
                 if cfg.randomize_scenes else cfg
@@ -342,6 +386,14 @@ def collect(cfg: FrozenConfig, out_root: Path, buf: StepBuffer | None = None,
                 models is not None
                 and rng.rand() < cfg.filter_episode_frac
             )
+            ctrl_kw = {}
+            if item_ep:
+                # Phase 5: item tasks run on the RiskTickController (plan
+                # retiming); the h_fn + sidecar wiring lands after a
+                # successful build, in the one wire_item_episode call below
+                from main.item_envs.controller import RiskTickController
+
+                ctrl_kw["controller_cls"] = RiskTickController
             try:
                 candidate = RolloutController(
                     cfg_ep, seed=episode_offset + attempt, mode="collect",
@@ -353,6 +405,7 @@ def collect(cfg: FrozenConfig, out_root: Path, buf: StepBuffer | None = None,
                     buf=buf, episode_id=episode_offset + attempt,
                     perturb_prob=cfg_ep.perturb_prob, rng=rng,
                     max_steps=int(cfg_ep.max_steps_per_episode * 250.0 / 25.0),
+                    **ctrl_kw,
                 )
             except Exception as exc:
                 # scene setup itself can fail (bad seed: unstable object
@@ -373,6 +426,19 @@ def collect(cfg: FrozenConfig, out_root: Path, buf: StepBuffer | None = None,
             slot_retries = 0  # don't carry the failed slot's count forward
             ep += 1
             continue
+        if item_ep:
+            # Phase 5, the ONE per-episode wiring call: h_fn (ItemMarginHFn)
+            # + lockstep sidecar rows + risky_skill_labels + episode tables
+            if sidecar is None:
+                from main.item_envs.item_buffer import ItemSidecarBuffer
+                from main.item_envs.masks import token_grid
+
+                sidecar = ItemSidecarBuffer.for_step_buffer(
+                    buf, n_tok=token_grid()[1]
+                )
+            from main.item_envs.margin_hook import wire_item_episode
+
+            wire_item_episode(ro, sidecar)
         print(f"ep {ep}: {cfg_ep.embodiment} / {cfg_ep.task} / "
               f"{cfg_ep.obstacle_model} / {cfg_ep.obstacle_mode} / "
               f"{'FILTER' if use_filter else 'nominal'}")
@@ -423,7 +489,11 @@ def collect(cfg: FrozenConfig, out_root: Path, buf: StepBuffer | None = None,
                 # success-only warmup: roll back the failed episode and
                 # retry the same slot with a fresh scene (new seed)
                 buf.discard_to(n_before)
+                if sidecar is not None:  # lockstep rollback (Phase 5)
+                    sidecar.discard_to(n_before)
                 buf.flush()
+                if sidecar is not None:
+                    sidecar.flush()
                 print(f"[collect] ep {ep} failed (attempt {slot_retries}/"
                       f"{cap}); retrying with a new scene")
                 continue
@@ -438,6 +508,8 @@ def collect(cfg: FrozenConfig, out_root: Path, buf: StepBuffer | None = None,
             slot_retries = 0
             n_written = len(buf)
             buf.flush()
+            if sidecar is not None:  # lockstep publish (Phase 5)
+                sidecar.flush()
             ep += 1
             continue
         slot_retries = 0
@@ -458,9 +530,13 @@ def collect(cfg: FrozenConfig, out_root: Path, buf: StepBuffer | None = None,
             f"realized/cmd={trace.get('mean_realized_ratio', float('nan')):.2f}"
         )
         buf.flush()
+        if sidecar is not None:  # lockstep publish (Phase 5)
+            sidecar.flush()
         ep += 1
 
     buf.flush()
+    if sidecar is not None:
+        sidecar.flush()
     print(f"spawn skips by mode: {n_skipped}; kept-failed episodes: {n_fallback}")
     print(f"\ncollection done: {n_written} steps in {time.time() - t_start:.0f}s")
     return out_root / "buffer"

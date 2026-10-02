@@ -76,6 +76,17 @@ python main/train/train.py --collect-rounds 10 --episodes-per-round 3 \
   process + trainer, checkpoint-follow). Faster wall-clock (collection hides
   behind training); round mode is the debuggable default.
 
+### item_envs integration (Phase 5)
+
+`cfg.task` registered in `main.item_envs.registry` routes through
+`is_item_task` in `make_training_env` (collect.py) into the runner
+machinery instead of choose_and_spawn; `rollout.py` takes `h_fn`
+(ItemMarginHFn: h = kappa*margin_active) + `controller_cls`
+(RiskTickController) hooks, defaults byte-identical. Item episodes write an
+`ItemSidecarBuffer` (`item_buffer/` next to the StepBuffer) in lockstep —
+same capacity/indices, rollback+flush mirrored; per-episode tables in
+`episodes.jsonl`.
+
 ## Standard training (production defaults)
 
 ```

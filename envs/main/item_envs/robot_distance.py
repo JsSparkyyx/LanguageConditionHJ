@@ -51,7 +51,7 @@ ensure_main_path()
 
 from .items import ItemSpec, entity_of
 
-__all__ = ["robot_item_distances", "robot_item_forces"]
+__all__ = ["robot_item_distances", "robot_item_forces", "HeldTracker"]
 
 
 def _cehj():
@@ -91,7 +91,8 @@ def _item_entity_psids(spec: ItemSpec) -> set[int]:
 def _robot_side_psids(env) -> dict[int, str]:
     """per_scene_id -> "left"/"right" for every robot link entity (cached on env).
 
-    Same construction as runner._robot_side_psids. Keyed on per_scene_id
+    Same construction as HeldTracker.contact_held_sides' side map. Keyed on
+    per_scene_id
     because distance.py's ``_entity_side_lookup`` keys on id() of temporary
     link wrappers that are garbage-collected before contact time.
     """
@@ -112,7 +113,7 @@ def _contact_held_item_indices(env, specs: list, cehj) -> set[int]:
 
     The per_scene_id-keyed replacement for the CEHJ
     ``_detect_held_from_contacts`` supplement (same scan shape as
-    runner._contact_held_sides): the item side is matched by psid, the
+    HeldTracker.contact_held_sides): the item side is matched by psid, the
     gripper side by NAME (``_is_gripper_entity`` is wrapper-safe) plus the
     psid side map, and the arm must read closed (``_arm_is_holding``). One
     item per arm, first contact wins.
@@ -145,6 +146,79 @@ def _contact_held_item_indices(env, specs: list, cehj) -> set[int]:
             found_sides.add(side)
             held.add(idx)
     return held
+
+
+class HeldTracker:
+    """Per-arm held-item latch (runner._held_indices' core, shared with
+    margin_hook.ItemMarginHFn — Phase 5).
+
+    CEHJ latch semantics: a closed-gripper contact STARTS the latch; it
+    holds while the arm stays closed and the item remains near the
+    TCP/fingers (``_hold_metrics``), and releases otherwise. Raises on
+    failure — callers guard (the runner warns once into
+    meta.diag["held_error"]).
+    """
+
+    def __init__(self, items):
+        self._items = _as_specs(items)
+        self._item_psids = {
+            int(entity_of(s).per_scene_id): s.item_id for s in self._items
+        }
+        self._latch: dict[str, str | None] = {"left": None, "right": None}
+
+    @property
+    def latched(self) -> dict[str, str | None]:
+        """side -> item_id currently latched (post held_indices), None if free."""
+        return dict(self._latch)
+
+    def contact_held_sides(self, env, cehj) -> dict[str, str]:
+        """side -> item_id for items touched by a CLOSED gripper link this step.
+
+        Same scan shape as ``_contact_held_item_indices`` but side-attributed:
+        one item per arm, first contact wins.
+        """
+        item_psids = self._item_psids
+        side_psids = _robot_side_psids(env)
+        found: dict[str, str] = {}
+        try:
+            contacts = env.task.scene.get_contacts()
+        except Exception:
+            contacts = []  # transient (e.g. before the first step), distance.py's guard
+        for contact in contacts:
+            bodies = contact.bodies
+            for i in range(2):
+                item_id = item_psids.get(int(bodies[1 - i].entity.per_scene_id))
+                if item_id is None:
+                    continue
+                grip_ent = bodies[i].entity
+                if not cehj._is_gripper_entity(env, grip_ent):
+                    continue
+                side = side_psids.get(int(grip_ent.per_scene_id))
+                if side is None or side in found or not cehj._arm_is_holding(env, side):
+                    continue
+                found[side] = item_id
+        return found
+
+    def held_indices(self, env) -> np.ndarray:
+        """[2] item index held by left/right arm, -1 if none (contact latch)."""
+        held = np.array([-1, -1], dtype=np.int64)
+        if not self._item_psids:
+            return held
+        cehj, _load_spheres = _cehj()
+        found = self.contact_held_sides(env, cehj)
+        index = {s.item_id: k for k, s in enumerate(self._items)}
+        by_id = {s.item_id: s for s in self._items}
+        for side, slot in (("left", 0), ("right", 1)):
+            item_id = found.get(side)
+            if item_id is None:
+                prev = self._latch.get(side)
+                if prev is not None and cehj._arm_is_holding(env, side):
+                    if cehj._hold_metrics(env, by_id[prev].entity, side)["near"]:
+                        item_id = prev
+            self._latch[side] = item_id
+            if item_id is not None:
+                held[slot] = index[item_id]
+        return held
 
 
 def _spec_obb_distance(cehj, held_obb: tuple, origin, rot, half) -> float:
