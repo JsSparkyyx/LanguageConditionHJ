@@ -1,21 +1,21 @@
 # Feasibility probes — results and gate evaluation (plan v3 §6 Phase 3, STOP gate)
 
-Date: 2026-10-02. Status: **all probes have sweep data. P1 gate FAILED on the first
-sweep (layout infeasibility, not geometry) → documented Fix 1 applied to
-`spawn.py`, rerun submitted (array 22611061). P3-robot PASS. P4(T1) FAIL (finding
-F5).** Outputs under `runs/item_envs/feas/` (rows JSONL + `summary.json` +
-`keyframes/`; the pre-Fix-1 P1 sweep is archived at `runs/item_envs/feas/P1_pre_fix1/`);
-run logs under `/work/nvme/bifq/project/tmp/logs/`.
+Date: 2026-10-02. Status: **all probes complete. P1 gate PASSES on the Fix-1 rerun
+(near2 63.8%, touch 62.8%, baseline 94.3%). P3-robot PASS. P4(T1) still FAIL
+(off_path visibility, finding F5 — its own documented fix pending).** Outputs
+under `runs/item_envs/feas/` (rows JSONL + `summary.json` + `keyframes/`; the
+pre-Fix-1 P1 sweep is archived at `runs/item_envs/feas/P1_pre_fix1/`); run logs
+under `/work/nvme/bifq/project/tmp/logs/`.
 
 Gate summary:
 
 | probe | gate | verdict |
 |---|---|---|
-| P1 multi-object path crossing (T1) | near ≤ 2 cm of ≥ 2 candidates in ≥ 50%; touch ≥ 1 in ≥ 30%; no-object success ≥ 70% | **FAIL on sweep 1** (near2 13.7%, touch 15.6%, baseline 94.1% PASS) — dominated by 18% layout feasibility; on the feasible subset the gate passes (near2 73%). Fix 1 applied, **rerun in flight** |
+| P1 multi-object path crossing (T1) | near ≤ 2 cm of ≥ 2 candidates in ≥ 50%; touch ≥ 1 in ≥ 30%; no-object success ≥ 70% | **PASS (Fix-1 rerun)**: near2 63.8%, touch 62.8%, baseline 94.3%. Sweep 1 (pre-fix): FAIL (13.7/15.6/94.1) — 18% layout feasibility was the cause |
 | P2 bowl containment + beads (T2) | rest inside: PASS (default cell) / FAIL (r=8 overflow cells, expected) · zero tunneling: **PASS** · spill ↑ with accel: **FAIL (finding F2)** · spill ↑ with ω: **FAIL as stated (finding F3)** · physics ≤ 20 ms/tick @ N=60: **PASS** | partial, findings below |
 | P3 push coast (T3) | coasting > 0, ↑ with v, ↓ with friction | **PASS** |
 | P3-robot push primitive | ≤ 3 cm of commanded in ≥ 80% of seeds at time_scale 0.5 | **PASS** (ur5-wsg 1.00, franka-panda 0.95) |
-| P4 visibility | visible fraction ≥ 0.3 in ≥ 1 camera in ≥ 95% of seeds | T2: **PASS** (bowl_src exactly 0.95 — borderline) · T1: **FAIL** (per item: on_path 0.85, near_path 0.98, off_path 0.65 — finding F5) |
+| P4 visibility | visible fraction ≥ 0.3 in ≥ 1 camera in ≥ 95% of seeds | T2: **PASS** (bowl_src exactly 0.95 — borderline) · T1: **FAIL** (rerun: near_path 0.951, on_path 0.917, off_path 0.642 — finding F5, fix pending) |
 | P5 token alignment (gpu) | highest-coverage token cells contain the encoder token positions closest to the item | **PASS** (overlap 0.5 — borderline) |
 
 ---
@@ -57,10 +57,22 @@ on_path→near_path→off_path, quota-gated so off_path only absorbs slots beyon
 the on/near minimum (`degraded_from` recorded); (c) partial-K acceptance: a
 layout with k ≥ 2 and the on/near quota met is kept instead of discarded
 (`k_dropped` recorded); (d) MAX_LAYOUTS 25→40, NEAR_PATH_TRIES 12→40.
-Offline replay of the diagnostic cells: place_container_plate layout
-feasibility 2/4 → 4/4 seeds. **Rerun submitted (array 22611061, same probe +
-grid into a fresh `runs/item_envs/feas/P1/`).** If the rerun still fails the
-gate, one documented fix remains before the STOP-gate report.
+
+**Rerun (array 22611061, 1000 rows, `runs/item_envs/feas/P1/`): gate PASS.**
+near2 **63.8%** (≥ 50), touch **62.8%** (≥ 30), baseline success **94.3%**
+(≥ 70). Layout feasibility 18% → **74.6%** overall:
+
+| host | embodiment | feasible | host | embodiment | feasible |
+|---|---|---|---|---|---|
+| place_container_plate | ur5-wsg | 43/50 (86%) | place_container_plate | franka-panda | 45/50 (90%) |
+| place_burger_fries | ur5-wsg | 50/50 (100%) | place_burger_fries | franka-panda | 45/50 (90%) |
+| stack_blocks_two | ur5-wsg | 37/50 (74%) | stack_blocks_two | franka-panda | 34/50 (68%) |
+| stack_bowls_two | ur5-wsg | 14/50 (28%) | stack_bowls_two | franka-panda | 11/50 (22%) |
+| place_bread_basket | ur5-wsg | 48/50 (96%) | place_bread_basket | franka-panda | 46/50 (92%) |
+
+stack_bowls_two remains the hardest host (22–28% — its corridor is short and
+its keepaways large) but no longer zero; the gate passes with it included.
+34 error rows (same cuRobo AssertionError / LinAlgError kinds as sweep 1).
 
 ## P3-robot — push primitive with the robot (T3)
 
@@ -77,16 +89,15 @@ Gate (≥ 80% within 3 cm at time_scale 0.5): **PASS on both embodiments.**
 Accuracy degrades monotonically with time_scale — exactly the dose-response
 T3 calibration needs (the 1.0–1.3 band straddles the 80% line).
 
-## P4 addendum — T1 visibility (from the P1 sweep's t = 0 hook)
+## P4 addendum — T1 visibility (from the P1 sweeps' t = 0 hook)
 
-175 rows over the feasible episodes of sweep 1 (per-item max-camera visible
-fraction). Per placement class: on_path **0.85**, near_path **0.98**, off_path
-**0.65** (several off_path items fully invisible, vis_max = 0.0) → per-item
-gate FAIL; per-seed "all candidates ≥ 0.3" is 0–50% per cell (gate 95%). The
-deficit is concentrated in off_path candidates near the far table corners
-(outside the camera rig's useful frustum) — *finding F5 below*. Fix 1 does not
-change off_path placement; P4-T1 gets its own documented fix if the rerun
-confirms the failure.
+Rerun (Fix-1 layouts, 636 item measurements): near_path **0.951**, on_path
+**0.917**, off_path **0.642** (fully-invisible items persist, vis_max = 0.0) —
+per-item gate FAIL; overall 0.808. Sweep 1 (175 measurements over its fewer
+feasible episodes) read the same: on_path 0.85, near_path 0.98, off_path 0.65.
+The deficit is structural and concentrated in off_path candidates near the far
+table corners (outside the camera rig's useful frustum); Fix 1 did not change
+off_path placement — *finding F5 below, its own documented fix pending*.
 
 180 cells, 3 seeds each. `002_bowl` ids 1/2/3/5, N ∈ {30, 60, 100} beads,
 r ∈ {5, 6, 8} mm, mass 0.5–2 g. Data: `runs/item_envs/feas/P2/` (logs
@@ -160,16 +171,12 @@ positions": PASS at exactly 0.5 — **borderline**; overlay keyframe in
 
 ## Findings for the STOP-gate review (human decisions needed)
 
-- **F1 (P1 layout feasibility) — quantified by sweep 1, Fix 1 applied.**
-  Confirmed and extended by the full sweep: layout feasibility is 18%
-  overall (0% on both stack hosts, 16–28% on place_container_plate /
-  place_burger_fries, ~50% on place_bread_basket), and it — not exposure
-  geometry — fails the P1 gate (on feasible episodes near2 = 73%). Fix 1
-  (adaptive placement + quota degradation, see the P1 section) is this gate's
-  first documented fix; the rerun (array 22611061) decides. If it still
-  fails, the remaining options are: one more documented fix (e.g. per-host
-  keepaway/`obstacle_bbox_gap` overrides in the T1 YAML), or STOP and report —
-  dropping hosts is reserved decision #3 (human).
+- **F1 (P1 layout feasibility) — RESOLVED by Fix 1.** The full sweeps quantify
+  it: feasibility 18% (sweep 1) → 74.6% (Fix-1 rerun), and the P1 gate passes
+  (near2 63.8%, touch 62.8%, baseline 94.3%). stack_bowls_two stays the
+  hardest host (22–28% feasible — short corridor, large keepaways) but is no
+  longer zero and does not block the gate. No further action; dropping hosts
+  (reserved decision #3) is off the table.
 - **F2 (P2 translate gate assumption).** Horizontal translation produces
   zero spill even at 32 m/s² peak accel — the regime is genuinely benign for
   a rimmed bowl at these masses/frictions; the "spill increases with accel"
@@ -184,13 +191,14 @@ positions": PASS at exactly 0.5 — **borderline**; overlay keyframe in
 - **F4 (borderline passes).** P4 bowl_src = 0.95 (exactly at gate) and P5
   overlap = 0.5 (exactly at gate) — both pass as written; noted for the
   record, no action required.
-- **F5 (P4-T1 visibility).** T1 candidates fail the visibility gate
-  (on_path 0.85, near_path 0.98, off_path 0.65 per item; the deficit is
-  off_path items in the far table corners, several with vis_max = 0.0).
-  Candidate documented fix: restrict off_path sampling to the camera rig's
-  useful frustum (empirically the visible table band), or drop the off_path
-  class fraction in favor of near_path. Deferred until the P1 rerun lands —
-  P4-T1 will be re-measured from the rerun's t = 0 hook on the same seeds.
+- **F5 (P4-T1 visibility) — CONFIRMED on the rerun, fix pending (its own
+  documented-fix budget).** Rerun: on_path 0.917, near_path 0.951, off_path
+  0.642 per item (gate 0.95). The deficit is off_path items in the far table
+  corners (outside the camera rig's useful frustum). Fix candidates:
+  (a) restrict off_path sampling to the empirically visible table band;
+  (b) shift the off_path class fraction toward near_path. Scheduled before
+  T1 calibration (spawn placement feeds it), validated by a layout+render-only
+  visibility probe — no full-episode sweep needed.
 
 ## Infra notes (probe-platform lessons, for the record)
 
