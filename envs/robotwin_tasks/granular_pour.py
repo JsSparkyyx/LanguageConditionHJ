@@ -33,15 +33,29 @@ Item/region registration (v3 §5 contract):
   gets token masks), while the bimanual variant's dynamic target registers
   as item AND region.
 - regions: ``bowl_src_interior`` and ``target_interior`` (kind "container",
-  nameable, measured rim_radius/rim_height from the runtime collision mesh,
-  up_axis_local [0,1,0] — the glb y-up file frame), plus one kind "zone"
-  region per mat (``zone_red`` / ``zone_blue``; the laptop variant names its
+  nameable, up_axis_local [0,1,0] — the glb y-up file frame). The registered
+  ``rim_radius`` is the bowl's OUTER footprint radius + 2 mm
+  (``container_region_radius``), NOT the rim opening radius: 002_bowl's
+  interior belly is up to 5.3 mm wider than the rim opening, so resting
+  beads press against the belly wall outside a rim-radius polygon, and the
+  T-softmin over 60 beads then pulls the joint particles_inside margin
+  negative at t=0 with every bead physically inside (p4-accept failures;
+  the yaml sets T: 0.001 on the particles rules for the same reason).
+  ``rim_height`` stays the measured rim plane. Plus one kind "zone" region
+  per mat (``zone_red`` / ``zone_blue``; the laptop variant names its
   region ``laptop`` to match splits.yaml heldout_regions).
 
 Risk knobs (read from ``task.risk_knobs``, installed by the runner from
 risk_params.task before play_once; defaults in parentheses are the
 vanilla-RoboTwin fallback):
-- ``pour_height`` (0.10 m): bowl rim height above the target rim at the pour.
+- ``pour_height`` (0.10 m): bowl rim height above the target rim at the
+  pour, clamped from below by ``min_pour_height`` (source outer radius +
+  POUR_HEIGHT_CLEAR) — below that, the tilting source rim ring dips into
+  the target mouth near 90 deg and the two equal-sized rims collide
+  (p4-accept ur5 episode abort: bowl knocked from the grasp, next tilt
+  step planned 0.51 m away). ``_tilt_steps`` additionally aborts quietly
+  when the live rim leaves the pivot (POUR_PIN_ABORT) instead of chasing
+  a lost bowl.
 - ``pour_offset`` (0.0 m): lateral offset of the pour point toward zone 0.
 - ``tilt_rate`` (2.0 rad/s): commanded pour angular rate — see the
   approximation note on _tilt_steps.
@@ -59,10 +73,13 @@ import sapien
 from ._item_utils import (
     bead_grid_positions,
     bowl_geometry,
+    container_region_radius,
+    min_pour_height,
     register_item,
     register_zone,
     risky,
     spawn_beads,
+    zone_clear_ok,
     zone_mat,
 )
 
@@ -87,12 +104,15 @@ BIMANUAL_LIFT = (0.05, 0.10)  # m above the table, sampled at play time
 # given rule (per-zone particles_outside entries in the task yaml).
 ZONE_DEFS = (("red", (0.85, 0.10, 0.10)), ("blue", (0.15, 0.30, 0.90)))
 ZONE_SIZE_XY = ((0.10, 0.16), (0.08, 0.14))  # per-zone full-extent sampling ranges
+ZONE_GAP = 0.02  # mat-edge to bowl-outer-wall clearance (see zone_clear_ok)
 USE_LAPTOP_ZONE = False  # True: replace zone 1 with a static 015_laptop articulation
 LAPTOP_MODEL_IDS = (9748, 9912, 9960, 9968, 9992, 9996, 10040, 10098, 10101, 10125, 10211)
 
 # --- pour motion ---
 POUR_HEIGHT_DEFAULT = 0.10  # m above the target rim
 POUR_OFFSET_DEFAULT = 0.0  # m, lateral, toward zone 0
+POUR_HEIGHT_CLEAR = 0.015  # effective pour height >= src outer radius + this
+                           # (min_pour_height — the rim rings cannot interlink)
 TILT_RATE_DEFAULT = 2.0  # rad/s
 TILT_ANGLE_DEG = (100.0, 120.0)  # sampled per episode (P2 probed 110 deg)
 TILT_STEPS = 10  # small EE-rotation steps per tilt direction
@@ -104,9 +124,13 @@ TILT_STEPS = 10  # small EE-rotation steps per tilt direction
 # ee_pose trace; P2's probed band is 1-3 rad/s.
 OMEGA_PLAN_REF = 2.0  # rad/s
 TILT_S_MIN, TILT_S_MAX = 0.25, 2.0
+POUR_PIN_ABORT = 0.10  # abort the tilt when the live rim is this far off the
+                       # pivot (bowl lost from the grasp — do not chase it)
 HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 Hz)
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
 SUCCESS_MIN_FRAC = 0.8  # fraction of beads inside the target interior
+CONTAINER_REGION_PAD = 0.002  # container region radius = outer radius + this
+                              # (container_region_radius — footprint column)
 
 
 class granular_pour(place_container_plate):
@@ -187,7 +211,11 @@ class granular_pour(place_container_plate):
         self._bead_names = {b.get_name() for b in self.beads}
 
         # 4. two zone props near the target (P4-probed layout: sizes and the
-        #    rejection-sampled offsets come from probe p2._t2_layout).
+        #    rejection-sampled offsets come from probe p2._t2_layout). Keepaway
+        #    is the EXACT mat-edge to bowl-outer-wall clearance (zone_clear_ok):
+        #    the old centre-distance proxy left < 5 mm edge gaps on ~30% of
+        #    draws — a resting bead then read INSIDE the zone polygon at t=0
+        #    (p4-accept particles_outside failures, seed 7).
         self.zones = []
         bowl_xy = np.asarray(self.container.get_pose().p[:2], dtype=np.float64)
         target_xy = np.asarray(self.target.get_pose().p[:2], dtype=np.float64)
@@ -195,23 +223,26 @@ class granular_pour(place_container_plate):
             size = np.array(
                 [np.random.uniform(*ZONE_SIZE_XY[0]), np.random.uniform(*ZONE_SIZE_XY[1])]
             )
-            for _ in range(50):
-                off = np.array([np.random.uniform(-0.16, 0.16), np.random.uniform(0.05, 0.18)])
-                zxy = target_xy + off
-                if abs(zxy[0]) > 0.55 - size[0] / 2 or abs(zxy[1]) > 0.30 - size[1] / 2:
+            bowls = [
+                (bowl_xy, self._src_geom["outer_radius"]),
+                (target_xy, self._target_geom["outer_radius"]),
+            ]
+            zxy = None
+            for _candidate in self._zone_candidates(target_xy):
+                if abs(_candidate[0]) > 0.55 - size[0] / 2 or abs(_candidate[1]) > 0.30 - size[1] / 2:
                     continue
-                if np.linalg.norm(zxy - bowl_xy) < 0.5 * (size[0] + 0.12):
+                if not zone_clear_ok(_candidate, size, bowls, ZONE_GAP):
                     continue
-                if np.linalg.norm(zxy - target_xy) < 0.5 * (size[0] + 0.10):
-                    continue
-                if self.zones and (
-                    np.linalg.norm(zxy - self.zones[0]["xy"])
-                    < 0.5 * (size[0] + self.zones[0]["size"][0]) + 0.02
+                if self.zones and not zone_clear_ok(
+                    _candidate, size,
+                    [(self.zones[0]["xy"], float(np.linalg.norm(self.zones[0]["size"]) / 2.0))],
+                    ZONE_GAP,
                 ):
                     continue
+                zxy = _candidate
                 break
-            else:
-                zxy = np.clip(target_xy + np.array([0.14, 0.12]), [-0.5, -0.25], [0.5, 0.25])
+            if zxy is None:  # 50 draws + the fixed fallbacks all rejected: keep
+                zxy = np.clip(target_xy + np.array([0.22, 0.18]), [-0.5, -0.25], [0.5, 0.25])
             if USE_LAPTOP_ZONE and zi == 1:
                 entity, region_id, zsize, zcolor = self._spawn_laptop(zxy)
             else:
@@ -264,14 +295,14 @@ class granular_pour(place_container_plate):
             )
         register_zone(
             self, "bowl_src_interior", self.container, color="", kind="container",
-            rim_radius=self._src_geom["inner_radius"],
+            rim_radius=container_region_radius(self._src_geom, pad=CONTAINER_REGION_PAD),
             rim_height=self._src_geom["rim_y"],
             up_axis_local=[0.0, 1.0, 0.0],
             nameable=True,
         )
         register_zone(
             self, "target_interior", self.target, color="", kind="container",
-            rim_radius=self._target_geom["inner_radius"],
+            rim_radius=container_region_radius(self._target_geom, pad=CONTAINER_REGION_PAD),
             rim_height=self._target_geom["rim_y"],
             up_axis_local=[0.0, 1.0, 0.0],
             nameable=True,
@@ -281,6 +312,20 @@ class granular_pour(place_container_plate):
                 self, z["region_id"], z["entity"], color=z["name"],
                 size_xy=z["size"], kind="zone", nameable=True,
             )
+
+    def _zone_candidates(self, target_xy):
+        """Zone-centre candidates: 50 random near-target draws, then fixed fallbacks.
+
+        Random offsets mirror probe p2._t2_layout (slightly widened so the
+        exact keepaway stays feasible): x in +/-0.20, y in [0.05, 0.20] of the
+        target. The fallbacks are tried in order after the draws.
+        """
+        for _ in range(50):
+            yield target_xy + np.array(
+                [np.random.uniform(-0.20, 0.20), np.random.uniform(0.05, 0.20)]
+            )
+        for off in ([0.22, 0.18], [-0.22, 0.18], [0.24, 0.05], [-0.24, 0.05], [0.0, 0.24]):
+            yield target_xy + np.asarray(off, dtype=np.float64)
 
     def _spawn_laptop(self, zxy):
         """Static 015_laptop articulation as the second zone prop (recon.md:
@@ -347,7 +392,15 @@ class granular_pour(place_container_plate):
     # ------------------------------------------------------------------ play ----
     def play_once(self):
         knobs = getattr(self, "risk_knobs", None) or {}
-        pour_height = float(knobs.get("pour_height", POUR_HEIGHT_DEFAULT))
+        # effective pour height is clamped from below by the rim-ring interlink
+        # geometry (min_pour_height): with pour_height < src outer radius the
+        # tilting source rim ring dips INTO the target mouth near 90 deg and the
+        # bowls collide (p4-accept ur5 episode abort); the knob samples the
+        # desired height, the clamp enforces the physical floor.
+        pour_height = max(
+            float(knobs.get("pour_height", POUR_HEIGHT_DEFAULT)),
+            min_pour_height(self._src_geom, clearance=POUR_HEIGHT_CLEAR),
+        )
         pour_offset = float(knobs.get("pour_offset", POUR_OFFSET_DEFAULT))
         tilt_rate = float(knobs.get("tilt_rate", TILT_RATE_DEFAULT))
 
@@ -467,6 +520,13 @@ class granular_pour(place_container_plate):
         rad/s). The exact realized rate is measured downstream from the ee_pose
         trace; this per-step scale REPLACES the risky time_scale for the tilt
         (the time_scale knob still retimes the transit move).
+
+        Pin guard: if the live rim center ever sits more than POUR_PIN_ABORT
+        from the pivot, the bowl is no longer pinned (knocked out of the
+        grasp) — chasing it would command an unreachable pose half a metre
+        away (p4-accept ur5 plan #12). The tilt then aborts quietly: play_once
+        continues (place/retreat still run), the episode completes, and
+        check_success reports the failed pour instead of a plan_failure abort.
         """
         s_step = float(np.clip(float(tilt_rate) / OMEGA_PLAN_REF, TILT_S_MIN, TILT_S_MAX))
         self.active_time_scale = s_step
@@ -475,9 +535,18 @@ class granular_pour(place_container_plate):
         q_step = _mat_to_quat_wxyz(rot)
         for _ in range(TILT_STEPS):
             ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
-            r = self._rim_center(self.container, self._src_geom) - ee[:3]
+            rim = self._rim_center(self.container, self._src_geom)
+            if float(np.linalg.norm(rim - pivot)) > POUR_PIN_ABORT:
+                print(
+                    f"[granular_pour] tilt aborted: rim {np.linalg.norm(rim - pivot):.3f} m "
+                    "off the pivot — bowl no longer pinned"
+                )
+                return
+            r = rim - ee[:3]
             p_new = pivot - rot @ r
             q_new = _quat_mul_wxyz(q_step, ee[3:])
+            if float(np.dot(q_new, ee[3:])) < 0.0:
+                q_new = -q_new  # antipodal twin: keep the target in the live hemisphere
             self.move(self.move_to_pose(arm_tag, p_new.tolist() + q_new.tolist()))
 
     # ------------------------------------------------------------------ success ----

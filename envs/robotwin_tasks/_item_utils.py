@@ -611,3 +611,81 @@ def spawn_beads(scene, positions_world, radius, masses, color=(0.85, 0.15, 0.15)
         entity.find_component_by_type(sapien.physx.PhysxRigidDynamicComponent).mass = float(masses[i])
         beads.append(entity)
     return beads
+
+
+# ---------------------------------------------------------------------------
+# T2 acceptance-fix helpers (p4-accept shard 2): container-region radius, zone
+# keepaway predicate, pour-height floor. Pure numpy / no sapien.
+# ---------------------------------------------------------------------------
+
+
+def container_region_radius(geom, pad=0.002):
+    """Registration ``rim_radius`` for a bowl's container region.
+
+    The region polygon (a 16-gon) is the container's FOOTPRINT column, not the
+    rim opening: 002_bowl's interior belly is up to 5.3 mm wider than the rim
+    opening (bowl 3: 0.0671 vs 0.0618 m), so resting beads press against the
+    belly wall OUTSIDE a rim-radius polygon, and the T-softmin over 60 beads
+    pulls the joint particles_inside margin negative even when every bead is
+    physically inside (p4-accept t=0 failures, softmin -1.6..-5.1 mm). The
+    outer AABB radius + ``pad`` contains bead centres with 1.8-2.3 cm of
+    margin while a bead on the table just clear of the bowl's outer wall
+    still reads outside. Semantics: a bead is "inside" while it is anywhere
+    in the column above the bowl's footprint (the PARTICLES_INSIDE margin is
+    2D, margins.py m_particles_inside).
+    """
+    return float(geom["outer_radius"]) + float(pad)
+
+
+def rect_support_radius(size_xy, dir_xy):
+    """Half-extent of an axis-aligned rect (full ``size_xy``) along ``dir_xy``.
+
+    Exact support function of the mat footprint rectangle; used for zone
+    keepaways (the centre-distance + half-x proxy left < 5 mm edge gaps on
+    ~30% of draws — a resting bead then reads inside the zone polygon at
+    t=0, the p4-accept particles_outside failure).
+    """
+    import numpy as np
+
+    d = np.asarray(dir_xy, dtype=np.float64).reshape(2)
+    n = float(np.linalg.norm(d))
+    if n < 1e-12:
+        return 0.5 * float(max(size_xy[0], size_xy[1]))
+    d = d / n
+    return 0.5 * (abs(float(d[0])) * float(size_xy[0]) + abs(float(d[1])) * float(size_xy[1]))
+
+
+def zone_clear_ok(zxy, size_xy, bowls, gap):
+    """True when the mat at ``zxy`` keeps a ``gap``-metre edge clearance.
+
+    ``bowls``: iterable of (center_xy, radius) — the exclusion discs (bowl
+    outer radius for resting-bead reach). The mat's exact support radius in
+    each bowl's direction (rect_support_radius) plus the disc radius plus
+    ``gap`` bounds the centre distance.
+    """
+    import numpy as np
+
+    z = np.asarray(zxy, dtype=np.float64).reshape(2)
+    for center, radius in bowls:
+        c = np.asarray(center, dtype=np.float64).reshape(2)
+        d = c - z
+        if float(np.linalg.norm(d)) < rect_support_radius(size_xy, -d) + float(radius) + float(gap):
+            return False
+    return True
+
+
+def min_pour_height(src_geom, clearance=0.015):
+    """Minimum effective pour height (rim pivot above the target rim plane).
+
+    The pivot pins the source bowl's rim CENTRE above the target rim. Tilting
+    to theta dips the source rim ring's lowest point to pivot - r_out*sin(theta);
+    at theta = 90 deg that is pivot - r_out, hanging INSIDE the target mouth —
+    two 002_bowl rims of near-equal radius cannot interlink, so with
+    pour_height < r_out the bowls collide at ~80-95 deg of tilt and the source
+    bowl is knocked out of the grasp (p4-accept ur5 plan #12: a 0.51 m
+    unreachable tilt target, episode abort). r_out + ``clearance`` keeps the
+    ring's lowest point ``clearance`` above the target rim plane at the worst
+    tilt angle. 0.0677 + 0.015 = 0.083 for the largest bowl — inside the
+    yaml knob range [0.05, 0.20].
+    """
+    return float(src_geom["outer_radius"]) + float(clearance)

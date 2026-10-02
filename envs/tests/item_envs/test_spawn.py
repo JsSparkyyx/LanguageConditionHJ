@@ -804,3 +804,186 @@ def test_spawn_candidates_vis_band_report_default(monkeypatch):
     specs, report = spawn.spawn_candidates(env, TASK_CFG, np.random.RandomState(0))
     assert "vis_band" in report
     assert report["vis_band"] is None
+
+
+# ---------------------------------------------------------------------------
+# fix 4: measured mesh AABB (bottom-rest z) + arm-link keepaways
+# ---------------------------------------------------------------------------
+
+
+def _mesh_draw(asset="068_boxdrink", model_id=0):
+    return _ObjectDraw(asset=asset, category="drink_box", model_id=model_id)
+
+
+def test_geometry_mesh_measured_aabb(monkeypatch):
+    """_geometry_of uses the measured collision AABB, not the json metadata."""
+    lo = np.array([-0.02, 0.00, -0.03])
+    hi = np.array([0.04, 0.10, 0.05])  # bottom-origin along +y -> up axis 1
+    monkeypatch.setattr(spawn, "_mesh_aabb", lambda a, i: (lo.copy(), hi.copy()))
+    geo = spawn._geometry_of(_mesh_draw())
+    np.testing.assert_allclose(geo.center_local, [0.01, 0.05, 0.01])
+    np.testing.assert_allclose(geo.half, [0.03, 0.05, 0.04])
+    # dominant |center| axis is y -> up=1: obstacle.py's _STAND_R permutation
+    assert geo.quat == spawn.ob.OBSTACLE_STAND_QUAT
+    np.testing.assert_allclose(geo.world_half, np.abs(spawn.ob._STAND_R) @ geo.half)
+    np.testing.assert_allclose(geo.up_local, spawn.ob._STAND_R.T @ np.array([0.0, 0.0, 1.0]))
+
+
+def test_geometry_mesh_bottom_rest_z(monkeypatch):
+    """Offset-origin asset: the z-pack rests the AABB BOTTOM at table + 0.002,
+    and the packed bottom equals the rotated mesh min-z (not the origin)."""
+    lo = np.array([-0.02, 0.00, -0.03])
+    hi = np.array([0.04, 0.10, 0.05])
+    monkeypatch.setattr(spawn, "_mesh_aabb", lambda a, i: (lo.copy(), hi.copy()))
+    geo = spawn._geometry_of(_mesh_draw())
+    table_z = 0.75
+    xyz_z = table_z + float(geo.world_half[2]) + 0.002  # spawn_candidates' pack
+    r = spawn._quat_wxyz_to_mat(np.asarray(geo.quat))  # _STAND_R (up=1 here)
+    pose_z = xyz_z - float((r @ geo.center_local)[2])  # _spawn_one compensation
+    corners = np.array([[x, y, z] for x in (lo[0], hi[0])
+                      for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+    bottom_local = float((corners @ r.T)[:, 2].min())  # world min-z rel. pose origin
+    assert pose_z + bottom_local == pytest.approx(table_z + 0.002, abs=1e-9)
+    # the asset origin is NOT at the AABB center along z — the compensation matters
+    assert abs(bottom_local + geo.world_half[2]) > 1e-3
+
+
+def test_geometry_mesh_json_fallback(monkeypatch):
+    """Mesh unloadable -> the old json-metadata path (obstacle.py semantics)."""
+    monkeypatch.setattr(spawn, "_mesh_aabb", lambda a, i: None)
+    cfg = {"center": [0.0, 0.05, 0.0], "extents": [0.06, 0.10, 0.08], "scale": [1, 1, 1]}
+    monkeypatch.setattr(spawn, "_load_model_cfg_local", lambda a, i: dict(cfg))
+    geo = spawn._geometry_of(_mesh_draw())
+    np.testing.assert_allclose(geo.center_local, [0.0, 0.05, 0.0])
+    np.testing.assert_allclose(geo.half, [0.03, 0.05, 0.04])
+
+
+def test_geometry_prim_bottom_rest_z():
+    """Prims are center-origin: bottom rests at table + 0.002 with no compensation."""
+    draw = _ObjectDraw(asset="prim_box", category="box", color="red",
+                       size=np.array([0.05, 0.06, 0.10]))
+    geo = spawn._geometry_of(draw)
+    table_z = 0.75
+    xyz_z = table_z + float(geo.world_half[2]) + 0.002
+    pose_z = xyz_z - float(geo.center_local[2])  # prims: identity quat, zero center
+    assert pose_z - float(geo.world_half[2]) == pytest.approx(table_z + 0.002, abs=1e-9)
+
+
+def test_draw_object_cap_uses_geometry_fn():
+    """The on/near size cap reads geometry_fn(draw).world_half (measured),
+    not the json globals — same geometry source as the placement itself."""
+    pool = [{"asset": "068_boxdrink", "category": "drink_box", "ids": [0]}]
+
+    def geo_with(r):
+        return _Geometry(center_local=np.zeros(3), half=np.full(3, r),
+                         world_half=np.full(3, r), up_local=np.array([0.0, 0.0, 1.0]),
+                         quat=(1.0, 0.0, 0.0, 0.0))
+
+    draw = spawn._draw_object(pool, np.random.RandomState(0), [], max_r_xy=0.035,
+                              geometry_fn=lambda d: geo_with(0.03))
+    assert draw is not None
+    draw2 = spawn._draw_object(pool, np.random.RandomState(0), [], max_r_xy=0.035,
+                               geometry_fn=lambda d: geo_with(0.05))
+    assert draw2 is None  # 5 cm radius exceeds the 3.5 cm cap on every retry
+
+
+def _link(x, y, z):
+    return SimpleNamespace(get_pose=lambda: SimpleNamespace(p=np.array([x, y, z])))
+
+
+def test_arm_link_keepaways_filter():
+    """Only low links over the (padded) table become circles; knobs retune."""
+    env = SimpleNamespace(robot=SimpleNamespace(
+        left_entity=SimpleNamespace(get_links=lambda: [
+            _link(0.30, -0.20, 0.90),   # over the table, low -> keepaway
+            _link(0.30, -0.20, 1.20),   # too high -> excluded
+            _link(0.90, -0.20, 0.90),   # outside the padded table xy -> excluded
+        ]),
+        right_entity=SimpleNamespace(get_links=lambda: [_link(-0.30, -0.20, 0.88)]),
+    ))
+    out = spawn._arm_link_keepaways(env, 0.74, {})
+    assert len(out) == 2
+    assert out[0][1] == pytest.approx(spawn.ARM_LINK_KEEPAWAY_R)
+    np.testing.assert_allclose(out[0][0], [0.30, -0.20])
+    np.testing.assert_allclose(out[1][0], [-0.30, -0.20])
+    # a broken/headless robot yields no circles and never raises
+    assert spawn._arm_link_keepaways(SimpleNamespace(robot=SimpleNamespace()), 0.74, {}) == []
+    # knobs: higher z_max admits the 1.20 m link; custom radius
+    out2 = spawn._arm_link_keepaways(env, 0.74, {"arm_link_z_max": 0.60,
+                                                 "arm_link_keepaway_r": 0.05})
+    assert len(out2) == 3
+    assert out2[0][1] == pytest.approx(0.05)
+
+
+def test_spawn_candidates_arm_link_keepaways(monkeypatch):
+    """Franka-style overhanging links reach the keepaways _layout_plan sees;
+    objects.arm_link_keepaways: false opts out."""
+    still = lambda xyz: (xyz.copy(), _quat_rotz(0.0))
+    _patch_driver(monkeypatch, [still])
+    seen = {}
+
+    def capture_layout(p0, p1, keepaways, cfg, task_cfg, rng, pool, colors, t_range, **kw):
+        seen["keepaways"] = list(keepaways)
+        return [_make_placement(0)], 0
+
+    monkeypatch.setattr(spawn, "_layout_plan", capture_layout)
+
+    def env_with_links():
+        env = _fake_env()
+        env.robot = SimpleNamespace(
+            left_entity=SimpleNamespace(get_links=lambda: [_link(0.30, -0.20, 0.90)]),
+            right_entity=SimpleNamespace(get_links=lambda: []),
+        )
+        return env
+
+    specs, report = spawn.spawn_candidates(env_with_links(), TASK_CFG, np.random.RandomState(0))
+    assert report["arm_link_keepaways"] == 1
+    assert any(np.allclose(xy, [0.30, -0.20]) for xy, _r in seen["keepaways"])
+
+    seen.clear()
+    cfg_off = {"objects": {**CFG, "arm_link_keepaways": False}, "corridor_t": [0.22, 0.48]}
+    specs2, report2 = spawn.spawn_candidates(env_with_links(), cfg_off, np.random.RandomState(0))
+    assert report2["arm_link_keepaways"] == 0
+    assert not any(np.allclose(xy, [0.30, -0.20]) for xy, _r in seen["keepaways"])
+
+
+# ---------------------------------------------------------------------------
+# fix 4, real assets (login-node: trimesh only; skips when the tree is absent)
+# ---------------------------------------------------------------------------
+
+
+def _assets_tree():
+    for root in spawn._objects_roots():
+        if Path(root).is_dir():
+            return Path(root)
+    return None
+
+
+@pytest.mark.skipif(_assets_tree() is None, reason="RoboTwin asset tree not present")
+def test_real_assets_bottom_rest_z():
+    """Every T1 pool mesh id: the measured AABB + z-pack rest the world AABB
+    bottom within [0, 4 mm] of the table — for any asset origin convention."""
+    objects_cfg = spawn.physics.load_objects_cfg()
+    pool = [e for e in spawn.t1_pool_entries(objects_cfg)
+            if not str(e["asset"]).startswith("prim_")]
+    table_z = 0.75
+    checked = 0
+    for entry in pool:
+        for model_id in entry.get("ids") or [0]:
+            draw = _ObjectDraw(asset=entry["asset"], category=entry["category"],
+                               model_id=int(model_id))
+            aabb = spawn._mesh_aabb(draw.asset, draw.model_id)
+            assert aabb is not None, f"{draw.asset} id {model_id}: collision mesh unloadable"
+            lo, hi = aabb
+            geo = spawn._geometry_of(draw)
+            r = spawn._quat_wxyz_to_mat(np.asarray(geo.quat))  # geometry's own quat
+            corners = np.array([[x, y, z] for x in (lo[0], hi[0])
+                              for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+            bottom_local = float((corners @ r.T)[:, 2].min())
+            xyz_z = table_z + float(geo.world_half[2]) + 0.002  # the pack
+            pose_z = xyz_z - float((r @ geo.center_local)[2])   # _spawn_one
+            offset = pose_z + bottom_local - table_z
+            assert 0.0 <= offset <= 0.004, (
+                f"{draw.asset} id {model_id}: AABB bottom at {offset:+.4f} m rel. table")
+            checked += 1
+    assert checked >= 70  # the full 79-id pool (guard against a silently empty pool)

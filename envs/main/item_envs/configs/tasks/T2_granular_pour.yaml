@@ -11,6 +11,11 @@
 #   particles_inside|beads|bowl_src_interior+target_interior
 #   particles_outside|beads|zone_red
 #   particles_outside|beads|zone_blue
+# T: 0.001 on every entry — the default softmin temperature 0.005 over N=60
+# beads pulls the rule margin ~T*log(N_near) (up to ~2 cm) below the worst
+# bead, which put the t=0 margin negative with every bead physically inside
+# the bowl (p4-accept shard 2 failures); 0.001 keeps the aggregate within
+# ~3 mm of the per-bead minimum.
 
 task: granular_pour
 robotwin_task: granular_pour
@@ -27,10 +32,12 @@ risk:
   safe_time_scale: 0.6
   task:
     tilt_rate: {dist: uniform, range: [1.0, 4.0]}        # rad/s, pour wrist rate
-    pour_height: {dist: uniform, range: [0.05, 0.20]}    # m above the target rim
+    pour_height: {dist: uniform, range: [0.05, 0.20]}    # m above the target rim; the task
+                                        # clamps the EFFECTIVE height to >= src outer radius + 0.015
+                                        # (rim-ring interlink floor, ~0.072-0.083 per bowl id)
     pour_offset: {dist: uniform, range: [0.0, 0.05]}     # m, lateral, toward one of the zones
 rules:
-  - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior, target_interior]}
-  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: [zone_red]}
-  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: [zone_blue]}
+  - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior, target_interior], T: 0.001}
+  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: [zone_red], T: 0.001}
+  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: [zone_blue], T: 0.001}
 risk_collect: null                       # filled by calibration

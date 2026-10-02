@@ -3,11 +3,12 @@
 Generalizes CEHJ's ``main/envs/obstacle.py::choose_and_spawn`` from one static
 obstacle to K dynamic candidates WITHOUT modifying obstacle.py — its corridor
 geometry (``longest_corridor``), keepaway construction (``keepaways_from_task``
-/ ``keepaways_from_robot``), stand-quat/half-extents machinery
-(``set_obstacle_model`` / ``_stand_R_quat`` / ``_world_half_extents``), and
-placement primitives (``_in_table`` / ``_line_dist`` / ``_table_grid``) are
-reused verbatim; the near-path class, pairwise separations, dynamic spawning,
-and the settle-reject loop are new.
+/ ``keepaways_from_robot``), and placement primitives (``_in_table`` /
+``_line_dist`` / ``_table_grid``) are reused verbatim; the near-path class,
+pairwise separations, dynamic spawning, and the settle-reject loop are new.
+The stand-quat/half-extents machinery is NOT reused (layout fix 4): the
+model_data json center/extents proved unreliable per id, so ``_geometry_of``
+measures the collision mesh AABB directly (``_mesh_aabb``).
 
 Layout (all draws from the CALLER's rng — ``np.random.RandomState(seed +
 4241)`` per PLAN v3 §2; this module never reseeds):
@@ -69,6 +70,29 @@ Layout (all draws from the CALLER's rng — ``np.random.RandomState(seed +
   (``report["vis_band"] == "shared-fallback"``), else no restriction (None).
   With the flag off or the npz missing the off_path branch is byte-identical
   to before (``vis_band=None`` skips the filter).
+- **Layout fix 4 (documented, P4 acceptance-wave finding — settle-time
+  toppling)**: the P4 sweep logged settle rejects with 25-131 mm slides and
+  35-149 deg tilts (franka >> ur5), after which MAX_LAYOUTS kept an unsettled
+  layout with negative t=0 margins. Offline audit (trimesh on the collision
+  glbs, no GPU): (a) the model_data json center/extents are unreliable per id
+  — 086_woodenblock id 2's json AABB bottom sits 24 mm high (drop-topple),
+  cup/mug/can/bottle halves are inflated up to 35 mm (conservative, but it
+  starved the size-capped draws) — so ``_geometry_of`` MEASURES the collision
+  mesh AABB (``_mesh_aabb``, cached per (asset, id)) and the z-pack then
+  rests the world AABB BOTTOM at ``table_z + 0.002`` for ANY asset origin
+  convention (origin-center, origin-bottom, …); (b) the dominant mechanism
+  is not z at all: franka's HOME pose rests the hand/fingers at z 0.85-0.98 m
+  over (x ±0.3, y −0.2) — INSIDE the spawn region — while the base keepaway
+  circles (r=0.18 at the bases, y=−0.65) never bind on the table, so
+  candidates >= ~11 cm tall spawn interpenetrating the fingers and PhysX
+  ejects them during the 250-step settle (ur5's folded home clears the
+  tallest pool object by >= 7 cm). Fix for (b): ``_arm_link_keepaways`` adds
+  one keepaway circle per robot link overhanging the table (default r 8 cm,
+  link z < table + 30 cm; ``objects.arm_link_keepaways: false`` opts out,
+  ``arm_link_keepaway_r`` / ``arm_link_z_max`` retune) — every placement
+  class already routes through ``_clearances_ok``, so the circles bind
+  on/near/off placements uniformly (``report["arm_link_keepaways"]`` counts
+  them).
 - Objects are DYNAMIC with masses sampled uniformly from their objects.yaml
   category ``mass_range`` (set via ``physics.set_mass_props``) —
   ``objects.static_objects: true`` gives the CrossSafe parity layout.
@@ -89,6 +113,7 @@ the same semantics as choose_and_spawn (drawn from the passed rng).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -195,12 +220,16 @@ def t1_pool_entries(objects_cfg: dict) -> list[dict]:
 
 
 def _draw_object(pool: list[dict], rng: np.random.RandomState, train_colors: list[str],
-                 max_r_xy: float | None = None) -> _ObjectDraw | None:
+                 max_r_xy: float | None = None, geometry_fn=None) -> _ObjectDraw | None:
     """Sample one pool object: asset uniform, then id/color/size in a fixed draw order.
 
     max_r_xy (layout fix, see module docstring): reject draws whose world
     xy-radius exceeds the cap (<= DRAW_CAP_TRIES tries), returning None when
-    the cap cannot be met — the layout attempt then fails and resamples.
+    the cap cannot be met — the layout attempt then fails and resamples. The
+    radius comes from ``geometry_fn(draw).world_half`` (fix 4: the measured
+    collision AABB — the json metadata inflated cup/mug radii up to 35 mm and
+    starved the capped draws); ``_layout_plan`` passes its own geometry_fn so
+    the test seam covers capping too. Prims use the drawn size, as before.
     """
     tries = DRAW_CAP_TRIES if max_r_xy is not None else 1
     for _ in range(tries):
@@ -210,8 +239,7 @@ def _draw_object(pool: list[dict], rng: np.random.RandomState, train_colors: lis
         if draw.asset.startswith("prim_"):
             half = np.asarray(draw.size, dtype=np.float64) * 0.5
         else:
-            ob.set_obstacle_model(draw.asset, draw.model_id)
-            half = ob._world_half_extents()
+            half = (geometry_fn or _geometry_of)(draw).world_half
         if float(np.max(half[:2])) <= max_r_xy:
             return draw
     return None
@@ -241,8 +269,122 @@ def _draw_one(pool: list[dict], rng: np.random.RandomState, train_colors: list[s
     return _ObjectDraw(asset=asset, category=str(entry["category"]), model_id=model_id)
 
 
+# ---------------------------------------------------------------------------
+# collision-mesh AABB measurement (fix 4; pure numpy + lazy trimesh)
+# ---------------------------------------------------------------------------
+
+_MESH_AABB_CACHE: dict = {}
+# obstacle.py::_stand_R_quat's up==0 rotation (inline there, not a constant)
+_UP0_R = np.array([[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64)
+_UP0_QUAT = (0.7071067811865476, 0.0, 0.7071067811865476, 0.0)
+
+
+def _objects_roots() -> list[Path]:
+    """RoboTwin assets/objects candidates (mirrors main/envs/env.py's root logic)."""
+    roots = [Path("assets/objects")]  # runtime: Env prepare() chdirs to the RoboTwin root
+    env_root = os.environ.get("ROBOTWIN_ROOT")
+    if env_root:
+        roots.append(Path(env_root) / "assets" / "objects")
+    repo = Path(__file__).resolve().parents[3]  # <repo>/envs/main/item_envs/spawn.py
+    roots.append(repo / "RoboTwin" / "assets" / "objects")
+    roots.append(repo.parent / "RoboTwin" / "assets" / "objects")
+    return roots
+
+
+def _load_model_cfg_local(asset: str, model_id: int) -> dict:
+    """model_data<id>.json (or model_data.json) from the first resolvable root."""
+    import json
+
+    for root in _objects_roots():
+        folder = root / str(asset)
+        for name in (f"model_data{int(model_id)}.json", "model_data.json"):
+            path = folder / name
+            if path.is_file():
+                return json.loads(path.read_text())
+    return {}
+
+
+def _mesh_aabb(asset: str, model_id: int) -> tuple[np.ndarray, np.ndarray] | None:
+    """Measured collision-mesh AABB (lo, hi) in the actor frame, json scale applied.
+
+    Loads the SAME file create_actor collides with (collision/base<id>.glb ->
+    base<id>.glb -> textured<id>.obj; scale from the model_data json, which
+    overrides create_actor's argument). The json center/extents metadata is
+    NOT trustworthy (P4 audit: 086_woodenblock id 2's json AABB bottom is
+    24 mm off; cup/mug halves inflated up to 35 mm), so placement geometry is
+    measured, not read. Cached per (asset, id); None when the mesh cannot be
+    loaded — callers fall back to the json metadata.
+    """
+    key = (str(asset), int(model_id or 0))
+    if key in _MESH_AABB_CACHE:
+        return _MESH_AABB_CACHE[key]
+    out = None
+    cfg = _load_model_cfg_local(*key)
+    scale = cfg.get("scale")
+    try:
+        import trimesh  # lazy: keeps the module import sapien-free
+
+        for root in _objects_roots():
+            folder = root / key[0]
+            if not folder.is_dir():
+                continue
+            cand = folder / "collision" / f"base{key[1]}.glb"
+            if not cand.is_file():
+                cand = folder / f"base{key[1]}.glb"
+            if not cand.is_file():
+                cand = folder / f"textured{key[1]}.obj"
+            if not cand.is_file():
+                continue
+            mesh = trimesh.load(str(cand), force="scene")
+            if hasattr(mesh, "dump"):
+                mesh = mesh.dump(concatenate=True)
+            s = np.asarray(scale if scale is not None else [1.0, 1.0, 1.0],
+                           dtype=np.float64).reshape(-1)
+            s = np.full(3, abs(float(s[0]))) if s.size == 1 else np.abs(np.resize(s, 3))
+            verts = np.asarray(mesh.vertices, dtype=np.float64) * s
+            if verts.size:
+                out = (verts.min(axis=0), verts.max(axis=0))
+            break
+    except Exception as exc:
+        print(f"[spawn] mesh AABB load failed for {key[0]} id {key[1]}: {exc}")
+    _MESH_AABB_CACHE[key] = out
+    return out
+
+
+def _stand_R_quat_for(asset: str, center: np.ndarray, half: np.ndarray):
+    """obstacle._stand_R_quat with the up-axis decided on GIVEN center/half.
+
+    Same rules (presets pin the axis, else the dominant |center| axis when
+    >= 1e-3, else the longest half axis) but evaluated on the measured AABB
+    instead of the json globals, so the orientation matches the geometry the
+    OBB is computed from.
+    """
+    if asset in ob.OBSTACLE_UP_AXIS:
+        up = int(ob.OBSTACLE_UP_AXIS[asset])
+    elif float(np.max(np.abs(center))) >= 1e-3:
+        up = int(np.argmax(np.abs(center)))
+    else:
+        up = int(np.argmax(half))
+    if up == 1:
+        return ob._STAND_R, ob.OBSTACLE_STAND_QUAT
+    if up == 0:
+        return _UP0_R, _UP0_QUAT
+    return np.eye(3, dtype=np.float64), (1.0, 0.0, 0.0, 0.0)
+
+
 def _geometry_of(draw: _ObjectDraw) -> _Geometry:
-    """OBB/stand geometry for a draw; meshes go through obstacle.py's globals."""
+    """OBB/stand geometry for a draw, from the MEASURED collision mesh (fix 4).
+
+    Prim path unchanged (create_box/create_cylinder are center-origin). Mesh
+    path: center/half are the measured collision-mesh AABB (``_mesh_aabb``),
+    the stand rotation is chosen on those measured values
+    (``_stand_R_quat_for``), and the json metadata is only a fallback when
+    the mesh cannot be loaded. With the z-pack ``table_z + world_half[2] +
+    0.002`` and ``_spawn_one``'s center compensation, the world AABB BOTTOM
+    then rests at ``table_z + 0.002`` for ANY asset origin convention
+    (origin-center, origin-bottom, …) — this function no longer calls
+    ``ob.set_obstacle_model`` (no obstacle.py global state).
+    """
     if draw.asset.startswith("prim_"):
         half = np.asarray(draw.size, dtype=np.float64) * 0.5
         return _Geometry(
@@ -252,14 +394,21 @@ def _geometry_of(draw: _ObjectDraw) -> _Geometry:
             up_local=np.array([0.0, 0.0, 1.0]),
             quat=(1.0, 0.0, 0.0, 0.0),
         )
-    ob.set_obstacle_model(draw.asset, draw.model_id)
-    r, quat = ob._stand_R_quat()
-    up_local = r.T @ np.array([0.0, 0.0, 1.0])  # body axis that spawn puts vertical
+    asset, model_id = draw.asset, int(draw.model_id or 0)
+    aabb = _mesh_aabb(asset, model_id)
+    if aabb is not None:
+        lo, hi = aabb
+        center, half = 0.5 * (lo + hi), 0.5 * (hi - lo)
+    else:  # mesh unloadable: the old json-metadata path (obstacle.py semantics)
+        center, half = ob.world_center_and_half(_load_model_cfg_local(asset, model_id))
+        if float(np.max(np.abs(half))) < 1e-6:
+            half = np.array([0.051, 0.051, 0.052], dtype=np.float64)  # obstacle._model_half_extents
+    r, quat = _stand_R_quat_for(asset, center, half)
     return _Geometry(
-        center_local=ob._model_center(),
-        half=ob._model_half_extents(),
-        world_half=ob._world_half_extents(),
-        up_local=up_local,
+        center_local=center,
+        half=half,
+        world_half=np.abs(r) @ half,
+        up_local=r.T @ np.array([0.0, 0.0, 1.0]),  # body axis that spawn puts vertical
         quat=quat,
     )
 
@@ -478,7 +627,7 @@ def _layout_plan(
         return sum(p.cls in ("on_path", "near_path") for p in placements)
 
     for i, cls in enumerate(classes):
-        draw = _draw_object(pool, rng, train_colors, max_r_xy=caps[cls])
+        draw = _draw_object(pool, rng, train_colors, max_r_xy=caps[cls], geometry_fn=geometry_fn)
         if draw is None:
             return None
         geo = geometry_fn(draw)
@@ -718,6 +867,54 @@ def _pose_of(spec: ItemSpec) -> tuple[np.ndarray, np.ndarray]:
 
 
 # ---------------------------------------------------------------------------
+# arm-link keepaways (fix 4b — the P4 settle-toppling root cause)
+# ---------------------------------------------------------------------------
+
+ARM_LINK_KEEPAWAY_R = 0.08  # covers hand/finger collision volumes about the link pose
+ARM_LINK_Z_MAX = 0.30  # only links below table_z + this threaten standing candidates
+ARM_LINK_XY_PAD = 0.10  # table xy inflated by this much for the overhang test
+
+
+def _arm_link_keepaways(env, table_z: float, cfg: dict) -> list:
+    """One keepaway circle per robot link pose overhanging the table.
+
+    obstacle.keepaways_from_robot's base circles (r=0.18 at the arm BASES,
+    y=-0.65) never bind on the table — but franka's home pose rests the
+    hand/fingers at z 0.85-0.98 m over (x ±0.3, y −0.2), INSIDE the spawn
+    region (offline FK on the embodiment URDFs at the config homestate), so
+    candidates >= ~11 cm tall spawned there interpenetrate the gripper and
+    PhysX ejects them during the settle (the P4 slides/topples; ur5's folded
+    home clears the tallest pool object by >= 7 cm). One circle per link with
+    pose z < table_z + ``arm_link_z_max`` and xy over the padded table; the
+    usual keepaway_gap applies on top via _clearances_ok. Pure pose reads —
+    a broken/headless robot yields no circles, never an exception.
+    """
+    r = float(cfg.get("arm_link_keepaway_r", ARM_LINK_KEEPAWAY_R))
+    z_max = float(table_z) + float(cfg.get("arm_link_z_max", ARM_LINK_Z_MAX))
+    x0, x1 = ob.TABLE_XYLIM[0, 0] - ARM_LINK_XY_PAD, ob.TABLE_XYLIM[0, 1] + ARM_LINK_XY_PAD
+    y0, y1 = ob.TABLE_XYLIM[1, 0] - ARM_LINK_XY_PAD, ob.TABLE_XYLIM[1, 1] + ARM_LINK_XY_PAD
+    out = []
+    robot = getattr(env, "robot", None)
+    for entity in (getattr(robot, "left_entity", None), getattr(robot, "right_entity", None)):
+        if entity is None:
+            continue
+        try:
+            links = entity.get_links()
+        except Exception:
+            continue
+        for link in links:
+            try:
+                pose = link.get_root_pose() if hasattr(link, "get_root_pose") else link.get_pose()
+                x, y, z = (float(v) for v in pose.p[:3])
+            except Exception:
+                continue
+            if z >= z_max or not (x0 <= x <= x1 and y0 <= y <= y1):
+                continue
+            out.append((np.array([x, y], dtype=np.float64), r))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # public entry point
 # ---------------------------------------------------------------------------
 
@@ -749,6 +946,14 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
     was applied — the embodiment's own name, "shared-fallback" (the other
     embodiment's npz), or None (flag off / no band file anywhere — the
     off_path scan is then byte-identical to the historical behavior).
+
+    Fix 4 (P4 settle-toppling): placement geometry is MEASURED from the
+    collision meshes (``_geometry_of`` / ``_mesh_aabb`` — the model_data json
+    metadata is a fallback only), and the z-pack rests each object's world
+    AABB BOTTOM at ``table_z + 0.002`` for any asset origin convention. The
+    keepaway list gains ``_arm_link_keepaways`` (fix 4b: franka's home-pose
+    hand/fingers overhang the spawn region — the dominant settle-ejection
+    mechanism); ``report["arm_link_keepaways"]`` counts the added circles.
     """
     spec = TASK_SPECS.get(getattr(env, "task_name", ""))
     if spec is None:
@@ -776,13 +981,17 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
 
     arm = resolve_arm(env.task, spec, "auto")
     p0, p1, _arm_hint = longest_corridor(env.task, spec, env.robot, arm)
+    table_z = ob.TABLE_Z + float(getattr(env.task, "table_z_bias", 0.0))
     keepaways = ob.keepaways_from_task(env.task, spec) + ob.keepaways_from_robot(env)
+    # fix 4b: franka's home-pose hand/fingers overhang the spawn region — one
+    # keepaway circle per link over the table (default on; objects.arm_link_keepaways)
+    arm_links = _arm_link_keepaways(env, table_z, cfg) if cfg.get("arm_link_keepaways", True) else []
+    keepaways += arm_links
     gap_range = spec.get("obstacle_bbox_gap")  # choose_and_spawn parity (stack_blocks_two)
     if gap_range is not None:
         extra = float(rng.uniform(float(gap_range[0]), float(gap_range[1])))
         keepaways = [(xy, float(r) + extra) for xy, r in keepaways]
         print(f"[spawn] bbox gap +{extra:.3f} m (task {env.task_name})")
-    table_z = ob.TABLE_Z + float(getattr(env.task, "table_z_bias", 0.0))
 
     report: dict = {
         "spawn_rejections": 0,
@@ -795,63 +1004,67 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
         "degraded": 0,
         "k_dropped": 0,
         "vis_band": band_label,  # fix 3 (F5): embodiment name | "shared-fallback" | None
+        "arm_link_keepaways": len(arm_links),  # fix 4b: link circles added (0 = off/none)
         "placements": [],
         "settle": [],
         "corridor": {"p0": [float(v) for v in p0[:2]], "p1": [float(v) for v in p1[:2]]},
     }
 
-    prev_model = (ob._active_model, ob._active_model_id)  # obstacle.py globals; restored below
     specs: list[ItemSpec] = []
     placements: list[Placement] | None = None
     k_dropped = 0
-    try:
-        for attempt in range(MAX_LAYOUTS):
-            if attempt:
-                report["spawn_rejections"] += 1
-            out = _layout_plan(
-                p0, p1, keepaways, cfg, task_cfg, rng, pool, train_colors, t_range,
-                vis_band=vis_band,
-            )
-            if out is None:
-                report["layout_retries"] += 1
-                continue
-            placements, k_dropped = out
-            for pl in placements:  # pack z now that the table height is known
-                pl.xyz = np.array([pl.xyz[0], pl.xyz[1], table_z + float(pl.geo.world_half[2]) + 0.002])
+    # no try/finally: nothing below flips obstacle.py globals anymore
+    # (_geometry_of measures meshes instead of set_obstacle_model), so there
+    # is no module state to restore on the way out.
+    for attempt in range(MAX_LAYOUTS):
+        if attempt:
+            report["spawn_rejections"] += 1
+        out = _layout_plan(
+            p0, p1, keepaways, cfg, task_cfg, rng, pool, train_colors, t_range,
+            vis_band=vis_band,
+        )
+        if out is None:
+            report["layout_retries"] += 1
+            continue
+        placements, k_dropped = out
+        for pl in placements:
+            # bottom-rest z (fix 4): pl.xyz is where the world AABB CENTER
+            # lands (_spawn_one compensates the measured center_local), so
+            # the AABB BOTTOM rests at table_z + 0.002 for any asset origin
+            # convention; world_half[2] is the measured rotated half-z.
+            pl.xyz = np.array([pl.xyz[0], pl.xyz[1], table_z + float(pl.geo.world_half[2]) + 0.002])
+        specs = []
+        for pl in placements:
+            actor = _spawn_one(env.task, pl, static, objects_cfg)
+            mass = 0.0
+            if not static:
+                lo_hi = nominal_ranges.get(pl.draw.category) or [0.05, 0.15]
+                mass = float(rng.uniform(float(lo_hi[0]), float(lo_hi[1])))
+                physics.set_mass_props(actor, mass)
+            specs.append(_spec_from(pl, actor, mass))
+        before = [_pose_of(s) for s in specs]
+        _settle(env, SETTLE_STEPS)
+        after = [_pose_of(s) for s in specs]
+        ok, details = settle_verdict(before, after, [s.up_axis_local for s in specs])
+        for d, s in zip(details, specs):
+            d["item_id"] = s.item_id
+        report["settle"] = details
+        if ok:
+            break
+        report["settle_rejections"] += 1
+        if attempt < MAX_LAYOUTS - 1:
+            _remove_layout(env, specs)
             specs = []
-            for pl in placements:
-                actor = _spawn_one(env.task, pl, static, objects_cfg)
-                mass = 0.0
-                if not static:
-                    lo_hi = nominal_ranges.get(pl.draw.category) or [0.05, 0.15]
-                    mass = float(rng.uniform(float(lo_hi[0]), float(lo_hi[1])))
-                    physics.set_mass_props(actor, mass)
-                specs.append(_spec_from(pl, actor, mass))
-            before = [_pose_of(s) for s in specs]
-            _settle(env, SETTLE_STEPS)
-            after = [_pose_of(s) for s in specs]
-            ok, details = settle_verdict(before, after, [s.up_axis_local for s in specs])
-            for d, s in zip(details, specs):
-                d["item_id"] = s.item_id
-            report["settle"] = details
-            if ok:
-                break
-            report["settle_rejections"] += 1
-            if attempt < MAX_LAYOUTS - 1:
-                _remove_layout(env, specs)
-                specs = []
-                print(
-                    f"[spawn] settle reject (attempt {attempt + 1}/{MAX_LAYOUTS}): "
-                    + ", ".join(
-                        f"{d['item_id']} moved {1e3 * d['moved_m']:.1f} mm tilt {d['tilt_deg']:.1f} deg"
-                        for d in details
-                    )
+            print(
+                f"[spawn] settle reject (attempt {attempt + 1}/{MAX_LAYOUTS}): "
+                + ", ".join(
+                    f"{d['item_id']} moved {1e3 * d['moved_m']:.1f} mm tilt {d['tilt_deg']:.1f} deg"
+                    for d in details
                 )
-            else:
-                report["max_layouts_hit"] = True
-                print(f"[spawn] MAX_LAYOUTS hit; keeping the last (unsettled) layout")
-    finally:
-        ob.set_obstacle_model(*prev_model)
+            )
+        else:
+            report["max_layouts_hit"] = True
+            print(f"[spawn] MAX_LAYOUTS hit; keeping the last (unsettled) layout")
 
     if placements is not None and specs:
         report["placements"] = [pl.report_dict() for pl in placements]

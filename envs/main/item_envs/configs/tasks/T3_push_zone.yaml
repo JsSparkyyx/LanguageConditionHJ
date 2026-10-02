@@ -22,10 +22,11 @@ push_objects:
     113_coffee-box: [0, 1, 2, 3, 4, 5, 6]
     112_tea-box: [0, 1, 2, 3, 4, 5]
   start:                                  # (x_lo, x_hi, y_lo, y_hi) per side
-    left: [-0.30, -0.15, -0.05, 0.05]
-    right: [0.15, 0.30, -0.05, 0.05]
+    left: [-0.36, -0.15, -0.18, 0.08]
+    right: [0.15, 0.36, -0.18, 0.08]
 
 goal:
+  dist: [0.10, 0.20]                      # commanded push travel band (calibrated push envelope)
   edge_dist: [0.05, 0.15]                 # edge goal distance from the front (-y) or side (±x) edge
   edge_jitter: 0.06                       # along-edge goal jitter (m)
   zone_dist: [0.12, 0.25]                 # zone-adjacent goal distance from P
@@ -40,10 +41,9 @@ zones:
 
 bystanders:
   n: [1, 2]
-  pool: [001_bottle, 021_cup, prim_tall_cylinder]
+  pool: [021_cup, prim_tall_cylinder]     # 001_bottle dropped: punt-ring bases tip in check_stable
   ids:
-    001_bottle: [9, 20, 22]               # tall, tippable (recon.md audit)
-    021_cup: [0, 1, 2, 3, 5]              # sane footprints (ids 6-12 sprawl)
+    021_cup: [0, 3, 5]                    # sane footprints (ids 6-12 sprawl; 1/2 have broken json OBBs)
   cylinder: {radius: [0.02, 0.035], height: [0.10, 0.18]}
   line_offset: [0.02, 0.08]               # bystander edge -> push corridor edge
   t: [0.25, 0.75]                         # position along the push segment

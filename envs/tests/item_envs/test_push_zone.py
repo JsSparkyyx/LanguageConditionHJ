@@ -210,6 +210,7 @@ def test_module_constants_mirror_yaml():
     assert _norm({k: mesh_ids[k] for k in cfg["push_objects"]["ids"]}) == _norm(cfg["push_objects"]["ids"])
     assert _norm({k: mesh_ids[k] for k in cfg["bystanders"]["ids"]}) == _norm(cfg["bystanders"]["ids"])
     assert _norm(_const("GOAL_EDGE_DIST")) == _norm(cfg["goal"]["edge_dist"])
+    assert _norm(_const("PUSH_DIST")) == _norm(cfg["goal"]["dist"])
     assert _norm(_const("GOAL_EDGE_JITTER")) == _norm(cfg["goal"]["edge_jitter"])
     assert _norm(_const("GOAL_ZONE_DIST")) == _norm(cfg["goal"]["zone_dist"])
     assert _norm(_const("GOAL_ZONE_ANGLE_DEG")) == _norm(cfg["goal"]["zone_angle_deg"])
@@ -237,3 +238,282 @@ def test_color_palette_matches_objects_yaml():
     assert _norm(_const("TRAIN_COLORS")) == _norm(objects_cfg["colors"]["train"])
     for name in _const("TRAIN_COLORS"):
         assert _norm(_const("COLOR_RGB")[name]) == _norm(objects_cfg["color_rgb"][name])
+
+
+# ------------------------------------------------------- offline layout replay ----
+#
+# p4-accept regression (GPU shard 2): seeds 5/9 exhausted bystander placement,
+# seed 2's 001_bottle bystander tipped in check_stable, seed 0's pushes missed
+# the 3 cm goal at 28-31 cm travel. The layout path is pure numpy — replayable
+# off-GPU by stubbing sapien + RoboTwin's utils, loading the REAL task module,
+# and reproducing the exact pre-load global-RNG stream:
+#   np.random.seed(seed)                     (_base_task.py:58)
+#   np.random.uniform(-0.0, 0.0)             (_base_task.py:111 table_z_bias)
+#   np.random.randn(3); np.random.uniform()  (camera/camera.py:98-100 head-cam jitter)
+# Verified against the p4-accept plan lines (seed 0 pre-poses/distances match
+# to 1.5 mm) and against the seed 5/9 RuntimeErrors.
+
+ROBOTWIN = ROOT.parent.parent / "RoboTwin"
+ROBOTWIN_OBJECTS = ROBOTWIN / "assets" / "objects"
+
+
+class _FakePose:
+    def __init__(self, p, q=None):
+        self.p = np.asarray(p, dtype=np.float64).reshape(3)
+        self.q = list(q) if q is not None else [1, 0, 0, 0]
+
+    def to_transformation_matrix(self):
+        w, x, y, z = self.q
+        m = np.eye(4)
+        m[:3, :3] = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ])
+        m[:3, 3] = self.p
+        return m
+
+
+class _FakeEntity:
+    def __init__(self):
+        self._pose = _FakePose([0, 0, 0])
+
+    def set_name(self, n):
+        pass
+
+    def set_pose(self, p):
+        self._pose = p
+
+    def get_pose(self):
+        return self._pose
+
+    def add_component(self, c):
+        pass
+
+    def find_component_by_type(self, t):
+        return None
+
+
+class _FakeActor:  # RoboTwin Actor wrapper: .config = model_data json dict
+    def __init__(self, entity, config):
+        self.actor = entity
+        self.config = config
+
+    def get_pose(self):
+        return self.actor.get_pose()
+
+
+class _FakeScene:
+    default_physical_material = object()
+
+    def get_system(self, name):
+        raise RuntimeError("no render")
+
+    def add_entity(self, e):
+        pass
+
+
+def _model_data(modelname, model_id):
+    import json
+
+    jf = ROBOTWIN_OBJECTS / str(modelname) / (
+        f"model_data{model_id}.json" if model_id is not None else "model_data.json"
+    )
+    with open(jf, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _load_task_module():
+    """Import robotwin_tasks/push_zone.py with sapien + RoboTwin utils stubbed."""
+    import importlib.util
+    import sys
+    import types
+
+    sapien = types.ModuleType("sapien")
+    sapien.Pose = _FakePose
+    sapien.Entity = _FakeEntity
+    physx = types.ModuleType("sapien.physx")
+    physx.PhysxRigidStaticComponent = type("C", (), {"attach": lambda self, s: None})
+    physx.PhysxRigidDynamicComponent = type("D", (), {})
+    physx.PhysxCollisionShapeBox = type("S", (), {"__init__": lambda self, **kw: None})
+    render = types.ModuleType("sapien.render")
+    render.RenderMaterial = type("M", (), {"__init__": lambda self, **kw: None})
+    render.RenderBodyComponent = type("B", (), {"attach": lambda self, s: None})
+    render.RenderShapeBox = type("R", (), {"__init__": lambda self, *a: None})
+    sapien.physx = physx
+    sapien.render = render
+
+    def create_box(scene, pose, half_size, color=None, name=None, **kw):
+        ent = _FakeEntity()
+        ent.set_pose(pose)
+        cfg = {"extents": list(half_size), "scale": list(half_size), "center": [0, 0, 0]}
+        return _FakeActor(ent, cfg)
+
+    def create_cylinder(scene, pose, radius, half_length, color=None, name=None, **kw):
+        ent = _FakeEntity()
+        ent.set_pose(pose)
+        cfg = {"extents": [radius, radius, half_length], "scale": [radius, radius, half_length], "center": [0, 0, 0]}
+        return _FakeActor(ent, cfg)
+
+    def create_actor(scene, pose, modelname, convex=False, is_static=False, model_id=0, **kw):
+        ent = _FakeEntity()
+        ent.set_pose(pose)
+        return _FakeActor(ent, _model_data(modelname, model_id))
+
+    utils = types.ModuleType("pz_replay.utils")
+    utils.np = np
+    utils.create_box = create_box
+    utils.create_cylinder = create_cylinder
+    utils.create_actor = create_actor
+    base = types.ModuleType("pz_replay._base_task")
+    base.Base_Task = type("Base_Task", (), {})
+    pkg = types.ModuleType("pz_replay")
+    pkg.__path__ = [str(TASK_SRC.parent)]
+
+    saved = {k: sys.modules.get(k) for k in ("sapien", "sapien.physx", "sapien.render")}
+    sys.modules.update(
+        {
+            "sapien": sapien,
+            "sapien.physx": physx,
+            "sapien.render": render,
+            "pz_replay": pkg,
+            "pz_replay.utils": utils,
+            "pz_replay._base_task": base,
+        }
+    )
+    mods = {}
+    for name, fname in (("pz_replay._item_utils", "_item_utils.py"), ("pz_replay.push_zone", "push_zone.py")):
+        spec = importlib.util.spec_from_file_location(name, TASK_SRC.parent / fname)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        mods[name] = mod
+
+    def _restore():
+        for key, old in saved.items():
+            if old is None:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = old
+
+    # the stubs must STAY installed while the replay runs: _item_utils.zone_mat
+    # does a function-level `import sapien`, and the real sapien imports on this
+    # node (GPU-less) and would cook real PhysX shapes against the fake scene
+    return mods["pz_replay.push_zone"], _restore
+
+
+def _replay_layout(pz, seed):
+    task = pz.push_zone()
+    task.scene = _FakeScene()
+    task.table_z_bias = 0.0
+    np.random.seed(seed)
+    np.random.uniform(-0.0, 0.0)  # _base_task.py:111
+    np.random.randn(3)  # camera.py:98
+    np.random.uniform(0.0, 0.0)  # camera.py:100
+    task.load_actors()
+    return task
+
+
+def _interior_zone_clearances(task):
+    """zone edge <-> push corridor interior-foot clearances (sim-test mirror)."""
+    out = []
+    for zone in task.zones:
+        c = np.asarray(zone["xy"], dtype=np.float64).reshape(2)
+        hx, hy = zone["size_xy"][0] / 2.0, zone["size_xy"][1] / 2.0
+        for corr in task.layout_info["corridors"]:
+            a = np.asarray(corr["a"], dtype=np.float64)
+            b = np.asarray(corr["b"], dtype=np.float64)
+            ab = b - a
+            t = float(((c - a) @ ab) / float(ab @ ab))
+            if not (0.01 < t < 0.99):
+                continue
+            d = ab / float(np.linalg.norm(ab))
+            perp = np.array([-d[1], d[0]])
+            z_half = float(abs(perp[0]) * hx + abs(perp[1]) * hy)
+            dist = float(np.linalg.norm(c - (a + t * ab)))
+            out.append(dist - float(corr["half"]) - z_half)
+    return out
+
+
+@pytest.mark.skipif(not ROBOTWIN_OBJECTS.is_dir(), reason="RoboTwin assets not available")
+def test_layout_replay_20_seeds():
+    pz, restore = _load_task_module()
+    try:
+        for seed in range(20):
+            task = _replay_layout(pz, seed)  # raises RuntimeError on a bad layout
+            assert len(task.push_objects) == 2
+            for rec in task.push_objects:
+                dist = float(np.linalg.norm(rec["goal_xy"] - rec["start_xy"]))
+                assert pz.PUSH_DIST[0] <= dist <= pz.PUSH_DIST[1], (seed, rec["item_id"], dist)
+            assert 2 <= len(task.zones) <= 3
+            assert 1 <= len(task.bystanders) <= 2  # 2nd bystander may degrade (range draw)
+            assert len({z["region_id"] for z in task.zones}) == len(task.zones)
+            clear = _interior_zone_clearances(task)
+            assert clear, seed
+            assert min(clear) > 0.0, (seed, min(clear))
+            assert min(clear) <= 0.06 + 1e-6, (seed, min(clear))  # near-line guarantee
+            # bystander edge clears every corridor
+            for b in task.bystanders:
+                xy = np.asarray(b["xy"], dtype=np.float64)
+                for corr in task.layout_info["corridors"]:
+                    a = np.asarray(corr["a"], dtype=np.float64)
+                    bseg = np.asarray(corr["b"], dtype=np.float64)
+                    ab = bseg - a
+                    t = float(np.clip((xy - a) @ ab / float(ab @ ab), 0.0, 1.0))
+                    assert float(np.linalg.norm(xy - (a + t * ab))) > float(corr["half"])
+    finally:
+        restore()
+
+
+def _mesh_verts(modelname, model_id):
+    """Collision-mesh vertices, node transforms baked (sapien's cook), scaled."""
+    trimesh = pytest.importorskip("trimesh")
+
+    modeldir = ROBOTWIN_OBJECTS / str(modelname)
+    coll = modeldir / "collision" / f"base{model_id}.glb"
+    if not coll.exists():
+        coll = modeldir / "collision" / f"textured{model_id}.obj"
+    if not coll.exists():
+        coll = modeldir / f"base{model_id}.glb"
+    if not coll.exists():
+        coll = modeldir / f"textured{model_id}.obj"
+    md = _model_data(modelname, model_id)
+    scale = np.asarray(md["scale"], dtype=np.float64).reshape(-1)
+    scale = np.full(3, scale[0]) if scale.size == 1 else np.resize(scale, 3)
+    loaded = trimesh.load(str(coll), force="scene", process=False)
+    dumped = loaded.dump()
+    meshes = dumped if isinstance(dumped, (list, tuple)) else [dumped]
+    return np.vstack([np.asarray(m.vertices, dtype=np.float64) for m in meshes]) * scale
+
+
+@pytest.mark.skipif(not ROBOTWIN_OBJECTS.is_dir(), reason="RoboTwin assets not available")
+def test_pool_meshes_bottom_origin_and_pads():
+    """z-placement + pad contracts for every pool (asset, id) — the T1-class bug
+    is a centered origin spawning embedded; the pads must cover the true OBB."""
+    pz, restore = _load_task_module()
+    try:
+        seen = set()
+        for asset, ids in pz.MESH_MODEL_IDS.items():
+            for model_id in ids:
+                assert (asset, model_id) not in seen
+                seen.add((asset, model_id))
+                v = _mesh_verts(asset, model_id)
+                lo, hi = v.min(axis=0), v.max(axis=0)
+                # Y-up bottom origin: spawning at z + 0.001 embeds at most ~2 mm
+                assert lo[1] > -0.005, (asset, model_id, lo[1])
+                assert hi[1] - lo[1] > 0.01
+                # json extents match the true mesh (the registered OBB is honest)
+                md = _model_data(asset, model_id)
+                scale = np.asarray(md["scale"], dtype=np.float64).reshape(-1)
+                scale = np.full(3, scale[0]) if scale.size == 1 else np.resize(scale, 3)
+                jext = np.abs(np.asarray(md["extents"], dtype=np.float64)) * scale
+                assert np.all(np.abs(jext - (hi - lo)) < 0.01), (asset, model_id, jext, hi - lo)
+                # placement pad covers the true horizontal half extents
+                pad = pz.MESH_PAD_HALF[asset]
+                assert pad >= max(hi[0] - lo[0], hi[2] - lo[2]) / 2.0 + 0.002, (asset, model_id, pad)
+                # mesh bystanders stay squat (the punt-ring 19-26 cm bottles tipped
+                # in check_stable — keep tall meshes out of the bystander pool)
+                if asset in pz.BYSTANDER_POOL:
+                    assert hi[1] - lo[1] <= 0.12, (asset, model_id, hi[1] - lo[1])
+    finally:
+        restore()

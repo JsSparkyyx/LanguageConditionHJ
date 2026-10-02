@@ -8,8 +8,10 @@ end. NOT run in the login-node suite.
   exercises the bead-skip in the task's check_stable), the rule table matches
   the T2 config contract, every margin is positive at t = 0, and the
   task-specific risk knobs land on task.risk_knobs.
-- One low-risk episode per embodiment (transit 0.5, tilt_rate 1.0, pour 5 cm
-  above the rim, centered): error is None, task_success (>= 80% of beads in
+- One low-risk episode per embodiment (transit 0.5, tilt_rate 1.0, pour
+  pinned at 0.05 — clamped by the task to the rim-ring interlink floor
+  min_pour_height = src outer radius + 0.015, ~0.07-0.08 m; centered):
+  error is None, task_success (>= 80% of beads in
   the target — P2 poured everything at omega = 1 rad/s, so a failure here is
   a tuning signal, not necessarily an implementation bug), and the trace
   shows the risky/safe time-scale windows.
@@ -40,7 +42,10 @@ EXPECTED_RULE_IDS = [
 ]
 
 # flat override keys — runner._merge_risk_override puts every
-# non-time_scale key into risk_params.task verbatim
+# non-time_scale key into risk_params.task verbatim. pour_height 0.05 is
+# below the rim-ring interlink floor: the task clamps the EFFECTIVE height
+# to min_pour_height (src outer radius + 0.015), so this pin also exercises
+# the clamp.
 LOW_RISK = {
     "time_scale": 0.5,
     "safe_time_scale": 0.6,

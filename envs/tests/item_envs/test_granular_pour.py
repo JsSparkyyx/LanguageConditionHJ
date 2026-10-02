@@ -128,7 +128,11 @@ def test_t2_rule_semantics():
     # the referent meaningless)
     assert by_id["particles_outside|beads|zone_red"].region_ids == ("zone_red",)
     assert by_id["particles_outside|beads|zone_blue"].region_ids == ("zone_blue",)
-    assert "T" in by_id["particles_inside|beads|bowl_src_interior+target_interior"].params
+    # softmin temperature: the 0.005 default over 60 beads pulled the t=0 rule
+    # margin negative with every bead inside the bowl (p4-accept failures) —
+    # the yaml pins T = 0.001 on all three entries
+    for rid in EXPECTED_RULE_IDS:
+        assert by_id[rid].params["T"] == 0.001, rid
 
 
 def test_t2_task_file_matches_yaml():
@@ -172,3 +176,102 @@ def test_t2_task_file_matches_yaml():
             if rid.startswith("zone_"):
                 assert rid == f"zone_{rid.split('_', 1)[1]}"
                 assert f'"{rid.split("_", 1)[1]}"' in m.group(1)
+
+
+# ---------------------------------------------------------------------------
+# p4-accept regression seams (pure numpy, login-node safe)
+# ---------------------------------------------------------------------------
+
+_ITEM_UTILS_PATH = ROOT / "robotwin_tasks" / "_item_utils.py"
+ASSET_OBJ_ROOT = Path("/work/nvme/bifq/project/RoboTwin/assets/objects")
+
+
+def _item_utils():
+    """Load robotwin_tasks/_item_utils.py by file path (no package import)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_item_utils", _ITEM_UTILS_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.skipif(not ASSET_OBJ_ROOT.is_dir(), reason="RoboTwin assets not on this host")
+def test_container_region_margin_contract():
+    """Resting beads sit comfortably inside the registered container polygon.
+
+    p4-accept regression: with the rim-OPENING radius the belly (up to 5.3 mm
+    wider) plus the T-softmin over 60 beads put the joint particles_inside
+    margin at -1.6..-5.1 mm at t=0. The registration now uses the OUTER
+    footprint radius + 2 mm (container_region_radius) and T = 0.001: the
+    softmin over the spawn grid must clear +8 mm per bowl id, and survive a
+    simulated 1.5 mm settle creep of the outer ring.
+    """
+    from main.item_envs.geometry import circle_polygon
+    from main.item_envs.margins import m_particles_inside
+
+    iu = _item_utils()
+    for bid in (1, 2, 3, 5):
+        geom = iu.bowl_geometry("002_bowl", bid, obj_root=str(ASSET_OBJ_ROOT))
+        radius = iu.container_region_radius(geom, pad=0.002)
+        poly = circle_polygon(radius, 16)
+        region = Region(
+            region_id=f"bowl_{bid}", kind="container", frame_fn=lambda: np.eye(4),
+            polygon=poly, z=0.0, z_band=0.01, nameable=True,
+        )
+        pos = np.asarray(
+            iu.bead_grid_positions(60, 0.006, geom["inner_radius"], geom["floor_y"],
+                                   bands=geom["bands"], rng=np.random)
+        )
+        margin = m_particles_inside([pos[:, [0, 2]]], [region], T=0.001)
+        assert margin > 0.008, (bid, margin)
+        # settle creep: the outer ring rolls up to 1.5 mm outward against the wall
+        rho = np.hypot(pos[:, 0], pos[:, 2])
+        crept = pos.copy()
+        outer = rho > 0.7 * rho.max()
+        crept[outer, 0] *= (rho[outer] + 0.0015) / rho[outer]
+        crept[outer, 2] *= (rho[outer] + 0.0015) / rho[outer]
+        margin_crept = m_particles_inside([crept[:, [0, 2]]], [region], T=0.001)
+        assert margin_crept > 0.004, (bid, margin_crept)
+
+
+def test_zone_keepaway_helper_semantics():
+    """rect_support_radius is the exact rect support; zone_clear_ok enforces it."""
+    iu = _item_utils()
+    size = (0.16, 0.14)
+    assert iu.rect_support_radius(size, (1.0, 0.0)) == pytest.approx(0.08)
+    assert iu.rect_support_radius(size, (0.0, 1.0)) == pytest.approx(0.07)
+    diag = 2 ** -0.5
+    assert iu.rect_support_radius(size, (diag, diag)) == pytest.approx(0.5 * (diag * 0.16 + diag * 0.14))
+    # a mat 3 cm (edge) from a bowl of outer radius 6 cm passes; 1 cm fails
+    bowl = [(np.array([0.0, 0.0]), 0.06)]
+    assert iu.zone_clear_ok(np.array([0.06 + 0.08 + 0.03, 0.0]), size, bowl, 0.02)
+    assert not iu.zone_clear_ok(np.array([0.06 + 0.08 + 0.01, 0.0]), size, bowl, 0.02)
+    # approach from the diagonal needs the diagonal support
+    d = diag * (0.06 + 0.5 * (diag * 0.16 + diag * 0.14) + 0.025)
+    assert iu.zone_clear_ok(np.array([d, d]), size, bowl, 0.02)
+    d2 = diag * (0.06 + 0.5 * (diag * 0.16 + diag * 0.14) + 0.005)
+    assert not iu.zone_clear_ok(np.array([d2, d2]), size, bowl, 0.02)
+
+
+def test_pour_height_floor_and_tilt_guards():
+    """The rim-ring interlink floor and the tilt abort guard are in place."""
+    iu = _item_utils()
+    src = TASK_SRC.read_text(encoding="utf-8")
+    # floor: src outer radius + 1.5 cm clearance, inside the yaml knob range
+    if ASSET_OBJ_ROOT.is_dir():
+        for bid in (1, 2, 3, 5):
+            geom = iu.bowl_geometry("002_bowl", bid, obj_root=str(ASSET_OBJ_ROOT))
+            floor = iu.min_pour_height(geom, clearance=0.015)
+            assert 0.05 < floor <= 0.20, (bid, floor)
+    # play_once clamps the knob; the tilt aborts on a lost pin; quat continuity
+    assert "min_pour_height(self._src_geom, clearance=POUR_HEIGHT_CLEAR)" in src
+    assert "POUR_HEIGHT_CLEAR = 0.015" in src
+    assert "POUR_PIN_ABORT = 0.10" in src
+    assert "np.dot(q_new, ee[3:])) < 0.0" in src
+    # registration uses the footprint-column radius, not the rim opening
+    assert "rim_radius=container_region_radius(self._src_geom" in src
+    assert "rim_radius=container_region_radius(self._target_geom" in src
+    # the zone layout goes through the exact keepaway predicate
+    assert "zone_clear_ok" in src
+    assert "ZONE_GAP = 0.02" in src
