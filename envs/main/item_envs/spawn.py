@@ -56,6 +56,19 @@ Layout (all draws from the CALLER's rng — ``np.random.RandomState(seed +
      returns the partial placements (``k_dropped`` slots unplaced) — a
      2-object layout with quota met keeps the "referent matters" property,
      an all-None layout wastes the episode.
+- **Layout fix 3 (documented, P4-T1 finding F5 — off_path visibility band)**:
+  the P1 rerun's t=0 visibility gate measured per-item max-camera visible
+  fraction 0.642 for off_path (< 0.95 gate): far-corner table cells sit
+  outside every camera frustum. When ``objects.off_path_visible_only`` is
+  set (T1 yaml), the OFF-path grid candidates are restricted to an
+  empirically measured visibility band — ``configs/visibility_band_<emb>.npz``
+  written by ``scripts/item_envs/visibility_band.py`` (a 2 cm grid sweep of a
+  kinematic reference cylinder through ``masks.item_masks``; band = largest
+  all-covered axis-aligned rect, vis >= 0.3, inset one cell). Resolution
+  order: the env's own embodiment band, else the OTHER embodiment's
+  (``report["vis_band"] == "shared-fallback"``), else no restriction (None).
+  With the flag off or the npz missing the off_path branch is byte-identical
+  to before (``vis_band=None`` skips the filter).
 - Objects are DYNAMIC with masses sampled uniformly from their objects.yaml
   category ``mass_range`` (set via ``physics.set_mass_props``) —
   ``objects.static_objects: true`` gives the CrossSafe parity layout.
@@ -77,6 +90,7 @@ the same semantics as choose_and_spawn (drawn from the passed rng).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -323,6 +337,7 @@ def _find_xy(
     rng: np.random.RandomState,
     t_range,
     xylim: np.ndarray | None = None,
+    vis_band: tuple | None = None,
 ) -> tuple[np.ndarray | None, float | None, float | None, bool]:
     """(xy, corridor_t, lateral, t_fallback) for one object, or all-None/False.
 
@@ -334,6 +349,10 @@ def _find_xy(
     near_path draws (t, offset, sign) up to NEAR_PATH_TRIES times; off_path
     scans the obstacle.py table grid >= off_path_min_dist from the corridor
     and takes the max-clearance feasible cell (rng-shuffled tie order).
+    vis_band (fix 3 / F5): (x_min, x_max, y_min, y_max) cell-center rect from
+    the measured visibility band — off_path grid candidates outside it are
+    skipped (±1e-9 tolerance); None (flag off / npz missing) is
+    byte-identical to the unfiltered scan. on/near_path ignore it.
     """
     xylim = ob.TABLE_XYLIM if xylim is None else np.asarray(xylim, dtype=np.float64)
     p0 = np.asarray(p0[:2], dtype=np.float64)
@@ -392,6 +411,11 @@ def _find_xy(
     best_xy, best_score = None, -np.inf
     for idx in order:
         cand = grid[idx]
+        if vis_band is not None and not (  # fix 3 (F5): stay inside the visible band
+            vis_band[0] - 1e-9 <= cand[0] <= vis_band[1] + 1e-9
+            and vis_band[2] - 1e-9 <= cand[1] <= vis_band[3] + 1e-9
+        ):
+            continue
         if ob._line_dist(cand, p0, p1) < min_dist:
             continue
         if not ok(cand):
@@ -416,12 +440,15 @@ def _layout_plan(
     t_range,
     geometry_fn=_geometry_of,
     xylim: np.ndarray | None = None,
+    vis_band: tuple | None = None,
 ) -> tuple[list[Placement], int] | None:
     """Draw one layout or None; returns (placements, k_dropped).
 
     Draw order per object (deterministic given rng): class list -> per object
     asset/id/color/size -> placement (t / offset / grid). ``geometry_fn`` is
-    the test seam (non-sim tests inject fake extents).
+    the test seam (non-sim tests inject fake extents). ``vis_band`` (fix 3 /
+    F5) is the off_path visibility-band rect, passed through to _find_xy;
+    None keeps the historical unrestricted off_path scan.
 
     Fix 2.2 (degradation chain): an object whose drawn class cannot be
     placed retries the SAME draw down _DEGRADE_CHAIN; stepping into
@@ -462,7 +489,8 @@ def _layout_plan(
             if cand_cls != cls and cand_cls == "off_path" and on_near_count() < quota:
                 break  # degrade into off_path refused: on/near quota unmet
             xy, t_used, lateral, t_fallback = _find_xy(
-                cand_cls, p0, p1, keepaways, placed, geo.world_half, cfg, rng, t_range, xylim
+                cand_cls, p0, p1, keepaways, placed, geo.world_half, cfg, rng, t_range,
+                xylim, vis_band=vis_band,
             )
             if xy is not None:
                 final_cls = cand_cls
@@ -486,6 +514,41 @@ def _layout_plan(
             )
         )
     return placements, 0
+
+
+# ---------------------------------------------------------------------------
+# off_path visibility band (fix 3 / F5; pure numpy, test seam = _CONFIGS_DIR)
+# ---------------------------------------------------------------------------
+
+_CONFIGS_DIR = Path(__file__).resolve().parent / "configs"
+
+
+def _read_band_rect(path: Path) -> tuple:
+    """(x_min, x_max, y_min, y_max) from a visibility_band npz."""
+    with np.load(path) as z:
+        return tuple(float(v) for v in z["rect"].reshape(4))
+
+
+def _vis_band_for(embodiment: str | None, configs_dir=None) -> tuple[tuple | None, str | None]:
+    """(rect, label) of the measured off_path visibility band, or (None, None).
+
+    Resolution: the embodiment's own ``visibility_band_<embodiment>.npz``
+    (label = the embodiment name), else any OTHER embodiment's band file
+    (label "shared-fallback" — camera rigs differ per embodiment, but a
+    foreign band is strictly better than the unmeasured far corners), else
+    (None, None) = no restriction. Called only when the task cfg sets
+    ``objects.off_path_visible_only``.
+    """
+    cfg_dir = Path(configs_dir) if configs_dir is not None else _CONFIGS_DIR
+    if embodiment:
+        own = cfg_dir / f"visibility_band_{embodiment}.npz"
+        if own.is_file():
+            return _read_band_rect(own), str(embodiment)
+    for path in sorted(cfg_dir.glob("visibility_band_*.npz")):
+        if embodiment and path.stem == f"visibility_band_{embodiment}":
+            continue
+        return _read_band_rect(path), "shared-fallback"
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -679,6 +742,13 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
     ``task.item_meta`` (the same channel robotwin_tasks/_item_utils writes)
     so runner-style consumers see the candidates. Does NOT call
     update_curobo_world — that is the caller's job.
+
+    Fix 3 (F5): when ``objects.off_path_visible_only`` is set, the measured
+    visibility band (``_vis_band_for``) is loaded ONCE here and threaded into
+    every ``_layout_plan`` call; ``report["vis_band"]`` records which band
+    was applied — the embodiment's own name, "shared-fallback" (the other
+    embodiment's npz), or None (flag off / no band file anywhere — the
+    off_path scan is then byte-identical to the historical behavior).
     """
     spec = TASK_SPECS.get(getattr(env, "task_name", ""))
     if spec is None:
@@ -689,6 +759,13 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
     cfg = dict(task_cfg.get("objects") or {})
     t_range = task_cfg.get("corridor_t", [0.22, 0.48])
     static = bool(cfg.get("static_objects", False))
+    # fix 3 (F5): the off_path visibility band, loaded once per call. The env's
+    # canonical embodiment name threads through (Env.embodiment; fall back to
+    # the task attribute for runner-built envs); None -> fallback/none.
+    embodiment = getattr(env, "embodiment", None) or getattr(env.task, "embodiment", None)
+    vis_band = band_label = None
+    if cfg.get("off_path_visible_only", False):
+        vis_band, band_label = _vis_band_for(embodiment)
     objects_cfg = physics.load_objects_cfg()
     pool = t1_pool_entries(objects_cfg)
     train_colors = list((objects_cfg.get("colors") or {}).get("train") or [])
@@ -717,6 +794,7 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
         "t_fallbacks": 0,
         "degraded": 0,
         "k_dropped": 0,
+        "vis_band": band_label,  # fix 3 (F5): embodiment name | "shared-fallback" | None
         "placements": [],
         "settle": [],
         "corridor": {"p0": [float(v) for v in p0[:2]], "p1": [float(v) for v in p1[:2]]},
@@ -731,7 +809,8 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
             if attempt:
                 report["spawn_rejections"] += 1
             out = _layout_plan(
-                p0, p1, keepaways, cfg, task_cfg, rng, pool, train_colors, t_range
+                p0, p1, keepaways, cfg, task_cfg, rng, pool, train_colors, t_range,
+                vis_band=vis_band,
             )
             if out is None:
                 report["layout_retries"] += 1

@@ -1,9 +1,14 @@
 task: selective_avoid
 host_tasks: [place_container_plate, place_burger_fries, stack_blocks_two, stack_bowls_two, place_bread_basket]
 embodiments: [ur5-wsg, franka-panda]
+# F5: restrict off_path candidates to the empirically-visible table band
+# (main/item_envs/configs/visibility_band_<embodiment>.npz, built by
+# scripts/item_envs/visibility_band.py) — far-corner cells sit outside every
+# camera frustum (P4-T1 off_path vis gate 0.642 < 0.95).
 objects: {k: [3, 5], max_on_path: 2, min_on_or_near_path: 2, near_path_offset: [0.02, 0.06],
           off_path_min_dist: 0.10, min_separation: 0.03, static_objects: false,
-          on_path_max_r_xy: 0.035, near_path_max_r_xy: 0.035}
+          on_path_max_r_xy: 0.035, near_path_max_r_xy: 0.035,
+          off_path_visible_only: true}
 corridor_t: [0.22, 0.48]
 risk:
   time_scale: {dist: choice, values: [0.6, 0.8, 1.0, 1.15, 1.3]}

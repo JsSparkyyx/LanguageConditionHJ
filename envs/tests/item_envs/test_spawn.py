@@ -7,6 +7,7 @@ mocked corridors/keepaways and injected geometry, no sapien scene.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -330,7 +331,7 @@ def _scripted_find_xy(monkeypatch, near_outcomes):
     (True -> XY_NEAR, False -> None); off_path always lands at XY_OFF."""
     calls = iter(near_outcomes)
 
-    def fake(cls, p0, p1, keepaways, placed, world_half, cfg, rng, t_range, xylim=None):
+    def fake(cls, p0, p1, keepaways, placed, world_half, cfg, rng, t_range, xylim=None, **_kw):
         if cls == "near_path" and next(calls, False):
             return XY_NEAR.copy(), 0.5, 0.05, False
         if cls == "off_path":
@@ -378,7 +379,7 @@ def test_layout_partial_k_acceptance(monkeypatch):
     stop and return the partial layout with k_dropped."""
     calls = {"off": 0}
 
-    def fake(cls, p0, p1, keepaways, placed, world_half, cfg, rng, t_range, xylim=None):
+    def fake(cls, p0, p1, keepaways, placed, world_half, cfg, rng, t_range, xylim=None, **_kw):
         if cls == "on_path":
             return np.array([-0.10, 0.0]), 0.3, 0.0, False
         if cls == "near_path":
@@ -398,7 +399,7 @@ def test_layout_partial_k_acceptance(monkeypatch):
     assert calls["off"] == 1  # stopped at the first exhausted slot
 
     # same shape but quota unmet by what is placed -> None, not a partial layout
-    def fake2(cls, p0, p1, keepaways, placed, world_half, cfg, rng, t_range, xylim=None):
+    def fake2(cls, p0, p1, keepaways, placed, world_half, cfg, rng, t_range, xylim=None, **_kw):
         if cls == "on_path":
             return np.array([-0.10, 0.0]), 0.3, 0.0, False
         return None, None, None, False
@@ -503,7 +504,7 @@ def _patch_driver(monkeypatch, poses_script):
         lambda entity, mass: calls["masses"].append(float(mass)),
     )
 
-    def fake_layout(p0, p1, keepaways, cfg, task_cfg, rng, pool, colors, t_range):
+    def fake_layout(p0, p1, keepaways, cfg, task_cfg, rng, pool, colors, t_range, **_kw):
         calls["layouts"] += 1
         return [_make_placement(0)], 0
 
@@ -571,7 +572,7 @@ def test_spawn_candidates_layout_retries(monkeypatch):
     calls, state = _patch_driver(monkeypatch, [still])
     layouts = {"n": 0}
 
-    def flaky_layout(p0, p1, keepaways, cfg, task_cfg, rng, pool, colors, t_range):
+    def flaky_layout(p0, p1, keepaways, cfg, task_cfg, rng, pool, colors, t_range, **_kw):
         layouts["n"] += 1
         if layouts["n"] == 1:
             return None  # first layout infeasible
@@ -591,7 +592,7 @@ def test_spawn_candidates_fix2_report_fields(monkeypatch):
     still = lambda xyz: (xyz.copy(), _quat_rotz(0.0))
     calls, _state = _patch_driver(monkeypatch, [still])
 
-    def flagged_layout(p0, p1, keepaways, cfg, task_cfg, rng, pool, colors, t_range):
+    def flagged_layout(p0, p1, keepaways, cfg, task_cfg, rng, pool, colors, t_range, **_kw):
         p0_ = _make_placement(0)
         p0_.t_fallback = True
         p1_ = _make_placement(1)
@@ -645,3 +646,161 @@ def test_spawn_candidates_rejects_non_host(monkeypatch):
     env.task_name = "not_a_host"
     with pytest.raises(KeyError):
         spawn.spawn_candidates(env, TASK_CFG, np.random.RandomState(0))
+
+
+# ---------------------------------------------------------------------------
+# F5: off_path visibility band (visibility_band_<embodiment>.npz)
+# ---------------------------------------------------------------------------
+
+BAND_RECT = (-0.15, 0.15, -0.25, 0.25)  # (x_min, x_max, y_min, y_max), cell-center coords
+
+
+def _write_band(dir_path, embodiment, rect):
+    """Fabricate a band npz in the shape visibility_band.py writes."""
+    dir_path = Path(dir_path)
+    xs = np.arange(rect[0], rect[1] + 0.01, 0.02)
+    ys = np.arange(rect[2], rect[3] + 0.01, 0.02)
+    grid_xy = np.array([[x, y] for y in ys for x in xs], dtype=np.float64)
+    vis = np.ones((len(ys), len(xs), 3), dtype=np.float32)
+    np.savez(
+        dir_path / f"visibility_band_{embodiment}.npz",
+        xs=xs, ys=ys, grid_xy=grid_xy, vis=vis, vis_max=vis.max(axis=2),
+        covered=np.ones((len(ys), len(xs)), dtype=bool),
+        band=np.ones((len(ys), len(xs)), dtype=bool),
+        rect=np.asarray(rect, dtype=np.float64),
+        embodiment=embodiment, cell=0.02, thresh=0.3,
+    )
+
+
+def test_layout_plan_off_path_vis_band(monkeypatch):
+    """F5 (a): with vis_band set, every off_path placement lands inside the rect
+    (and still honors off_path_min_dist); on/near placements are NOT restricted."""
+    monkeypatch.setattr(
+        spawn, "_class_counts",
+        lambda k_, cfg_, task_cfg_, rng_: [
+            "on_path", "near_path", "off_path", "off_path", "off_path"],
+    )
+    cfg = dict(CFG, k=[5, 5])
+    n_off = 0
+    for seed in range(5):
+        out = spawn._layout_plan(
+            P0, P1, [], cfg, TASK_CFG, np.random.RandomState(seed), POOL, ["red"],
+            [0.22, 0.48], geometry_fn=fake_geometry, xylim=XYLIM, vis_band=BAND_RECT,
+        )
+        assert out is not None
+        placements, k_dropped = out
+        assert k_dropped == 0
+        for p in placements:
+            if p.cls != "off_path":
+                continue
+            n_off += 1
+            assert BAND_RECT[0] - 1e-9 <= p.xyz[0] <= BAND_RECT[1] + 1e-9
+            assert BAND_RECT[2] - 1e-9 <= p.xyz[1] <= BAND_RECT[3] + 1e-9
+            assert spawn.ob._line_dist(p.xyz[:2], P0, P1) >= CFG["off_path_min_dist"]
+    assert n_off == 15  # 3 off_path draws x 5 seeds, all placed
+
+
+def test_layout_plan_vis_band_none_byte_identical():
+    """F5 (b), layout level: vis_band=None (flag off / npz missing) reproduces
+    the unrestricted layout exactly, same seed."""
+    def run(seed, **kw):
+        return spawn._layout_plan(
+            P0, P1, [], CFG, TASK_CFG, np.random.RandomState(seed), POOL, ["red"],
+            [0.22, 0.48], geometry_fn=fake_geometry, xylim=XYLIM, **kw,
+        )
+
+    for seed in (0, 1, 2, 3):
+        base, base_kd = run(seed)
+        explicit, explicit_kd = run(seed, vis_band=None)
+        assert base_kd == explicit_kd
+        assert [tuple(p.xyz) for p in base] == [tuple(p.xyz) for p in explicit]
+        assert [(p.cls, p.corridor_t, p.lateral) for p in base] == [
+            (p.cls, p.corridor_t, p.lateral) for p in explicit
+        ]
+
+
+def test_vis_band_for_resolution(monkeypatch, tmp_path):
+    """F5 (c), unit: own embodiment's npz wins; otherwise the other embodiment's
+    band resolves as 'shared-fallback'; no file at all -> (None, None)."""
+    other_rect = (-0.20, 0.20, -0.22, 0.22)
+    _write_band(tmp_path, "franka-panda", other_rect)
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", tmp_path)
+
+    rect, label = spawn._vis_band_for("franka-panda")
+    assert rect == pytest.approx(other_rect)
+    assert label == "franka-panda"
+
+    rect2, label2 = spawn._vis_band_for("ur5-wsg")  # own file missing -> fallback
+    assert rect2 == pytest.approx(other_rect)
+    assert label2 == "shared-fallback"
+
+    rect3, label3 = spawn._vis_band_for(None)  # no embodiment at all -> fallback
+    assert rect3 == pytest.approx(other_rect)
+    assert label3 == "shared-fallback"
+
+    # own file takes precedence over the fallback
+    _write_band(tmp_path, "ur5-wsg", BAND_RECT)
+    rect4, label4 = spawn._vis_band_for("ur5-wsg")
+    assert rect4 == pytest.approx(BAND_RECT)
+    assert label4 == "ur5-wsg"
+
+    # empty configs dir -> no restriction
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", empty)
+    assert spawn._vis_band_for("ur5-wsg") == (None, None)
+
+
+def test_spawn_candidates_vis_band_threading(monkeypatch, tmp_path):
+    """F5 (b/c), driver level: the flag loads the band once per spawn_candidates
+    call, threads it into _layout_plan, and labels the report; a missing npz
+    falls back to vis_band=None with the old behavior."""
+    still = lambda xyz: (xyz.copy(), _quat_rotz(0.0))
+    _patch_driver(monkeypatch, [still])
+    _write_band(tmp_path, "franka-panda", BAND_RECT)
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", tmp_path)
+    seen = {}
+
+    def capture_layout(p0, p1, keepaways, cfg, task_cfg, rng, pool, colors, t_range, **kw):
+        seen.update(kw)
+        return [_make_placement(0)], 0
+
+    monkeypatch.setattr(spawn, "_layout_plan", capture_layout)
+    flag_cfg = {"objects": {**CFG, "off_path_visible_only": True}, "corridor_t": [0.22, 0.48]}
+
+    # own band missing, franka's present -> shared-fallback, rect threaded through
+    env = _fake_env()
+    env.embodiment = "ur5-wsg"
+    specs, report = spawn.spawn_candidates(env, flag_cfg, np.random.RandomState(0))
+    assert report["vis_band"] == "shared-fallback"
+    assert seen["vis_band"] == pytest.approx(BAND_RECT)
+
+    # no band files anywhere -> vis_band None threaded, report None (old behavior)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", empty)
+    seen.clear()
+    env2 = _fake_env()
+    env2.embodiment = "ur5-wsg"
+    specs2, report2 = spawn.spawn_candidates(env2, flag_cfg, np.random.RandomState(0))
+    assert report2["vis_band"] is None
+    assert seen["vis_band"] is None
+
+    # flag OFF: band never loaded even though files exist
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", tmp_path)
+    seen.clear()
+    env3 = _fake_env()
+    env3.embodiment = "ur5-wsg"
+    specs3, report3 = spawn.spawn_candidates(env3, TASK_CFG, np.random.RandomState(0))
+    assert report3["vis_band"] is None
+    assert seen["vis_band"] is None
+
+
+def test_spawn_candidates_vis_band_report_default(monkeypatch):
+    """F5 (d): the report always carries vis_band (None when the flag is off)."""
+    still = lambda xyz: (xyz.copy(), _quat_rotz(0.0))
+    _patch_driver(monkeypatch, [still])
+    env = _fake_env()
+    specs, report = spawn.spawn_candidates(env, TASK_CFG, np.random.RandomState(0))
+    assert "vis_band" in report
+    assert report["vis_band"] is None
