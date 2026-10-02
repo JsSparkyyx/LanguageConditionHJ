@@ -1,0 +1,27 @@
+# smoke_items — TEST-ONLY Phase 2 acceptance task config (PLAN v3 §6 Phase 2).
+# One green zone mat, two colored candidate boxes (red = grasped, blue =
+# bystander). Not a deliverable task; do not calibrate or sweep in production.
+#
+# Expected rule table (rules enumerate deterministically, items sorted by id):
+#   inside|box_0|table_top   inside|box_1|table_top
+#   outside|box_0|zone_green outside|box_1|zone_green
+#   avoid|box_0|-            avoid|box_1|-
+# The avoid rule on the grasped box_0 WILL violate at grasp contact — that is
+# intended: it exercises the runner's first-violation keyframe and red flash.
+
+task: smoke_items
+robotwin_task: smoke_items
+embodiments: [ur5-wsg, franka-panda]     # first entry is the default
+test_only: true
+
+risk:
+  time_scale: {dist: choice, values: [0.6, 1.0, 1.3]}
+  safe_time_scale: 0.6
+  task: {}
+
+rules:
+  - {consequence: inside, items: {role: candidate}, regions: [table_top]}
+  - {consequence: outside, items: {role: candidate}, regions: {kind: zone}}
+  - {consequence: avoid, items: {role: candidate}, margin: 0.0}
+
+risk_collect: null                        # filled by calibration (Phase 4; never for this task)
