@@ -65,6 +65,15 @@ ENVS_DIR = ROOT / "envs"
 if str(ENVS_DIR) not in sys.path:
     sys.path.insert(0, str(ENVS_DIR))  # `main` = envs/main; ensure_main_path adds ROOT/main
 
+# RoboTwin's `envs` package (envs.utils.*) — same resolution as
+# main/envs/env.py:16-18. Needed BEFORE any lazy RoboTwin import: nothing
+# calls Env/prepare() first in this script, so sys.path would otherwise lack it.
+ROBOTWIN_ROOT = ROOT / "RoboTwin"
+if not ROBOTWIN_ROOT.is_dir():
+    ROBOTWIN_ROOT = ROOT.parent / "RoboTwin"
+if str(ROBOTWIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(ROBOTWIN_ROOT))
+
 from main.item_envs._bootstrap import ensure_main_path
 
 ensure_main_path()
@@ -151,7 +160,6 @@ def sweep_embodiment(embodiment: str, out_dir: Path) -> dict:
     """Build one smoke_items Env, repose one probe cylinder over the grid."""
     import sapien
     import sapien.physx as physx
-    from envs.utils.create_actor import create_cylinder
 
     from main.envs import obstacle as ob
     from main.item_envs import masks
@@ -160,6 +168,9 @@ def sweep_embodiment(embodiment: str, out_dir: Path) -> dict:
 
     t0 = time.perf_counter()
     env = build_env("smoke_items", embodiment, 0)
+    # AFTER build_env: Env init has chdir'd to the RoboTwin root, and
+    # envs.utils.create_actor reads assets cwd-relative AT IMPORT TIME.
+    from envs.utils.create_actor import create_cylinder
     try:
         task = env.task
         table_z = ob.TABLE_Z + float(getattr(task, "table_z_bias", 0.0))
