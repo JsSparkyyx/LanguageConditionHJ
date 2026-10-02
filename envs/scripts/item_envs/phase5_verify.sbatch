@@ -15,7 +15,12 @@
 #   byte-identity: same-node planner reruns diverge at tick ~30
 #   (job 22624498, see the test docstring).
 # - test_phase5_dryrun.py: 3 nominal episodes per item task x embodiment
-#   through the real collect wiring; sidecar margins == trace.npz exactly.
+#   through the real collect wiring; structural guards (lockstep teardown,
+#   rule_valid width, ring parity) hard per episode; sidecar-vs-trace
+#   margins compared as a trajectory contract (count +-8, divergence
+#   onset >=3 ticks within 5 mm) with >=1 matching pair required —
+#   strict equality is unachievable under measured planner nondeterminism
+#   (job 22624498, see the test docstrings).
 
 apptainer exec --nv --bind /work/hdd/bifq,/work/nvme/bifq,/projects/bifq \
   /work/nvme/bifq/robot-sim_cu128.sif env \
