@@ -483,9 +483,11 @@ def _fake_env():
     )
 
 
-def _patch_driver(monkeypatch, poses_script):
+def _patch_driver(monkeypatch, poses_script, real_layout=False):
     """Patch every sim-side seam of spawn_candidates. poses_script: per-attempt
-    movers mapping the spawn xyz -> the after-settle pose (k = 1 object)."""
+    movers mapping the spawn xyz -> the after-settle pose (k = 1 object).
+    real_layout=True keeps the genuine _layout_plan (F5b end-to-end tests;
+    the OBJECTS_CFG pool is prim_box only, so geometry stays trimesh-free)."""
     calls = {"spawn_one": 0, "masses": [], "layouts": 0}
     state = {"xyz": None, "pose_calls": 0}  # per attempt: 1 before + 1 after
 
@@ -508,7 +510,8 @@ def _patch_driver(monkeypatch, poses_script):
         calls["layouts"] += 1
         return [_make_placement(0)], 0
 
-    monkeypatch.setattr(spawn, "_layout_plan", fake_layout)
+    if not real_layout:
+        monkeypatch.setattr(spawn, "_layout_plan", fake_layout)
 
     def fake_spawn_one(task, placement, static, objects_cfg):
         calls["spawn_one"] += 1
@@ -655,17 +658,23 @@ def test_spawn_candidates_rejects_non_host(monkeypatch):
 BAND_RECT = (-0.15, 0.15, -0.25, 0.25)  # (x_min, x_max, y_min, y_max), cell-center coords
 
 
-def _write_band(dir_path, embodiment, rect):
-    """Fabricate a band npz in the shape visibility_band.py writes."""
+def _write_band(dir_path, embodiment, rect, covered=None):
+    """Fabricate a band npz in the shape visibility_band.py writes.
+
+    covered: optional bool [ny, nx] mask (F5b tests craft partial coverage);
+    default all-True (every cell covered, as the F5 tests assume).
+    """
     dir_path = Path(dir_path)
     xs = np.arange(rect[0], rect[1] + 0.01, 0.02)
     ys = np.arange(rect[2], rect[3] + 0.01, 0.02)
     grid_xy = np.array([[x, y] for y in ys for x in xs], dtype=np.float64)
     vis = np.ones((len(ys), len(xs), 3), dtype=np.float32)
+    if covered is None:
+        covered = np.ones((len(ys), len(xs)), dtype=bool)
     np.savez(
         dir_path / f"visibility_band_{embodiment}.npz",
         xs=xs, ys=ys, grid_xy=grid_xy, vis=vis, vis_max=vis.max(axis=2),
-        covered=np.ones((len(ys), len(xs)), dtype=bool),
+        covered=np.asarray(covered, dtype=bool),
         band=np.ones((len(ys), len(xs)), dtype=bool),
         rect=np.asarray(rect, dtype=np.float64),
         embodiment=embodiment, cell=0.02, thresh=0.3,
@@ -987,3 +996,343 @@ def test_real_assets_bottom_rest_z():
                 f"{draw.asset} id {model_id}: AABB bottom at {offset:+.4f} m rel. table")
             checked += 1
     assert checked >= 70  # the full 79-id pool (guard against a silently empty pool)
+
+
+# ---------------------------------------------------------------------------
+# F5b: near/on_path visibility coverage (covered mask in visibility_band npz)
+# ---------------------------------------------------------------------------
+
+COV_XS = np.arange(-0.48, 0.481, 0.02)
+COV_YS = np.arange(-0.32, 0.281, 0.02)
+
+
+def _vis_cov(covered):
+    return (COV_XS, COV_YS, np.asarray(covered, dtype=bool))
+
+
+def _mask_pos_y():
+    """Covered = all cells with y > 0.005 (the +y half of the table)."""
+    return np.broadcast_to(COV_YS[:, None] > 0.005, (len(COV_YS), len(COV_XS))).copy()
+
+
+def test_covered_at_nearest_cell():
+    cov = _vis_cov(_mask_pos_y())
+    assert spawn._covered_at(cov, np.array([0.10, 0.03])) is True
+    assert spawn._covered_at(cov, np.array([0.10, -0.03])) is False
+    # between-cell points snap to the nearest cell center
+    assert spawn._covered_at(cov, np.array([0.10, 0.011])) is True   # -> 0.02 row
+    assert spawn._covered_at(cov, np.array([0.10, 0.009])) is False  # -> ~0.00 row
+
+
+def test_find_xy_near_path_covered_only():
+    """F5b (a): with near_path_visible_only, near placements land only in
+    covered cells — the +y mask forces sign=+1 draws, no fallback needed."""
+    cfg = dict(CFG, near_path_visible_only=True)
+    vis_cov = _vis_cov(_mask_pos_y())
+    rng = np.random.RandomState(2)
+    for _ in range(30):
+        vis_out = {}
+        xy, t, lat, fb = spawn._find_xy(
+            "near_path", P0, P1, [], [], GEO.world_half, cfg, rng, [0.22, 0.48],
+            XYLIM, vis_cov=vis_cov, vis_out=vis_out,
+        )
+        assert xy is not None
+        assert xy[1] > 0.005  # only +y cells are covered
+        assert lat > 0.0
+        assert spawn._covered_at(vis_cov, xy)
+        assert vis_out == {}  # covered pass succeeded -> no fallback
+        assert fb is False
+
+
+def test_find_xy_on_path_covered_segment():
+    """F5b (b): the base window is uncovered, a fallback-window segment is
+    covered -> the covered pass lands there (t_fallback=True, no vis fallback)."""
+    # cover only corridor cells with x in [0.06, 0.18] (t in [0.6, 0.8])
+    covered = (np.abs(COV_YS[:, None]) <= 0.005) & (COV_XS[None, :] >= 0.06) & (COV_XS[None, :] <= 0.18)
+    vis_cov = _vis_cov(covered)
+    cfg = dict(CFG, on_path_visible_only=True)
+    rng = np.random.RandomState(3)
+    for _ in range(10):
+        vis_out = {}
+        xy, t, lat, fb = spawn._find_xy(
+            "on_path", P0, P1, [], [], GEO.world_half, cfg, rng, [0.22, 0.48],
+            XYLIM, vis_cov=vis_cov, vis_out=vis_out,
+        )
+        assert xy is not None
+        assert spawn._covered_at(vis_cov, xy)
+        assert fb is True  # base window [0.22,0.48] (x <= -0.012) is uncovered
+        assert vis_out == {}
+        lo, hi = spawn.ON_PATH_FALLBACK_T
+        assert lo - 1e-9 <= t <= hi + 1e-9
+
+
+def test_find_xy_vis_fallback_when_no_covered_cell():
+    """F5b (c): no covered cell anywhere -> each class falls back to the
+    ORIGINAL logic and flags vis_fallback. on_path's covered pass consumes no
+    rng, so its fallback placement is byte-identical to the no-vis_cov run."""
+    vis_cov = _vis_cov(np.zeros((len(COV_YS), len(COV_XS)), dtype=bool))
+
+    cfg_near = dict(CFG, near_path_visible_only=True)
+    rng = np.random.RandomState(4)
+    vis_out = {}
+    xy, t, lat, fb = spawn._find_xy(
+        "near_path", P0, P1, [], [], GEO.world_half, cfg_near, rng, [0.22, 0.48],
+        XYLIM, vis_cov=vis_cov, vis_out=vis_out,
+    )
+    assert xy is not None  # the old unrestricted loop still places
+    assert vis_out == {"vis_fallback": True}
+
+    cfg_on = dict(CFG, on_path_visible_only=True)
+    for seed in (5, 6, 7):
+        vis_out = {}
+        xy, t, lat, fb = spawn._find_xy(
+            "on_path", P0, P1, [], [], GEO.world_half, cfg_on,
+            np.random.RandomState(seed), [0.22, 0.48], XYLIM,
+            vis_cov=vis_cov, vis_out=vis_out,
+        )
+        # flag off, same seed: identical placement (covered pass is draw-free)
+        xy0, t0_, lat0, fb0 = spawn._find_xy(
+            "on_path", P0, P1, [], [], GEO.world_half, CFG,
+            np.random.RandomState(seed), [0.22, 0.48], XYLIM,
+        )
+        assert vis_out == {"vis_fallback": True}
+        np.testing.assert_allclose(xy, xy0, atol=0.0)
+        assert (t, lat, fb) == (t0_, lat0, fb0)
+
+
+def test_layout_plan_vis_cov_none_byte_identical():
+    """F5b (d), layout level: class flags ON but vis_cov=None (npz missing)
+    reproduces the flags-off layout exactly, same seed."""
+    cfg_flags = dict(CFG, near_path_visible_only=True, on_path_visible_only=True)
+
+    def run(cfg, seed, **kw):
+        return spawn._layout_plan(
+            P0, P1, [], cfg, TASK_CFG, np.random.RandomState(seed), POOL, ["red"],
+            [0.22, 0.48], geometry_fn=fake_geometry, xylim=XYLIM, **kw,
+        )
+
+    for seed in (0, 1, 2, 3):
+        base, base_kd = run(CFG, seed)
+        flagged, flagged_kd = run(cfg_flags, seed, vis_cov=None)
+        assert base_kd == flagged_kd == 0
+        assert [tuple(p.xyz) for p in base] == [tuple(p.xyz) for p in flagged]
+        assert [(p.cls, p.corridor_t, p.lateral) for p in base] == [
+            (p.cls, p.corridor_t, p.lateral) for p in flagged
+        ]
+        assert all(p.vis_fallback is False for p in flagged)
+
+
+def test_layout_plan_vis_cov_determinism_and_coverage():
+    """F5b (a/e), layout level: +y-only mask -> every near_path placement is
+    covered (y > 0); same seed twice -> identical layout."""
+    cfg = dict(CFG, near_path_visible_only=True)
+    vis_cov = _vis_cov(_mask_pos_y())
+
+    def run(seed):
+        return spawn._layout_plan(
+            P0, P1, [], cfg, TASK_CFG, np.random.RandomState(seed), POOL, ["red"],
+            [0.22, 0.48], geometry_fn=fake_geometry, xylim=XYLIM, vis_cov=vis_cov,
+        )
+
+    n_near = 0
+    for seed in (0, 1, 2, 3):
+        out = run(seed)
+        assert out is not None
+        placements, k_dropped = out
+        assert k_dropped == 0
+        for p in placements:
+            if p.cls == "near_path":
+                n_near += 1
+                assert spawn._covered_at(vis_cov, p.xyz[:2])
+                assert p.xyz[1] > 0.005
+                assert p.vis_fallback is False
+        again, again_kd = run(seed)
+        assert again_kd == k_dropped
+        assert [tuple(p.xyz) for p in placements] == [tuple(p.xyz) for p in again]
+        assert [p.vis_fallback for p in placements] == [p.vis_fallback for p in again]
+    assert n_near > 0  # the draw actually produced near_path objects
+
+
+def test_vis_covered_for_resolution(monkeypatch, tmp_path):
+    """F5b (g), unit: own embodiment's npz wins; otherwise the other
+    embodiment's mask resolves as 'shared-fallback'; no file -> (None, None)."""
+    rect = (-0.20, 0.20, -0.22, 0.22)
+    _write_band(tmp_path, "franka-panda", rect)
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", tmp_path)
+
+    cov, label = spawn._vis_covered_for("franka-panda")
+    assert label == "franka-panda"
+    xs, ys, covered = cov
+    np.testing.assert_allclose(xs, np.arange(rect[0], rect[1] + 0.01, 0.02))
+    np.testing.assert_allclose(ys, np.arange(rect[2], rect[3] + 0.01, 0.02))
+    assert covered.shape == (len(ys), len(xs)) and covered.dtype == bool
+    assert covered.all()  # _write_band's default mask
+
+    cov2, label2 = spawn._vis_covered_for("ur5-wsg")  # own file missing
+    assert label2 == "shared-fallback"
+    assert cov2[2].shape == covered.shape
+
+    _, label3 = spawn._vis_covered_for(None)
+    assert label3 == "shared-fallback"
+
+    # partial mask round-trips (F5b tests rely on fabricated partial coverage)
+    partial = np.zeros_like(covered)
+    partial[3, 5] = True
+    _write_band(tmp_path, "ur5-wsg", rect, covered=partial)
+    cov4, label4 = spawn._vis_covered_for("ur5-wsg")
+    assert label4 == "ur5-wsg"
+    assert cov4[2].sum() == 1 and cov4[2][3, 5]
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", empty)
+    assert spawn._vis_covered_for("ur5-wsg") == (None, None)
+
+
+def test_spawn_candidates_vis_cov_threading(monkeypatch, tmp_path):
+    """F5b (f), driver level: either class flag loads the mask once per
+    spawn_candidates call, threads it into _layout_plan, and labels the
+    report; a missing npz falls back to vis_cov=None (old behavior)."""
+    still = lambda xyz: (xyz.copy(), _quat_rotz(0.0))
+    _patch_driver(monkeypatch, [still])
+    _write_band(tmp_path, "franka-panda", BAND_RECT)
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", tmp_path)
+    seen = {}
+
+    def capture_layout(p0, p1, keepaways, cfg, task_cfg, rng, pool, colors, t_range, **kw):
+        seen.update(kw)
+        return [_make_placement(0)], 0
+
+    monkeypatch.setattr(spawn, "_layout_plan", capture_layout)
+    near_cfg = {"objects": {**CFG, "near_path_visible_only": True}, "corridor_t": [0.22, 0.48]}
+    on_cfg = {"objects": {**CFG, "on_path_visible_only": True}, "corridor_t": [0.22, 0.48]}
+
+    # own mask missing, franka's present -> shared-fallback, mask threaded
+    env = _fake_env()
+    env.embodiment = "ur5-wsg"
+    specs, report = spawn.spawn_candidates(env, near_cfg, np.random.RandomState(0))
+    assert report["vis_cov"] == "shared-fallback"
+    assert seen["vis_cov"] is not None and seen["vis_cov"][2].all()
+    assert report["near_path_vis_fallbacks"] == 0
+    assert report["on_path_vis_fallbacks"] == 0
+
+    # on_path flag alone also loads the mask
+    seen.clear()
+    env1 = _fake_env()
+    env1.embodiment = "ur5-wsg"
+    specs1, report1 = spawn.spawn_candidates(env1, on_cfg, np.random.RandomState(0))
+    assert report1["vis_cov"] == "shared-fallback"
+    assert seen["vis_cov"] is not None
+
+    # no npz anywhere -> None threaded, report None (old behavior)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", empty)
+    seen.clear()
+    env2 = _fake_env()
+    env2.embodiment = "ur5-wsg"
+    specs2, report2 = spawn.spawn_candidates(env2, near_cfg, np.random.RandomState(0))
+    assert report2["vis_cov"] is None
+    assert seen["vis_cov"] is None
+
+    # flags OFF: mask never loaded even though files exist
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", tmp_path)
+    seen.clear()
+    env3 = _fake_env()
+    env3.embodiment = "ur5-wsg"
+    specs3, report3 = spawn.spawn_candidates(env3, TASK_CFG, np.random.RandomState(0))
+    assert report3["vis_cov"] is None
+    assert seen["vis_cov"] is None
+
+
+def test_spawn_candidates_vis_cov_report_default(monkeypatch):
+    """F5b (f): the report always carries the F5b keys (None/0 when flags off)."""
+    still = lambda xyz: (xyz.copy(), _quat_rotz(0.0))
+    _patch_driver(monkeypatch, [still])
+    env = _fake_env()
+    specs, report = spawn.spawn_candidates(env, TASK_CFG, np.random.RandomState(0))
+    assert report["vis_cov"] is None
+    assert report["near_path_vis_fallbacks"] == 0
+    assert report["on_path_vis_fallbacks"] == 0
+    assert report["placements"][0]["vis_fallback"] is False
+
+
+def test_spawn_candidates_vis_fallback_counters(monkeypatch):
+    """F5b (c/f), driver level: the counters describe the FINAL kept layout,
+    split by final class (a degraded on->near vis fallback counts as near)."""
+    still = lambda xyz: (xyz.copy(), _quat_rotz(0.0))
+    _patch_driver(monkeypatch, [still])
+
+    def flagged_layout(p0, p1, keepaways, cfg, task_cfg, rng, pool, colors, t_range, **_kw):
+        p_near = _make_placement(0)
+        p_near.cls = "near_path"
+        p_near.vis_fallback = True
+        p_on = _make_placement(1)
+        p_on.cls = "on_path"
+        p_on.vis_fallback = True
+        p_ok = _make_placement(2)
+        p_ok.cls = "near_path"
+        return [p_near, p_on, p_ok], 0
+
+    monkeypatch.setattr(spawn, "_layout_plan", flagged_layout)
+    env = _fake_env()
+    specs, report = spawn.spawn_candidates(env, TASK_CFG, np.random.RandomState(0))
+    assert report["near_path_vis_fallbacks"] == 1
+    assert report["on_path_vis_fallbacks"] == 1
+    flags = [p["vis_fallback"] for p in report["placements"]]
+    assert flags == [True, True, False]
+
+
+def test_spawn_candidates_f5b_end_to_end(monkeypatch, tmp_path):
+    """F5b (a/b/d), driver + real layout: +y-only mask in the embodiment npz
+    restricts every near_path placement to covered cells; flag-off and
+    missing-npz runs are byte-identical; same seed -> same layout."""
+    still = lambda xyz: (xyz.copy(), _quat_rotz(0.0))
+    _patch_driver(monkeypatch, [still], real_layout=True)
+    # table-wide grid, +y half covered (spawn_candidates uses ob.TABLE_XYLIM)
+    rect = (-0.48, 0.48, -0.32, 0.28)
+    xs = np.arange(rect[0], rect[1] + 0.01, 0.02)
+    ys = np.arange(rect[2], rect[3] + 0.01, 0.02)
+    covered = np.broadcast_to(ys[:, None] > 0.005, (len(ys), len(xs))).copy()
+    _write_band(tmp_path, "ur5-wsg", rect, covered=covered)
+    monkeypatch.setattr(spawn, "_CONFIGS_DIR", tmp_path)
+    flag_cfg = {
+        "objects": {**CFG, "near_path_visible_only": True, "on_path_visible_only": True},
+        "corridor_t": [0.22, 0.48],
+    }
+
+    def run(cfg, seed):
+        env = _fake_env()
+        env.embodiment = "ur5-wsg"
+        return spawn.spawn_candidates(env, cfg, np.random.RandomState(seed))
+
+    vis_cov = (xs, ys, covered)
+    n_near = 0
+    for seed in (0, 1, 2):
+        specs, report = run(flag_cfg, seed)
+        assert report["vis_cov"] == "ur5-wsg"
+        assert len(specs) >= 2
+        for p in report["placements"]:
+            if p["cls"] == "near_path":
+                n_near += 1
+                xy = np.array(p["xyz"][:2])
+                if not p["vis_fallback"]:
+                    assert spawn._covered_at(vis_cov, xy)
+                    assert xy[1] > 0.005
+        # determinism: same seed -> identical placements
+        specs2, report2 = run(flag_cfg, seed)
+        assert [p["xyz"] for p in report["placements"]] == [
+            p["xyz"] for p in report2["placements"]
+        ]
+        # missing npz -> byte-identical to flags OFF, same seed
+        empty = tmp_path / "empty"
+        empty.mkdir(exist_ok=True)
+        monkeypatch.setattr(spawn, "_CONFIGS_DIR", empty)
+        _, rep_missing = run(flag_cfg, seed)
+        _, rep_off = run(TASK_CFG, seed)
+        monkeypatch.setattr(spawn, "_CONFIGS_DIR", tmp_path)
+        assert rep_missing["vis_cov"] is None
+        assert [p["xyz"] for p in rep_missing["placements"]] == [
+            p["xyz"] for p in rep_off["placements"]
+        ]
+    assert n_near > 0

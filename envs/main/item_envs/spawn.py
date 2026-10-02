@@ -93,6 +93,28 @@ Layout (all draws from the CALLER's rng — ``np.random.RandomState(seed +
   class already routes through ``_clearances_ok``, so the circles bind
   on/near/off placements uniformly (``report["arm_link_keepaways"]`` counts
   them).
+- **Layout fix 5 (documented, P4-T1 finding F5b — near/on_path visibility
+  coverage)**: the F5 band rerun still measured near_path 0.947 / on_path
+  0.948 max-camera visible fraction (< 0.95 gate) — the band RECT fix only
+  restricted off_path, and single cells inside the rect can still be
+  occluded (robot body, frustum notches). When
+  ``objects.near_path_visible_only`` / ``objects.on_path_visible_only``
+  are set (T1 yaml), near/on-path candidates are restricted to the
+  npz's measured per-cell ``covered`` mask (vis_max >= 0.3 at that cell —
+  ``_vis_covered_for`` / ``_covered_at``, nearest-cell lookup), NOT the
+  inset band rect off_path uses. Each class runs a bounded covered-only
+  pass FIRST (near: ``NEAR_PATH_VIS_TRIES`` draws; on: the t0 + 9-point
+  base scan plus the 25-point fallback window); when no covered candidate
+  is feasible the class falls back to the ORIGINAL unrestricted logic
+  verbatim and the Placement records ``vis_fallback=True`` (the gate
+  tolerates 5% — e.g. corridors whose on-window has no covered cell).
+  Resolution order and labels mirror fix 3 (own embodiment npz, else
+  ``shared-fallback``, else None); the counters
+  ``report["near_path_vis_fallbacks"]`` / ``report["on_path_vis_fallbacks"]``
+  describe the FINAL kept layout, and ``report["vis_cov"]`` labels the
+  mask applied. With both flags off or the npz missing every branch is
+  skipped (``vis_cov=None``) and the layout is byte-identical to before;
+  off_path is untouched by this fix.
 - Objects are DYNAMIC with masses sampled uniformly from their objects.yaml
   category ``mass_range`` (set via ``physics.set_mass_props``) —
   ``objects.static_objects: true`` gives the CrossSafe parity layout.
@@ -136,6 +158,7 @@ SETTLE_STEPS = 250
 MOVE_TOL_M = 0.005
 TILT_TOL_RAD = float(np.deg2rad(3.0))
 NEAR_PATH_TRIES = 40
+NEAR_PATH_VIS_TRIES = 40  # fix 5 (F5b): covered-only draws before the unrestricted pass
 DRAW_CAP_TRIES = 24
 ON_PATH_FALLBACK_T = (0.10, 0.75)  # fix 2.1: second scan window (corridor t)
 ON_PATH_FALLBACK_N = 25  # fix 2.1: grid points in the fallback scan
@@ -184,6 +207,7 @@ class Placement:
     lateral: float | None = None  # signed lateral offset (near_path)
     t_fallback: bool = False  # on_path t came from the ON_PATH_FALLBACK_T window
     degraded_from: str | None = None  # drawn class when cls was degraded; None = as drawn
+    vis_fallback: bool = False  # fix 5 (F5b): covered cell infeasible -> unrestricted placement
 
     def report_dict(self) -> dict:
         return {
@@ -198,6 +222,7 @@ class Placement:
             "lateral": None if self.lateral is None else float(self.lateral),
             "t_fallback": bool(self.t_fallback),
             "degraded_from": self.degraded_from,
+            "vis_fallback": bool(self.vis_fallback),
         }
 
 
@@ -487,6 +512,8 @@ def _find_xy(
     t_range,
     xylim: np.ndarray | None = None,
     vis_band: tuple | None = None,
+    vis_cov: tuple | None = None,
+    vis_out: dict | None = None,
 ) -> tuple[np.ndarray | None, float | None, float | None, bool]:
     """(xy, corridor_t, lateral, t_fallback) for one object, or all-None/False.
 
@@ -502,6 +529,17 @@ def _find_xy(
     the measured visibility band — off_path grid candidates outside it are
     skipped (±1e-9 tolerance); None (flag off / npz missing) is
     byte-identical to the unfiltered scan. on/near_path ignore it.
+    vis_cov (fix 5 / F5b): (xs, ys, covered) measured per-cell coverage from
+    the same npz. With the class's flag set (``near_path_visible_only`` /
+    ``on_path_visible_only``) the class runs a covered-only pass FIRST —
+    near: NEAR_PATH_VIS_TRIES draws accepting ``ok() and _covered_at``; on:
+    the same t0 + 9-point sequence accepting the first covered ok() (the
+    pass consumes NO rng draws — t0 is already drawn — so the rng stream
+    matches the flag-off run). When no covered candidate is feasible the
+    class falls through to the ORIGINAL logic verbatim and
+    ``vis_out["vis_fallback"]`` is set True (the caller records it on the
+    Placement). vis_cov=None skips both passes byte-identically; off_path
+    never reads it.
     """
     xylim = ob.TABLE_XYLIM if xylim is None else np.asarray(xylim, dtype=np.float64)
     p0 = np.asarray(p0[:2], dtype=np.float64)
@@ -529,6 +567,19 @@ def _find_xy(
             t = float(t)
             if all(abs(t - x) > 1e-4 for x in t_tries):
                 t_tries.append(t)
+        if vis_cov is not None and cfg.get("on_path_visible_only", False):
+            # fix 5 (F5b): same candidate sequence, covered cells only (no rng)
+            for t in t_tries:
+                cand = p0 + t * delta
+                if ok(cand) and _covered_at(vis_cov, cand):
+                    return cand, t, 0.0, False
+            for t in np.linspace(ON_PATH_FALLBACK_T[0], ON_PATH_FALLBACK_T[1], ON_PATH_FALLBACK_N):
+                t = float(t)
+                cand = p0 + t * delta
+                if ok(cand) and _covered_at(vis_cov, cand):
+                    return cand, t, 0.0, True
+            if vis_out is not None:
+                vis_out["vis_fallback"] = True
         for t in t_tries:
             cand = p0 + t * delta
             if ok(cand):
@@ -544,6 +595,18 @@ def _find_xy(
     if cls == "near_path":
         t_near_lo, t_near_hi = (float(v) for v in cfg.get("near_path_t", [0.05, 0.95]))
         off_lo, off_hi = (float(v) for v in cfg.get("near_path_offset", [0.02, 0.06]))
+        if vis_cov is not None and cfg.get("near_path_visible_only", False):
+            # fix 5 (F5b): covered-only draws first; on exhaustion the original
+            # loop below runs verbatim (its draw stream continues, unchanged)
+            for _ in range(NEAR_PATH_VIS_TRIES):
+                t = float(np.clip(rng.uniform(t_near_lo, t_near_hi), t_near_lo, t_near_hi))
+                off = float(rng.uniform(off_lo, off_hi))
+                sign = 1.0 if rng.rand() < 0.5 else -1.0
+                cand = p0 + t * delta + sign * off * perp
+                if ok(cand) and _covered_at(vis_cov, cand):
+                    return cand, t, sign * off, False
+            if vis_out is not None:
+                vis_out["vis_fallback"] = True
         for _ in range(NEAR_PATH_TRIES):
             t = float(np.clip(rng.uniform(t_near_lo, t_near_hi), t_near_lo, t_near_hi))
             off = float(rng.uniform(off_lo, off_hi))
@@ -590,6 +653,7 @@ def _layout_plan(
     geometry_fn=_geometry_of,
     xylim: np.ndarray | None = None,
     vis_band: tuple | None = None,
+    vis_cov: tuple | None = None,
 ) -> tuple[list[Placement], int] | None:
     """Draw one layout or None; returns (placements, k_dropped).
 
@@ -597,7 +661,10 @@ def _layout_plan(
     asset/id/color/size -> placement (t / offset / grid). ``geometry_fn`` is
     the test seam (non-sim tests inject fake extents). ``vis_band`` (fix 3 /
     F5) is the off_path visibility-band rect, passed through to _find_xy;
-    None keeps the historical unrestricted off_path scan.
+    None keeps the historical unrestricted off_path scan. ``vis_cov`` (fix 5
+    / F5b) is the (xs, ys, covered) measured coverage mask for the
+    near/on_path covered-first passes; None keeps the historical
+    unrestricted draws byte-identically.
 
     Fix 2.2 (degradation chain): an object whose drawn class cannot be
     placed retries the SAME draw down _DEGRADE_CHAIN; stepping into
@@ -633,16 +700,18 @@ def _layout_plan(
         geo = geometry_fn(draw)
         final_cls = None
         xy = t_used = lateral = None
-        t_fallback = False
+        t_fallback = vis_fallback = False
         for cand_cls in _DEGRADE_CHAIN[cls]:
             if cand_cls != cls and cand_cls == "off_path" and on_near_count() < quota:
                 break  # degrade into off_path refused: on/near quota unmet
+            vis_out: dict = {}
             xy, t_used, lateral, t_fallback = _find_xy(
                 cand_cls, p0, p1, keepaways, placed, geo.world_half, cfg, rng, t_range,
-                xylim, vis_band=vis_band,
+                xylim, vis_band=vis_band, vis_cov=vis_cov, vis_out=vis_out,
             )
             if xy is not None:
                 final_cls = cand_cls
+                vis_fallback = bool(vis_out.get("vis_fallback", False))
                 break
         if final_cls is None:
             if len(placements) >= max(2, quota) and on_near_count() >= quota:
@@ -660,6 +729,7 @@ def _layout_plan(
                 lateral=lateral,
                 t_fallback=t_fallback,
                 degraded_from=None if final_cls == cls else cls,
+                vis_fallback=vis_fallback,
             )
         )
     return placements, 0
@@ -698,6 +768,44 @@ def _vis_band_for(embodiment: str | None, configs_dir=None) -> tuple[tuple | Non
             continue
         return _read_band_rect(path), "shared-fallback"
     return None, None
+
+
+def _read_vis_cov(path: Path) -> tuple:
+    """(xs, ys, covered) from a visibility_band npz — the measured per-cell mask."""
+    with np.load(path) as z:
+        xs = np.asarray(z["xs"], dtype=np.float64).reshape(-1)
+        ys = np.asarray(z["ys"], dtype=np.float64).reshape(-1)
+        covered = np.asarray(z["covered"], dtype=bool)
+    return xs, ys, covered
+
+
+def _vis_covered_for(embodiment: str | None, configs_dir=None) -> tuple[tuple | None, str | None]:
+    """((xs, ys, covered), label) of the measured visibility coverage, or (None, None).
+
+    Same resolution order and labels as ``_vis_band_for`` (own embodiment npz,
+    else the other embodiment's as "shared-fallback", else none) — fix 5 (F5b)
+    restricts near/on_path to the npz's measured ``covered`` cells, a stricter
+    per-cell mask than the off_path band rect. Called only when the task cfg
+    sets ``objects.near_path_visible_only`` / ``objects.on_path_visible_only``.
+    """
+    cfg_dir = Path(configs_dir) if configs_dir is not None else _CONFIGS_DIR
+    if embodiment:
+        own = cfg_dir / f"visibility_band_{embodiment}.npz"
+        if own.is_file():
+            return _read_vis_cov(own), str(embodiment)
+    for path in sorted(cfg_dir.glob("visibility_band_*.npz")):
+        if embodiment and path.stem == f"visibility_band_{embodiment}":
+            continue
+        return _read_vis_cov(path), "shared-fallback"
+    return None, None
+
+
+def _covered_at(vis_cov: tuple, xy: np.ndarray) -> bool:
+    """Nearest-cell lookup into (xs, ys, covered): is this xy in a covered cell?"""
+    xs, ys, covered = vis_cov
+    ix = int(np.argmin(np.abs(xs - float(xy[0]))))
+    iy = int(np.argmin(np.abs(ys - float(xy[1]))))
+    return bool(covered[iy, ix])
 
 
 # ---------------------------------------------------------------------------
@@ -954,6 +1062,18 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
     keepaway list gains ``_arm_link_keepaways`` (fix 4b: franka's home-pose
     hand/fingers overhang the spawn region — the dominant settle-ejection
     mechanism); ``report["arm_link_keepaways"]`` counts the added circles.
+
+    Fix 5 (F5b): when ``objects.near_path_visible_only`` and/or
+    ``objects.on_path_visible_only`` are set, the measured per-cell coverage
+    (``_vis_covered_for``) is loaded ONCE here and threaded into every
+    ``_layout_plan`` call; ``report["vis_cov"]`` records which mask was
+    applied (embodiment name | "shared-fallback" | None — None means both
+    covered passes were skipped and the layout is byte-identical to the
+    historical behavior). The counters ``near_path_vis_fallbacks`` /
+    ``on_path_vis_fallbacks`` describe the FINAL kept layout: objects whose
+    covered-only pass found no feasible cell and that were placed by the
+    original unrestricted logic (``vis_fallback=True`` on their placement
+    records). off_path is unaffected (fix 3 owns it).
     """
     spec = TASK_SPECS.get(getattr(env, "task_name", ""))
     if spec is None:
@@ -971,6 +1091,12 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
     vis_band = band_label = None
     if cfg.get("off_path_visible_only", False):
         vis_band, band_label = _vis_band_for(embodiment)
+    # fix 5 (F5b): the measured per-cell coverage mask for near/on_path,
+    # loaded once per call when either class flag is set (same npz, same
+    # resolution order as the band; None -> both covered passes skipped)
+    vis_cov = cov_label = None
+    if cfg.get("near_path_visible_only", False) or cfg.get("on_path_visible_only", False):
+        vis_cov, cov_label = _vis_covered_for(embodiment)
     objects_cfg = physics.load_objects_cfg()
     pool = t1_pool_entries(objects_cfg)
     train_colors = list((objects_cfg.get("colors") or {}).get("train") or [])
@@ -1004,6 +1130,9 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
         "degraded": 0,
         "k_dropped": 0,
         "vis_band": band_label,  # fix 3 (F5): embodiment name | "shared-fallback" | None
+        "vis_cov": cov_label,  # fix 5 (F5b): embodiment name | "shared-fallback" | None
+        "near_path_vis_fallbacks": 0,  # fix 5 (F5b): final-layout uncovered near placements
+        "on_path_vis_fallbacks": 0,  # fix 5 (F5b): final-layout uncovered on placements
         "arm_link_keepaways": len(arm_links),  # fix 4b: link circles added (0 = off/none)
         "placements": [],
         "settle": [],
@@ -1021,7 +1150,7 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
             report["spawn_rejections"] += 1
         out = _layout_plan(
             p0, p1, keepaways, cfg, task_cfg, rng, pool, train_colors, t_range,
-            vis_band=vis_band,
+            vis_band=vis_band, vis_cov=vis_cov,
         )
         if out is None:
             report["layout_retries"] += 1
@@ -1073,6 +1202,13 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
         report["t_fallbacks"] = sum(1 for pl in placements if pl.t_fallback)
         report["degraded"] = sum(1 for pl in placements if pl.degraded_from is not None)
         report["k_dropped"] = int(k_dropped)
+        # fix-5 counters describe the FINAL kept layout, per FINAL class
+        report["near_path_vis_fallbacks"] = sum(
+            1 for pl in placements if pl.cls == "near_path" and pl.vis_fallback
+        )
+        report["on_path_vis_fallbacks"] = sum(
+            1 for pl in placements if pl.cls == "on_path" and pl.vis_fallback
+        )
     report["k"] = len(specs)
 
     # runner-style consumers: same metadata channel as register_item
