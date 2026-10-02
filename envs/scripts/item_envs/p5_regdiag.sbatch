@@ -11,7 +11,10 @@
 # the default path; 142 ticks -> test/reference reconstruction issue.
 
 set -e
-WT=/work/nvme/bifq/project/tmp/wt_pre5_${SLURM_JOB_ID}
+# NOTE: the worktree must sit NEXT TO the RoboTwin sibling checkout
+# (main/envs/env.py resolves RoboTwin as <wt>/RoboTwin then <wt>/../RoboTwin),
+# so it goes under /work/nvme/bifq/project/, NOT tmp/.
+WT=/work/nvme/bifq/project/wt_pre5_${SLURM_JOB_ID}
 cd /work/nvme/bifq/project/LanguageConditionHJ
 git worktree add --detach "$WT" 14c6180
 trap 'git worktree remove --force "$WT" || true' EXIT
