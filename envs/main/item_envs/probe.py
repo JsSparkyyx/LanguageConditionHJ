@@ -34,7 +34,7 @@ ensure_main_path()  # runner/controller pull main.envs.* from the sibling CEHJ c
 
 from .registry import ITEM_TASKS, default_embodiment, get_task_entry
 
-PROBE_IDS = [f"P{i}" for i in range(1, 6)]
+PROBE_IDS = ["P1", "P2", "P3", "P3-robot", "P5"]
 MAX_CHILD_RETRIES = 3
 
 
@@ -251,12 +251,40 @@ def _primary_violation_rate(metas) -> float | None:
     return sum(1 for m in metas if (m.violations or {}).get(primary_id)) / len(metas)
 
 
+def _parse_seeds(text: str) -> list[int]:
+    """"0-49" -> range; "0,1,2" -> explicit list."""
+    text = text.strip()
+    if "-" in text and "," not in text:
+        a, b = text.split("-", 1)
+        return list(range(int(a), int(b) + 1))
+    return [int(s) for s in text.split(",") if s.strip()]
+
+
 def cmd_physics(args) -> int:
-    print(
-        f"probe {args.probe}: the physics feasibility probes P1-P5 are Phase 3 — "
-        "not implemented yet. See docs/item_envs/PLAN.md §6 Phase 3."
-    )
-    return 2
+    from .probes import get_probe
+
+    mod = get_probe(args.probe.lower().replace("-", "_"))
+    out = Path(args.out or f"runs/item_envs/feas/{args.probe.upper()}").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    kw: dict = {}
+    for kv in args.kw or []:
+        key, eq, val = kv.partition("=")
+        if not eq:
+            print(f"[physics] bad --kw {kv!r}, want key=value")
+            return 2
+        try:
+            kw[key] = json.loads(val)
+        except ValueError:
+            kw[key] = val
+    if args.embodiments:
+        kw["embodiments"] = [e.strip() for e in args.embodiments.split(",") if e.strip()]
+    if args.seeds:
+        kw["seeds"] = _parse_seeds(args.seeds)
+    if args.shard:
+        kw["shard"] = args.shard
+    result = mod.summarize(out) if args.summarize_only else mod.run(out, **kw)
+    print(json.dumps(result, indent=2, default=str))
+    return 0
 
 
 def cmd_summarize(args) -> int:
@@ -418,7 +446,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ph = sub.add_parser("physics", help="physics feasibility probes (Phase 3)")
     p_ph.add_argument("--probe", required=True, choices=PROBE_IDS)
-    p_ph.add_argument("--out", default=None)
+    p_ph.add_argument("--out", default=None, help="default runs/item_envs/feas/<PROBE>")
+    p_ph.add_argument("--embodiments", default=None, help="comma list, e.g. ur5-wsg,franka-panda")
+    p_ph.add_argument("--seeds", default=None, help="'0-49' or '0,1,2'")
+    p_ph.add_argument("--shard", default=None, help="'i/n' — run cells[i::n]")
+    p_ph.add_argument("--kw", nargs="*", default=None,
+                      help="extra probe kwargs as key=value (JSON-parsed when possible)")
+    p_ph.add_argument("--summarize-only", action="store_true", dest="summarize_only")
     p_ph.set_defaults(func=cmd_physics)
 
     p_su = sub.add_parser("summarize", help="aggregate meta.json tree -> CSV + plots")

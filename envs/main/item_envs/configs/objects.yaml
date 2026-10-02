@@ -15,6 +15,24 @@ colors:
   train: [red, green, blue, yellow, white, black]   # 6 training colors
   heldout: [purple, orange, cyan]                   # splits.yaml heldout_colors
 
+# RGB triples for the named colors (primitive boxes/cylinders, zone mats).
+color_rgb:
+  red:    [0.85, 0.10, 0.10]
+  green:  [0.10, 0.70, 0.15]
+  blue:   [0.15, 0.30, 0.90]
+  yellow: [0.95, 0.85, 0.10]
+  white:  [0.95, 0.95, 0.95]
+  black:  [0.08, 0.08, 0.08]
+  purple: [0.55, 0.20, 0.75]
+  orange: [0.95, 0.50, 0.10]
+  cyan:   [0.10, 0.80, 0.85]
+
+# T1 selective_avoid candidate pool (PLAN v3 §7): the eleven textured assets
+# plus colored primitives. spawn.py samples uniformly from this list.
+t1_pool: ["068_boxdrink", "086_woodenblock", "001_bottle", "114_bottle",
+          "021_cup", "039_mug", "071_can", "080_pillbottle", "105_sauce-can",
+          "112_tea-box", "113_coffee-box", "prim_box", "prim_tall_cylinder"]
+
 categories:
   bottle:       {names: [bottle], synonyms: [flask, water bottle], mass_range: [0.05, 0.30]}
   pill_bottle:  {names: [pill bottle], synonyms: [pill jar, small bottle], mass_range: [0.05, 0.30]}
@@ -35,24 +53,28 @@ categories:
 
 assets:
   # --- T1 object pool (PLAN v3 §7) ---
-  068_boxdrink:    {category: drink_box}
-  086_woodenblock: {category: wooden_block}
-  001_bottle:      {category: bottle}
-  114_bottle:      {category: bottle}
-  021_cup:         {category: cup}
-  039_mug:         {category: mug}
-  071_can:         {category: can}
-  080_pillbottle:  {category: pill_bottle}
-  105_sauce-can:   {category: sauce_can}
-  112_tea-box:     {category: tea_box}
-  113_coffee-box:  {category: coffee_box}
+  # ids = the audited loadable model ids spawn.py may draw (recon.md Q13:
+  # 002_bowl/080_pillbottle/114_bottle have NO id 0; 001_bottle ids audited
+  # "drop (height)" are excluded, 23+ cm; taller-than-20 cm ids are kept —
+  # the audit verdict is "ok as candidate (tall)" and T1 wants salient items).
+  068_boxdrink:    {category: drink_box, ids: [0, 1, 2, 3]}
+  086_woodenblock: {category: wooden_block, ids: [0, 1, 2, 3, 4]}
+  001_bottle:      {category: bottle, ids: [2, 4, 8, 9, 13, 14, 18, 19, 20, 21, 22]}
+  114_bottle:      {category: bottle, ids: [1, 2, 3, 4]}
+  021_cup:         {category: cup, ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}
+  039_mug:         {category: mug, ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}
+  071_can:         {category: can, ids: [0, 1, 2, 3, 5, 6]}
+  080_pillbottle:  {category: pill_bottle, ids: [1, 2, 3, 4, 5]}
+  105_sauce-can:   {category: sauce_can, ids: [0, 2, 4, 5, 6]}
+  112_tea-box:     {category: tea_box, ids: [0, 1, 2, 3, 4, 5]}
+  113_coffee-box:  {category: coffee_box, ids: [0, 1, 2, 3, 4, 5, 6]}
   # --- containers / targets / zone props for T2 and T3 ---
   002_bowl:        {category: bowl}
   062_plasticbox:  {category: plastic_box}
   015_laptop:      {category: laptop}
-  # --- colored primitives ---
-  prim_box:           {category: box, colored: true}
-  prim_tall_cylinder: {category: cylinder, colored: true}
+  # --- colored primitives (sizes sampled per instance, SI metres) ---
+  prim_box:           {category: box, colored: true, side_xy: [0.04, 0.08], height: [0.05, 0.15]}
+  prim_tall_cylinder: {category: cylinder, colored: true, radius: [0.02, 0.035], height: [0.10, 0.18]}
 
 regions:
   table_top:         {names: [table], synonyms: [tabletop]}
