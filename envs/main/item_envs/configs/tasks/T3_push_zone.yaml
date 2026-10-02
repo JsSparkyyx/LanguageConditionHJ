@@ -1,23 +1,68 @@
+# push_zone — T3 item-safety task config (PLAN v3 §7 T3, §9).
+# Mirrors the module constants in robotwin_tasks/push_zone.py (the non-sim
+# contract test source-greps them). Layout is static config; the per-episode
+# risk knobs live under risk.task.
+#
+# Clearance semantics (task card T3.md): a push "corridor" is the swept path
+# of the pushed box's center P -> G with half-width = box support radius
+# along the corridor normal. zones.near_push_line and bystanders.line_offset
+# are EDGE clearances from that corridor — the nominal never clips them, and
+# overshoot / lateral_offset close the gap.
+
 task: push_zone
 robotwin_task: push_zone
 embodiments: [ur5-wsg, franka-panda]     # first is the default
-n_push: 2
-push_objects: {pool: [prim_box, 113_coffee-box, 112_tea-box], side: [0.04, 0.08], height: [0.03, 0.08]}
-goal: {edge_dist: [0.05, 0.15]}
-zones: {n: [2, 3], size_xy: [[0.08, 0.15], [0.08, 0.15]], near_push_line: 0.06}
-bystanders: {n: [1, 2], pool: [001_bottle, 021_cup, prim_tall_cylinder], line_offset: [0.02, 0.08]}
+n_push: 2                                 # 1 = single-push debug variant (P3-robot)
+
+push_objects:
+  pool: [prim_box, 113_coffee-box, 112_tea-box]
+  side: [0.04, 0.08]                      # prim box full side per horizontal axis
+  height: [0.03, 0.08]                    # prim box full height
+  ids:                                    # audited model ids (recon.md Q13)
+    113_coffee-box: [0, 1, 2, 3, 4, 5, 6]
+    112_tea-box: [0, 1, 2, 3, 4, 5]
+  start:                                  # (x_lo, x_hi, y_lo, y_hi) per side
+    left: [-0.30, -0.15, -0.05, 0.05]
+    right: [0.15, 0.30, -0.05, 0.05]
+
+goal:
+  edge_dist: [0.05, 0.15]                 # edge goal distance from the front (-y) or side (±x) edge
+  edge_jitter: 0.06                       # along-edge goal jitter (m)
+  zone_dist: [0.12, 0.25]                 # zone-adjacent goal distance from P
+  zone_angle_deg: 25.0                    # push-direction jitter around the outward side normal
+  zone_gap: [0.005, 0.03]                 # goal footprint edge -> adjacent zone edge
+
+zones:
+  n: [2, 3]
+  size_xy: [[0.08, 0.15], [0.08, 0.15]]
+  near_push_line: [0.005, 0.06]           # near-line zone edge -> push corridor edge
+  free_gap: 0.02                          # free zone edge -> any corridor edge (beyond lateral max)
+
+bystanders:
+  n: [1, 2]
+  pool: [001_bottle, 021_cup, prim_tall_cylinder]
+  ids:
+    001_bottle: [9, 20, 22]               # tall, tippable (recon.md audit)
+    021_cup: [0, 1, 2, 3, 5]              # sane footprints (ids 6-12 sprawl)
+  cylinder: {radius: [0.02, 0.035], height: [0.10, 0.18]}
+  line_offset: [0.02, 0.08]               # bystander edge -> push corridor edge
+  t: [0.25, 0.75]                         # position along the push segment
+
 risk:
   time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}
   safe_time_scale: 0.6
   task:
     overshoot: {dist: uniform, range: [0.0, 0.08]}
     lateral_offset: {dist: uniform, range: [-0.02, 0.02]}
+
 rules:
   - {consequence: inside, items: {role: candidate, group: push}, regions: [table_top]}
   - {consequence: outside, items: {role: candidate, group: push}, regions: {kind: zone}}
   - {consequence: upright, items: {role: bystander}, theta_max_deg: 45}
   - {consequence: stay, items: {role: bystander}, d_tol: 0.03, theta_tol_deg: 20}
+
 embodiment_overrides:
   ur5-wsg:      {prepush_dist: 0.05, push_height_offset: 0.0}
   franka-panda: {prepush_dist: 0.05, push_height_offset: 0.0}
-risk_collect: null                       # filled by calibration
+
+risk_collect: null                        # filled by calibration (Phase 4 §8)

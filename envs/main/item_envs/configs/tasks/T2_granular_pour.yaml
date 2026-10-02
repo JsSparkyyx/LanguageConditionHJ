@@ -1,19 +1,36 @@
+# T2 granular_pour — carry a bowl of beads, pour into a target container,
+# don't spill, keep beads off the named zone (PLAN v3 §7 T2).
+#
+# The robotwin_tasks/granular_pour.py task file owns the layout (bowl pool,
+# bead grid, zone placement); the constants below mirror its module constants
+# and are cross-checked by tests/item_envs/test_granular_pour.py.
+#
+# Expected rule table (deterministic enumeration; the beads particle_set is
+# the only candidate, and particles_* consequences make ONE joint rule over
+# the listed regions, so each zone needs its own entry):
+#   particles_inside|beads|bowl_src_interior+target_interior
+#   particles_outside|beads|zone_red
+#   particles_outside|beads|zone_blue
+
 task: granular_pour
 robotwin_task: granular_pour
-embodiments: [ur5-wsg, franka-panda]     # first is the default
-bimanual: false                          # true: second arm holds the target container during the pour
-bowl: {model: 002_bowl, ids: [1, 2, 3, 5]}   # ids subject to probe P2 containment
-beads: {n: 60, radius: 0.006, mass: [0.0005, 0.002]}   # default from P2; masses in kg
-target: {pool: [002_bowl, 062_plasticbox], static: true}
-zones: {n: 2, distinct_colors: true, near_target: true}  # one may be replaced by a static 015_laptop
+embodiments: [ur5-wsg, franka-panda]     # first entry is the default
+bimanual: false                          # true: second arm holds the (dynamic) target during the pour
+bowl_model: 002_bowl
+bowl_ids: [1, 2, 3, 5]                   # passed P2 rest containment at (60 beads, 6 mm)
+beads: {n: 60, radius: 0.006, mass: [0.0005, 0.002]}   # P2 default cell; masses in kg
+target: {model: 002_bowl, static: true}  # bimanual variant: dynamic
+zones: {n: 2, colors: [red, blue], size_xy: [[0.10, 0.16], [0.08, 0.14]], near_target: true}
+                                        # one may be replaced by a static 015_laptop (variant)
 risk:
-  time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}
+  time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}   # transit retime
   safe_time_scale: 0.6
   task:
-    tilt_rate: {dist: uniform, range: [1.0, 4.0]}        # rad/s
+    tilt_rate: {dist: uniform, range: [1.0, 4.0]}        # rad/s, pour wrist rate
     pour_height: {dist: uniform, range: [0.05, 0.20]}    # m above the target rim
     pour_offset: {dist: uniform, range: [0.0, 0.05]}     # m, lateral, toward one of the zones
 rules:
   - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior, target_interior]}
-  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: {kind: zone}}
+  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: [zone_red]}
+  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: [zone_blue]}
 risk_collect: null                       # filled by calibration

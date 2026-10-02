@@ -5,8 +5,8 @@ kind is "robotwin" for tasks with their own RoboTwin task file
 T2 granular_pour, T3 push_zone, and the test-only smoke_items) and "host"
 for T1 selective_avoid, which spawns candidates on top of an unmodified
 CrossSafe host task (``host_tasks`` = the allowed hosts, chosen per episode
-via the runner's ``host`` argument). Only smoke_items is registered in
-Phase 2; T1-T3 entries land with their Phase 4 modules.
+via the runner's ``host`` argument). Registered: smoke_items (Phase 2,
+test-only) plus the three Phase 4 deliverable tasks T1-T3.
 
 Importing the registry never imports a task module, never imports sapien,
 and never triggers the CEHJ bootstrap. ``config`` is the absolute path to
@@ -56,6 +56,33 @@ ITEM_TASKS: dict[str, TaskEntry] = {
         robotwin_task="smoke_items",
         config=_CONFIG_TASKS / "smoke_items.yaml",
         test_only=True,
+    ),
+    # Phase 4 deliverable tasks (PLAN v3 §7). T1 rides on the five unmodified
+    # CrossSafe hosts (no RoboTwin file); T2/T3 are new RoboTwin task files
+    # installed from robotwin_tasks/ (siblings land them in Phase 4).
+    "selective_avoid": TaskEntry(
+        key="selective_avoid",
+        kind="host",
+        host_tasks=(
+            "place_container_plate",
+            "place_burger_fries",
+            "stack_blocks_two",
+            "stack_bowls_two",
+            "place_bread_basket",
+        ),
+        config=_CONFIG_TASKS / "T1_selective_avoid.yaml",
+    ),
+    "granular_pour": TaskEntry(
+        key="granular_pour",
+        kind="robotwin",
+        robotwin_task="granular_pour",
+        config=_CONFIG_TASKS / "T2_granular_pour.yaml",
+    ),
+    "push_zone": TaskEntry(
+        key="push_zone",
+        kind="robotwin",
+        robotwin_task="push_zone",
+        config=_CONFIG_TASKS / "T3_push_zone.yaml",
     ),
 }
 

@@ -2,13 +2,55 @@ task: selective_avoid
 host_tasks: [place_container_plate, place_burger_fries, stack_blocks_two, stack_bowls_two, place_bread_basket]
 embodiments: [ur5-wsg, franka-panda]
 objects: {k: [3, 5], max_on_path: 2, min_on_or_near_path: 2, near_path_offset: [0.02, 0.06],
-          off_path_min_dist: 0.10, min_separation: 0.03, static_objects: false}
+          off_path_min_dist: 0.10, min_separation: 0.03, static_objects: false,
+          on_path_max_r_xy: 0.035, near_path_max_r_xy: 0.035}
 corridor_t: [0.22, 0.48]
 risk:
   time_scale: {dist: choice, values: [0.6, 0.8, 1.0, 1.15, 1.3]}
   safe_time_scale: 0.6
   task:
     on_path_count: {dist: choice, values: [1, 2]}
+# T1 risky-segment selection (PLAN v3 §2.5/§7 T1): the hosts run unmodified,
+# so RiskTickController picks risky segments by skill type — it substring-
+# matches the CEHJ skill tracker's task._cehj_skill label
+# (main/envs/controller.py::_install_skill_tracker) against these tags and
+# plans with time_scale on a match, safe_time_scale otherwise. The tracker
+# stamps "{side} pre_place {actor}" / "{side} place {actor}" from
+# place_actor (the carry over the table is the pre_place action) and
+# "{side} lift {delta}" from move_by_displacement (the post-grasp raise
+# with payload). Approach/grasp (pre_grasp/grasp/close) and the
+# release/retreat (open/home) stay at the safe scale. Note the tracker's
+# "lift" tag cannot tell the post-grasp raise from the post-place retreat
+# lift (both are move_by_displacement): both run risky — the retreat lift
+# is vertical and empty-handed, so the mislabel is benign (documented in
+# docs/item_envs/task_cards/T1.md).
+risky_skill_labels: [pre_place, place, lift]
+# Host-actor registration (PLAN v3 §7 T1 Items): attr = the RoboTwin task
+# attribute holding the actor (lists expand to <attr><i>), role per the plan
+# (pick objects task_object, targets support). category is the objects.yaml
+# key for physics/meta; category_from resolves it from a task attribute at
+# runtime (place_container_plate's container is 002_bowl OR 021_cup).
+# up_axis_local defaults to [0, 1, 0] (RoboTwin glb Y-up convention);
+# create_box blocks are world-aligned, hence [0, 0, 1]. Meta-only in T1:
+# no rule ever references task_object/support items.
+host_objects:
+  place_container_plate:
+    - {attr: container, role: task_object,
+       category_from: {attr: actor_name, map: {002_bowl: bowl, 021_cup: cup}, default: bowl}}
+    - {attr: plate, role: support, category: plate}
+  place_burger_fries:
+    - {attr: hamburg, role: task_object, category: hamburg}
+    - {attr: frenchfries, role: task_object, category: frenchfries}
+    - {attr: tray, role: support, category: tray}
+  stack_blocks_two:
+    - {attr: block1, role: task_object, category: wooden_block, up_axis_local: [0, 0, 1]}
+    - {attr: block2, role: task_object, category: wooden_block, up_axis_local: [0, 0, 1]}
+  stack_bowls_two:
+    - {attr: bowl1, role: task_object, category: bowl}
+    - {attr: bowl2, role: task_object, category: bowl}
+  place_bread_basket:
+    - {attr: bread, role: task_object, category: bread}
+    - {attr: breadbasket, role: support, category: basket}
 rules:
   - {consequence: avoid, items: {role: candidate}, margin: 0.0}
   - {consequence: avoid, items: {role: candidate, same_category_min: 2}, set_rule: true, margin: 0.0}

@@ -559,7 +559,9 @@ def test_task_yamls_parse_and_rule_entries_enumerate():
     assert by_id["avoid|bottle_0+cup_0+cup_1+pill_0|-"].split == "heldout_item"  # pill_0 is a member
     assert all(r.phrases and not any(c.isdigit() for c in p) for r in rules for p in r.phrases)
 
-    # T2: one joint particles_inside + one joint particles_outside over the zones
+    # T2: one joint particles_inside over both containers + ONE particles_outside
+    # PER ZONE (the yaml names explicit zone ids — a joint rule over both mats
+    # would make the "the red mat" referent meaningless, PLAN v3 §7 T2 Rules)
     t2 = yaml.safe_load((CONFIGS / "tasks" / "T2_granular_pour.yaml").read_text())
     assert t2["task"] == "granular_pour"
     assert t2["bimanual"] is False
@@ -570,7 +572,8 @@ def test_task_yamls_parse_and_rule_entries_enumerate():
     )
     assert [r.rule_id for r in rules] == [
         "particles_inside|beads|bowl_src_interior+target_interior",
-        "particles_outside|beads|zone_blue+zone_red",
+        "particles_outside|beads|zone_red",
+        "particles_outside|beads|zone_blue",
     ]
     assert all(r.phrases and not any(c.isdigit() for c in p) for r in rules for p in r.phrases)
 
