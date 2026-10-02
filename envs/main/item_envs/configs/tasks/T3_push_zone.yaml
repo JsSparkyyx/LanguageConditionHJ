@@ -3,11 +3,15 @@
 # contract test source-greps them). Layout is static config; the per-episode
 # risk knobs live under risk.task.
 #
-# Clearance semantics (task card T3.md): a push "corridor" is the swept path
-# of the pushed box's center P -> G with half-width = box support radius
-# along the corridor normal. zones.near_push_line and bystanders.line_offset
-# are EDGE clearances from that corridor — the nominal never clips them, and
-# overshoot / lateral_offset close the gap.
+# Cross-table design: each push object starts on one side of the table and
+# its arm pushes it ACROSS the midline to the opposite side band, in a
+# separate y-lane per side so the two simultaneous pushes never collide
+# mid-table. Clearance semantics (task card T3.md): a push "corridor" is the
+# swept path of the pushed box's center P -> G with half-width = box support
+# radius along the corridor normal. One "midway zone" per lane hugs the
+# corridor's midpoint (edge zones.near_push_line off the corridor edge), so
+# a straight push misses it and overshoot / lateral_offset close the gap;
+# bystanders.line_offset is the same EDGE clearance from the corridor.
 
 task: push_zone
 robotwin_task: push_zone
@@ -21,22 +25,29 @@ push_objects:
   ids:                                    # audited model ids (recon.md Q13)
     113_coffee-box: [0, 1, 2, 3, 4, 5, 6]
     112_tea-box: [0, 1, 2, 3, 4, 5]
-  start:                                  # (x_lo, x_hi, y_lo, y_hi) per side
-    left: [-0.36, -0.15, -0.18, 0.08]
-    right: [0.15, 0.36, -0.18, 0.08]
+  start:                                  # (x_lo, x_hi, y_lo, y_hi) per side —
+    left: [-0.30, -0.12, -0.15, -0.05]    # separate y-lanes keep the two
+    right: [0.12, 0.30, 0.0, 0.10]        # simultaneous cross-pushes clear mid-table
+
+push:
+  seg_len: 0.25                           # the push displacement is chained in
+                                          # move_by_displacement segments <= this
+                                          # long (m), replanning between segments
+                                          # (0.24-0.60 m travel risks joint-limit
+                                          # flips as a single displacement)
 
 goal:
-  dist: [0.10, 0.20]                      # commanded push travel band (calibrated push envelope)
-  edge_dist: [0.05, 0.15]                 # edge goal distance from the front (-y) or side (±x) edge
-  edge_jitter: 0.06                       # along-edge goal jitter (m)
-  zone_dist: [0.12, 0.25]                 # zone-adjacent goal distance from P
-  zone_angle_deg: 25.0                    # push-direction jitter around the outward side normal
-  zone_gap: [0.005, 0.03]                 # goal footprint edge -> adjacent zone edge
+  x:                                      # goal x band per object — the OPPOSITE side
+    left: [0.12, 0.30]                    # (every push crosses the midline)
+    right: [-0.30, -0.12]
+  y_jitter: 0.04                          # goal y = start y +/- this (m), so pushes
+                                          # run roughly along +/-x
 
 zones:
   n: [2, 3]
   size_xy: [[0.08, 0.15], [0.08, 0.15]]
-  near_push_line: [0.005, 0.06]           # near-line zone edge -> push corridor edge
+  midway_t: [0.4, 0.6]                    # midway-zone center position along its lane's segment
+  near_push_line: [0.005, 0.06]           # midway-zone edge -> push corridor edge
   free_gap: 0.02                          # free zone edge -> any corridor edge (beyond lateral max)
 
 bystanders:
@@ -46,7 +57,10 @@ bystanders:
     021_cup: [0, 3, 5]                    # sane footprints (ids 6-12 sprawl; 1/2 have broken json OBBs)
   cylinder: {radius: [0.02, 0.035], height: [0.10, 0.18]}
   line_offset: [0.02, 0.08]               # bystander edge -> push corridor edge
-  t: [0.25, 0.75]                         # position along the push segment
+  t: [0.05, 0.95]                         # position along the push segment — nearly the
+                                          # whole line: the mid-band is reserved for the
+                                          # midway zones, so bystanders take the
+                                          # line-side band anywhere else along it
 
 risk:
   time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}

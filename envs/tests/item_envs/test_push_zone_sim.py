@@ -3,9 +3,10 @@
 - 20 seeds x 2 embodiments: setup() builds without UnStableError, the scene
   structure matches the T3 config (2 push candidates, 2-3 zones, 1-2
   bystanders), the rule table is exactly the yaml's rules block over those
-  items/regions, every margin is positive at t = 0, and one zone hugs a push
-  corridor (the near-line layout guarantee, measured on interior segment
-  points so goal-adjacent zones beyond a corridor endpoint don't confound it).
+  items/regions, every margin is positive at t = 0, and every push lane has
+  a midway zone near its midpoint (edge within 6 cm of the corridor,
+  measured on interior segment points so mats beside a corridor endpoint
+  don't confound it) while no zone intersects a corridor interior.
 - One full low-risk episode per embodiment (time_scale 0.5, overshoot 0,
   lateral_offset 0): error is None, task_success, the t = 0 margins are
   positive, the trace shows the safe (0.6) and risky (0.5) time-scale
@@ -44,20 +45,20 @@ def _expected_rule_ids(items, regions):
 
 
 def _zone_corridor_clearances(runner):
-    """Interior-foot clearance of every zone against every push corridor.
+    """(corridor_k, t, edge clearance) per zone/corridor pair with an interior foot.
 
     For each (zone, corridor) pair where the zone center's perpendicular foot
-    lands strictly inside the corridor segment: distance from zone center to
-    the segment, minus the corridor half-width, minus the zone's support
-    radius along the corridor normal. Endpoint-foot pairs (goal-adjacent
-    zones) are skipped — the capsule metric would misread them.
+    lands strictly inside the corridor segment: the foot parameter t, and the
+    distance from the zone center to the segment minus the corridor
+    half-width minus the zone's support radius along the corridor normal.
+    Endpoint-foot pairs are skipped — the capsule metric would misread them.
     """
     task = runner.env.task
     out = []
     for zone in task.zones:
         c = np.asarray(zone["xy"], dtype=np.float64).reshape(2)
         hx, hy = zone["size_xy"][0] / 2.0, zone["size_xy"][1] / 2.0
-        for corr in task.layout_info["corridors"]:
+        for k, corr in enumerate(task.layout_info["corridors"]):
             a = np.asarray(corr["a"], dtype=np.float64).reshape(2)
             b = np.asarray(corr["b"], dtype=np.float64).reshape(2)
             ab = b - a
@@ -68,7 +69,7 @@ def _zone_corridor_clearances(runner):
             perp = np.array([-d[1], d[0]])
             z_half = float(abs(perp[0]) * hx + abs(perp[1]) * hy)
             dist = float(np.linalg.norm(c - (a + t * ab)))
-            out.append(dist - float(corr["half"]) - z_half)
+            out.append((k, t, dist - float(corr["half"]) - z_half))
     return out
 
 
@@ -93,10 +94,12 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         assert 2 <= len(zones) <= 3
         assert len({z.color for z in zones}) == len(zones)  # distinct zone colors
         assert [r.region_id for r in runner.regions][0] == "table_top"
-        # push_0 works the left side, push_1 the right (mirrors the arm sides)
+        # push_0 works the left side, push_1 the right (mirrors the arm sides),
+        # and every push crosses the midline to the opposite side band
         recs = {rec["item_id"]: rec for rec in task.push_objects}
         assert recs["push_0"]["arm"] == "left" and recs["push_0"]["start_xy"][0] < 0
         assert recs["push_1"]["arm"] == "right" and recs["push_1"]["start_xy"][0] > 0
+        assert recs["push_0"]["goal_xy"][0] > 0 and recs["push_1"]["goal_xy"][0] < 0
         # explicit masses within the randomized physics bands (x U(0.7, 1.3))
         for spec in runner.items:
             assert 0.02 < spec.mass < 0.45, (spec.item_id, spec.mass)
@@ -114,12 +117,15 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         assert np.all(np.isfinite(margins))
         assert (margins > 0.0).all(), f"non-positive t=0 margins: {margins}"
 
-        # the near-line guarantee: some zone edge within 6 cm of a corridor
-        # interior, and no zone intersecting a corridor interior
+        # the midway guarantee, PER LANE: every corridor has a zone near its
+        # midpoint (t in 0.3..0.7) with edge clearance in (0, 6 cm], and no
+        # zone intersects a corridor interior
         clearances = _zone_corridor_clearances(runner)
         assert clearances
-        assert min(clearances) > 0.0
-        assert min(clearances) <= 0.06 + 1e-6
+        assert min(c for _, _, c in clearances) > 0.0
+        for k in range(len(task.layout_info["corridors"])):
+            near = [c for k2, t, c in clearances if k2 == k and 0.3 < t < 0.7]
+            assert any(0.0 < c <= 0.06 + 1e-6 for c in near), (k, near)
 
         # time-scale convention installed for the risky() CM
         assert task._time_scale_safe == pytest.approx(runner.risk_params.safe_time_scale)

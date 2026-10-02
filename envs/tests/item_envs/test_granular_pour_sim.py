@@ -74,7 +74,7 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         ]
         beads = {s.item_id: s for s in runner.items}["beads"]
         assert beads.kind == "particle_set"
-        assert len(beads.particles) == 60
+        assert len(beads.particles) == 100
         margins = runner._rule_margins()
         assert margins.shape == (len(EXPECTED_RULE_IDS),)
         assert np.all(np.isfinite(margins))

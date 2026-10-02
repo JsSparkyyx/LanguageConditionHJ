@@ -33,7 +33,7 @@ CONFIGS = ROOT / "main" / "item_envs" / "configs"
 TASK_SRC = ROOT / "robotwin_tasks" / "push_zone.py"
 
 REQUIRED_KEYS = [
-    "task", "robotwin_task", "embodiments", "n_push", "push_objects", "goal",
+    "task", "robotwin_task", "embodiments", "n_push", "push_objects", "push", "goal",
     "zones", "bystanders", "risk", "rules", "embodiment_overrides", "risk_collect",
 ]
 
@@ -209,14 +209,12 @@ def test_module_constants_mirror_yaml():
     mesh_ids = _const("MESH_MODEL_IDS")
     assert _norm({k: mesh_ids[k] for k in cfg["push_objects"]["ids"]}) == _norm(cfg["push_objects"]["ids"])
     assert _norm({k: mesh_ids[k] for k in cfg["bystanders"]["ids"]}) == _norm(cfg["bystanders"]["ids"])
-    assert _norm(_const("GOAL_EDGE_DIST")) == _norm(cfg["goal"]["edge_dist"])
-    assert _norm(_const("PUSH_DIST")) == _norm(cfg["goal"]["dist"])
-    assert _norm(_const("GOAL_EDGE_JITTER")) == _norm(cfg["goal"]["edge_jitter"])
-    assert _norm(_const("GOAL_ZONE_DIST")) == _norm(cfg["goal"]["zone_dist"])
-    assert _norm(_const("GOAL_ZONE_ANGLE_DEG")) == _norm(cfg["goal"]["zone_angle_deg"])
-    assert _norm(_const("GOAL_ZONE_GAP")) == _norm(cfg["goal"]["zone_gap"])
+    assert _norm(_const("PUSH_SEG_LEN")) == _norm(cfg["push"]["seg_len"])
+    assert _norm(_const("GOAL_X")) == _norm(cfg["goal"]["x"])
+    assert _norm(_const("GOAL_Y_JITTER")) == _norm(cfg["goal"]["y_jitter"])
     assert _norm(_const("N_ZONES")) == _norm(cfg["zones"]["n"])
     assert _norm(_const("ZONE_SIZE_XY")) == _norm(cfg["zones"]["size_xy"])
+    assert _norm(_const("ZONE_MIDWAY_T")) == _norm(cfg["zones"]["midway_t"])
     assert _norm(_const("ZONE_NEAR_LINE_GAP")) == _norm(cfg["zones"]["near_push_line"])
     assert _norm(_const("ZONE_FREE_GAP")) == _norm(cfg["zones"]["free_gap"])
     assert _norm(_const("N_BYSTANDERS")) == _norm(cfg["bystanders"]["n"])
@@ -243,15 +241,17 @@ def test_color_palette_matches_objects_yaml():
 # ------------------------------------------------------- offline layout replay ----
 #
 # p4-accept regression (GPU shard 2): seeds 5/9 exhausted bystander placement,
-# seed 2's 001_bottle bystander tipped in check_stable, seed 0's pushes missed
-# the 3 cm goal at 28-31 cm travel. The layout path is pure numpy — replayable
-# off-GPU by stubbing sapien + RoboTwin's utils, loading the REAL task module,
-# and reproducing the exact pre-load global-RNG stream:
+# seed 2's 001_bottle bystander tipped in check_stable. The layout path is
+# pure numpy — replayable off-GPU by stubbing sapien + RoboTwin's utils,
+# loading the REAL task module, and reproducing the exact pre-load global-RNG
+# stream:
 #   np.random.seed(seed)                     (_base_task.py:58)
 #   np.random.uniform(-0.0, 0.0)             (_base_task.py:111 table_z_bias)
 #   np.random.randn(3); np.random.uniform()  (camera/camera.py:98-100 head-cam jitter)
-# Verified against the p4-accept plan lines (seed 0 pre-poses/distances match
-# to 1.5 mm) and against the seed 5/9 RuntimeErrors.
+# The pre-load stream prefix is unchanged by the cross-table redesign; the
+# load_actors draw order it feeds is documented in the task module docstring.
+# (The old design was additionally verified against the p4-accept plan lines —
+# seed 0 pre-poses/distances to 1.5 mm — and the seed 5/9 RuntimeErrors.)
 
 ROBOTWIN = ROOT.parent.parent / "RoboTwin"
 ROBOTWIN_OBJECTS = ROBOTWIN / "assets" / "objects"
@@ -415,12 +415,18 @@ def _replay_layout(pz, seed):
 
 
 def _interior_zone_clearances(task):
-    """zone edge <-> push corridor interior-foot clearances (sim-test mirror)."""
+    """(corridor_k, t, edge clearance) per zone/corridor pair with an interior foot.
+
+    For each (zone, corridor) pair where the zone center's perpendicular foot
+    lands strictly inside the corridor segment: the foot parameter t, and the
+    distance from the zone center to the segment minus the corridor
+    half-width minus the zone's support radius along the corridor normal
+    (sim-test mirror)."""
     out = []
     for zone in task.zones:
         c = np.asarray(zone["xy"], dtype=np.float64).reshape(2)
         hx, hy = zone["size_xy"][0] / 2.0, zone["size_xy"][1] / 2.0
-        for corr in task.layout_info["corridors"]:
+        for k, corr in enumerate(task.layout_info["corridors"]):
             a = np.asarray(corr["a"], dtype=np.float64)
             b = np.asarray(corr["b"], dtype=np.float64)
             ab = b - a
@@ -431,7 +437,7 @@ def _interior_zone_clearances(task):
             perp = np.array([-d[1], d[0]])
             z_half = float(abs(perp[0]) * hx + abs(perp[1]) * hy)
             dist = float(np.linalg.norm(c - (a + t * ab)))
-            out.append(dist - float(corr["half"]) - z_half)
+            out.append((k, t, dist - float(corr["half"]) - z_half))
     return out
 
 
@@ -442,16 +448,50 @@ def test_layout_replay_20_seeds():
         for seed in range(20):
             task = _replay_layout(pz, seed)  # raises RuntimeError on a bad layout
             assert len(task.push_objects) == 2
-            for rec in task.push_objects:
+            recs = {rec["item_id"]: rec for rec in task.push_objects}
+            # cross-table bands: start in the side band/lane, goal mirrored
+            # across the midline, y within the jitter of the start
+            for rec, side in ((recs["push_0"], "left"), (recs["push_1"], "right")):
+                sx, sy = (float(v) for v in rec["start_xy"])
+                gx, gy = (float(v) for v in rec["goal_xy"])
+                x0, x1, y0, y1 = pz.PUSH_START[side]
+                assert x0 <= sx <= x1 and y0 <= sy <= y1, (seed, side, "start", (sx, sy))
+                gx0, gx1 = pz.GOAL_X[side]
+                assert gx0 <= gx <= gx1, (seed, side, "goal x", gx)
+                assert abs(gy - sy) <= pz.GOAL_Y_JITTER + 1e-9, (seed, side, "goal y", (sy, gy))
+                assert gx * sx < 0, (seed, side, "does not cross the midline", (sx, gx))
                 dist = float(np.linalg.norm(rec["goal_xy"] - rec["start_xy"]))
-                assert pz.PUSH_DIST[0] <= dist <= pz.PUSH_DIST[1], (seed, rec["item_id"], dist)
+                dmin = min(abs(a - b) for a in (x0, x1) for b in (gx0, gx1))
+                dmax = max(abs(a - b) for a in (x0, x1) for b in (gx0, gx1))
+                assert dmin - 1e-9 <= dist <= float(np.hypot(dmax, pz.GOAL_Y_JITTER)) + 1e-9, (
+                    seed, side, dist,
+                )
+            # the two corridors never collide mid-table (separate y-lanes +
+            # the placement clearance): sampled capsule separation >= sum of halves
+            corrs = task.layout_info["corridors"]
+            if len(corrs) == 2:
+                ts = np.linspace(0.0, 1.0, 101)
+                segs = []
+                for corr in corrs:
+                    a = np.asarray(corr["a"], dtype=np.float64)
+                    b = np.asarray(corr["b"], dtype=np.float64)
+                    segs.append(a[None, :] + ts[:, None] * (b - a)[None, :])
+                d2 = ((segs[0][:, None, :] - segs[1][None, :, :]) ** 2).sum(-1)
+                sep = float(np.sqrt(d2.min()))
+                assert sep >= float(corrs[0]["half"]) + float(corrs[1]["half"]) + 0.005, (seed, sep)
             assert 2 <= len(task.zones) <= 3
             assert 1 <= len(task.bystanders) <= 2  # 2nd bystander may degrade (range draw)
             assert len({z["region_id"] for z in task.zones}) == len(task.zones)
             clear = _interior_zone_clearances(task)
             assert clear, seed
-            assert min(clear) > 0.0, (seed, min(clear))
-            assert min(clear) <= 0.06 + 1e-6, (seed, min(clear))  # near-line guarantee
+            # no zone intersects any corridor interior...
+            assert min(c for _, _, c in clear) > 0.0, (seed, min(c for _, _, c in clear))
+            # ...and the midway guarantee holds PER LANE: every corridor has a
+            # zone near its midpoint (t in 0.3..0.7) with edge clearance in
+            # (0, 0.06] — a straight push misses it, lateral drift enters it
+            for k in range(len(corrs)):
+                near = [c for k2, t, c in clear if k2 == k and 0.3 < t < 0.7]
+                assert any(0.0 < c <= 0.06 + 1e-6 for c in near), (seed, k, near)
             # bystander edge clears every corridor
             for b in task.bystanders:
                 xy = np.asarray(b["xy"], dtype=np.float64)

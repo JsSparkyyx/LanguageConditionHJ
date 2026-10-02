@@ -201,11 +201,13 @@ def test_container_region_margin_contract():
     """Resting beads sit comfortably inside the registered container polygon.
 
     p4-accept regression: with the rim-OPENING radius the belly (up to 5.3 mm
-    wider) plus the T-softmin over 60 beads put the joint particles_inside
+    wider) plus the T-softmin over the bead set put the joint particles_inside
     margin at -1.6..-5.1 mm at t=0. The registration now uses the OUTER
     footprint radius + 2 mm (container_region_radius) and T = 0.001: the
     softmin over the spawn grid must clear +8 mm per bowl id, and survive a
-    simulated 1.5 mm settle creep of the outer ring.
+    simulated 1.5 mm settle creep of the outer ring. Runs at the current
+    default N=100 (fills the bowl to ~one layer below the rim — the top ring
+    projects wider than the 60-bead grid, so the gate is tighter there).
     """
     from main.item_envs.geometry import circle_polygon
     from main.item_envs.margins import m_particles_inside
@@ -220,7 +222,7 @@ def test_container_region_margin_contract():
             polygon=poly, z=0.0, z_band=0.01, nameable=True,
         )
         pos = np.asarray(
-            iu.bead_grid_positions(60, 0.006, geom["inner_radius"], geom["floor_y"],
+            iu.bead_grid_positions(100, 0.006, geom["inner_radius"], geom["floor_y"],
                                    bands=geom["bands"], rng=np.random)
         )
         margin = m_particles_inside([pos[:, [0, 2]]], [region], T=0.001)

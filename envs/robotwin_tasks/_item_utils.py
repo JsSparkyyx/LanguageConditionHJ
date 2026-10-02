@@ -302,7 +302,7 @@ def _obb_half_world(obj):
 
 
 def push(task, arm_tag, obj, push_dir_xy, dist, overshoot=0.0, lateral_offset=0.0,
-         prepush_dist=0.05, height_offset=0.0):
+         prepush_dist=0.05, height_offset=0.0, seg_len=None):
     """One straight table-top push with a closed gripper (plan v3 §7 T3).
 
     Returns the skill action list (RoboTwin skills only) in execution order:
@@ -317,7 +317,14 @@ def push(task, arm_tag, obj, push_dir_xy, dist, overshoot=0.0, lateral_offset=0.
        overshoot: the gripper first closes the ``prepush_dist`` gap to P's
        contact face, then drives P by dist + overshoot — so P travels the
        commanded dist, which is what the P3-robot gate measures) — the whole
-       contact line is shifted laterally by ``lateral_offset``,
+       contact line is shifted laterally by ``lateral_offset``. With
+       ``seg_len`` set (push_zone's cross-table pushes), the displacement is
+       CHAINED in ceil(travel / seg_len) RiskyStep segments of travel/n_seg
+       each (every segment <= seg_len): each segment is its own _Deferred
+       plan anchored at the live EE pose, so the arm replans/reconfigures
+       over the long travel instead of committing one 0.5+ m displacement
+       (joint-limit flip risk). The segments run back-to-back at the risky
+       time scale (consecutive risky() blocks with the same scale).
     4. retreat 5 cm along -push_dir and lift 5 cm.
 
     Steps 3 and 4 are ``_Deferred``: ``move_by_displacement`` bakes an
@@ -362,10 +369,21 @@ def push(task, arm_tag, obj, push_dir_xy, dist, overshoot=0.0, lateral_offset=0.
     # gripper travel = closing gap + commanded box travel (+ overshoot)
     travel = float(prepush_dist) + float(dist) + float(overshoot)
 
-    def _push_step(task):
-        return task.move_by_displacement(
-            arm_tag, x=float(direction[0] * travel), y=float(direction[1] * travel)
-        )
+    def _disp_step(dist_m):
+        def _step(task):
+            return task.move_by_displacement(
+                arm_tag, x=float(direction[0] * dist_m), y=float(direction[1] * dist_m)
+            )
+
+        return _step
+
+    if seg_len is None:
+        push_steps = [RiskyStep(_Deferred(arm_tag, _disp_step(travel)))]
+    else:
+        n_seg = max(1, int(np.ceil(travel / float(seg_len))))
+        push_steps = [
+            RiskyStep(_Deferred(arm_tag, _disp_step(travel / n_seg))) for _ in range(n_seg)
+        ]
 
     def _retreat_step(task):
         return task.move_by_displacement(
@@ -378,7 +396,7 @@ def push(task, arm_tag, obj, push_dir_xy, dist, overshoot=0.0, lateral_offset=0.
     steps = [
         task.close_gripper(arm_tag),
         task.move_to_pose(arm_tag, pre_pose),
-        RiskyStep(_Deferred(arm_tag, _push_step)),
+        *push_steps,
         _Deferred(arm_tag, _retreat_step),
     ]
     return steps
@@ -521,7 +539,10 @@ def bead_grid_positions(n, r, inner_radius, floor_y, bands=None, spacing_factor=
     rim-sized grid spawns the lower layers INTO the wall (the P2
     spawn-ejection failure). Layers stack above the rim when the bowl cannot
     hold ``n`` beads — the overflow then spills during settle (by design in
-    P2's r = 8 mm cells; not expected at the T2 default 60 x 6 mm).
+    P2's r = 8 mm cells). At the T2 default 100 x 6 mm the top grid layer
+    sits just below the rim plane (~1 cm of bead-center clearance) — near
+    the rim on purpose (easier transport spill); rest containment itself was
+    validated at the P2 default 60 x 6 mm.
     ``rng`` (anything with .uniform, e.g. the seeded global numpy RNG) adds a
     +/-0.2 mm horizontal jitter per bead.
     """

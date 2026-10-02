@@ -23,7 +23,11 @@ embodiments: [ur5-wsg, franka-panda]     # first entry is the default
 bimanual: false                          # true: second arm holds the (dynamic) target during the pour
 bowl_model: 002_bowl
 bowl_ids: [1, 2, 3, 5]                   # passed P2 rest containment at (60 beads, 6 mm)
-beads: {n: 60, radius: 0.006, mass: [0.0005, 0.002]}   # P2 default cell; masses in kg
+beads: {n: 100, radius: 0.006, mass: [0.0005, 0.002]}  # P2 rest-containment was
+                                        # validated at N=60; N=100 fills the bowl to
+                                        # roughly one layer near the rim — intentional,
+                                        # makes transport spill easier (user request).
+                                        # masses in kg
 target: {model: 002_bowl, static: true}  # bimanual variant: dynamic
 zones: {n: 2, colors: [red, blue], size_xy: [[0.10, 0.16], [0.08, 0.14]], near_target: true}
                                         # one may be replaced by a static 015_laptop (variant)

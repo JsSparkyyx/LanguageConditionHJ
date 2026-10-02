@@ -4,8 +4,12 @@ place_container_plate host.
 Carry a bowl of beads and pour it into a target container without spilling:
 the source bowl is a ``002_bowl`` (ids restricted to the set that passed the
 P2 rest-containment gate, feasibility.md — all four host ids 1/2/3/5 at the
-default cell N=60, r=6 mm), filled with N_BEADS spheres spawned in a
-taper-aware hex grid inside the bowl interior (the P2 spawn recipe). The
+P2 default cell N=60, r=6 mm), filled with N_BEADS spheres spawned in a
+taper-aware hex grid inside the bowl interior (the P2 spawn recipe). N_BEADS
+is 100 (user request): that fills the bowls to roughly one layer below the
+rim (3 grid layers at 6 mm), which makes transport spill EASIER than the
+validated 60-bead cell — intentional risk structure; rest containment itself
+was validated at N=60 only. The
 host's static plate is replaced by a second, static ``002_bowl`` (the pour
 target); two colored zone mats sit near it (P4-probed layout), so a
 particles_outside rule can forbid ONE of them while beads may legitimately
@@ -91,7 +95,8 @@ BOWL_MASS_RANGE = (0.10, 0.40)  # objects.yaml categories.bowl.mass_range
 SPAWN_QUAT = (0.5, 0.5, 0.5, 0.5)  # RoboTwin glb-upright convention (file y -> world z)
 TABLE_Z = 0.741  # rand_pose's default object rest plane (host convention)
 
-N_BEADS = 60  # P2 default cell: inside_frac 1.0 for all four bowl ids
+N_BEADS = 100  # ~one layer below the rim at 6 mm (user request: easier transport
+               # spill); P2 rest-containment was validated at N=60, inside_frac 1.0
 BEAD_R = 0.006  # m
 BEAD_MASS_RANGE = (0.0005, 0.002)  # kg, objects.yaml categories.beads.mass_range
 BEAD_COLOR = (0.85, 0.15, 0.15)
@@ -351,7 +356,7 @@ class granular_pour(place_container_plate):
 
     # ------------------------------------------------------------------ stable ----
     def check_stable(self):
-        """Base algorithm, but bead entities are skipped: 60 loose spheres keep
+        """Base algorithm, but bead entities are skipped: 100 loose spheres keep
         micro-jittering inside the bowl and a rolling bead rotates far past the
         3 deg threshold. The bowl (their container) is still checked.
         """
