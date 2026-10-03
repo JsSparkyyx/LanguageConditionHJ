@@ -478,6 +478,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Env() chdirs to the RoboTwin root: resolve --out against the launch cwd
+    # before any env exists (sweep resume checks + child re-exec read it too)
+    if getattr(args, "out", None):
+        args.out = str(Path(args.out).resolve())
     if args.cmd == "episode" and getattr(args, "embodiment", None) is None:
         args.embodiment = default_embodiment(args.task)
     if args.cmd == "sweep" and getattr(args, "child", False) and getattr(args, "embodiment", None) is None:

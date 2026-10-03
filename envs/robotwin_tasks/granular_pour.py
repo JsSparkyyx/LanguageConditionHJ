@@ -554,6 +554,37 @@ class granular_pour(place_container_plate):
                 q_new = -q_new  # antipodal twin: keep the target in the live hemisphere
             self.move(self.move_to_pose(arm_tag, p_new.tolist() + q_new.tolist()))
 
+    # ---------------------------------------------------------------- overlay ----
+    def _beads_inside(self, actor, geom):
+        T = actor.get_pose().to_transformation_matrix()
+        rot, t = T[:3, :3], np.asarray(T[:3, 3], dtype=np.float64)
+        n = 0
+        for bead in self.beads:
+            local = rot.T @ (np.asarray(bead.get_pose().p, dtype=np.float64) - t)
+            if float(np.hypot(local[0], local[2])) < geom["inner_radius"] and (
+                geom["bottom_y"] - 0.5 * BEAD_R
+            ) < float(local[1]) < geom["rim_y"]:
+                n += 1
+        return n
+
+    def overlay_lines(self):
+        """Video diagnostics (runner overlay hook): bead counts in the source /
+        target interiors (check_success definition), the rest, and the source
+        bowl's tilt from upright."""
+        if not getattr(self, "beads", None):
+            return []
+        n_src = self._beads_inside(self.container, self._src_geom)
+        n_tgt = self._beads_inside(self.target, self._target_geom)
+        n = len(self.beads)
+        up = self.container.get_pose().to_transformation_matrix()[:3, 1]  # file y = up
+        tilt = float(np.rad2deg(np.arccos(np.clip(up[2], -1.0, 1.0))))
+        ok = n_tgt >= SUCCESS_MIN_FRAC * n
+        return [
+            f"beads src {n_src} tgt {n_tgt} other {n - n_src - n_tgt} / {n}",
+            f"{'' if ok else '!'}target frac {n_tgt / n:.2f} (need {SUCCESS_MIN_FRAC:.2f})",
+            f"bowl tilt {tilt:.0f}deg",
+        ]
+
     # ------------------------------------------------------------------ success ----
     def check_success(self):
         """Nominal goal only: >= SUCCESS_MIN_FRAC of the beads rest inside the

@@ -62,3 +62,38 @@ def test_run_one_recomputes_corrupt_meta(tmp_path, monkeypatch):
     assert called.get("built") is True
     assert error is None and runner is not None
     assert m.task_success is False
+
+
+# ---------------------------------------------------------------------------
+# relative --out paths: Env() chdirs to the RoboTwin root, so every output
+# path must be absolute before the first env exists (calib sweeps 22634591..
+# died writing trace.npz under RoboTwin/runs/...).
+# ---------------------------------------------------------------------------
+
+
+def test_main_resolves_relative_out_before_dispatch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    seen = {}
+
+    def _capture(args):
+        seen["out"] = args.out
+        return 0
+
+    parser = probe.build_parser()
+    monkeypatch.setattr(probe, "build_parser", lambda: parser)
+    for name in ("episode", "sweep"):
+        sub = parser._subparsers._group_actions[0].choices[name]
+        sub.set_defaults(func=_capture)
+        assert probe.main([name, "--task", "push_zone", "--embodiment", "ur5-wsg",
+                           "--out", "runs/rel"]) == 0
+        assert seen["out"] == str(tmp_path / "runs" / "rel")
+
+
+def test_runner_out_dir_is_absolute(tmp_path, monkeypatch):
+    from main.item_envs.runner import ItemEpisodeRunner
+
+    monkeypatch.chdir(tmp_path)
+    runner = ItemEpisodeRunner("push_zone", embodiment="ur5-wsg", seed=2,
+                               render="none", out_root="runs/rel")
+    assert runner.out_dir.is_absolute()
+    assert runner.out_dir == tmp_path / "runs" / "rel" / "push_zone" / "ur5-wsg" / "seed_2"

@@ -138,7 +138,9 @@ class ItemEpisodeRunner:
         self.active_rule_id = active_rule_id
         self.render = render
         self.video_enabled = bool(video) and render == "full"
-        self.out_dir = Path(out_root) / task / self.embodiment / f"seed_{self.seed}"
+        # absolute NOW: Env() chdirs to the RoboTwin root (env.py prepare()),
+        # so a relative out_root would resolve under RoboTwin/ at write time
+        self.out_dir = Path(out_root).resolve() / task / self.embodiment / f"seed_{self.seed}"
         self.max_steps = int(max_steps)
         self.arm_distance = arm_distance
         self.video_fps = float(video_fps)
@@ -873,7 +875,8 @@ def _particle_positions(spec: ItemSpec) -> np.ndarray:
 
 
 def _overlay_lines(runner: ItemEpisodeRunner, margins: np.ndarray, tick: int) -> list[str]:
-    """Active rule phrase, its margin, min margin over rules, time scale."""
+    """Active rule phrase + margin, min margin, time scale, then every rule margin
+    and the task's optional ``overlay_lines()`` diagnostics."""
     rules = list(runner.rules)
     lines = []
     active = next((r for r in rules if r.rule_id == runner.active_rule_id), None)
@@ -888,7 +891,21 @@ def _overlay_lines(runner: ItemEpisodeRunner, margins: np.ndarray, tick: int) ->
         j_min = int(np.argmin(margins))
         lines.append(f"min={_fmt_margin(rules[j_min], margins[j_min])} [{rules[j_min].rule_id}]")
     s = float(getattr(runner.env.task, "active_time_scale", 1.0)) if runner.env is not None else 1.0
-    lines.append(f"s={s:.2f} tick={tick}")
+    lines.append(f"s={s:.2f} tick={tick} t={tick / 25.0:.2f}s")
+    # every rule's margin (human units), violations prefixed "!" (drawn red),
+    # so a video can be checked number-by-number against the trace
+    for rule, value in zip(rules, margins):
+        flag = "!" if float(value) < 0.0 else ""
+        lines.append(f"{flag}{rule.rule_id}: {_fmt_margin(rule, value)}")
+    # optional task-side diagnostics (RoboTwin task files cannot import
+    # main.*, so this is a duck-typed hook returning plain strings)
+    task = getattr(runner.env, "task", None) if runner.env is not None else None
+    extra = getattr(task, "overlay_lines", None)
+    if callable(extra):
+        try:
+            lines.extend(str(x) for x in extra())
+        except Exception as exc:  # diagnostics must never kill an episode
+            lines.append(f"overlay_lines error: {type(exc).__name__}")
     return lines
 
 

@@ -320,17 +320,25 @@ def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False) -
 
     img = np.ascontiguousarray(np.asarray(frame_rgb).copy())
     scale = max(img.shape[0] / 240.0, 1.0)
-    thick = max(1, int(round(scale)))
-    y = int(round(18 * scale))
-    dy = int(round(20 * scale))
+    # shrink the text so every line fits the frame height (per-rule margin
+    # lists run 10-15 lines); lines starting with "!" are drawn red
+    fit = (img.shape[0] - 8) / max(1, len(lines)) / (20.0 * scale)
+    scale_txt = scale * min(1.0, max(0.45, fit))
+    thick = max(1, int(round(scale_txt)))
+    y = int(round(18 * scale_txt))
+    dy = int(round(20 * scale_txt))
     for line in lines:
-        for color, th in (((0, 0, 0), thick + 2), ((255, 255, 255), thick)):
+        line = str(line)
+        fg = (255, 255, 255)
+        if line.startswith("!"):
+            line, fg = line[1:], (255, 60, 60)
+        for color, th in (((0, 0, 0), thick + 2), (fg, thick)):
             cv2.putText(
                 img,
-                str(line),
+                line,
                 (6, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.45 * scale,
+                0.45 * scale_txt,
                 color,
                 th,
                 cv2.LINE_AA,

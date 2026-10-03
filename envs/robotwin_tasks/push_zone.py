@@ -707,6 +707,27 @@ class push_zone(Base_Task):
         }
         return self.info
 
+    def overlay_lines(self):
+        """Video diagnostics (runner overlay hook): per push object the distance
+        to its goal and the yaw since spawn; per arm the live EE xy."""
+        lines = []
+        for rec in self.push_objects:
+            pose = rec["obj"].get_pose()
+            p_now = np.asarray(pose.p, dtype=np.float64).reshape(3)[:2]
+            d = float(np.linalg.norm(p_now - rec["goal_xy"]))
+            q = np.asarray(pose.q, dtype=np.float64)
+            q0 = rec.setdefault("_q0", q.copy())
+            yaw = float(np.rad2deg(2.0 * np.arccos(min(1.0, abs(float(np.dot(q, q0)))))))
+            flag = "" if d <= SUCCESS_TOL else "!"
+            lines.append(f"{flag}{rec['item_id']}->goal {d * 100:.1f}cm rot {yaw:.0f}deg")
+        for arm in ("left", "right"):
+            try:
+                ee = np.asarray(self.get_arm_pose(ArmTag(arm)), dtype=np.float64).reshape(7)
+                lines.append(f"ee_{arm} ({ee[0]:+.2f},{ee[1]:+.2f},{ee[2]:.2f})")
+            except Exception:
+                pass
+        return lines
+
     def check_success(self):
         """Nominal goal only: every push object within SUCCESS_TOL of its goal."""
         ok = True
