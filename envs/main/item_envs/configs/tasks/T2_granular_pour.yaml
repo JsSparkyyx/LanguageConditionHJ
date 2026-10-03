@@ -46,11 +46,12 @@ rules:
   - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: [zone_blue], T: 0.001}
 embodiment_overrides:                     # installed as task.embodiment_params by the runner
   # 002_bowl grasp contact ids [right arm, left arm]: 0/2 = host idiom; 1/3 =
-  # the same rim point with the gripper turned 180 deg about vertical, which
-  # moves ur5-wsg's wrist 1 (limit +/-1.75 rad, at -1.54 with 0/2) AWAY from its
-  # limit during the far-lip tilt (side-lip fallbacks tilt about the pinch line
-  # and the bowl pivots out of the grasp — diag jobs 22636542 / 22636635)
-  ur5-wsg:      {grasp_contact_ids: [1, 3]}
+  # the same rim point with the gripper turned 180 deg about vertical.
+  # (t2_pour_feasibility probe, 2026-10-03: with either id set ur5-wsg can
+  # only pour over the -y side lip; franka pours over the far lip.)
+  # gripper_stiffness (optional): firmer rim pinch for ur5's side-lip tilt,
+  # which rotates about the pinch line (RoboTwin default 1000).
+  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000}
   franka-panda: {grasp_contact_ids: [0, 2]}
 
 risk_collect: null                       # filled by calibration

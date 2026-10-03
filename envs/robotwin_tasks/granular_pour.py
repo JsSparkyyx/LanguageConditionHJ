@@ -448,7 +448,20 @@ class granular_pour(place_container_plate):
         #    gripper turned 180 deg about vertical, which mirrors how the
         #    far-lip tilt maps onto the wrist joints (ur5-wsg wrist 1 is
         #    limited to +/-1.75 rad and sits at -1.54 with ids 0/2).
-        cp_ids = list((getattr(self, "embodiment_params", None) or {}).get("grasp_contact_ids", GRASP_CONTACT_IDS))
+        eparams = getattr(self, "embodiment_params", None) or {}
+        cp_ids = list(eparams.get("grasp_contact_ids", GRASP_CONTACT_IDS))
+        # optional firmer pinch (embodiment_params.gripper_stiffness): the
+        # rim pinch is a gripper PD drive (RoboTwin default stiffness 1000);
+        # ur5-wsg can only pour over a side lip (wrist 1 blocks the far lip,
+        # t2_pour_feasibility probe), tilting about the pinch line, where the
+        # loaded bowl pivots out of a soft grasp (diag jobs 22636542/22636635)
+        k_grip = eparams.get("gripper_stiffness")
+        if k_grip is not None:
+            for joints, damping in ((self.robot.left_gripper, self.robot.left_gripper_damping),
+                                    (self.robot.right_gripper, self.robot.right_gripper_damping)):
+                for joint in joints:
+                    joint[0].set_drive_property(stiffness=float(k_grip), damping=float(damping))
+        self.grip_info = {"grasp_contact_ids": cp_ids, "gripper_stiffness": k_grip}
         self.move(
             self.grasp_actor(
                 self.container,

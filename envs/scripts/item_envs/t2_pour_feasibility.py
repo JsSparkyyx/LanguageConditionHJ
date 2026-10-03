@@ -37,6 +37,8 @@ def main() -> int:
     ap.add_argument("--cp", default="0,2", help="grasp contact ids right,left")
     ap.add_argument("--out", default=None, help="append one JSON line here")
     args = ap.parse_args()
+    if args.out:  # Env() chdirs to the RoboTwin root
+        args.out = str(Path(args.out).resolve())
 
     from main.item_envs.runner import ItemEpisodeRunner
 
