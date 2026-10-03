@@ -16,5 +16,7 @@ granular_pour:
 push_zone:
   heldout_colors: [purple, orange, cyan]
   heldout_item_categories: [tea_box]
+granular_carry:  # T4 (2026-10-03): colors only, mirroring the other tasks — final list is the human's call
+  heldout_colors: [purple, orange, cyan]
 all:
   heldout_phrase_templates: ["stay away from the {item}", "don't get any {item} in the {region}"]

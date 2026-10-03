@@ -84,6 +84,13 @@ ITEM_TASKS: dict[str, TaskEntry] = {
         robotwin_task="push_zone",
         config=_CONFIG_TASKS / "T3_push_zone.yaml",
     ),
+    # T4 (user request 2026-10-03): bimanual brim-full bowl carry + place
+    "granular_carry": TaskEntry(
+        key="granular_carry",
+        kind="robotwin",
+        robotwin_task="granular_carry",
+        config=_CONFIG_TASKS / "T4_granular_carry.yaml",
+    ),
 }
 
 
