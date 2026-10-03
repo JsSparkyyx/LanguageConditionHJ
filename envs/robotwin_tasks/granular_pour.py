@@ -120,6 +120,7 @@ POUR_OFFSET_DEFAULT = 0.0  # m, lateral, toward zone 0
 POUR_HEIGHT_CLEAR = 0.015  # effective pour height >= src outer radius + this
                            # (min_pour_height — the rim rings cannot interlink)
 TILT_RATE_DEFAULT = 2.0  # rad/s
+GRASP_CONTACT_IDS = (0, 2)  # [right, left] 002_bowl contact points (host idiom); per-embodiment override in the yaml
 TILT_ANGLE_DEG = (100.0, 120.0)  # sampled per episode (P2 probed 110 deg)
 TILT_STEPS = 10  # small EE-rotation steps per tilt direction
 # Tilt rate: each step sets task.plan_duration_target = |step| / tilt_rate and
@@ -439,12 +440,18 @@ class granular_pour(place_container_plate):
         arm_tag = ArmTag("right" if container_pose[0] > 0 else "left")
         other_tag = ArmTag("left" if arm_tag == "right" else "right")
 
-        # 1. grasp the source bowl (host idiom: contact point 0 or 2) — safe scale
+        # 1. grasp the source bowl — safe scale. Contact ids per embodiment
+        #    (embodiment_params.grasp_contact_ids = [right, left]; host idiom
+        #    [0, 2]). 002_bowl's ids 1/3 grasp the same rim point with the
+        #    gripper turned 180 deg about vertical, which mirrors how the
+        #    far-lip tilt maps onto the wrist joints (ur5-wsg wrist 1 is
+        #    limited to +/-1.75 rad and sits at -1.54 with ids 0/2).
+        cp_ids = list((getattr(self, "embodiment_params", None) or {}).get("grasp_contact_ids", GRASP_CONTACT_IDS))
         self.move(
             self.grasp_actor(
                 self.container,
                 arm_tag=arm_tag,
-                contact_point_id=[0, 2][int(arm_tag == "left")],
+                contact_point_id=int(cp_ids[int(arm_tag == "left")]),
                 pre_grasp_dis=0.1,
             ))
         # 2. lift 0.1 m along the arm axis — safe scale

@@ -106,9 +106,8 @@ def test_full_episode_low_risk(embodiment, tmp_path):
     )
     meta, error = runner.run()
     assert error is None
-    # >= 80% of beads inside the target (check_success); P2 poured the full
-    # load at omega = 1 rad/s, so treat a failure here as a knob-tuning
-    # signal first (pour is 5 cm above the rim, centered).
+    # >= 80% of beads inside the target (check_success): the lip-pivot pour
+    # at 1 rad/s (min-jerk local steps) pins the pouring lip over the target.
     assert meta.task_success is True
 
     data = np.load(runner.out_dir / "trace.npz")
@@ -116,8 +115,9 @@ def test_full_episode_low_risk(embodiment, tmp_path):
     assert data["margins"].shape[1] == len(EXPECTED_RULE_IDS)
     assert (data["margins"][0] > 0.0).all()  # all margins positive at t = 0
     assert len(data["t"]) > 50  # a real episode, not a stub
-    # transit ran at the risky scale 0.5, approach/grasp/retreat at 0.6;
-    # the tilt steps pin active_time_scale to clip(tilt_rate / 2.0) = 0.5
+    # transit ran at the risky scale 0.5, approach/grasp/retreat at 0.6; the
+    # tilt steps are duration-targeted (|step| / tilt_rate) inside the same
+    # risky() block, so the logged scale there stays 0.5
     scales = np.unique(np.round(data["time_scale"], 3))
     assert 0.5 in scales
     assert 0.6 in scales

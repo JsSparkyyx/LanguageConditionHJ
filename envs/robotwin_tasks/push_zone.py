@@ -663,7 +663,7 @@ class push_zone(Base_Task):
         knobs = getattr(self, "risk_knobs", None) or {}
         overshoot = float(knobs.get("overshoot", 0.0))
         lateral = float(knobs.get("lateral_offset", 0.0))
-        params = getattr(self, "push_params", None) or {}
+        params = getattr(self, "embodiment_params", None) or getattr(self, "push_params", None) or {}
         prepush = float(params.get("prepush_dist", PREPUSH_DIST))
         h_off = float(params.get("push_height_offset", PUSH_HEIGHT_OFFSET))
         z = TABLE_TOP_Z + float(self.table_z_bias)

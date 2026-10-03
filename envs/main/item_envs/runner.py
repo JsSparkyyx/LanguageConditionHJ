@@ -291,6 +291,10 @@ class ItemEpisodeRunner:
         # getattr(self, "risk_knobs", {}); T1's on_path_count is consumed by
         # spawn_candidates above)
         task.risk_knobs = dict(self.risk_params.task)
+        # per-embodiment static config (PLAN §7: "embodiment differences live
+        # in data"): the task yaml's embodiment_overrides[<embodiment>]
+        overrides = (self.task_cfg.get("embodiment_overrides") or {}).get(self.embodiment) or {}
+        task.embodiment_params = dict(overrides)
 
     def close(self) -> None:
         if self.env is not None:
