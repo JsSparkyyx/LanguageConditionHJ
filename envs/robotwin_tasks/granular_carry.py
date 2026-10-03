@@ -69,15 +69,15 @@ TARGET_MIN_ABS_X = 0.10
 PAD_SIZE = 0.16  # painted target pad, full side (m)
 PAD_COLOR = (0.55, 0.55, 0.55)
 N_BEADS_MAX = 240  # grid candidates; beads above rim_y - BRIM_CLEAR are dropped
-BRIM_CLEAR = 0.012  # m, top bead centre below the rim plane: spills beyond ~12 deg of tilt
+BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitch 12.6 mm -> 11-19 mm by bowl id)
 CARRY_BOWL_MASS_RANGE = (0.10, 0.20)  # kg
 PINCH_CLEAR_R = 0.050  # m: no top-layer beads within this of the rim at the pinch point
 PINCH_CLEAR_DEPTH = 0.025  # m below the rim plane
 
 # --- nominal motion ---
 GRASP_CONTACT_IDS = (0, 2)  # [right, left]: outer rim of the bowl (host idiom)
-GRASP_DIS = 0.0  # m: grasp target stops this short of the contact point along the approach (shallower rim pinch)
-GRASP_RADIAL_OUT = 0.0  # m: grasp target shifted radially outward (centres the fingers on the wall)
+GRASP_DIS = 0.02  # m: grasp target stops this short of the contact point along the approach (shallower rim pinch)
+GRASP_RADIAL_OUT = 0.006  # m: grasp target shifted radially outward (centres the fingers on the wall)
 GRIPPER_STIFFNESS = 5000.0  # gripper PD stiffness (RoboTwin default 1000) — firmer rim pinch
 LIFTOFF = 0.015  # m: first lift, then level
 LEVEL_ITERS = 2  # leveling passes after lift-off

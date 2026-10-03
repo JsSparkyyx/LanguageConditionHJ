@@ -98,6 +98,8 @@ def test_constants_mirror_yaml():
     assert _const("LEVEL_ITERS") == cfg["carry"]["level_iters"]
     assert _f(_const("GRIPPER_STIFFNESS")) == _f(cfg["carry"]["gripper_stiffness"])
     assert _f(_const("CARRY_BOWL_MASS_RANGE")) == _f(cfg["carry"]["bowl_mass"])
+    assert _f(_const("GRASP_DIS")) == _f(cfg["carry"]["grasp_dis"])
+    assert _f(_const("GRASP_RADIAL_OUT")) == _f(cfg["carry"]["grasp_radial_out"])
     lo, hi = cfg["risk"]["task"]["carry_tilt_deg"]["range"]
     assert lo <= _const("CARRY_TILT_DEFAULT") <= hi
     lo, hi = cfg["risk"]["task"]["carry_height"]["range"]
