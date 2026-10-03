@@ -95,3 +95,31 @@ def test_overshoot_is_applied_once_on_the_last_segment(utils_mod):
     box, goal, _ = _run(utils_mod, drift=0.0, overshoot=0.05)
     past = float((box.p[:2] - goal) @ np.array([1.0, 0.0]))
     assert 0.03 < past < 0.07, past
+
+
+def test_push_quat_puts_fingers_across_the_push(utils_mod):
+    def R(q):
+        w, x, y, z = q
+        return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                         [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                         [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+    for ang in np.linspace(-np.pi, np.pi, 13):
+        d = np.array([np.cos(ang), np.sin(ang)])
+        m = R(utils_mod._push_quat(d))
+        assert np.allclose(m[:, 0], [0, 0, -1], atol=1e-9)  # still top-down (approach down)
+        finger = m[:2, 1]
+        assert abs(float(finger @ d)) < 1e-9  # finger axis across the push direction
+        # smallest yaw from TOP_DOWN (finger axis world -x): |angle| <= 90 deg
+        assert float(finger @ np.array([-1.0, 0.0])) >= -1e-9
+
+
+def test_lost_box_stops_the_segment_loop(utils_mod):
+    box = _Box([-0.15, -0.10])
+    task = _Task(box, drift=0.0)
+    steps = utils_mod.push_to_goal(task, "left", box, np.array([0.15, -0.10]), seg_len=0.10)
+    box.p[2] = 0.07  # knocked onto the floor before the first segment
+    n_actions = 0
+    for entry in steps[2:-1]:
+        step = utils_mod.realize_step(task, entry)
+        n_actions += len(step.step[1])
+    assert n_actions == 0

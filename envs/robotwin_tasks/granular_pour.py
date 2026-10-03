@@ -122,14 +122,10 @@ POUR_HEIGHT_CLEAR = 0.015  # effective pour height >= src outer radius + this
 TILT_RATE_DEFAULT = 2.0  # rad/s
 TILT_ANGLE_DEG = (100.0, 120.0)  # sampled per episode (P2 probed 110 deg)
 TILT_STEPS = 10  # small EE-rotation steps per tilt direction
-# Tilt-rate approximation (documented in the T2 task card): cuRobo's unretimed
-# plan for a ~11 deg EE rotation runs at roughly OMEGA_PLAN_REF rad/s (joint
-# velocity limits ~2 rad/s), so the per-step retime factor
-# clip(tilt_rate / OMEGA_PLAN_REF, TILT_S_MIN, TILT_S_MAX) lands the realized
-# rate near tilt_rate. The exact realized rate is derived downstream from the
-# ee_pose trace; P2's probed band is 1-3 rad/s.
-OMEGA_PLAN_REF = 2.0  # rad/s
-TILT_S_MIN, TILT_S_MAX = 0.25, 2.0
+# Tilt rate: each step sets task.plan_duration_target = |step| / tilt_rate and
+# RiskTickController retimes the step's plan to exactly that duration, so the
+# realized rate is the commanded one for cuRobo and mplib-screw plans alike
+# (v_ratio > 1 events are logged, never clipped).
 POUR_PIN_ABORT = 0.03  # abort the tilt when the rim-to-EE distance drifts this
                        # far from its grasp-time value (bowl slipping / lost)
 SWING_CLEAR = 0.03  # m: source-bowl hull above the target rim during transit and tilt swing
@@ -659,20 +655,19 @@ class granular_pour(place_container_plate):
         joints jump > LOCAL_JUMP_MAX. Reach / joint limits of the full tilt
         were dry-run in ``_choose_pour``.
 
-        Rate approximation (PLAN v3 §7 T2 "timed by the retimer"): every step's
-        plan is retimed by RiskTickController with s = task.active_time_scale,
-        set here to clip(tilt_rate / OMEGA_PLAN_REF, TILT_S_MIN, TILT_S_MAX);
-        the realized pour rate is measured downstream from the ee_pose trace.
-        This per-step scale REPLACES the risky time_scale for the tilt.
+        Rate (PLAN v3 §7 T2 "timed by the retimer"): every step sets
+        ``plan_duration_target = |step| / tilt_rate`` and RiskTickController
+        retimes the step's plan to exactly that duration — the realized pour
+        rate is the commanded one (v_ratio > 1 is logged, never clipped). This
+        REPLACES the risky time_scale for the tilt.
 
         Grasp guard: if the rim-to-EE distance drifts more than POUR_PIN_ABORT
         from its value at the tilt start, the bowl is slipping or lost — the
         tilt then aborts quietly (play_once continues to place/retreat, the
         episode completes, check_success reports the failed pour).
         """
-        s_step = float(np.clip(float(tilt_rate) / OMEGA_PLAN_REF, TILT_S_MIN, TILT_S_MAX))
-        self.active_time_scale = s_step
         step = float(angle) / TILT_STEPS
+        self.plan_duration_target = abs(step) / max(float(tilt_rate), 1e-3)
         pivot = np.asarray(pivot, dtype=np.float64).reshape(3)
         ee0 = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
         off0 = ee0[:3] - pivot
@@ -697,6 +692,7 @@ class granular_pour(place_container_plate):
                 self.move(self.move_to_pose(arm_tag, p_new.tolist() + q_new.tolist()))
         finally:
             self.plan_local = False
+            self.plan_duration_target = None
 
     # ---------------------------------------------------------------- overlay ----
     def _beads_inside(self, actor, geom):

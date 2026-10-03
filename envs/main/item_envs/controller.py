@@ -46,6 +46,7 @@ from main.envs.controller import TickChunkedController, current_skill  # noqa: E
 from .retime import retime  # noqa: E402
 
 DEFAULT_JOINT_VEL = 2.0  # rad/s (or m/s prismatic) fallback, body_features.py policy
+PHYSICS_DT = 1.0 / 250.0  # one plan row per physics step (cuRobo interpolation_dt, mplib time_step)
 LOCAL_JUMP_MAX = 1.0  # rad: a plan_local step whose joints leave the start by more is a branch flip
 
 
@@ -81,7 +82,18 @@ class RiskTickController(TickChunkedController):
             # degenerate plan (0/1 rows or missing velocity): leave untouched —
             # retime needs >= 2 rows; never crash a sweep on a short plan.
             return result
-        s = float(getattr(getattr(self.env, "task", None), "active_time_scale", 1.0))
+        task = getattr(self.env, "task", None)
+        s = float(getattr(task, "active_time_scale", 1.0))
+        # duration-targeted retime: a task that knows how long a step should
+        # take (T2 tilt: |step angle| / tilt_rate) sets plan_duration_target;
+        # s then follows from the plan's own duration, whichever planner made
+        # it (mplib screw plans run ~10x slower than cuRobo's — the old fixed
+        # tilt_rate / 2 rad/s factor turned a 1 rad/s pour into ~0.1 rad/s
+        # and timed out the episode, diag job 22636290)
+        target = getattr(task, "plan_duration_target", None)
+        if target is not None and float(target) > 0.0:
+            t_in = (pos.shape[0] - 1) * PHYSICS_DT
+            s = max(1e-3, t_in / float(target))
         pos_out, vel_out, info = retime(pos, vel, s, v_limit=self._v_limit(arm))
         result["position"], result["velocity"] = pos_out, vel_out
         result["_item_retime"] = info

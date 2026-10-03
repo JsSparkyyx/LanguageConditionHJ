@@ -402,6 +402,29 @@ def push(task, arm_tag, obj, push_dir_xy, dist, overshoot=0.0, lateral_offset=0.
     return steps
 
 
+def _push_quat(push_dir_xy):
+    """TOP_DOWN_QUAT yawed about world z so the finger axis (EE y — world x
+    under TOP_DOWN) lies across ``push_dir_xy``, using the yaw in
+    (-pi/2, pi/2] (the closed gripper is symmetric under 180 deg)."""
+    import numpy as np
+
+    d = np.asarray(push_dir_xy, dtype=np.float64).reshape(2)
+    perp = np.array([-d[1], d[0]])
+    # R_z(psi) @ (-1, 0) == perp  ->  psi = atan2(perp) - pi, folded into (-pi/2, pi/2]
+    psi = float(np.arctan2(perp[1], perp[0]) - np.pi)
+    psi = (psi + np.pi / 2.0) % np.pi - np.pi / 2.0
+    qz = np.array([np.cos(psi / 2.0), 0.0, 0.0, np.sin(psi / 2.0)])
+    w1, x1, y1, z1 = qz
+    w2, x2, y2, z2 = TOP_DOWN_QUAT
+    q = [
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ]
+    return [float(v) for v in q]
+
+
 def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
                  prepush_dist=0.05, height_offset=0.0, seg_len=0.10, approach_gap=0.015,
                  max_segments=12, goal_tol=0.005, realign_tol=0.01):
@@ -423,19 +446,29 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
     If the gripper is not already at ``pre`` (box drifted / yawed), it backs
     off 2 cm along the old heading first, so the sideways re-alignment never
     drags the box. Segments stop once the box is within ``goal_tol`` with
-    the overshoot spent (empty action lists — ``move`` no-ops on them).
+    the overshoot spent, or the box fell off the table, or the distance to
+    the goal grew on two consecutive segments (box lost — never chase it
+    around; empty action lists, ``move`` no-ops on them).
+
+    Gripper yaw: under TOP_DOWN_QUAT the finger axis (EE y; franka
+    delta_matrix maps it onto panda_finger_joint's axis) is world x, so a
+    ±x push touched the box with ONE fingertip and the box yawed off the
+    line (diag job 22636290: franka tea box rotated ~80 deg and slid off the
+    front edge). Every push pose is yawed so the finger pair lies ACROSS the
+    push direction (two-finger line contact), with the smallest wrist
+    rotation (the closed gripper is symmetric under 180 deg).
 
     Returns the skill list: close gripper -> pre-push (``prepush_dist``
     behind the contact face, fingers vertical, CoM height clamped >= 1 cm
     above the table on the fingertip plane) -> max_segments RiskyStep
-    segments -> retreat 5 cm back + 5 cm up. Execute through
+    segments -> retreat 4 cm back along the initial push direction + 6 cm up. Execute through
     ``execute_steps`` or the zipped ``realize_step`` pairs (push_zone).
     """
     import numpy as np
 
     goal = np.asarray(goal_xy, dtype=np.float64).reshape(2)
     table_z = TABLE_TOP_Z + float(getattr(task, "table_z_bias", 0.0))
-    state = {"overshoot_left": float(overshoot), "done": False, "d": None}
+    state = {"overshoot_left": float(overshoot), "done": False, "d": None, "d0": None, "dist": None, "grew": 0}
 
     def _live():
         pose = _unwrap(obj).get_pose()
@@ -453,13 +486,13 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
         face = center[:2] - d * depth + perp * float(lateral_offset)
         return d, dist, face, z_contact
 
-    def _pose(xy, z_contact):
-        return [float(xy[0]), float(xy[1]), z_contact + APPROACH_TO_TCP] + list(TOP_DOWN_QUAT)
+    def _pose(xy, z_contact, d):
+        return [float(xy[0]), float(xy[1]), z_contact + APPROACH_TO_TCP] + _push_quat(d)
 
     def _prepush(task):
         d, _, face, zc = _live()
-        state["d"] = d
-        return task.move_to_pose(arm_tag, _pose(face - d * float(prepush_dist), zc))
+        state["d"] = state["d0"] = d
+        return task.move_to_pose(arm_tag, _pose(face - d * float(prepush_dist), zc, d))
 
     def _segment(task):
         if state["done"]:
@@ -468,6 +501,18 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
         if dist <= goal_tol and state["overshoot_left"] <= 1e-9:
             state["done"] = True
             return arm_tag, []
+        box_z = float(np.asarray(_unwrap(obj).get_pose().p, dtype=np.float64).reshape(3)[2])
+        if box_z < table_z - 0.02:  # fell off the table: nothing left to push
+            state["done"] = True
+            return arm_tag, []
+        if state["dist"] is not None and dist > state["dist"] + 0.005:
+            state["grew"] += 1
+            if state["grew"] >= 2:  # moving away from the goal twice: box lost
+                state["done"] = True
+                return arm_tag, []
+        else:
+            state["grew"] = 0
+        state["dist"] = dist
         pre = face - d * float(approach_gap)
         travel = dist + float(approach_gap)
         last = travel <= float(seg_len)
@@ -479,15 +524,19 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
         ee = np.asarray(task.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
         if float(np.linalg.norm(ee[:2] - pre)) > float(realign_tol):
             d_old = state["d"] if state["d"] is not None else d
-            actions += task.move_to_pose(arm_tag, _pose(ee[:2] - d_old * 0.02, zc))[1]
-            actions += task.move_to_pose(arm_tag, _pose(pre, zc))[1]
-        actions += task.move_to_pose(arm_tag, _pose(pre + d * length, zc))[1]
+            actions += task.move_to_pose(arm_tag, _pose(ee[:2] - d_old * 0.02, zc, d_old))[1]
+            actions += task.move_to_pose(arm_tag, _pose(pre, zc, d))[1]
+        actions += task.move_to_pose(arm_tag, _pose(pre + d * length, zc, d))[1]
         state["d"] = d
         return arm_tag, actions
 
     def _retreat(task):
-        d = state["d"] if state["d"] is not None else np.array([1.0, 0.0])
-        return task.move_by_displacement(arm_tag, x=float(-d[0] * 0.05), y=float(-d[1] * 0.05), z=0.05)
+        # back along the INITIAL push direction (toward the arm's own side):
+        # after an overshoot the re-aimed heading points back at the goal, and
+        # retreating along it went further across the midline, out of reach
+        # (diag job 22636290 ur5 seed 0: plan failure at x = 0.235)
+        d = state["d0"] if state["d0"] is not None else np.array([1.0, 0.0])
+        return task.move_by_displacement(arm_tag, x=float(-d[0] * 0.04), y=float(-d[1] * 0.04), z=0.06)
 
     return [
         task.close_gripper(arm_tag),

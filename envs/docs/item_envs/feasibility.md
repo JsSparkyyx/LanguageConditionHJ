@@ -215,6 +215,23 @@ positions": PASS at exactly 0.5 — **borderline**; overlay keyframe in
   visibility-aware spacing (larger `min_separation` vs tall items) or a
   per-height probe sweep, NOT more cell masking.
 
+- **F6 (2026-10-02, found after F5 was accepted) — every primitive cylinder
+  was spawned LYING DOWN.** SAPIEN's `PhysxCollisionShapeCylinder` runs along
+  its LOCAL x axis; RoboTwin's `create_cylinder` with an identity pose
+  therefore lays the "tall cylinder" on its side. Affected: T1
+  `prim_tall_cylinder` candidates (spawn.py), T3 cylinder bystanders (rolled
+  ~0.37 m off the table during setup, diag job 22636182), and the
+  visibility-band probe (`visibility_band.py`: a lying 12 cm probe, while its
+  registered OBB was a TALL box — so the band's visible fractions were pixels
+  of a lying cylinder over the projected area of a standing box, biased low).
+  All three now stand the cylinder up (`CYL_STAND_QUAT`, OBB axis on local x).
+  Consequence for F5: the committed `visibility_band_<emb>.npz` and the F5b
+  coverage masks were measured with the wrong probe geometry; the accepted
+  per-class numbers (0.995 / 0.948 / 0.947) were measured on layouts whose
+  cylinder candidates were also lying down. Re-running
+  `visibility_band.py --embodiment both` (compute + validate) would re-measure
+  both — optional, the human decision on F5 stands until then.
+
 ## Infra notes (probe-platform lessons, for the record)
 
 - ~26 render-system scene creations in one process exhaust svulkan2
