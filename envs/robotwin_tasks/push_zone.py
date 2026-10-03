@@ -22,9 +22,11 @@ drawn side of the line first, then the other. Several candidates of the same
 rule type are exposed to the nominal, only the specified ones are
 constrained. ``inside(P, table_top)`` stays in the rule table regardless.
 
-Push travel (0.18-0.48 m + overshoot) exceeds the push primitive's calibrated
-8-15 cm envelope, so the displacement is commanded SEGMENTED: a chain of
-move_by_displacement steps of <= PUSH_SEG_LEN (0.25 m), all risk-bearing.
+Push travel (0.18-0.48 m + overshoot) exceeds the open-loop push primitive's
+calibrated 8-15 cm envelope (the box yaws under the narrow finger contact
+and walks off the line), so the nominal uses ``push_to_goal``: CLOSED-LOOP
+segments of <= PUSH_SEG_LEN (0.10 m), each re-aimed at the live box pose and
+re-centred behind its contact face, all risk-bearing.
 SUCCESS_TOL stays 3 cm; Phase-4 calibration may revisit it for long pushes.
 Bystanders are cups / primitive cylinders: every 001_bottle id stands on a
 narrow punt ring and wobbles past RoboTwin's 3-degree check_stable gate.
@@ -85,7 +87,7 @@ from ._item_utils import (
     TABLE_TOP_Z,
     TOP_DOWN_QUAT,
     RiskyStep,
-    push,
+    push_to_goal,
     realize_step,
     register_item,
     register_zone,
@@ -110,7 +112,7 @@ GOAL_X = {"left": (0.08, 0.22), "right": (-0.22, -0.08)}  # goal x band per star
 GOAL_Y_JITTER = 0.03  # goal y = start y ± this (m) — pushes run roughly along ±x
 REACH_X_MAX = (0.15, -1.0)  # (a, b): across the midline the gripper needs |x| <= a + b*y (both embodiments, workspace_*.npz)
 OVERSHOOT_MAX = 0.08  # risk.task.overshoot upper bound — the reach check covers the longest push
-PUSH_SEG_LEN = 0.25  # the push displacement is chained in move_by_displacement segments <= this (m), replanning between segments
+PUSH_SEG_LEN = 0.10  # closed-loop push segment length (m): each segment re-aims at the LIVE box pose (push_to_goal)
 
 N_ZONES = (2, 3)
 ZONE_SIZE_XY = ((0.08, 0.15), (0.08, 0.15))  # per-axis full extents (m)
@@ -155,6 +157,7 @@ TABLE_HALF_X = 0.6  # RoboTwin table 1.2 m x 0.7 m at table_xy_bias [0, 0]
 TABLE_HALF_Y = 0.35
 TABLE_EPS = 0.005
 STAND_QUAT = (0.5, 0.5, 0.5, 0.5)  # RoboTwin-OD meshes are Y-up (recon.md Q13)
+CYL_STAND_QUAT = (0.7071067811865476, 0.0, -0.7071067811865476, 0.0)  # wxyz R_y(-90deg): SAPIEN cylinder axis (local x) -> world z
 TUCK_POSE = (0.42, -0.30, 0.30)  # idle arm: (|x| toward its own side, y, height above the table)
 
 
@@ -609,15 +612,20 @@ class push_zone(Base_Task):
             xy, box = chosen
 
             if asset == "prim_tall_cylinder":
+                # SAPIEN cylinders run along LOCAL x: an identity pose spawns
+                # the "tall" cylinder lying down and it rolls off the table
+                # during check_stable (diag job 22636182, seed 0: both
+                # bystanders ended at y ~ +0.36). CYL_STAND_QUAT stands it up;
+                # the item frame keeps the axis on local x.
                 ent = create_cylinder(
                     self.scene,
-                    sapien.Pose([float(xy[0]), float(xy[1]), z + h / 2.0]),
+                    sapien.Pose([float(xy[0]), float(xy[1]), z + h / 2.0], list(CYL_STAND_QUAT)),
                     radius=r,
                     half_length=h / 2.0,
                     color=COLOR_RGB[color],
                     name=item_id,
                 )
-                center_local, half_ext, up_local = [0.0, 0.0, 0.0], [r, r, h / 2.0], [0.0, 0.0, 1.0]
+                center_local, half_ext, up_local = [0.0, 0.0, 0.0], [h / 2.0, r, r], [1.0, 0.0, 0.0]
             else:
                 ent = create_actor(
                     self,
@@ -663,8 +671,8 @@ class push_zone(Base_Task):
             dist = float(np.linalg.norm(delta))
             if dist < 1e-9:
                 continue  # already at the goal: nothing to push
-            steps_by_arm[rec["arm"]] = push(
-                self, rec["arm"], rec["push_obj"], delta / dist, dist,
+            steps_by_arm[rec["arm"]] = push_to_goal(
+                self, rec["arm"], rec["push_obj"], rec["goal_xy"],
                 overshoot=overshoot, lateral_offset=lateral,
                 prepush_dist=prepush, height_offset=h_off, seg_len=PUSH_SEG_LEN,
             )

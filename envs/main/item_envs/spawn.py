@@ -189,6 +189,9 @@ class _ObjectDraw:
     size: np.ndarray | None = None  # prims only: box [sx, sy, sz] / cylinder [r, r, h] full extents
 
 
+CYL_STAND_QUAT = (0.7071067811865476, 0.0, -0.7071067811865476, 0.0)  # wxyz, R_y(-90deg): local x -> world z
+
+
 @dataclass
 class _Geometry:
     """OBB + placement geometry for one object draw."""
@@ -416,6 +419,20 @@ def _geometry_of(draw: _ObjectDraw) -> _Geometry:
     (origin-center, origin-bottom, …) — this function no longer calls
     ``ob.set_obstacle_model`` (no obstacle.py global state).
     """
+    if draw.asset == "prim_tall_cylinder":
+        # SAPIEN's PhysxCollisionShapeCylinder runs along its LOCAL x axis: an
+        # identity pose spawns the "tall" cylinder lying down, and it rolls
+        # (diag job 22636182: push_zone bystander cylinders rolled ~0.37 m off
+        # the table during setup). Stand it up with CYL_STAND_QUAT (local x ->
+        # world z); the item frame then has the axis on x.
+        r, h2 = 0.5 * float(draw.size[0]), 0.5 * float(draw.size[2])
+        return _Geometry(
+            center_local=np.zeros(3),
+            half=np.array([h2, r, r], dtype=np.float64),
+            world_half=np.array([r, r, h2], dtype=np.float64),
+            up_local=np.array([1.0, 0.0, 0.0]),
+            quat=CYL_STAND_QUAT,
+        )
     if draw.asset.startswith("prim_"):
         half = np.asarray(draw.size, dtype=np.float64) * 0.5
         return _Geometry(
@@ -910,9 +927,9 @@ def _spawn_one(task, placement: Placement, static: bool, objects_cfg: dict):
     elif pl.draw.asset == "prim_tall_cylinder":
         actor = create_cylinder(
             task,
-            sapien.Pose(xyz.tolist(), [1, 0, 0, 0]),
-            radius=float(geo.half[0]),
-            half_length=float(geo.half[2]),
+            sapien.Pose(xyz.tolist(), list(geo.quat)),  # CYL_STAND_QUAT: axis vertical
+            radius=float(geo.half[1]),
+            half_length=float(geo.half[0]),
             color=_color_rgb(objects_cfg, pl.draw.color),
             name=pl.item_id,
         )

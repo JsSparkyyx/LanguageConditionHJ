@@ -41,8 +41,18 @@ def test_pinched_item_beats_earlier_single_finger_contact(monkeypatch):
     assert got == {"left": "bread"}
 
 
-def test_tie_breaks_by_tcp_distance(monkeypatch):
+def test_single_link_contacts_never_start_a_hold(monkeypatch):
+    # an item resting against the OUTSIDE of one finger is not held — this
+    # latched the basket the carried bread touched (diag 22636122 seed 3)
     contacts = [_contact(FINGER_L, CAN), _contact(FINGER_R, BREAD)]
+    env, cehj = _setup(monkeypatch, contacts, {"can": 0.08, "bread": 0.01})
+    got = rd._closed_gripper_contacts(env, {CAN: "can", BREAD: "bread"}, {"can": "can", "bread": "bread"}, cehj)
+    assert got == {}
+
+
+def test_two_pinched_items_tie_break_by_tcp_distance(monkeypatch):
+    contacts = [_contact(FINGER_L, CAN), _contact(FINGER_R, CAN),
+                _contact(FINGER_L, BREAD), _contact(FINGER_R, BREAD)]
     env, cehj = _setup(monkeypatch, contacts, {"can": 0.08, "bread": 0.01})
     got = rd._closed_gripper_contacts(env, {CAN: "can", BREAD: "bread"}, {"can": "can", "bread": "bread"}, cehj)
     assert got == {"left": "bread"}
@@ -53,3 +63,20 @@ def test_open_gripper_holds_nothing(monkeypatch):
     env, cehj = _setup(monkeypatch, contacts, {"bread": 0.0})
     cehj._arm_is_holding = lambda env, side: False
     assert rd._closed_gripper_contacts(env, {BREAD: "bread"}, {"bread": "bread"}, cehj) == {}
+
+
+def test_tall_cylinder_stands_upright():
+    """SAPIEN cylinders run along local x: the spawn quat must put that axis on
+    world z, and the registered OBB / up axis must live in the same frame."""
+    import numpy as np
+
+    from main.item_envs import spawn
+
+    draw = spawn._ObjectDraw(asset="prim_tall_cylinder", category="cylinder", color="red",
+                             size=np.array([0.06, 0.06, 0.14]))
+    geo = spawn._geometry_of(draw)
+    R = spawn._quat_wxyz_to_mat(np.asarray(geo.quat, dtype=np.float64))
+    assert np.allclose(R @ np.array([1.0, 0.0, 0.0]), [0.0, 0.0, 1.0], atol=1e-9)  # axis vertical
+    assert np.allclose(R @ geo.up_local, [0.0, 0.0, 1.0], atol=1e-9)
+    assert np.allclose(np.abs(R) @ geo.half, geo.world_half, atol=1e-9)
+    assert np.allclose(geo.world_half, [0.03, 0.03, 0.07])

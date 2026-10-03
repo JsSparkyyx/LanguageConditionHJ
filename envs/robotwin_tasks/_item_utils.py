@@ -402,6 +402,101 @@ def push(task, arm_tag, obj, push_dir_xy, dist, overshoot=0.0, lateral_offset=0.
     return steps
 
 
+def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
+                 prepush_dist=0.05, height_offset=0.0, seg_len=0.10, approach_gap=0.015,
+                 max_segments=12, goal_tol=0.005, realign_tol=0.01):
+    """Closed-loop table-top push of ``obj`` to ``goal_xy`` (plan v3 §7 T3).
+
+    ``push()`` commands one fixed direction/distance from the pose at
+    play_once time; over push_zone's 0.2-0.5 m cross-table travel the box
+    yaws under the narrow finger contact and walks 3-5 cm off the line (diag
+    job 22636182: ur5 seeds 0/2 ended 3-5 cm off the goal; franka seed 2 the
+    rotated box was pinched and launched). Here every segment is a
+    ``RiskyStep(_Deferred)`` re-aimed at EXECUTION time from the LIVE box:
+
+      d     = unit(goal - box centre)           (re-aimed every segment)
+      face  = centre - d * OBB support along d  (+ lateral_offset sideways)
+      pre   = face - d * approach_gap
+      push  = pre + d * min(seg_len, remaining + approach_gap [+ overshoot on
+              the last segment])
+
+    If the gripper is not already at ``pre`` (box drifted / yawed), it backs
+    off 2 cm along the old heading first, so the sideways re-alignment never
+    drags the box. Segments stop once the box is within ``goal_tol`` with
+    the overshoot spent (empty action lists — ``move`` no-ops on them).
+
+    Returns the skill list: close gripper -> pre-push (``prepush_dist``
+    behind the contact face, fingers vertical, CoM height clamped >= 1 cm
+    above the table on the fingertip plane) -> max_segments RiskyStep
+    segments -> retreat 5 cm back + 5 cm up. Execute through
+    ``execute_steps`` or the zipped ``realize_step`` pairs (push_zone).
+    """
+    import numpy as np
+
+    goal = np.asarray(goal_xy, dtype=np.float64).reshape(2)
+    table_z = TABLE_TOP_Z + float(getattr(task, "table_z_bias", 0.0))
+    state = {"overshoot_left": float(overshoot), "done": False, "d": None}
+
+    def _live():
+        pose = _unwrap(obj).get_pose()
+        center = np.asarray(pose.p, dtype=np.float64).reshape(3)
+        rot = np.asarray(pose.to_transformation_matrix(), dtype=np.float64)[:3, :3]
+        half = _obb_half_world(obj)
+        if half is None:
+            half = np.array([0.03, 0.03, 0.03], dtype=np.float64)
+        rem = goal - center[:2]
+        dist = float(np.linalg.norm(rem))
+        d = rem / dist if dist > 1e-9 else (state["d"] if state["d"] is not None else np.array([1.0, 0.0]))
+        depth = float(np.abs(rot.T @ np.array([d[0], d[1], 0.0])) @ half)
+        z_contact = max(float(center[2]) + float(height_offset), table_z + 0.01)
+        perp = np.array([-d[1], d[0]], dtype=np.float64)
+        face = center[:2] - d * depth + perp * float(lateral_offset)
+        return d, dist, face, z_contact
+
+    def _pose(xy, z_contact):
+        return [float(xy[0]), float(xy[1]), z_contact + APPROACH_TO_TCP] + list(TOP_DOWN_QUAT)
+
+    def _prepush(task):
+        d, _, face, zc = _live()
+        state["d"] = d
+        return task.move_to_pose(arm_tag, _pose(face - d * float(prepush_dist), zc))
+
+    def _segment(task):
+        if state["done"]:
+            return arm_tag, []
+        d, dist, face, zc = _live()
+        if dist <= goal_tol and state["overshoot_left"] <= 1e-9:
+            state["done"] = True
+            return arm_tag, []
+        pre = face - d * float(approach_gap)
+        travel = dist + float(approach_gap)
+        last = travel <= float(seg_len)
+        length = travel + state["overshoot_left"] if last else float(seg_len)
+        if last:
+            state["overshoot_left"] = 0.0
+            state["done"] = True
+        actions = []
+        ee = np.asarray(task.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+        if float(np.linalg.norm(ee[:2] - pre)) > float(realign_tol):
+            d_old = state["d"] if state["d"] is not None else d
+            actions += task.move_to_pose(arm_tag, _pose(ee[:2] - d_old * 0.02, zc))[1]
+            actions += task.move_to_pose(arm_tag, _pose(pre, zc))[1]
+        actions += task.move_to_pose(arm_tag, _pose(pre + d * length, zc))[1]
+        state["d"] = d
+        return arm_tag, actions
+
+    def _retreat(task):
+        d = state["d"] if state["d"] is not None else np.array([1.0, 0.0])
+        return task.move_by_displacement(arm_tag, x=float(-d[0] * 0.05), y=float(-d[1] * 0.05), z=0.05)
+
+    return [
+        task.close_gripper(arm_tag),
+        _Deferred(arm_tag, _prepush),
+        *[RiskyStep(_Deferred(arm_tag, _segment)) for _ in range(int(max_segments))],
+        _Deferred(arm_tag, _retreat),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # granular_pour (T2) helpers: bowl geometry + bead grid + bead spawner
 # ---------------------------------------------------------------------------

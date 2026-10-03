@@ -88,6 +88,7 @@ VIS_THRESH = 0.3  # the F5 gate threshold (max-camera visible fraction)
 PROBE_R = 0.03  # reference cylinder radius (m)
 PROBE_H = 0.12  # reference cylinder height (m)
 SETTLE_STEPS = 3  # scene.step()s after each repose
+PROBE_STAND_QUAT = (0.7071067811865476, 0.0, -0.7071067811865476, 0.0)  # wxyz: SAPIEN cylinder axis (local x) -> world z
 EMBODIMENTS = ("ur5-wsg", "franka-panda")
 
 
@@ -176,9 +177,11 @@ def sweep_embodiment(embodiment: str, out_dir: Path) -> dict:
         task = env.task
         table_z = ob.TABLE_Z + float(getattr(task, "table_z_bias", 0.0))
         half_len = PROBE_H / 2.0
+        # SAPIEN cylinders run along LOCAL x: stand the probe up (the band npz
+        # committed before 2026-10-02 was swept with a LYING 12 cm probe)
         probe = create_cylinder(
             task,
-            sapien.Pose([0.0, 0.0, table_z + half_len + 0.001], [1, 0, 0, 0]),
+            sapien.Pose([0.0, 0.0, table_z + half_len + 0.001], list(PROBE_STAND_QUAT)),
             radius=PROBE_R,
             half_length=half_len,
             color=(0.9, 0.6, 0.1),
@@ -192,8 +195,9 @@ def sweep_embodiment(embodiment: str, out_dir: Path) -> dict:
             entity=probe,
             category="probe",
             kind="rigid",
-            half_extents=np.array([PROBE_R, PROBE_R, half_len]),
+            half_extents=np.array([half_len, PROBE_R, PROBE_R]),  # axis on local x (stood up)
             obb_center_local=np.zeros(3),
+            up_axis_local=np.array([1.0, 0.0, 0.0]),
         )
 
         xs = np.arange(ob.TABLE_XYLIM[0, 0] + MARGIN_M,
@@ -208,7 +212,7 @@ def sweep_embodiment(embodiment: str, out_dir: Path) -> dict:
             t_row = time.perf_counter()
             for ix, x in enumerate(xs):
                 probe.set_pose(sapien.Pose([float(x), float(y), table_z + half_len + 0.001],
-                                           [1, 0, 0, 0]))
+                                           list(PROBE_STAND_QUAT)))
                 for _ in range(SETTLE_STEPS):
                     task.scene.step()
                 visibility, _tok = masks.item_masks(task, [spec], [])

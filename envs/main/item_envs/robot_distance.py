@@ -108,17 +108,22 @@ def _robot_side_psids(env) -> dict[int, str]:
     return cache
 
 
+PINCH_MIN_LINKS = 2  # distinct gripper links touching an item for it to count as held
+
+
 def _closed_gripper_contacts(env, key_by_psid: dict, entity_by_key: dict, cehj) -> dict:
     """side -> key of the item a CLOSED gripper is holding this physics step.
 
-    Every item touched by a closed gripper link is a candidate; the HELD one
-    is the item touched by the most distinct gripper links (a pinch contacts
-    both fingers), ties broken by the item's distance to that arm's TCP.
-    "First contact wins" (the previous rule) latched a can brushing the
-    outside of a finger instead of the bread pinched between them (diag job
-    22636048, selective_avoid/place_bread_basket/franka seed 1): the can then
-    read avoid = +inf while the gripper was touching it, and the bread was
-    never counted as payload.
+    A held item is PINCHED: touched by at least ``PINCH_MIN_LINKS`` distinct
+    gripper links (both fingers squeeze it). Among several pinched items the
+    one nearest that arm's TCP wins. Single-link contacts never start a hold
+    — "first contact wins" (the previous rule) latched a can brushing the
+    outside of a finger instead of the bread pinched between them, and later
+    the basket the carried bread touched (diag jobs 22636048 / 22636122,
+    selective_avoid/place_bread_basket/franka seeds 1, 3): the touched item
+    then read avoid = +inf while the gripper was on it, and the real payload
+    dropped out of the distance. HeldTracker keeps an EXISTING latch while
+    the arm stays closed and the item near (CEHJ ``_hold_metrics``).
     """
     side_psids = _robot_side_psids(env)
     touch: dict[str, dict] = {}  # side -> key -> set of gripper link psids
@@ -142,6 +147,9 @@ def _closed_gripper_contacts(env, key_by_psid: dict, entity_by_key: dict, cehj) 
     out: dict = {}
     for side, cands in touch.items():
         if not cehj._arm_is_holding(env, side):
+            continue
+        cands = {k: links for k, links in cands.items() if len(links) >= PINCH_MIN_LINKS}
+        if not cands:
             continue
         if len(cands) == 1:
             out[side] = next(iter(cands))

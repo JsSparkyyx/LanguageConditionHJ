@@ -33,11 +33,11 @@ push_objects:
     right: [0.10, 0.26, -0.16, -0.04]     # shrinks as y grows
 
 push:
-  seg_len: 0.25                           # the push displacement is chained in
-                                          # move_by_displacement segments <= this
-                                          # long (m), replanning between segments
-                                          # (0.24-0.60 m travel risks joint-limit
-                                          # flips as a single displacement)
+  seg_len: 0.10                           # closed-loop push segments (m): each one
+                                          # re-aims at the LIVE box pose and re-centres
+                                          # behind its contact face (push_to_goal) —
+                                          # open-loop 0.2-0.5 m pushes walked the box
+                                          # 3-5 cm off the line
 
 goal:
   x:                                      # goal x band per object — the OPPOSITE side
