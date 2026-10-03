@@ -165,6 +165,8 @@ def _sweep_parent(args) -> int:
             cmd += ["--host", args.host]
         if args.task_cfg:
             cmd += ["--task-cfg", args.task_cfg]
+        if getattr(args, "shard", None):
+            cmd += ["--shard", args.shard]
         print(f"[sweep] child for embodiment {emb}: {' '.join(cmd)}")
         attempt = 0
         while True:
@@ -186,6 +188,11 @@ def _sweep_child(args) -> int:
     grid = _parse_grid(args.grid)
     base_risk = _parse_kv(args.risk)
     cells = _grid_cells(grid) if grid else [{}]
+    if getattr(args, "shard", None):
+        # cells[i::n] — n processes split one sweep (same --out, disjoint cell
+        # dirs, so shards never write the same meta.json)
+        i, n = (int(v) for v in args.shard.split("/"))
+        cells = cells[i::n]
     total = len(cells) * args.episodes
     print(
         f"[sweep] {args.task}/{args.embodiment}: {len(cells)} cell(s) x "
@@ -453,6 +460,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sw.add_argument("--adaptive-episodes", type=int, default=15, dest="adaptive_episodes")
     p_sw.add_argument("--seed-base", type=int, default=0, dest="seed_base")
     p_sw.add_argument("--out", default="runs/item_envs/calib")
+    p_sw.add_argument("--shard", default=None,
+                      help="'i/n' — run grid cells[i::n] (parallel sweep processes)")
     p_sw.add_argument("--child", action="store_true",
                       help=argparse.SUPPRESS)  # internal: the parent re-execs this
     p_sw.set_defaults(func=cmd_sweep)

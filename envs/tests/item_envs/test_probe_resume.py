@@ -97,3 +97,19 @@ def test_runner_out_dir_is_absolute(tmp_path, monkeypatch):
                                render="none", out_root="runs/rel")
     assert runner.out_dir.is_absolute()
     assert runner.out_dir == tmp_path / "runs" / "rel" / "push_zone" / "ur5-wsg" / "seed_2"
+
+
+def test_sweep_shard_partitions_cells(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(probe, "_run_one", lambda args, cell, tag, seed: (
+        ran.append((tag, seed)) or (SimpleNamespace(task_success=True, rules=[], violations={}), None, None)))
+    grid = ["time_scale=0.5,1.0,1.3", "overshoot=0,0.04"]
+    tags = {}
+    for i in range(2):
+        ran.clear()
+        args = SimpleNamespace(**{**vars(_args(tmp_path)), "grid": grid, "episodes": 1,
+                                  "seed_base": 0, "adaptive": False, "shard": f"{i}/2"})
+        probe._sweep_child(args)
+        tags[i] = {t for t, _ in ran}
+    assert tags[0].isdisjoint(tags[1])
+    assert len(tags[0] | tags[1]) == 6
