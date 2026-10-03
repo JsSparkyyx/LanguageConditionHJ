@@ -37,8 +37,6 @@ EMBODIMENTS = ["ur5-wsg", "franka-panda"]
 
 EXPECTED_RULE_IDS = [
     "particles_inside|beads|bowl_src_interior+target_interior",
-    "particles_outside|beads|zone_red",
-    "particles_outside|beads|zone_blue",
 ]
 
 # flat override keys — runner._merge_risk_override puts every
@@ -69,8 +67,6 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
             "table_top",
             "bowl_src_interior",
             "target_interior",
-            "zone_red",
-            "zone_blue",
         ]
         beads = {s.item_id: s for s in runner.items}["beads"]
         assert beads.kind == "particle_set"

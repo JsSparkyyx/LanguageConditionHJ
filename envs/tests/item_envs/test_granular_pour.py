@@ -28,8 +28,6 @@ TASK_SRC = ROOT / "robotwin_tasks" / "granular_pour.py"
 
 EXPECTED_RULE_IDS = [
     "particles_inside|beads|bowl_src_interior+target_interior",
-    "particles_outside|beads|zone_red",
-    "particles_outside|beads|zone_blue",
 ]
 
 
@@ -88,7 +86,7 @@ def test_t2_cfg_shape():
     task_cfg = _load("tasks/T2_granular_pour.yaml")
     for key in (
         "task", "robotwin_task", "embodiments", "bimanual", "bowl_model",
-        "bowl_ids", "beads", "target", "zones", "risk", "rules", "risk_collect",
+        "bowl_ids", "beads", "target", "risk", "rules", "risk_collect",
     ):
         assert key in task_cfg, f"T2 yaml missing {key}"
     assert task_cfg["task"] == "granular_pour"
@@ -124,10 +122,8 @@ def test_t2_rule_semantics():
     assert by_id["particles_inside|beads|bowl_src_interior+target_interior"].region_ids == (
         "bowl_src_interior", "target_interior",
     )
-    # one particles_outside per zone (a joint rule over both zones would make
-    # the referent meaningless)
-    assert by_id["particles_outside|beads|zone_red"].region_ids == ("zone_red",)
-    assert by_id["particles_outside|beads|zone_blue"].region_ids == ("zone_blue",)
+    # no forbidden-mat rules (user decision 2026-10-03)
+    assert not any(r.consequence.value == "particles_outside" for r in rules)
     # softmin temperature: the 0.005 default over 60 beads pulled the t=0 rule
     # margin negative with every bead inside the bowl (p4-accept failures) —
     # the yaml pins T = 0.001 on all three entries
@@ -152,30 +148,13 @@ def test_t2_task_file_matches_yaml():
 
     assert f"BIMANUAL = {cfg['bimanual']}" in src  # False vs False
 
-    m = re.search(r"^ZONE_DEFS = \((.*)\)\s*$", src, flags=re.MULTILINE)
-    assert m, "ZONE_DEFS not found in task file"
-    for c in cfg["zones"]["colors"]:
-        assert f'"{c}"' in m.group(1), f"zone color {c} missing from ZONE_DEFS"
-
-    # per-zone full-extent sampling ranges (compare numerically: yaml 0.10
-    # stringifies as 0.1)
-    ms = re.search(r"^ZONE_SIZE_XY = (\(.*\))\s*(?:#.*)?$", src, flags=re.MULTILINE)
-    assert ms, "ZONE_SIZE_XY not found in task file"
-    src_sizes = [tuple(float(v) for v in pair.split(",")) for pair in re.findall(r"\(([^()]+)\)", ms.group(1))]
-    assert src_sizes == [tuple(pair) for pair in cfg["zones"]["size_xy"]]
-
     # pour knob defaults + tilt range
     assert "POUR_HEIGHT_DEFAULT = 0.10" in src
     assert "POUR_OFFSET_DEFAULT = 0.0" in src
     assert "TILT_RATE_DEFAULT = 2.0" in src
     assert "TILT_ANGLE_DEG = (100.0, 120.0)" in src
 
-    # every zone the yaml names a rule for must be one the task registers
-    for entry in cfg["rules"]:
-        for rid in entry["regions"]:
-            if rid.startswith("zone_"):
-                assert rid == f"zone_{rid.split('_', 1)[1]}"
-                assert f'"{rid.split("_", 1)[1]}"' in m.group(1)
+    assert "ZONE_DEFS" not in src  # no forbidden mats (user decision 2026-10-03)
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +253,5 @@ def test_pour_height_floor_and_tilt_guards():
     # registration uses the footprint-column radius, not the rim opening
     assert "rim_radius=container_region_radius(self._src_geom" in src
     assert "rim_radius=container_region_radius(self._target_geom" in src
-    # the zone layout goes through the exact keepaway predicate
-    assert "zone_clear_ok" in src
-    assert "ZONE_GAP = 0.02" in src
+    # no forbidden mats any more (user decision 2026-10-03)
+    assert "zone_mat(" not in src

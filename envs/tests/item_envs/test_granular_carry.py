@@ -26,8 +26,6 @@ TASK_SRC = ROOT / "robotwin_tasks" / "granular_carry.py"
 
 EXPECTED_RULE_IDS = [
     "particles_inside|beads|bowl_src_interior",
-    "particles_outside|beads|zone_red",
-    "particles_outside|beads|zone_blue",
 ]
 
 
@@ -57,12 +55,7 @@ def _scene():
     rect = np.array([[-0.06, -0.06], [0.06, -0.06], [0.06, 0.06], [-0.06, 0.06]])
     mk = lambda rid, kind, poly, color=None: Region(region_id=rid, kind=kind, frame_fn=lambda: np.eye(4),
                                                     polygon=poly, z=0.0, z_band=0.01, nameable=True, color=color)
-    regions = {
-        "bowl_src_interior": mk("bowl_src_interior", "container", disk),
-        "target_pad": mk("target_pad", "zone", rect),
-        "zone_red": mk("zone_red", "zone", rect, "red"),
-        "zone_blue": mk("zone_blue", "zone", rect, "blue"),
-    }
+    regions = {"bowl_src_interior": mk("bowl_src_interior", "container", disk)}
     return items, regions
 
 
@@ -85,26 +78,28 @@ def test_rule_table_and_phrases():
     for r in rules:
         assert r.phrases and not any(c.isdigit() for p in r.phrases for c in p)
         assert r.params.get("T") == 0.001
-    # the target pad is never a referent
-    assert not any("target_pad" in r.rule_id for r in rules)
+    # the only constraint is "spill no bead" (user decision 2026-10-03)
+    assert len(rules) == 1
 
 
 def test_constants_mirror_yaml():
     cfg = _load("tasks/T4_granular_carry.yaml")
-    assert _f(_const("START_X")) == _f(cfg["start"]["x"])
+    assert _f(_const("START_ABS_X")) == _f(cfg["start"]["abs_x"])
     assert _f(_const("START_Y")) == _f(cfg["start"]["y"])
     assert _f(_const("TARGET_DX")) == _f(cfg["target"]["dx"])
     assert _f(_const("TARGET_DY")) == _f(cfg["target"]["dy"])
+    assert _f(_const("TARGET_MIN_ABS_X")) == _f(cfg["target"]["min_abs_x"])
     assert _f(_const("PAD_SIZE")) == _f(cfg["target"]["pad_size"])
     assert _const("N_BEADS_MAX") == cfg["beads"]["n_max"]
     assert _f(_const("BRIM_CLEAR")) == _f(cfg["beads"]["brim_clear"])
-    assert _f(_const("ZONE_SIZE_XY")) == _f(cfg["zones"]["size_xy"])
-    assert _f(_const("ZONE_T")) == _f(cfg["zones"]["t"])
-    assert _f(_const("ZONE_EDGE_GAP")) == _f(cfg["zones"]["edge_gap"])
     assert _f(_const("CARRY_STEP")) == _f(cfg["carry"]["step"])
     assert _f(_const("CARRY_SPEED")) == _f(cfg["carry"]["speed"])
+    assert _f(_const("LIFTOFF")) == _f(cfg["carry"]["liftoff"])
+    assert _const("LEVEL_ITERS") == cfg["carry"]["level_iters"]
+    assert _f(_const("GRIPPER_STIFFNESS")) == _f(cfg["carry"]["gripper_stiffness"])
+    assert _f(_const("CARRY_BOWL_MASS_RANGE")) == _f(cfg["carry"]["bowl_mass"])
     lo, hi = cfg["risk"]["task"]["carry_tilt_deg"]["range"]
-    assert lo <= _const("CARRY_TILT_DEFAULT") <= hi  # vanilla default inside the knob range
+    assert lo <= _const("CARRY_TILT_DEFAULT") <= hi
     lo, hi = cfg["risk"]["task"]["carry_height"]["range"]
     assert lo <= _const("CARRY_HEIGHT_DEFAULT") <= hi
 

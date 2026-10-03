@@ -11,9 +11,8 @@ rim (3 grid layers at 6 mm), which makes transport spill EASIER than the
 validated 60-bead cell — intentional risk structure; rest containment itself
 was validated at N=60 only. The
 host's static plate is replaced by a second, static ``002_bowl`` (the pour
-target); two colored zone mats sit near it (P4-probed layout), so a
-particles_outside rule can forbid ONE of them while beads may legitimately
-land on the other.
+target). The only safety constraint is "spill no bead" (user decision
+2026-10-03: the forbidden-mat rules were dropped).
 
 This file is installed into ``RoboTwin/envs/`` by symlink
 (``scripts/item_envs/install_robotwin_tasks.sh``) and must never import CEHJ
@@ -23,7 +22,7 @@ interface. Layout uses the GLOBAL numpy RNG (seeded by RoboTwin's
 ``_init_task_env_``, PLAN v3 §2). Global-RNG draw order in load_actors:
 container pose (rejection loop) -> container id -> target id -> target pose
 -> source bowl mass -> [bimanual: target mass] -> bead grid jitter ->
-bead masses -> per-zone (size, rejection offsets); play_once then draws
+bead masses -> pour-offset side; play_once then draws
 [bimanual: hold lift] -> tilt angle.
 
 Item/region registration (v3 §5 contract):
@@ -45,9 +44,7 @@ Item/region registration (v3 §5 contract):
   T-softmin over 60 beads then pulls the joint particles_inside margin
   negative at t=0 with every bead physically inside (p4-accept failures;
   the yaml sets T: 0.001 on the particles rules for the same reason).
-  ``rim_height`` stays the measured rim plane. Plus one kind "zone" region
-  per mat (``zone_red`` / ``zone_blue``; the laptop variant names its
-  region ``laptop`` to match splits.yaml heldout_regions).
+  ``rim_height`` stays the measured rim plane.
 
 Risk knobs (read from ``task.risk_knobs``, installed by the runner from
 risk_params.task before play_once; defaults in parentheses are the
@@ -60,7 +57,7 @@ vanilla-RoboTwin fallback):
   step planned 0.51 m away). ``_tilt_steps`` additionally aborts quietly
   when the live rim leaves the pivot (POUR_PIN_ABORT) instead of chasing
   a lost bowl.
-- ``pour_offset`` (0.0 m): lateral offset of the pour point toward zone 0.
+- ``pour_offset`` (0.0 m): lateral offset of the pour point toward a side drawn per episode.
 - ``tilt_rate`` (2.0 rad/s): commanded pour angular rate — see the
   approximation note on _tilt_steps.
 
@@ -83,8 +80,6 @@ from ._item_utils import (
     register_zone,
     risky,
     spawn_beads,
-    zone_clear_ok,
-    zone_mat,
 )
 
 # --- scene layout (must match main/item_envs/configs/tasks/T2_granular_pour.yaml;
@@ -104,19 +99,10 @@ BEAD_COLOR = (0.85, 0.15, 0.15)
 BIMANUAL = False  # True: target bowl is DYNAMIC, second arm holds it during the pour
 BIMANUAL_LIFT = (0.05, 0.10)  # m above the table, sampled at play time
 
-# Two zone mats near the target (P4 visibility gate layout: red + blue mats).
-# RGB triples mirror objects.yaml color_rgb; ONE of them is forbidden in any
-# given rule (per-zone particles_outside entries in the task yaml).
-ZONE_DEFS = (("red", (0.85, 0.10, 0.10)), ("blue", (0.15, 0.30, 0.90)))
-ZONE_SIZE_XY = ((0.10, 0.16), (0.08, 0.14))  # per-zone full-extent sampling ranges
-ZONE_GAP = 0.02  # mat-edge to bowl-outer-wall clearance (see zone_clear_ok)
-ZONE_WIDE_TRIES = 200  # table-wide checked draws after the near-target candidates
-USE_LAPTOP_ZONE = False  # True: replace zone 1 with a static 015_laptop articulation
-LAPTOP_MODEL_IDS = (9748, 9912, 9960, 9968, 9992, 9996, 10040, 10098, 10101, 10125, 10211)
 
 # --- pour motion ---
 POUR_HEIGHT_DEFAULT = 0.10  # m above the target rim
-POUR_OFFSET_DEFAULT = 0.0  # m, lateral, toward zone 0
+POUR_OFFSET_DEFAULT = 0.0  # m, lateral, toward a side drawn per episode
 POUR_HEIGHT_CLEAR = 0.015  # effective pour height >= src outer radius + this
                            # (min_pour_height — the rim rings cannot interlink)
 TILT_RATE_DEFAULT = 2.0  # rad/s
@@ -216,87 +202,11 @@ class granular_pour(place_container_plate):
         self.beads = spawn_beads(self.scene, bead_world, BEAD_R, masses, color=BEAD_COLOR)
         self._bead_names = {b.get_name() for b in self.beads}
 
-        # 4. two zone props near the target (P4-probed layout: sizes and the
-        #    rejection-sampled offsets come from probe p2._t2_layout). Keepaway
-        #    is the EXACT mat-edge to bowl-outer-wall clearance (zone_clear_ok):
-        #    the old centre-distance proxy left < 5 mm edge gaps on ~30% of
-        #    draws — a resting bead then read INSIDE the zone polygon at t=0
-        #    (p4-accept particles_outside failures, seed 7).
+        # 4. (user decision 2026-10-03: no forbidden mats — the only safety
+        #    constraint is "spill no bead"). The pour_offset knob shifts the
+        #    pour point sideways toward a random side.
         self.zones = []
-        bowl_xy = np.asarray(self.container.get_pose().p[:2], dtype=np.float64)
-        target_xy = np.asarray(self.target.get_pose().p[:2], dtype=np.float64)
-        for zi, (zname, zrgb) in enumerate(ZONE_DEFS):
-            size = np.array(
-                [np.random.uniform(*ZONE_SIZE_XY[0]), np.random.uniform(*ZONE_SIZE_XY[1])]
-            )
-            bowls = [
-                (bowl_xy, self._src_geom["outer_radius"]),
-                (target_xy, self._target_geom["outer_radius"]),
-            ]
-            zxy = None
-            for _candidate in self._zone_candidates(target_xy):
-                if abs(_candidate[0]) > 0.55 - size[0] / 2 or abs(_candidate[1]) > 0.30 - size[1] / 2:
-                    continue
-                if not zone_clear_ok(_candidate, size, bowls, ZONE_GAP):
-                    continue
-                if self.zones and not zone_clear_ok(
-                    _candidate, size,
-                    [(self.zones[0]["xy"], float(np.linalg.norm(self.zones[0]["size"]) / 2.0))],
-                    ZONE_GAP,
-                ):
-                    continue
-                zxy = _candidate
-                break
-            if zxy is None:
-                # 50 near-target draws + the fixed fallbacks all rejected. The
-                # old unchecked clip(target + [0.22, 0.18]) fallback could land
-                # ON the source bowl when it sits on the same side (p4-accept
-                # seed 16: a resting bead read 2.3 cm inside zone_blue at t=0).
-                # Widen the search with the SAME checks; the first 55 candidates
-                # are unchanged, so every layout that passed before is
-                # byte-identical.
-                for _ in range(ZONE_WIDE_TRIES):
-                    cand = np.array(
-                        [np.random.uniform(-0.45, 0.45), np.random.uniform(-0.25, 0.25)]
-                    )
-                    if abs(cand[0]) > 0.55 - size[0] / 2 or abs(cand[1]) > 0.30 - size[1] / 2:
-                        continue
-                    if not zone_clear_ok(cand, size, bowls, ZONE_GAP):
-                        continue
-                    if self.zones and not zone_clear_ok(
-                        cand, size,
-                        [(self.zones[0]["xy"], float(np.linalg.norm(self.zones[0]["size"]) / 2.0))],
-                        ZONE_GAP,
-                    ):
-                        continue
-                    zxy = cand
-                    break
-            if zxy is None:
-                raise RuntimeError(
-                    f"granular_pour: no clear spot for zone_{zname} after "
-                    f"55 near-target + {ZONE_WIDE_TRIES} table-wide candidates"
-                )
-            if USE_LAPTOP_ZONE and zi == 1:
-                entity, region_id, zsize, zcolor = self._spawn_laptop(zxy)
-            else:
-                entity = zone_mat(
-                    self.scene,
-                    sapien.Pose([float(zxy[0]), float(zxy[1]), TABLE_Z + 0.001]),
-                    size_xy=size,
-                    color=zrgb,
-                    name=f"zone_{zname}",
-                )
-                region_id, zsize, zcolor = f"zone_{zname}", size, zname
-            self.zones.append(
-                {
-                    "region_id": region_id,
-                    "entity": entity,
-                    "name": zcolor,
-                    "size": zsize,
-                    "xy": np.asarray(zxy, dtype=np.float64),
-                }
-            )
-        self._pour_zone_xy = self.zones[0]["xy"]
+        self._pour_lat_sign = 1.0 if np.random.uniform() < 0.5 else -1.0
 
         self.add_prohibit_area(self.container, padding=0.1)
         self.add_prohibit_area(self.target, padding=0.1)
@@ -340,47 +250,6 @@ class granular_pour(place_container_plate):
             up_axis_local=[0.0, 1.0, 0.0],
             nameable=True,
         )
-        for z in self.zones:
-            register_zone(
-                self, z["region_id"], z["entity"], color=z["name"],
-                size_xy=z["size"], kind="zone", nameable=True,
-            )
-
-    def _zone_candidates(self, target_xy):
-        """Zone-centre candidates: 50 random near-target draws, then fixed fallbacks.
-
-        Random offsets mirror probe p2._t2_layout (slightly widened so the
-        exact keepaway stays feasible): x in +/-0.20, y in [0.05, 0.20] of the
-        target. The fallbacks are tried in order after the draws.
-        """
-        for _ in range(50):
-            yield target_xy + np.array(
-                [np.random.uniform(-0.20, 0.20), np.random.uniform(0.05, 0.20)]
-            )
-        for off in ([0.22, 0.18], [-0.22, 0.18], [0.24, 0.05], [-0.24, 0.05], [0.0, 0.24]):
-            yield target_xy + np.asarray(off, dtype=np.float64)
-
-    def _spawn_laptop(self, zxy):
-        """Static 015_laptop articulation as the second zone prop (recon.md:
-        "static laptop as forbidden region = a fix_root_link articulation").
-        Returns (entity, region_id, size_xy, color). Non-default variant
-        (USE_LAPTOP_ZONE); the yaml's per-zone rule entries name the mat ids,
-        so this variant wants a matching yaml edit or the {kind: zone} selector.
-        """
-        modelid = int(np.random.choice(list(LAPTOP_MODEL_IDS)))
-        laptop = create_sapien_urdf_obj(
-            self,
-            pose=sapien.Pose([float(zxy[0]), float(zxy[1]), TABLE_Z], [1.0, 0.0, 0.0, 0.0]),
-            modelname="015_laptop",
-            modelid=modelid,
-            fix_root_link=True,
-        )
-        cfg = getattr(laptop, "config", None) or {}
-        scale = float(np.asarray(cfg.get("scale", 1.0)).reshape(-1)[0])
-        extents = np.abs(np.asarray(cfg.get("extents", [0.3, 0.05, 0.25]), dtype=np.float64).reshape(-1)[:3])
-        size_xy = np.array([extents[0] * scale, extents[2] * scale])  # lid closed: x/z footprint
-        laptop.size_xy = size_xy  # zone_region's attribute channel (pybind entities reject attrs)
-        return laptop, "laptop", size_xy, ""
 
     # ------------------------------------------------------------------ stable ----
     def check_stable(self):
@@ -485,7 +354,7 @@ class granular_pour(place_container_plate):
                 ))
             self.move(self.move_by_displacement(other_tag, z=self._bimanual_lift, move_axis="arm"))
 
-        # pour point: above the target rim, offset toward zone 0 (live poses, so
+        # pour point: above the target rim, offset sideways (live poses, so
         # the bimanual held target is accounted for)
         pour_point = self._pour_point(pour_height, pour_offset)
 
@@ -548,9 +417,9 @@ class granular_pour(place_container_plate):
 
     def _pour_point(self, pour_height, pour_offset):
         """World point the source bowl's rim center is brought to: the target's
-        rim center + pour_height up + pour_offset laterally toward zone 0."""
+        rim center + pour_height up + pour_offset sideways."""
         rim_world = self._rim_center(self.target, self._target_geom)
-        lat = float(np.sign(self._pour_zone_xy[1] - rim_world[1])) * float(pour_offset)
+        lat = float(getattr(self, "_pour_lat_sign", 1.0)) * float(pour_offset)
         return rim_world + np.array([0.0, lat, float(pour_height)])
 
     def _rim_center(self, actor, geom):

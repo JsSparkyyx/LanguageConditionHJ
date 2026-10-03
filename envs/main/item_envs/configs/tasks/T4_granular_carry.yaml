@@ -1,38 +1,34 @@
-# T4 granular_carry — carry a BRIM-FULL bowl of beads with both arms and
-# place it on a target pad without spilling (user request 2026-10-03).
+# T4 granular_carry — pick up a FULL bowl of beads with ONE arm (the arm on
+# the bowl's side) and place it on a target pad without spilling a bead
+# (user request 2026-10-03, revised: single arm, no forbidden mats).
 #
 # robotwin_tasks/granular_carry.py owns the layout; the constants below
 # mirror its module constants (tests/item_envs/test_granular_carry.py).
-# The bowl is filled until the top bead centre is brim_clear below the rim
-# (~135-190 beads by bowl id), so a few degrees of tilt or a sharp start /
-# stop spills the top layer. Two colored mats sit beside the carry path, one
-# per side; a rule may forbid beads on ONE of them.
+# The bowl is filled until the top bead centre is brim_clear below the rim,
+# so a tilt of ~12 deg or a sharp start / stop spills the top layer. The
+# nominal levels the bowl right after lift-off (a single rim pinch lets it
+# sag ~15-20 deg) and carries it level.
 #
 # Expected rule table:
 #   particles_inside|beads|bowl_src_interior     ("don't spill the beans")
-#   particles_outside|beads|zone_red
-#   particles_outside|beads|zone_blue
 
 task: granular_carry
 robotwin_task: granular_carry
 embodiments: [ur5-wsg, franka-panda]
 bowl_model: 002_bowl
 bowl_ids: [1, 2, 3, 5]
-beads: {n_max: 240, radius: 0.006, mass: [0.0005, 0.002], brim_clear: 0.002}
-start: {x: [-0.04, 0.04], y: [-0.02, 0.04]}
-target: {dx: [-0.05, 0.05], dy: [0.14, 0.20], pad_size: 0.16}   # pad = start + (dx, -dy)
-zones: {colors: [red, blue], size_xy: [[0.10, 0.14], [0.10, 0.14]], t: [0.3, 0.7], edge_gap: [0.02, 0.05]}
-carry: {step: 0.03, speed: 0.10, gripper_stiffness: 5000, bowl_mass: [0.10, 0.20]}  # paired lockstep steps (m), m/s at time_scale 1
+beads: {n_max: 240, radius: 0.006, mass: [0.0005, 0.002], brim_clear: 0.012}
+start: {abs_x: [0.15, 0.25], y: [-0.06, 0.04]}       # side drawn per episode; that side's arm carries
+target: {dx: [-0.06, 0.06], dy: [0.12, 0.18], min_abs_x: 0.10, pad_size: 0.16}   # pad = start + (dx, -dy)
+carry: {step: 0.03, speed: 0.10, liftoff: 0.015, level_iters: 2, gripper_stiffness: 5000, bowl_mass: [0.10, 0.20]}
 risk:
   time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}   # carry speed multiplier
   safe_time_scale: 0.6
   task:
-    carry_tilt_deg: {dist: uniform, range: [-6.0, 6.0]}  # signed bowl tilt held during the carry
-    carry_height: {dist: uniform, range: [0.04, 0.12]}   # m lift above the table
+    carry_tilt_deg: {dist: uniform, range: [-12.0, 12.0]}  # signed tilt held during the carry (after leveling)
+    carry_height: {dist: uniform, range: [0.04, 0.12]}     # m lift above the table
 rules:
   - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior], T: 0.001}
-  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: [zone_red], T: 0.001}
-  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: [zone_blue], T: 0.001}
 embodiment_overrides:
   ur5-wsg:      {grasp_contact_ids: [0, 2]}
   franka-panda: {grasp_contact_ids: [0, 2]}
