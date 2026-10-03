@@ -226,7 +226,7 @@ class granular_carry(granular_pour):
         arm = self.carry_arm
 
         # firmer pinch for the loaded rim grasp
-        k_grip = float(eparams.get("gripper_stiffness", GRIPPER_STIFFNESS))
+        k_grip = float(knobs.get("gripper_stiffness", eparams.get("gripper_stiffness", GRIPPER_STIFFNESS)))
         joints, damping = ((self.robot.left_gripper, self.robot.left_gripper_damping) if arm == "left"
                            else (self.robot.right_gripper, self.robot.right_gripper_damping))
         for joint in joints:
