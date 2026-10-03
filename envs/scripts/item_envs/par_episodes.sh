@@ -15,6 +15,7 @@ JOBS=${1:?jobs file}
 OUT=$(readlink -f "${2:?out root}")
 PAR=${3:-4}
 PY=${PY:-/work/nvme/bifq/conda/envs/RoboTwin/bin/python}
+export PYTHONUNBUFFERED=1  # stream episode logs live (block-buffered when redirected)
 mkdir -p "$OUT/logs"
 : > "$OUT/summary.jsonl"
 

@@ -3,20 +3,23 @@
 # contract test source-greps them). Layout is static config; the per-episode
 # risk knobs live under risk.task.
 #
-# Cross-table design: each push object starts on one side of the table and
-# its arm pushes it ACROSS the midline to the opposite side band, in a
-# separate y-lane per side so the two simultaneous pushes never collide
-# mid-table. Clearance semantics (task card T3.md): a push "corridor" is the
-# swept path of the pushed box's center P -> G with half-width = box support
-# radius along the corridor normal. One "midway zone" per lane hugs the
-# corridor's midpoint (edge zones.near_push_line off the corridor edge), so
-# a straight push misses it and overshoot / lateral_offset close the gap;
+# Cross-table design, ONE push per episode (user decision 2026-10-02): the
+# push object spawns on a random side and that side's arm pushes it ACROSS
+# the midline to the opposite x band; the idle arm tucks away (two
+# simultaneous cross pushes collide mid-table — diag job 22636048). The lane
+# sits near the robot: across the midline both embodiments reach
+# |x| <= 0.15 - y top-down (workspace_*.npz; REACH_X_MAX in the task file).
+# Clearance semantics (task card T3.md): a push "corridor" is the swept path
+# of the pushed box's center P -> G with half-width = box support radius
+# along the corridor normal. One "midway zone" hugs the corridor's midpoint
+# (edge zones.near_push_line off the corridor edge), so a straight push
+# misses it and overshoot / lateral_offset close the gap;
 # bystanders.line_offset is the same EDGE clearance from the corridor.
 
 task: push_zone
 robotwin_task: push_zone
 embodiments: [ur5-wsg, franka-panda]     # first is the default
-n_push: 2                                 # 1 = single-push debug variant (P3-robot)
+n_push: 1                                 # one push object; side drawn per episode
 
 push_objects:
   pool: [prim_box, 113_coffee-box, 112_tea-box]
@@ -25,9 +28,9 @@ push_objects:
   ids:                                    # audited model ids (recon.md Q13)
     113_coffee-box: [0, 1, 2, 3, 4, 5, 6]
     112_tea-box: [0, 1, 2, 3, 4, 5]
-  start:                                  # (x_lo, x_hi, y_lo, y_hi) per side —
-    left: [-0.30, -0.12, -0.15, -0.05]    # separate y-lanes keep the two
-    right: [0.12, 0.30, 0.0, 0.10]        # simultaneous cross-pushes clear mid-table
+  start:                                  # (x_lo, x_hi, y_lo, y_hi) per start side —
+    left: [-0.26, -0.10, -0.16, -0.04]    # near the robot: cross-midline reach
+    right: [0.10, 0.26, -0.16, -0.04]     # shrinks as y grows
 
 push:
   seg_len: 0.25                           # the push displacement is chained in
@@ -38,9 +41,9 @@ push:
 
 goal:
   x:                                      # goal x band per object — the OPPOSITE side
-    left: [0.12, 0.30]                    # (every push crosses the midline)
-    right: [-0.30, -0.12]
-  y_jitter: 0.04                          # goal y = start y +/- this (m), so pushes
+    left: [0.08, 0.22]                    # (the push crosses the midline)
+    right: [-0.22, -0.08]
+  y_jitter: 0.03                          # goal y = start y +/- this (m), so pushes
                                           # run roughly along +/-x
 
 zones:

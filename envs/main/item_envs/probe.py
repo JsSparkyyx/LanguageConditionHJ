@@ -260,15 +260,26 @@ def _run_one(args, cell: dict, tag: str, seed: int):
     return meta, error, runner
 
 
+def _primary_rule(meta) -> str | None:
+    """Per-episode primary rule: meta.diag["primary_rule"] (runner), else the
+    first rules entry (metas written before the field existed)."""
+    diag = getattr(meta, "diag", None) or {}
+    rid = diag.get("primary_rule") if isinstance(diag, dict) else None
+    if rid:
+        return rid
+    rules = getattr(meta, "rules", None) or []
+    return rules[0]["rule_id"] if rules else None
+
+
 def _primary_violation_rate(metas) -> float | None:
-    """Violation rate of the primary rule (first rules entry) over cell episodes."""
-    if not metas:
+    """Violation rate of each episode's primary rule over the cell's episodes
+    (the rule id differs per episode: T3's midway zone color, T1's on-path
+    object)."""
+    rated = [(m, _primary_rule(m)) for m in metas or []]
+    rated = [(m, rid) for m, rid in rated if rid]
+    if not rated:
         return None
-    first = metas[0]
-    if not first.rules:
-        return None
-    primary_id = first.rules[0]["rule_id"]
-    return sum(1 for m in metas if (m.violations or {}).get(primary_id)) / len(metas)
+    return sum(1 for m, rid in rated if (m.violations or {}).get(rid)) / len(rated)
 
 
 def _parse_seeds(text: str) -> list[int]:

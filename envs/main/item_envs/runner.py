@@ -414,7 +414,31 @@ class ItemEpisodeRunner:
                 meta.diag["spawn_layout_infeasible"] = True
         if self._held_error is not None:
             meta.diag["held_error"] = self._held_error
+        meta.diag["primary_rule"] = self._primary_rule_id(task)
         return error
+
+    def _primary_rule_id(self, task) -> str | None:
+        """The episode's at-risk rule for calibration (PLAN §8: adaptive cells
+        and the 0.2-0.5 primary violation band).
+
+        Task hint first (``task.primary_rule_id``: T3 names the midway zone's
+        ``outside`` rule — the first table rule, ``inside|push_0|table_top``,
+        cannot be violated now that goals sit inside the table); T1 takes the
+        ``avoid`` rule of the first on-path (else near-path) candidate from
+        the spawn report; otherwise the first rule (T2: the spill rule).
+        """
+        ids = [r.rule_id for r in self.rules]
+        hint = getattr(task, "primary_rule_id", None)
+        if hint in ids:
+            return hint
+        if self._spawn_report:
+            placements = self._spawn_report.get("placements") or []
+            for cls in ("on_path", "near_path"):
+                for pl in placements:
+                    rid = f"avoid|{pl.get('item_id')}|-"
+                    if pl.get("cls") == cls and rid in ids:
+                        return rid
+        return ids[0] if ids else None
 
     # -------------------------------------------------------------- capture ----
     def _capture_tick(self, env, trace, video, state: "_TickState", n_physics: int) -> None:

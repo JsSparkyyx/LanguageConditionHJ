@@ -127,7 +127,10 @@ def load_episodes(root: Path) -> list[Episode]:
                 violations=d.get("violations") or {},
                 min_margin=d.get("min_margin") or {},
                 first_violation_t=d.get("first_violation_t") or {},
-                primary_rule=(rules[0].get("rule_id") if rules and isinstance(rules[0], dict) else None),
+                primary_rule=(
+                    (d.get("diag") or {}).get("primary_rule")
+                    or (rules[0].get("rule_id") if rules and isinstance(rules[0], dict) else None)
+                ),
             )
         )
     return episodes

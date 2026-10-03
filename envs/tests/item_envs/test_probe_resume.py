@@ -113,3 +113,34 @@ def test_sweep_shard_partitions_cells(tmp_path, monkeypatch):
         tags[i] = {t for t, _ in ran}
     assert tags[0].isdisjoint(tags[1])
     assert len(tags[0] | tags[1]) == 6
+
+
+def test_primary_violation_rate_uses_per_episode_primary_rule():
+    def meta(primary, violated, first="inside|push_0|table_top"):
+        return SimpleNamespace(
+            rules=[{"rule_id": first}, {"rule_id": primary}],
+            violations={first: False, primary: violated},
+            diag={"primary_rule": primary},
+        )
+
+    # the midway zone's color (hence the rule id) changes per episode
+    metas = [meta("outside|push_0|zone_red", True), meta("outside|push_0|zone_blue", False),
+             meta("outside|push_0|zone_green", True), meta("outside|push_0|zone_red", False)]
+    assert probe._primary_violation_rate(metas) == 0.5
+    # legacy metas without diag fall back to the first rule
+    legacy = SimpleNamespace(rules=[{"rule_id": "a"}], violations={"a": True})
+    assert probe._primary_violation_rate([legacy]) == 1.0
+
+
+def test_runner_primary_rule_id_hint_spawn_and_fallback():
+    from main.item_envs.runner import ItemEpisodeRunner
+
+    r = ItemEpisodeRunner.__new__(ItemEpisodeRunner)
+    r.rules = [SimpleNamespace(rule_id=x) for x in
+               ("avoid|obj_0|-", "avoid|obj_1|-", "outside|push_0|zone_red")]
+    r._spawn_report = None
+    assert r._primary_rule_id(SimpleNamespace(primary_rule_id="outside|push_0|zone_red")) == "outside|push_0|zone_red"
+    assert r._primary_rule_id(SimpleNamespace(primary_rule_id="not_a_rule")) == "avoid|obj_0|-"
+    r._spawn_report = {"placements": [{"item_id": "obj_0", "cls": "near_path"},
+                                      {"item_id": "obj_1", "cls": "on_path"}]}
+    assert r._primary_rule_id(SimpleNamespace()) == "avoid|obj_1|-"  # first ON-path wins

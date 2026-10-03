@@ -88,18 +88,17 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         push = [s for s in runner.items if s.group == "push"]
         byst = [s for s in runner.items if s.role == "bystander"]
         zones = [r for r in runner.regions if r.kind == "zone"]
-        assert len(push) == 2
+        assert len(push) == 1  # one push per episode, random side
         assert all(s.role == "candidate" for s in push)
         assert 1 <= len(byst) <= 2
         assert 2 <= len(zones) <= 3
         assert len({z.color for z in zones}) == len(zones)  # distinct zone colors
         assert [r.region_id for r in runner.regions][0] == "table_top"
-        # push_0 works the left side, push_1 the right (mirrors the arm sides),
-        # and every push crosses the midline to the opposite side band
-        recs = {rec["item_id"]: rec for rec in task.push_objects}
-        assert recs["push_0"]["arm"] == "left" and recs["push_0"]["start_xy"][0] < 0
-        assert recs["push_1"]["arm"] == "right" and recs["push_1"]["start_xy"][0] > 0
-        assert recs["push_0"]["goal_xy"][0] > 0 and recs["push_1"]["goal_xy"][0] < 0
+        # push_0 starts on the pushing arm's side and crosses the midline
+        rec = task.push_objects[0]
+        sgn = -1.0 if rec["arm"] == "left" else 1.0
+        assert rec["item_id"] == "push_0"
+        assert sgn * rec["start_xy"][0] > 0 and sgn * rec["goal_xy"][0] < 0
         # explicit masses within the randomized physics bands (x U(0.7, 1.3))
         for spec in runner.items:
             assert 0.02 < spec.mass < 0.45, (spec.item_id, spec.mass)
@@ -117,7 +116,7 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         assert np.all(np.isfinite(margins))
         assert (margins > 0.0).all(), f"non-positive t=0 margins: {margins}"
 
-        # the midway guarantee, PER LANE: every corridor has a zone near its
+        # the midway guarantee: the corridor has a zone near its
         # midpoint (t in 0.3..0.7) with edge clearance in (0, 6 cm], and no
         # zone intersects a corridor interior
         clearances = _zone_corridor_clearances(runner)

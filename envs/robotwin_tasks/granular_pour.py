@@ -133,6 +133,7 @@ TILT_S_MIN, TILT_S_MAX = 0.25, 2.0
 POUR_PIN_ABORT = 0.03  # abort the tilt when the rim-to-EE distance drifts this
                        # far from its grasp-time value (bowl slipping / lost)
 POUR_REF_DEG = 95.0  # tilt angle at which the pouring lip sits on the pour point
+SWING_CLEAR = 0.03  # m: source-bowl hull above the target rim during transit and tilt swing
 HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 Hz)
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
 SUCCESS_MIN_FRAC = 0.8  # fraction of beads inside the target interior
@@ -472,28 +473,29 @@ class granular_pour(place_container_plate):
         pour_point = self._pour_point(pour_height, pour_offset)
 
         # 4's parameters first (the transit target depends on them): tilt
-        # 100-120 deg about world y (the horizontal axis perpendicular to the
-        # inter-arm x axis); sign tips the mouth toward the target side (-x for
-        # the right arm, +x for the left).
+        # 100-120 deg so the bowl's mouth tips toward a horizontal direction m
+        # (rotation axis z x m). Preferred m points from the grasp side to the
+        # far lip (toward the target); the sideways lips (-y, +y) are the
+        # fallbacks — never the near lip, which sits under the fingers.
         tilt_total = float(np.deg2rad(np.random.uniform(*TILT_ANGLE_DEG)))
         sign = -1.0 if container_pose[0] > 0 else 1.0
+        theta_ref = min(tilt_total, float(np.deg2rad(POUR_REF_DEG)))
+        mouth, axis, ee_target = self._choose_pour(arm_tag, pour_point, sign, theta_ref, tilt_total)
 
         # 3. transit — risky scale (time_scale knob). The tilt pivots about the
         #    EE ORIGIN (pure wrist reorientation, see _tilt_steps), so the EE is
-        #    first translated to where the bowl's pouring lip lands on the pour
-        #    point at the reference pour angle POUR_REF_DEG (beads start leaving
-        #    at ~85-101 deg, feasibility.md F3).
-        ee_target = self._pour_ee_target(arm_tag, pour_point, sign * min(tilt_total, np.deg2rad(POUR_REF_DEG)))
+        #    first translated to where the chosen pouring lip lands on the pour
+        #    point at the reference angle POUR_REF_DEG (beads start leaving at
+        #    ~85-101 deg, feasibility.md F3).
         with risky(self):
-            ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
-            d = ee_target - ee[:3]
-            self.move(self.move_by_displacement(arm_tag, x=float(d[0]), y=float(d[1]), z=float(d[2])))
+            for leg in self._transit_legs(arm_tag, ee_target):
+                self.move(self.move_by_displacement(arm_tag, x=float(leg[0]), y=float(leg[1]), z=float(leg[2])))
 
         # 4. tilt, hold, tilt back — risky; per-step scale from tilt_rate
         with risky(self):
-            self._tilt_steps(arm_tag, sign * tilt_total, tilt_rate)
+            self._tilt_steps(arm_tag, axis, tilt_total, tilt_rate)
             self.delay(HOLD_DELAY)
-            self._tilt_steps(arm_tag, -sign * tilt_total, tilt_rate)
+            self._tilt_steps(arm_tag, axis, -tilt_total, tilt_rate)
 
         # 5. place the empty bowl beside the target and retreat — safe scale.
         #    Explicit place poses carry the IDENTITY quat (dump_bin_bigbin's
@@ -545,28 +547,117 @@ class granular_pour(place_container_plate):
             [0.0, float(geom["rim_y"]), 0.0]
         )
 
-    def _pour_lip(self, arm_tag):
-        """World point of the source bowl's pouring lip: the rim-opening point
-        on the far side from the grasp (the gripper holds the near rim, so the
-        mouth's lowest point when tipped away from the hand is the far lip)."""
-        ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+    def _pour_lip(self, mouth):
+        """World point of the rim opening on the ``mouth`` side (horizontal
+        unit vector): the lowest point of the mouth once the bowl tips that way."""
         rim = self._rim_center(self.container, self._src_geom)
-        away = rim[:2] - ee[:2]
-        n = float(np.linalg.norm(away))
-        away = away / n if n > 1e-6 else np.array([1.0, 0.0])
-        return rim + float(self._src_geom["inner_radius"]) * np.array([away[0], away[1], 0.0])
+        m = np.asarray(mouth, dtype=np.float64).reshape(3)
+        return rim + float(self._src_geom["inner_radius"]) * m
 
-    def _pour_ee_target(self, arm_tag, pour_point, angle_ref):
-        """EE position whose pure rotation by ``angle_ref`` (about world y,
-        pivot = EE origin) brings the pouring lip onto ``pour_point``. The
-        transit is a pure translation, so the EE->lip offset measured now (bowl
-        upright, just lifted) is the one that gets rotated."""
+    def _pour_ee_target(self, arm_tag, pour_point, mouth, axis, angle_ref):
+        """EE position whose pure rotation by ``angle_ref`` about ``axis``
+        (pivot = EE origin) brings the ``mouth``-side lip onto ``pour_point``.
+        The transit is a pure translation, so the EE->lip offset measured now
+        (bowl upright, just lifted) is the one that gets rotated."""
         ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
-        lip = self._pour_lip(arm_tag)
-        return np.asarray(pour_point, dtype=np.float64) - _roty(angle_ref) @ (lip - ee[:3])
+        lip = self._pour_lip(mouth)
+        return np.asarray(pour_point, dtype=np.float64) - _rot_axis(axis, angle_ref) @ (lip - ee[:3])
 
-    def _tilt_steps(self, arm_tag, angle, tilt_rate):
-        """Rotate the held bowl by ``angle`` (rad, signed about world +y) in
+    def _choose_pour(self, arm_tag, pour_point, sign, theta_ref, tilt_total):
+        """(mouth, axis, ee_target) of the first pour direction whose FULL
+        tilted pose the arm can reach on its current IK branch.
+
+        Candidates in order: far lip (mouth toward the target, sign * x),
+        then -y, then +y. Feasibility = the runner-installed dry run
+        ``task.screw_plan_ok(arm, pose)`` (RiskTickController.attach; a screw
+        from the live joints to the tilted pose at its EE target). ur5-wsg's
+        wrist 1 is limited to +/-1.75 rad and the far-lip tilt runs into it
+        after ~12 deg (diag job 22636122: screw dead-ends, the only cuRobo
+        solution is a 3.1 rad branch flip). Without the capability (vanilla
+        RoboTwin) the far lip is used. Recorded in ``self.pour_info``.
+        """
+        ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+        up = np.array([0.0, 0.0, 1.0])
+        cands = [np.array([sign, 0.0, 0.0]), np.array([0.0, -1.0, 0.0]), np.array([0.0, 1.0, 0.0])]
+        check = getattr(self, "screw_plan_ok", None)
+        tried = []
+        chosen = None
+        for m in cands:
+            axis = np.cross(up, m)
+            # the tilt swings the bowl about the EE: raise the pose until the
+            # swept hull clears the target rim (the lip then pours higher up)
+            target, lift = self._swing_clear(arm_tag, self._pour_ee_target(arm_tag, pour_point, m, axis, theta_ref), axis, tilt_total)
+            q_final = _quat_mul_wxyz(_mat_to_quat_wxyz(_rot_axis(axis, tilt_total)), ee[3:])
+            ok = True if not callable(check) else bool(check(arm_tag, target.tolist() + list(q_final)))
+            tried.append({"mouth": m.tolist(), "ok": ok, "swing_lift": round(lift, 4)})
+            if ok:
+                chosen = (m, axis, target)
+                break
+        if chosen is None:  # nothing passes the dry run: far lip, let the guards handle it
+            m = cands[0]
+            axis = np.cross(up, m)
+            chosen = (m, axis, self._swing_clear(arm_tag, self._pour_ee_target(arm_tag, pour_point, m, axis, theta_ref), axis, tilt_total)[0])
+        self.pour_info = {"mouth": chosen[0].tolist(), "tried": tried}
+        print(f"[granular_pour] pour mouth {chosen[0].tolist()} (dry runs {tried})")
+        return chosen
+
+    def _bowl_hull_world(self):
+        """[32, 3] world points bounding the source bowl: its rim ring (outer
+        radius) and a bottom ring (0.7 x outer radius — the bowls taper)."""
+        g = self._src_geom
+        ang = np.linspace(0.0, 2.0 * np.pi, 16, endpoint=False)
+        ring = np.stack([np.cos(ang), np.zeros_like(ang), np.sin(ang)], axis=1)
+        rim = ring * float(g["outer_radius"]) + np.array([0.0, float(g["rim_y"]), 0.0])
+        bot = ring * 0.7 * float(g["outer_radius"]) + np.array([0.0, float(g["bottom_y"]), 0.0])
+        T = self.container.get_pose().to_transformation_matrix()
+        pts = np.vstack([rim, bot])  # file frame: y = up
+        return pts @ np.asarray(T[:3, :3]).T + np.asarray(T[:3, 3])
+
+    def _target_disc(self):
+        """(rim centre, footprint radius + 1 cm, rim z) of the target bowl."""
+        rim = self._rim_center(self.target, self._target_geom)
+        return rim, float(self._target_geom["outer_radius"]) + 0.01, float(rim[2])
+
+    def _swing_clear(self, arm_tag, ee_target, axis, tilt_total, clearance=SWING_CLEAR):
+        """(lifted ee_target, lift): raise ``ee_target`` until the source bowl's hull, rotated about the
+        EE origin over the whole tilt (0 .. tilt_total), stays ``clearance``
+        above the target rim wherever it is horizontally over the target.
+
+        Without it the upright bowl hangs ~0.21 m below the EE — below the
+        target rim — and the tilt swing / transit drag it through the static
+        target (diag job 22636122 seed 2: 6688 N contact, bowl knocked out of
+        the grasp, beads launched to z = 3.6 m)."""
+        ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+        offs = self._bowl_hull_world() - ee[:3]
+        c, r, z_rim = self._target_disc()
+        need = 0.0
+        for th in np.linspace(0.0, float(tilt_total), 25):
+            q = np.asarray(ee_target, dtype=np.float64) + offs @ _rot_axis(axis, float(np.sign(tilt_total)) * th).T
+            over = np.linalg.norm(q[:, :2] - c[:2], axis=1) < r
+            if over.any():
+                need = max(need, z_rim + clearance - float(q[over, 2].min()))
+        need = max(0.0, need)
+        return np.asarray(ee_target, dtype=np.float64) + np.array([0.0, 0.0, need]), float(need)
+
+    def _transit_legs(self, arm_tag, ee_target, clearance=SWING_CLEAR):
+        """EE displacement legs: up until the hanging bowl clears the target
+        rim, across at that height, then down to ``ee_target`` (a straight
+        line from the lift pose sweeps the low-hanging bowl through the target
+        — diag job 22636122 seed 2)."""
+        ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+        hull = self._bowl_hull_world()
+        _, _, z_rim = self._target_disc()
+        z_hi = max(float(ee_target[2]), float(ee[2]) + max(0.0, z_rim + clearance - float(hull[:, 2].min())))
+        legs = []
+        if z_hi - ee[2] > 1e-3:
+            legs.append(np.array([0.0, 0.0, z_hi - ee[2]]))
+        legs.append(np.array([ee_target[0] - ee[0], ee_target[1] - ee[1], 0.0]))
+        if z_hi - ee_target[2] > 1e-3:
+            legs.append(np.array([0.0, 0.0, ee_target[2] - z_hi]))
+        return legs
+
+    def _tilt_steps(self, arm_tag, axis, angle, tilt_rate):
+        """Rotate the held bowl by ``angle`` (rad, signed about ``axis``) in
         TILT_STEPS small EE-orientation steps about the EE ORIGIN (position
         held fixed): a pure wrist reorientation, the smallest reach demand of
         any pivot. The old rim-centre pivot swung the EE ~0.3 m across the
@@ -591,7 +682,7 @@ class granular_pour(place_container_plate):
         s_step = float(np.clip(float(tilt_rate) / OMEGA_PLAN_REF, TILT_S_MIN, TILT_S_MAX))
         self.active_time_scale = s_step
         step = float(angle) / TILT_STEPS
-        q_step = _mat_to_quat_wxyz(_roty(step))
+        q_step = _mat_to_quat_wxyz(_rot_axis(axis, step))
         ee0 = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
         hold = float(np.linalg.norm(self._rim_center(self.container, self._src_geom) - ee0[:3]))
         self.plan_local = True
@@ -675,6 +766,14 @@ def _roty(th):
     """3x3 rotation matrix about the world +y axis by th radians."""
     c, s = float(np.cos(th)), float(np.sin(th))
     return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], dtype=np.float64)
+
+
+def _rot_axis(axis, th):
+    """3x3 rotation about the unit ``axis`` by th radians (Rodrigues)."""
+    k = np.asarray(axis, dtype=np.float64).reshape(3)
+    k = k / float(np.linalg.norm(k))
+    K = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]])
+    return np.eye(3) + np.sin(th) * K + (1.0 - np.cos(th)) * (K @ K)
 
 
 def _mat_to_quat_wxyz(rot):

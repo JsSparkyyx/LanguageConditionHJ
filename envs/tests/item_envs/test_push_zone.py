@@ -202,6 +202,7 @@ def test_push_rule_semantics():
 def test_module_constants_mirror_yaml():
     cfg = _task_cfg()
     assert _norm(_const("N_PUSH")) == _norm(cfg["n_push"])
+    assert _const("OVERSHOOT_MAX") == pytest.approx(cfg["risk"]["task"]["overshoot"]["range"][1])
     assert _norm(_const("PUSH_OBJECT_POOL")) == _norm(cfg["push_objects"]["pool"])
     assert _norm(_const("PRIM_SIDE_XY")) == _norm(cfg["push_objects"]["side"])
     assert _norm(_const("PRIM_HEIGHT")) == _norm(cfg["push_objects"]["height"])
@@ -442,65 +443,53 @@ def _interior_zone_clearances(task):
 
 
 @pytest.mark.skipif(not ROBOTWIN_OBJECTS.is_dir(), reason="RoboTwin assets not available")
-def test_layout_replay_20_seeds():
+def test_layout_replay_seeds():
+    """200 replayed layouts: one cross-midline push on a random side, the far
+    end inside the shared reach band, midway zone + bystander clearances."""
     pz, restore = _load_task_module()
     try:
-        for seed in range(20):
+        sides = set()
+        for seed in range(200):
             task = _replay_layout(pz, seed)  # raises RuntimeError on a bad layout
-            assert len(task.push_objects) == 2
-            recs = {rec["item_id"]: rec for rec in task.push_objects}
-            # cross-table bands: start in the side band/lane, goal mirrored
-            # across the midline, y within the jitter of the start
-            for rec, side in ((recs["push_0"], "left"), (recs["push_1"], "right")):
-                sx, sy = (float(v) for v in rec["start_xy"])
-                gx, gy = (float(v) for v in rec["goal_xy"])
-                x0, x1, y0, y1 = pz.PUSH_START[side]
-                assert x0 <= sx <= x1 and y0 <= sy <= y1, (seed, side, "start", (sx, sy))
-                gx0, gx1 = pz.GOAL_X[side]
-                assert gx0 <= gx <= gx1, (seed, side, "goal x", gx)
-                assert abs(gy - sy) <= pz.GOAL_Y_JITTER + 1e-9, (seed, side, "goal y", (sy, gy))
-                assert gx * sx < 0, (seed, side, "does not cross the midline", (sx, gx))
-                dist = float(np.linalg.norm(rec["goal_xy"] - rec["start_xy"]))
-                dmin = min(abs(a - b) for a in (x0, x1) for b in (gx0, gx1))
-                dmax = max(abs(a - b) for a in (x0, x1) for b in (gx0, gx1))
-                assert dmin - 1e-9 <= dist <= float(np.hypot(dmax, pz.GOAL_Y_JITTER)) + 1e-9, (
-                    seed, side, dist,
-                )
-            # the two corridors never collide mid-table (separate y-lanes +
-            # the placement clearance): sampled capsule separation >= sum of halves
+            assert len(task.push_objects) == 1
+            rec = task.push_objects[0]
+            side = rec["arm"]
+            assert side == task.push_side == task.layout_info["push_side"]
+            sides.add(side)
+            sx, sy = (float(v) for v in rec["start_xy"])
+            gx, gy = (float(v) for v in rec["goal_xy"])
+            x0, x1, y0, y1 = pz.PUSH_START[side]
+            assert x0 <= sx <= x1 and y0 <= sy <= y1, (seed, side, "start", (sx, sy))
+            gx0, gx1 = pz.GOAL_X[side]
+            assert gx0 <= gx <= gx1, (seed, side, "goal x", gx)
+            assert abs(gy - sy) <= pz.GOAL_Y_JITTER + 1e-9, (seed, side, "goal y", (sy, gy))
+            assert gx * sx < 0, (seed, side, "does not cross the midline", (sx, gx))
+            # far-end reach: even the longest overshoot keeps the gripper (one
+            # contact depth behind the box) inside |x| <= a + b*y
+            d = (rec["goal_xy"] - rec["start_xy"]) / np.linalg.norm(rec["goal_xy"] - rec["start_xy"])
+            grip = rec["goal_xy"] + d * pz.OVERSHOOT_MAX  # contact depth >= 0 only shortens it
+            assert abs(grip[0]) <= pz.REACH_X_MAX[0] + pz.REACH_X_MAX[1] * grip[1] + 0.06, (seed, grip)
             corrs = task.layout_info["corridors"]
-            if len(corrs) == 2:
-                ts = np.linspace(0.0, 1.0, 101)
-                segs = []
-                for corr in corrs:
-                    a = np.asarray(corr["a"], dtype=np.float64)
-                    b = np.asarray(corr["b"], dtype=np.float64)
-                    segs.append(a[None, :] + ts[:, None] * (b - a)[None, :])
-                d2 = ((segs[0][:, None, :] - segs[1][None, :, :]) ** 2).sum(-1)
-                sep = float(np.sqrt(d2.min()))
-                assert sep >= float(corrs[0]["half"]) + float(corrs[1]["half"]) + 0.005, (seed, sep)
+            assert len(corrs) == 1
             assert 2 <= len(task.zones) <= 3
             assert 1 <= len(task.bystanders) <= 2  # 2nd bystander may degrade (range draw)
             assert len({z["region_id"] for z in task.zones}) == len(task.zones)
             clear = _interior_zone_clearances(task)
             assert clear, seed
-            # no zone intersects any corridor interior...
+            # no zone intersects the corridor interior...
             assert min(c for _, _, c in clear) > 0.0, (seed, min(c for _, _, c in clear))
-            # ...and the midway guarantee holds PER LANE: every corridor has a
-            # zone near its midpoint (t in 0.3..0.7) with edge clearance in
-            # (0, 0.06] — a straight push misses it, lateral drift enters it
-            for k in range(len(corrs)):
-                near = [c for k2, t, c in clear if k2 == k and 0.3 < t < 0.7]
-                assert any(0.0 < c <= 0.06 + 1e-6 for c in near), (seed, k, near)
-            # bystander edge clears every corridor
+            # ...and the midway guarantee: a zone near the midpoint (t in
+            # 0.3..0.7) with edge clearance in (0, 0.06]
+            near = [c for _, t, c in clear if 0.3 < t < 0.7]
+            assert any(0.0 < c <= 0.06 + 1e-6 for c in near), (seed, near)
             for b in task.bystanders:
                 xy = np.asarray(b["xy"], dtype=np.float64)
-                for corr in task.layout_info["corridors"]:
-                    a = np.asarray(corr["a"], dtype=np.float64)
-                    bseg = np.asarray(corr["b"], dtype=np.float64)
-                    ab = bseg - a
-                    t = float(np.clip((xy - a) @ ab / float(ab @ ab), 0.0, 1.0))
-                    assert float(np.linalg.norm(xy - (a + t * ab))) > float(corr["half"])
+                a = np.asarray(corrs[0]["a"], dtype=np.float64)
+                bseg = np.asarray(corrs[0]["b"], dtype=np.float64)
+                ab = bseg - a
+                t = float(np.clip((xy - a) @ ab / float(ab @ ab), 0.0, 1.0))
+                assert float(np.linalg.norm(xy - (a + t * ab))) > float(corrs[0]["half"])
+        assert sides == {"left", "right"}
     finally:
         restore()
 

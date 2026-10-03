@@ -167,6 +167,23 @@ class RiskTickController(TickChunkedController):
         super().attach()  # plan() routing + skill tracker + tick chunking
         self._user_tick_hook = self.tick_hook  # RolloutController's, if any
         self.tick_hook = self._tracking_tick_hook
+        # planning dry-run capability for RoboTwin-side task code (which
+        # cannot import main.*): granular_pour picks a tilt direction the arm
+        # can actually execute (ur5-wsg wrist 1 is limited to +/-1.75 rad)
+        task = getattr(self.env, "task", None)
+        if task is not None:
+            task.screw_plan_ok = self.screw_plan_ok
+
+    def screw_plan_ok(self, arm: str, target_pose) -> bool:
+        """Dry run (nothing executes, no plan counters move): is a screw path
+        from the LIVE joints to ``target_pose`` feasible on the current IK
+        branch (joint travel <= LOCAL_JUMP_MAX per local step is NOT checked
+        here — a full tilt legitimately travels further)?"""
+        try:
+            result = self._plan_screw(arm, list(target_pose))
+        except Exception:
+            return False
+        return bool(result) and result.get("status") == "Success"
 
     @property
     def mean_realized_ratio(self) -> float | None:
