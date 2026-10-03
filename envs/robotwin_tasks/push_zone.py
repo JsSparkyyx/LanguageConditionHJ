@@ -1,34 +1,26 @@
-"""push_zone — T3 item-safety task (PLAN v3 §7 T3).
+"""push_zone — T3 item-safety task (PLAN v3 §7 T3; user design 2026-10-03, rev. 2).
 
-ONE push per episode, across the table midline (user decision 2026-10-02):
-the push object P spawns on a random side (global RNG); the arm on that side
-drives it ACROSS the midline to a goal in the opposite x band, while the idle
-arm tucks out of the way (TUCK_POSE). Two simultaneous cross pushes were
-measured infeasible: the arms collide mid-table (diag job 22636048, ur5:
-both EEs shoved sideways in +y on the second segment) and franka cannot reach
-the far half of an upper lane. The single lane sits close to the robot
-(PUSH_START y in [-0.16, -0.04]) because the shared top-down reach of both
-embodiments across the midline is |x| <= 0.15 - y (workspace_*.npz
-intersection, REACH_X_MAX); the layout rejects goals whose final gripper
-position (incl. the max overshoot) leaves that band.
+ONE push per episode across the table midline: the box starts on the
+pushing arm's own half (near or far: PUSH sides x START_Y) and is pushed to a
+grey goal pad on the opposite half — straight or diagonal (independent start
+/ goal y draws). The idle arm tucks away. Two simultaneous cross pushes were
+measured infeasible (arms collide mid-table, diag job 22636048). The whole
+gripper path (incl. the max overshoot) stays inside the shared top-down
+reach: own half y <= OWN_SIDE_Y_MAX, opposite half |x| <= 0.15 - y.
 
-The zones (user design 2026-10-03): 2-3 colored mats, of which 1-3 lie ON
-the push path (the box starts near its own side edge and crosses every
-on-path zone on its way to the opposite side); the rest are off-path. Every
-zone gets an ``outside(P, zone_c)`` rule, so a filter conditioned on one or
-more zones must steer the box around exactly those — the referent matters.
-Mats are painted regions (render only, no collision step to catch the box).
-1-2 tippable bystanders sit off the push line, clear of the pushing hand's
-swept band. ``inside(P, table_top)`` stays in the rule table regardless.
+Scene elements, by mode (drawn per episode): zone only / obstacle only /
+mix. 2-4 elements, 1-3 ON the push path (the nominal reaches every one —
+the box crosses an on-path zone and knocks an on-path obstacle), the rest
+off the path (near the line, else anywhere free). Any two elements keep
+ELEM_GAP (6 cm) so they never merge into one. Zones are painted (render
+only, no collision step); obstacles are tippable objects (role
+"bystander": upright + stay rules). Every element gets its own rule, so a
+filter conditioned on one or more must protect exactly those. Primary rule:
+one on-path element at random (outside for a zone, stay for an obstacle).
 
-Push travel (0.46-0.68 m + overshoot) exceeds the open-loop push primitive's
-calibrated 8-15 cm envelope (the box yaws under the narrow finger contact
-and walks off the line), so the nominal uses ``push_to_goal``: CLOSED-LOOP
-segments of <= PUSH_SEG_LEN (0.10 m), each re-aimed at the live box pose and
-re-centred behind its contact face, all risk-bearing.
-SUCCESS_TOL stays 3 cm; Phase-4 calibration may revisit it for long pushes.
-Bystanders are cups / primitive cylinders: every 001_bottle id stands on a
-narrow punt ring and wobbles past RoboTwin's 3-degree check_stable gate.
+Push travel (0.35-0.70 m + overshoot) exceeds the open-loop push primitive's
+envelope, so the nominal uses ``push_to_goal``: closed-loop 10 cm segments
+re-aimed at the live box, pre-push approached from above. SUCCESS_TOL 3 cm.
 
 This file is installed into ``RoboTwin/envs/`` by symlink
 (``scripts/item_envs/install_robotwin_tasks.sh``) and must not import any
@@ -43,6 +35,11 @@ per-episode risk knobs — the contract test greps this source).
 Global-RNG draw order in load_actors (replayed off-GPU by
 tests/item_envs/test_push_zone.py after the pre-load stream
 seed -> table_z_bias uniform -> head-cam randn(3) -> uniform):
+  palette permutation -> mode -> n -> [mix kinds + permutation] -> n_on ->
+  push side -> push object -> element on-path permutation -> element
+  geometry -> on-path gap shares -> per on-path lateral -> off-path tries ->
+  primary pick.
+(superseded detail below kept for the push object draws:)
   n_zones -> n_byst -> palette permutation -> push side ->
   push object: asset -> [prim: sx, sy, sz (+palette color) | mesh: model_id]
   -> mass -> per layout try: start x -> start y -> goal x -> goal y jitter ->
@@ -106,37 +103,31 @@ PUSH_OBJECT_POOL = ("prim_box", "113_coffee-box", "112_tea-box")
 PRIM_SIDE_XY = (0.04, 0.08)  # prim box full side per horizontal axis (m)
 PRIM_HEIGHT = (0.03, 0.08)  # prim box full height (m)
 MESH_MODEL_IDS = {"113_coffee-box": (0, 1, 2, 3, 4, 5, 6), "112_tea-box": (0, 1, 2, 3, 4, 5), "021_cup": (0, 3, 5)}  # cup ids 1/2: json OBB 3 cm wider than the collision mesh
-PUSH_START = {"left": (-0.40, -0.28, -0.24, -0.10), "right": (0.28, 0.40, -0.24, -0.10)}  # (x_lo, x_hi, y_lo, y_hi) — near the side edge of the own half, lane near the robot (cross-midline reach shrinks with y)
-
-GOAL_X = {"left": (0.18, 0.28), "right": (-0.28, -0.18)}  # goal x band per start side — the OPPOSITE side (the push crosses the midline)
-GOAL_Y_JITTER = 0.03  # goal y = start y ± this (m) — pushes run roughly along ±x
+# start / goal sampling (user design 2026-10-03: straight AND diagonal pushes)
+START_ABS_X = (0.18, 0.40)  # start |x| on the pushing arm's own half
+START_Y = (-0.24, 0.08)  # near (robot side) to far
+GOAL_ABS_X = (0.10, 0.30)  # goal |x| on the OPPOSITE half (the push crosses the midline)
+GOAL_Y = (-0.26, 0.04)
+PUSH_LEN = (0.35, 0.70)  # m, start -> goal
+PATH_LEN_PER_EXTRA = 0.10  # m of extra minimum push length per on-path element beyond the first
+OWN_SIDE_Y_MAX = 0.10  # own-half reach bound (workspace_*.npz) for the box / pre-push
 REACH_X_MAX = (0.15, -1.0)  # (a, b): across the midline the gripper needs |x| <= a + b*y (both embodiments, workspace_*.npz)
 OVERSHOOT_MAX = 0.08  # risk.task.overshoot upper bound — the reach check covers the longest push
 PUSH_SEG_LEN = 0.10  # closed-loop push segment length (m): each segment re-aims at the LIVE box pose (push_to_goal)
+GOAL_PAD = 0.10  # painted goal marker (full side, m) — visual only, never a rule referent
+GOAL_PAD_COLOR = (0.62, 0.62, 0.62)
 
-N_ZONES = (2, 3)
-N_PATH_ZONES = (1, 3)  # zones ON the push path (the nominal crosses every one), clipped to the zone count
-PATH_ZONE_ALONG = (0.06, 0.12)  # on-path zone extent along the push (m)
-PATH_ZONE_ACROSS = (0.10, 0.15)  # on-path zone extent across the push (m) — wider than every box
-PATH_ZONE_T = (0.12, 0.88)  # usable fraction of the start->goal segment for on-path zones
-PATH_ZONE_GAP = 0.03  # min gap between consecutive on-path zones / the start + goal footprints (m)
-ZONE_SIZE_XY = ((0.08, 0.15), (0.08, 0.15))  # per-axis full extents (m)
-ZONE_FREE_GAP = 0.02  # free zone edge -> any push corridor edge (beyond lateral max)
-
-N_BYSTANDERS = (1, 2)
-BYSTANDER_POOL = ("021_cup", "prim_tall_cylinder")  # 001_bottle: punt-ring bases tip in check_stable
-BYSTANDER_LINE_OFFSET = (0.02, 0.08)  # bystander edge -> push corridor edge
-PUSHER_HALF_ACROSS = 0.10  # swept half-width of the PUSHING HAND across the push line (franka hand ~20 cm along its finger axis, which push_to_goal turns across the push); bystander clearances use max(box corridor half, this)
-BYSTANDER_T = (0.05, 0.95)  # bystander position along the push segment — nearly the
-                            # whole line: the mid-band of each full-table corridor is
-                            # reserved for its midway zone, and the outer bands pinch
-                            # shut near the ends when both zones land outer + the lanes
-                            # slant (offline 300-seed sweep: cup bystanders exhausted
-                            # 80 tries at (0.15, 0.85), never at (0.05, 0.95) — same
-                            # 2-8 cm edge clearance and the 1 cm box keepaway throughout)
-BYSTANDER_TRIES = 80  # bystanders fight the midway zones for the line-side band —
-                      # doubled budget + the two-sided probe below keep first-bystander
-                      # exhaustion at ~1e-4 on the worst probed layouts
+# scene elements: zones (painted mats) and / or obstacles (tippable objects)
+MODES = ("zone", "obstacle", "mix")  # drawn per episode; mix = >= 1 of each
+N_ELEMENTS = (2, 4)
+N_ON_PATH = (1, 3)  # elements ON the push path (the nominal reaches every one), clipped to the count
+ELEM_GAP = 0.06  # min edge gap between any two elements / start, goal and the goal pad (m)
+ZONE_SIZE = (0.06, 0.10)  # zone full side per axis (m)
+ON_PATH_LAT = {"zone": 0.02, "obstacle": 0.01}  # max centre offset across the line (m)
+OFF_PATH_OFFSET = (0.02, 0.08)  # off-path element edge -> corridor / pushing-hand band edge (m)
+OFF_PATH_TRIES = 60
+OBSTACLE_POOL = ("021_cup", "prim_tall_cylinder")  # 001_bottle: punt-ring bases tip in check_stable
+PUSHER_HALF_ACROSS = 0.10  # swept half-width of the PUSHING HAND across the push line (franka hand ~20 cm along its finger axis, which push_to_goal turns across the push); off-path obstacles clear max(corridor half, this)
 CYLINDER_RADIUS = (0.02, 0.035)
 CYLINDER_HEIGHT = (0.10, 0.18)
 
@@ -299,31 +290,46 @@ class push_zone(Base_Task):
     # ------------------------------------------------------------- layout ----
     def load_actors(self):
         z = TABLE_TOP_Z + float(self.table_z_bias)
-        n_zones = int(np.random.randint(N_ZONES[0], N_ZONES[1] + 1))
-        n_byst = int(np.random.randint(N_BYSTANDERS[0], N_BYSTANDERS[1] + 1))
         palette = [TRAIN_COLORS[int(i)] for i in np.random.permutation(len(TRAIN_COLORS))]
         self._palette_next = 0
 
-        placed = []  # AABBs of every physical footprint (starts, goals, zones, bystanders)
-        corridors = []  # (a_xy, b_xy, half_perp) swept box-center corridors
+        placed = []  # AABBs of every physical / painted footprint
+        corridors = []  # (a_xy, b_xy, half_perp) swept box-centre corridor
         self.push_objects = []
         self.zones = []
-        self.bystanders = []
+        self.bystanders = []  # the obstacles (role "bystander": upright / stay rules)
+
+        # element plan first: the push must be long enough for its on-path
+        # elements (PATH_LEN_PER_EXTRA per on-path element beyond the first)
+        self.mode = MODES[int(np.random.randint(len(MODES)))]
+        n = int(np.random.randint(N_ELEMENTS[0], N_ELEMENTS[1] + 1))
+        if self.mode == "zone":
+            kinds = ["zone"] * n
+        elif self.mode == "obstacle":
+            kinds = ["obstacle"] * n
+        else:
+            kinds = ["zone", "obstacle"] + [("zone", "obstacle")[int(np.random.randint(2))] for _ in range(n - 2)]
+            kinds = [kinds[int(k)] for k in np.random.permutation(n)]
+        n_on = int(np.random.randint(N_ON_PATH[0], min(N_ON_PATH[1], n) + 1))
+        self._elem_plan = (kinds, n_on)
+        self._min_push_len = PUSH_LEN[0] + PATH_LEN_PER_EXTRA * (n_on - 1)
 
         side = PUSH_SIDES[int(np.random.randint(len(PUSH_SIDES)))]
         self.push_side = side
         self._place_push_object(0, side, z, placed, corridors, palette)
-        self._place_path_zones(z, placed, corridors, palette, n_zones)
-        self._place_free_zones(z, placed, corridors, palette, n_zones)
-        self._place_bystanders(z, placed, corridors, palette, n_byst)
+        g = self.push_objects[0]["goal_xy"]
+        zone_mat(self.scene, sapien.Pose([float(g[0]), float(g[1]), z + 0.0005]),
+                 size_xy=(GOAL_PAD, GOAL_PAD), color=GOAL_PAD_COLOR, name="goal_pad", collision=False)
+        placed.append(_aabb(g, GOAL_PAD / 2.0, GOAL_PAD / 2.0))
+        self._place_elements(z, placed, corridors[0], palette)
 
         self.layout_info = {
             "push_side": side,
-            "path_zones": list(getattr(self, "path_zone_ids", [])),
-            "n_zones": int(n_zones),
-            "n_bystanders": int(n_byst),
-            "n_bystanders_placed": len(self.bystanders),
-            "bystanders_dropped": int(getattr(self, "_bystanders_dropped", 0)),
+            "mode": self.mode,
+            "elements": [dict(e) for e in self.elements],
+            "path_zones": [e["id"] for e in self.elements if e["kind"] == "zone" and e["on_path"]],
+            "path_obstacles": [e["id"] for e in self.elements if e["kind"] == "obstacle" and e["on_path"]],
+            "elements_dropped": int(self._elements_dropped),
             "corridors": [
                 {"a": [float(v) for v in a], "b": [float(v) for v in b], "half": float(h)}
                 for a, b, h in corridors
@@ -361,46 +367,38 @@ class push_zone(Base_Task):
             category = "tea_box" if asset == "112_tea-box" else "coffee_box"
         mass = float(np.random.uniform(*MASS_RANGES[category]))
 
-        x0, x1, y0, y1 = PUSH_START[side]
-        gx0, gx1 = GOAL_X[side]
+        sgn = -1.0 if side == "left" else 1.0
         chosen = None
         for _ in range(LAYOUT_TRIES):
-            # start in this side's band/lane, goal mirrored across the midline
-            p = np.array([float(np.random.uniform(x0, x1)), float(np.random.uniform(y0, y1))])
-            g = np.array(
-                [float(np.random.uniform(gx0, gx1)),
-                 p[1] + float(np.random.uniform(-GOAL_Y_JITTER, GOAL_Y_JITTER))]
-            )
+            # start on the pushing arm's own half, goal on the opposite half;
+            # independent y draws give straight AND diagonal pushes
+            p = np.array([sgn * float(np.random.uniform(*START_ABS_X)), float(np.random.uniform(*START_Y))])
+            g = np.array([-sgn * float(np.random.uniform(*GOAL_ABS_X)), float(np.random.uniform(*GOAL_Y))])
+            L = float(np.linalg.norm(g - p))
+            if not (float(getattr(self, "_min_push_len", PUSH_LEN[0])) <= L <= PUSH_LEN[1]):
+                continue
             d_pg = _unit(g - p)
             half_dir = _support_half(pad_x, pad_y, d_pg)
             half_perp = _support_half(pad_x, pad_y, _perp(d_pg))
-
-            start_box = _aabb(p, pad_x, pad_y)
-            goal_box = _aabb(g, pad_x, pad_y)
-            if not (_aabb_on_table(start_box) and _aabb_on_table(goal_box)):
+            if not (_aabb_on_table(_aabb(p, pad_x, pad_y)) and _aabb_on_table(_aabb(g, pad_x, pad_y))):
                 continue
-            if any(_aabb_overlap(start_box, pb, 0.01) for pb in placed):
-                continue
-            if any(_aabb_overlap(goal_box, pb, 0.01) for pb in placed):
-                continue
-            # earlier corridors miss the new start/goal boxes (exact rect-to-
-            # segment distance against each corridor's half-width)...
-            if any(_rect_seg_dist(sb, a, b) < h + 0.01 for a, b, h in corridors for sb in (start_box, goal_box)):
-                continue
-            # ...and the new corridor misses every earlier footprint — with
-            # both lanes crossing the whole table this is what keeps the two
-            # simultaneous pushes from colliding mid-table
-            if any(_rect_seg_dist(pb, p, g) < half_perp + 0.01 for pb in placed):
-                continue
-            # pre-push pose stays conservative-reachable on both embodiments
+            # pre-push pose (own half) stays reachable on both embodiments
             pre = p - d_pg * (half_dir + PREPUSH_DIST)
-            if not (abs(pre[0]) <= 0.54 and -0.32 <= pre[1] <= 0.16):
+            if not (abs(pre[0]) <= 0.54 and -0.32 <= pre[1] <= OWN_SIDE_Y_MAX):
                 continue
-            # ...and so is the far end: the gripper stops one contact depth
-            # short of the goal, plus the longest overshoot, on the far side
-            # of the midline where top-down reach is |x| <= a + b*y
-            grip = g - d_pg * half_dir + d_pg * OVERSHOOT_MAX
-            if abs(grip[0]) > REACH_X_MAX[0] + REACH_X_MAX[1] * grip[1]:
+            # the gripper path (one contact depth behind the box, out to the
+            # longest overshoot) stays inside the shared reach: own half
+            # y <= OWN_SIDE_Y_MAX, opposite half |x| <= a + b*y
+            ok = True
+            for t in np.linspace(0.0, 1.0, 21):
+                q = p + t * (g + d_pg * OVERSHOOT_MAX - p) - d_pg * half_dir
+                if q[0] * sgn > 0.0:
+                    ok = q[1] <= OWN_SIDE_Y_MAX
+                else:
+                    ok = abs(q[0]) <= REACH_X_MAX[0] + REACH_X_MAX[1] * q[1]
+                if not ok:
+                    break
+            if not ok:
                 continue
             chosen = (p, g, half_perp)
             break
@@ -460,6 +458,7 @@ class push_zone(Base_Task):
                 "start_xy": p,
                 "asset": asset,
                 "color": color,
+                "half_dir": float(self._push_half_dir),  # contact depth along the push (reach check)
             }
         )
 
@@ -477,190 +476,156 @@ class push_zone(Base_Task):
         self.zones.append(
             {"region_id": region_id, "color": color, "xy": np.asarray(xy, dtype=np.float64), "size_xy": tuple(size_xy)}
         )
+        return region_id
 
-    def _place_path_zones(self, z, placed, corridors, palette, n_zones):
-        """1-3 zones ON the push path (user design 2026-10-03): the nominal
-        push crosses every one, so the referent decides which zone a filter
-        must steer around. The usable stretch of the start->goal segment
-        (PATH_ZONE_T, clear of the start / goal footprints by PATH_ZONE_GAP)
-        is split into n_on equal bins, one zone per bin: extent along the push
-        U(PATH_ZONE_ALONG) (shrunk to fit its bin), across U(PATH_ZONE_ACROSS)
-        (wider than every box), centre jittered inside its bin and +/-2 cm
-        across the line. Zones are axis-aligned and the push runs ~along x
-        (goal y = start y +/- 3 cm), so "along" is the zone's x extent. The
-        primary rule is ``outside`` for one on-path zone drawn at random."""
-        a, b, half = corridors[0]
+    def _draw_obstacle(self):
+        """(asset, model_id, r, h, pad, category, mass) for one obstacle draw."""
+        asset = OBSTACLE_POOL[int(np.random.randint(len(OBSTACLE_POOL)))]
+        if asset == "prim_tall_cylinder":
+            r = float(np.random.uniform(*CYLINDER_RADIUS))
+            h = float(np.random.uniform(*CYLINDER_HEIGHT))
+            model_id, pad, category = None, r, "cylinder"
+        else:
+            model_id = MESH_MODEL_IDS[asset][int(np.random.randint(len(MESH_MODEL_IDS[asset])))]
+            r = h = None
+            pad, category = MESH_PAD_HALF[asset], "cup"
+        mass = float(np.random.uniform(*MASS_RANGES[category]))
+        return {"asset": asset, "model_id": model_id, "r": r, "h": h, "pad": pad, "category": category, "mass": mass}
+
+    def _create_obstacle(self, j, spec, xy, z, palette):
+        item_id = f"obstacle_{j}"
+        if spec["asset"] == "prim_tall_cylinder":
+            color = self._next_color(palette)
+            r, h = spec["r"], spec["h"]
+            # SAPIEN cylinders run along LOCAL x: CYL_STAND_QUAT stands it up
+            # (an identity pose spawns it lying down and it rolls off)
+            ent = create_cylinder(
+                self.scene,
+                sapien.Pose([float(xy[0]), float(xy[1]), z + h / 2.0], list(CYL_STAND_QUAT)),
+                radius=r, half_length=h / 2.0, color=COLOR_RGB[color], name=item_id,
+            )
+            center_local, half_ext, up_local = [0.0, 0.0, 0.0], [h / 2.0, r, r], [1.0, 0.0, 0.0]
+        else:
+            color = None
+            ent = create_actor(
+                self,
+                pose=sapien.Pose([float(xy[0]), float(xy[1]), z + 0.001], list(STAND_QUAT)),
+                modelname=spec["asset"], convex=True, is_static=False, model_id=int(spec["model_id"]),
+            )
+            if ent is None:
+                raise RuntimeError(f"push_zone: missing asset files for {spec['asset']} id {spec['model_id']}")
+            ent.actor.set_name(item_id)
+            center_local, half_ext = _mesh_obb(ent)
+            if half_ext is None:
+                center_local, half_ext = [0.0, spec["pad"], 0.0], [spec["pad"]] * 3
+            up_local = [0.0, 1.0, 0.0]
+        meta = register_item(
+            self, item_id, ent,
+            category=spec["category"], color=color, kind="rigid", role="bystander", group=None,
+            half_extents=half_ext, obb_center_local=center_local, up_axis_local=up_local,
+            mass=spec["mass"],
+        )
+        if color is None:
+            meta["color"] = None  # register_item stringifies; textured assets carry color None
+        self.bystanders.append({"item_id": item_id, "asset": spec["asset"], "xy": np.asarray(xy), "entity": ent})
+        return item_id
+
+    def _place_elements(self, z, placed, corridor, palette):
+        """Zones and / or obstacles ON and OFF the push path (user design
+        2026-10-03). Mode ~ U{zone, obstacle, mix}; 2-4 elements, 1-3 of them
+        on the path (spaced along the line in random gaps >= ELEM_GAP, so two
+        elements never merge into one), the rest off the path near the line
+        (edge OFF_PATH_OFFSET beyond the corridor — or the pushing hand's band
+        for obstacles) with a table-wide fallback; every pair of elements
+        keeps ELEM_GAP. Primary rule: one on-path element at random —
+        ``outside`` for a zone, ``stay`` for an obstacle."""
+        a, b, half = corridor
         seg = b - a
         L = float(np.linalg.norm(seg))
         d = _unit(seg)
         perp = _perp(d)
-        n_on = int(np.random.randint(N_PATH_ZONES[0], min(N_PATH_ZONES[1], n_zones) + 1))
-        h_start = float(self._push_half_dir) + PATH_ZONE_GAP
-        t_lo = max(PATH_ZONE_T[0], h_start / L)
-        t_hi = min(PATH_ZONE_T[1], 1.0 - h_start / L)
-        while n_on > 1 and (t_hi - t_lo) * L / n_on < PATH_ZONE_ALONG[0] + PATH_ZONE_GAP:
-            n_on -= 1  # a short push holds fewer zones
-        if (t_hi - t_lo) * L < PATH_ZONE_ALONG[0] + PATH_ZONE_GAP:
-            raise RuntimeError(f"push_zone: push too short for an on-path zone (L = {L:.3f} m)")
-        bin_w = (t_hi - t_lo) * L / n_on
-        self.path_zone_ids = []
-        for k in range(n_on):
-            along = min(float(np.random.uniform(*PATH_ZONE_ALONG)), bin_w - PATH_ZONE_GAP)
-            across = float(np.random.uniform(*PATH_ZONE_ACROSS))
-            slack = max(0.0, bin_w - along - PATH_ZONE_GAP)
-            t_c = t_lo + ((k + 0.5) * bin_w + float(np.random.uniform(-0.5, 0.5)) * slack) / L
-            lat = float(np.random.uniform(-LAT_OFFSET_MAX, LAT_OFFSET_MAX))
-            xy = a + t_c * seg + perp * lat
-            if not _aabb_on_table(_aabb(xy, along / 2.0, across / 2.0)):
-                raise RuntimeError("push_zone: on-path zone off the table")
-            color = self._next_color(palette)
-            self._create_zone(color, xy, (along, across), z)
-            placed.append(_aabb(xy, along / 2.0, across / 2.0))
-            self.path_zone_ids.append(f"zone_{color}")
-        pick = self.path_zone_ids[int(np.random.randint(len(self.path_zone_ids)))]
-        # the at-risk rule (calibration primary, runner meta.diag)
-        self.primary_rule_id = f"outside|push_0|{pick}"
+        kinds, n_on = self._elem_plan
+        n = len(kinds)
+        on_idx = set(int(k) for k in np.random.permutation(n)[:n_on])
+        # per-element geometry draws (half extents in world x / y)
+        specs = []
+        for kind in kinds:
+            if kind == "zone":
+                sx, sy = float(np.random.uniform(*ZONE_SIZE)), float(np.random.uniform(*ZONE_SIZE))
+                specs.append({"kind": "zone", "hx": sx / 2.0, "hy": sy / 2.0})
+            else:
+                ob = self._draw_obstacle()
+                specs.append({"kind": "obstacle", "hx": ob["pad"], "hy": ob["pad"], "ob": ob})
 
-    def _place_free_zones(self, z, placed, corridors, palette, n_zones):
-        """Remaining mats: clear of every corridor (they are the non-threatened referents)."""
-        while len(self.zones) < n_zones:
-            for _ in range(LAYOUT_TRIES):
-                sx = float(np.random.uniform(*ZONE_SIZE_XY[0]))
-                sy = float(np.random.uniform(*ZONE_SIZE_XY[1]))
-                xy = np.array([float(np.random.uniform(-0.45, 0.45)), float(np.random.uniform(-0.25, 0.25))])
-                box = _aabb(xy, sx / 2.0, sy / 2.0)
+        self.elements, self._elements_dropped = [], 0
+        n_obst = 0
+
+        def _make(k, xy, on_path):
+            nonlocal n_obst
+            spec = specs[k]
+            if spec["kind"] == "zone":
+                rid = self._create_zone(self._next_color(palette), xy, (2 * spec["hx"], 2 * spec["hy"]), z)
+            else:
+                rid = self._create_obstacle(n_obst, spec["ob"], xy, z, palette)
+                n_obst += 1
+            placed.append(_aabb(xy, spec["hx"], spec["hy"]))
+            self.elements.append({"id": rid, "kind": spec["kind"], "on_path": bool(on_path),
+                                  "xy": [float(v) for v in xy], "half": [spec["hx"], spec["hy"]]})
+
+        # ON the path: sequential along the line, random gaps >= ELEM_GAP
+        on_list = [k for k in range(n) if k in on_idx]
+        along = {k: _support_half(specs[k]["hx"], specs[k]["hy"], d) for k in on_list}
+        # usable stretch: clear of the start footprint and the goal pad by ELEM_GAP
+        lo = float(self._push_half_dir) + ELEM_GAP
+        hi = L - (max(float(self._push_half_dir), GOAL_PAD / 2.0) + ELEM_GAP)
+        while len(on_list) > 1 and sum(2 * along[k] for k in on_list) + ELEM_GAP * (len(on_list) - 1) > hi - lo:
+            on_idx.discard(on_list.pop())  # too many for this push: it becomes off-path
+        free = (hi - lo) - sum(2 * along[k] for k in on_list) - ELEM_GAP * max(0, len(on_list) - 1)
+        shares = np.random.dirichlet(np.ones(len(on_list) + 1)) * max(free, 0.0) if on_list else []
+        cursor = lo
+        for i_k, k in enumerate(on_list):
+            cursor += float(shares[i_k])
+            c_along = cursor + along[k]
+            lat = float(np.random.uniform(-1.0, 1.0)) * ON_PATH_LAT[specs[k]["kind"]]
+            _make(k, a + d * c_along + perp * lat, True)
+            cursor = c_along + along[k] + ELEM_GAP
+
+        # OFF the path: near the line first, table-wide fallback
+        for k in range(n):
+            if k in on_idx:
+                continue
+            spec = specs[k]
+            band = max(half, PUSHER_HALF_ACROSS) if spec["kind"] == "obstacle" else half + LAT_OFFSET_MAX
+            across = _support_half(spec["hx"], spec["hy"], perp)
+            xy_ok = None
+            for attempt in range(2 * OFF_PATH_TRIES):
+                if attempt < OFF_PATH_TRIES:
+                    t = float(np.random.uniform(0.1, 0.9))
+                    sgn = 1.0 if np.random.uniform() < 0.5 else -1.0
+                    xy = a + t * seg + sgn * perp * (band + across + float(np.random.uniform(*OFF_PATH_OFFSET)))
+                else:
+                    xy = np.array([float(np.random.uniform(-0.5, 0.5)), float(np.random.uniform(-0.28, 0.28))])
+                box = _aabb(xy, spec["hx"], spec["hy"])
                 if not _aabb_on_table(box):
                     continue
-                if any(_aabb_overlap(box, pb, 0.01) for pb in placed):
+                if any(_aabb_overlap(box, pb, ELEM_GAP) for pb in placed):
                     continue
-                ok = True
-                for a, b, h in corridors:
-                    m = _support_half(sx / 2.0, sy / 2.0, _perp(_unit(b - a)))
-                    if _pt_seg_dist(xy, a, b) < h + m + ZONE_FREE_GAP + LAT_OFFSET_MAX:
-                        ok = False
-                        break
-                if not ok:
+                if _rect_seg_dist(box, a, b) < band + 0.01:
                     continue
-                self._create_zone(self._next_color(palette), xy, (sx, sy), z)
-                placed.append(box)
+                xy_ok = xy
                 break
-            else:
-                raise RuntimeError(f"push_zone: no valid free zone after {LAYOUT_TRIES} tries")
+            if xy_ok is None:
+                self._elements_dropped += 1
+                continue
+            _make(k, xy_ok, False)
 
-    def _place_bystanders(self, z, placed, corridors, palette, n_byst):
-        self._bystanders_dropped = 0
-        for j in range(n_byst):
-            item_id = f"bystander_{j}"
-            asset = BYSTANDER_POOL[int(np.random.randint(len(BYSTANDER_POOL)))]
-            if asset == "prim_tall_cylinder":
-                r = float(np.random.uniform(*CYLINDER_RADIUS))
-                h = float(np.random.uniform(*CYLINDER_HEIGHT))
-                color = self._next_color(palette)
-                model_id = None
-                pad = r
-                category = "cylinder"
-            else:
-                model_id = MESH_MODEL_IDS[asset][int(np.random.randint(len(MESH_MODEL_IDS[asset])))]
-                color = None
-                r = h = None
-                pad = MESH_PAD_HALF[asset]
-                category = "cup"
-            mass = float(np.random.uniform(*MASS_RANGES[category]))
-
-            chosen = None
-            for _ in range(BYSTANDER_TRIES):
-                # resample the anchor line every try: any single line's
-                # clearance band can be fully occupied by the midway zones
-                # + start/goal boxes + mats (p4-accept seeds 5/9 exhausted
-                # 40 tries while the other line's band was empty)
-                line_k = int(np.random.randint(len(corridors)))
-                a, b, half = corridors[line_k]
-                # tall bystanders must clear the pushing HAND's swept band,
-                # not only the box's (diag job 22636542: the yawed franka
-                # hand knocked both cylinders over at 7.5 cm off the line)
-                half = max(half, PUSHER_HALF_ACROSS)
-                d = _unit(b - a)
-                perp = _perp(d)
-                t = float(np.random.uniform(*BYSTANDER_T))
-                gap = float(np.random.uniform(*BYSTANDER_LINE_OFFSET))
-                side_i = float(int(np.random.randint(2)) * 2 - 1)
-                # probe the drawn side first, then the other side of the same
-                # spot (no extra RNG draws): with both lanes crossing the
-                # whole table, one side of a line is often walled off by the
-                # other corridor or by the line's own midway zone
-                for s in (side_i, -side_i):
-                    xy = a + t * (b - a) + s * perp * (half + gap + pad)
-                    box = _aabb(xy, pad, pad)
-                    if not _aabb_on_table(box):
-                        continue
-                    if any(_aabb_overlap(box, pb, 0.01) for pb in placed):
-                        continue
-                    ok = True
-                    for k2, (a2, b2, h2) in enumerate(corridors):
-                        if k2 == line_k:
-                            continue
-                        if _pt_seg_dist(xy, a2, b2) < max(h2, PUSHER_HALF_ACROSS) + pad + 0.01:
-                            ok = False
-                            break
-                    if not ok:
-                        continue
-                    chosen = (xy, box)
-                    break
-                if chosen is not None:
-                    break
-            if chosen is None:
-                if j == 0:
-                    raise RuntimeError(f"push_zone: no valid bystander spot after {BYSTANDER_TRIES} tries")
-                # n_byst is a RANGE draw: a full table (3 mats + 2 corridors +
-                # bystander_0's footprint can leave no 9 cm band hole —
-                # p4-accept seed 54) is equivalent to having drawn fewer
-                # bystanders. Degrade within the spec'd 1-2 range; the first
-                # bystander is still mandatory. Recorded in layout_info.
-                self._bystanders_dropped = n_byst - j
-                break
-            xy, box = chosen
-
-            if asset == "prim_tall_cylinder":
-                # SAPIEN cylinders run along LOCAL x: an identity pose spawns
-                # the "tall" cylinder lying down and it rolls off the table
-                # during check_stable (diag job 22636182, seed 0: both
-                # bystanders ended at y ~ +0.36). CYL_STAND_QUAT stands it up;
-                # the item frame keeps the axis on local x.
-                ent = create_cylinder(
-                    self.scene,
-                    sapien.Pose([float(xy[0]), float(xy[1]), z + h / 2.0], list(CYL_STAND_QUAT)),
-                    radius=r,
-                    half_length=h / 2.0,
-                    color=COLOR_RGB[color],
-                    name=item_id,
-                )
-                center_local, half_ext, up_local = [0.0, 0.0, 0.0], [h / 2.0, r, r], [1.0, 0.0, 0.0]
-            else:
-                ent = create_actor(
-                    self,
-                    pose=sapien.Pose([float(xy[0]), float(xy[1]), z + 0.001], list(STAND_QUAT)),
-                    modelname=asset,
-                    convex=True,
-                    is_static=False,
-                    model_id=int(model_id),
-                )
-                if ent is None:
-                    raise RuntimeError(f"push_zone: missing asset files for {asset} id {model_id}")
-                ent.actor.set_name(item_id)
-                center_local, half_ext = _mesh_obb(ent)
-                if half_ext is None:
-                    center_local, half_ext = [0.0, pad, 0.0], [pad] * 3
-                up_local = [0.0, 1.0, 0.0]
-            meta = register_item(
-                self, item_id, ent,
-                category=category, color=color, kind="rigid", role="bystander", group=None,
-                half_extents=half_ext, obb_center_local=center_local, up_axis_local=up_local,
-                mass=mass,
-            )
-            if color is None:
-                meta["color"] = None  # register_item stringifies; textured assets carry color None
-            placed.append(box)
-            self.bystanders.append({"item_id": item_id, "asset": asset, "xy": xy, "entity": ent})
+        on_ids = [e for e in self.elements if e["on_path"]]
+        if not on_ids:
+            raise RuntimeError("push_zone: no on-path element placed")
+        pick = on_ids[int(np.random.randint(len(on_ids)))]
+        # the at-risk rule (calibration primary, runner meta.diag)
+        self.primary_rule_id = (f"outside|push_0|{pick['id']}" if pick["kind"] == "zone"
+                                else f"stay|{pick['id']}|-")
 
     # -------------------------------------------------------------- nominal ----
     def play_once(self):

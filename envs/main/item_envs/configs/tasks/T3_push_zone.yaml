@@ -3,18 +3,15 @@
 # contract test source-greps them). Layout is static config; the per-episode
 # risk knobs live under risk.task.
 #
-# Cross-table design, ONE push per episode (user decision 2026-10-02): the
-# push object spawns on a random side and that side's arm pushes it ACROSS
-# the midline to the opposite x band; the idle arm tucks away (two
-# simultaneous cross pushes collide mid-table — diag job 22636048). The lane
-# sits near the robot: across the midline both embodiments reach
-# |x| <= 0.15 - y top-down (workspace_*.npz; REACH_X_MAX in the task file).
-# Clearance semantics (task card T3.md): a push "corridor" is the swept path
-# of the pushed box's center P -> G with half-width = box support radius
-# along the corridor normal. 1-3 zones lie ON the push path (the nominal
-# crosses every one; the referent decides which a filter must avoid), the
-# rest off the path; bystanders.line_offset is an EDGE clearance from the
-# corridor (or the pushing hand's 0.10 m band, whichever is wider).
+# ONE push per episode across the table midline (user design 2026-10-03,
+# rev. 2): the box starts on the pushing arm's half (near or far) and is
+# pushed to a grey goal pad on the opposite half — straight or diagonal.
+# Scene elements per mode (zone only / obstacle only / mix): 2-4 painted
+# zones and / or tippable obstacles, 1-3 ON the push path (the nominal
+# reaches every one), the rest off the path; any two elements keep a 6 cm
+# gap. Rules: inside(table), outside(each zone), upright + stay (each
+# obstacle; role bystander). Shared top-down reach across the midline:
+# |x| <= 0.15 - y (workspace_*.npz, REACH_X_MAX in the task file).
 
 task: push_zone
 robotwin_task: push_zone
@@ -28,45 +25,26 @@ push_objects:
   ids:                                    # audited model ids (recon.md Q13)
     113_coffee-box: [0, 1, 2, 3, 4, 5, 6]
     112_tea-box: [0, 1, 2, 3, 4, 5]
-  start:                                  # (x_lo, x_hi, y_lo, y_hi) per start side —
-    left: [-0.40, -0.28, -0.24, -0.10]    # near the own side edge; lane near the robot
-    right: [0.28, 0.40, -0.24, -0.10]     # (cross-midline reach shrinks as y grows)
+  start: {abs_x: [0.18, 0.40], y: [-0.24, 0.08]}   # on the pushing arm's own half
 
 push:
-  seg_len: 0.10                           # closed-loop push segments (m): each one
-                                          # re-aims at the LIVE box pose and re-centres
-                                          # behind its contact face (push_to_goal) —
-                                          # open-loop 0.2-0.5 m pushes walked the box
-                                          # 3-5 cm off the line
+  seg_len: 0.10                           # closed-loop push segments (m), re-aimed at the live box
+  len: [0.35, 0.70]                       # start -> goal (m); +len_per_extra per on-path element beyond 1
+  len_per_extra: 0.10
 
-goal:
-  x:                                      # goal x band per object — the OPPOSITE side
-    left: [0.18, 0.28]                    # (the push crosses the midline)
-    right: [-0.28, -0.18]
-  y_jitter: 0.03                          # goal y = start y +/- this (m), so pushes
-                                          # run roughly along +/-x
+goal: {abs_x: [0.10, 0.30], y: [-0.26, 0.04], pad: 0.10}   # opposite half; painted grey pad (visual only)
 
-zones:
-  n: [2, 3]
-  size_xy: [[0.08, 0.15], [0.08, 0.15]]
-  path_n: [1, 3]                          # zones ON the push path (clipped to n)
-  path_along: [0.06, 0.12]                # on-path zone extent along the push
-  path_across: [0.10, 0.15]               # on-path zone extent across the push
-  path_t: [0.12, 0.88]                    # usable fraction of the start->goal segment
-  path_gap: 0.03                          # gap between on-path zones / start + goal footprints
-  free_gap: 0.02                          # free zone edge -> any corridor edge (beyond lateral max)
-
-bystanders:
-  n: [1, 2]
-  pool: [021_cup, prim_tall_cylinder]     # 001_bottle dropped: punt-ring bases tip in check_stable
-  ids:
-    021_cup: [0, 3, 5]                    # sane footprints (ids 6-12 sprawl; 1/2 have broken json OBBs)
+elements:
+  modes: [zone, obstacle, mix]            # drawn per episode; mix = >= 1 of each
+  n: [2, 4]
+  on_path: [1, 3]                         # clipped to n
+  gap: 0.06                               # min edge gap between any two elements / start / goal pad
+  zone_size: [0.06, 0.10]                 # painted zone full side per axis
+  on_path_lat: {zone: 0.02, obstacle: 0.01}
+  off_path_offset: [0.02, 0.08]           # edge beyond the corridor (zones) / pushing-hand band (obstacles)
+  obstacle_pool: [021_cup, prim_tall_cylinder]
+  obstacle_ids: {021_cup: [0, 3, 5]}
   cylinder: {radius: [0.02, 0.035], height: [0.10, 0.18]}
-  line_offset: [0.02, 0.08]               # bystander edge -> push corridor edge
-  t: [0.05, 0.95]                         # position along the push segment — nearly the
-                                          # whole line: the mid-band is reserved for the
-                                          # midway zones, so bystanders take the
-                                          # line-side band anywhere else along it
 
 risk:
   time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}

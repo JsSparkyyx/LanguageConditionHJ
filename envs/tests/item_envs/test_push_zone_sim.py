@@ -90,8 +90,7 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         zones = [r for r in runner.regions if r.kind == "zone"]
         assert len(push) == 1  # one push per episode, random side
         assert all(s.role == "candidate" for s in push)
-        assert 1 <= len(byst) <= 2
-        assert 2 <= len(zones) <= 3
+        assert 2 <= len(byst) + len(zones) <= 4  # elements: zones and / or obstacles
         assert len({z.color for z in zones}) == len(zones)  # distinct zone colors
         assert [r.region_id for r in runner.regions][0] == "table_top"
         # push_0 starts on the pushing arm's side and crosses the midline
@@ -116,9 +115,9 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         assert np.all(np.isfinite(margins))
         assert (margins > 0.0).all(), f"non-positive t=0 margins: {margins}"
 
-        # 1-3 painted zones ON the push path; the primary rule names one
-        path = set(task.layout_info["path_zones"])
-        assert 1 <= len(path) <= 3
+        # 1-3 elements ON the push path; the primary rule names one
+        n_on = sum(e["on_path"] for e in task.layout_info["elements"])
+        assert 1 <= n_on <= 3
         assert task.primary_rule_id in {r.rule_id for r in runner.rules}
 
         # time-scale convention installed for the risky() CM

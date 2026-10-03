@@ -34,7 +34,7 @@ TASK_SRC = ROOT / "robotwin_tasks" / "push_zone.py"
 
 REQUIRED_KEYS = [
     "task", "robotwin_task", "embodiments", "n_push", "push_objects", "push", "goal",
-    "zones", "bystanders", "risk", "rules", "embodiment_overrides", "risk_collect",
+    "elements", "risk", "rules", "embodiment_overrides", "risk_collect",
 ]
 
 EXPECTED_RULE_IDS = [
@@ -206,31 +206,31 @@ def test_module_constants_mirror_yaml():
     assert _norm(_const("PUSH_OBJECT_POOL")) == _norm(cfg["push_objects"]["pool"])
     assert _norm(_const("PRIM_SIDE_XY")) == _norm(cfg["push_objects"]["side"])
     assert _norm(_const("PRIM_HEIGHT")) == _norm(cfg["push_objects"]["height"])
-    assert _norm(_const("PUSH_START")) == _norm(cfg["push_objects"]["start"])
+    assert _norm(_const("START_ABS_X")) == _norm(cfg["push_objects"]["start"]["abs_x"])
+    assert _norm(_const("START_Y")) == _norm(cfg["push_objects"]["start"]["y"])
     mesh_ids = _const("MESH_MODEL_IDS")
     assert _norm({k: mesh_ids[k] for k in cfg["push_objects"]["ids"]}) == _norm(cfg["push_objects"]["ids"])
-    assert _norm({k: mesh_ids[k] for k in cfg["bystanders"]["ids"]}) == _norm(cfg["bystanders"]["ids"])
     assert _norm(_const("PUSH_SEG_LEN")) == _norm(cfg["push"]["seg_len"])
-    assert _norm(_const("GOAL_X")) == _norm(cfg["goal"]["x"])
-    assert _norm(_const("GOAL_Y_JITTER")) == _norm(cfg["goal"]["y_jitter"])
-    assert _norm(_const("N_ZONES")) == _norm(cfg["zones"]["n"])
-    assert _norm(_const("ZONE_SIZE_XY")) == _norm(cfg["zones"]["size_xy"])
-    assert _norm(_const("N_PATH_ZONES")) == _norm(cfg["zones"]["path_n"])
-    assert _norm(_const("PATH_ZONE_ALONG")) == _norm(cfg["zones"]["path_along"])
-    assert _norm(_const("PATH_ZONE_ACROSS")) == _norm(cfg["zones"]["path_across"])
-    assert _norm(_const("PATH_ZONE_T")) == _norm(cfg["zones"]["path_t"])
-    assert _norm(_const("PATH_ZONE_GAP")) == _norm(cfg["zones"]["path_gap"])
-    assert _norm(_const("ZONE_FREE_GAP")) == _norm(cfg["zones"]["free_gap"])
-    assert _norm(_const("N_BYSTANDERS")) == _norm(cfg["bystanders"]["n"])
-    assert _norm(_const("BYSTANDER_POOL")) == _norm(cfg["bystanders"]["pool"])
-    assert _norm(_const("CYLINDER_RADIUS")) == _norm(cfg["bystanders"]["cylinder"]["radius"])
-    assert _norm(_const("CYLINDER_HEIGHT")) == _norm(cfg["bystanders"]["cylinder"]["height"])
-    assert _norm(_const("BYSTANDER_LINE_OFFSET")) == _norm(cfg["bystanders"]["line_offset"])
-    assert _norm(_const("BYSTANDER_T")) == _norm(cfg["bystanders"]["t"])
+    assert _norm(_const("PUSH_LEN")) == _norm(cfg["push"]["len"])
+    assert _norm(_const("PATH_LEN_PER_EXTRA")) == _norm(cfg["push"]["len_per_extra"])
+    assert _norm(_const("GOAL_ABS_X")) == _norm(cfg["goal"]["abs_x"])
+    assert _norm(_const("GOAL_Y")) == _norm(cfg["goal"]["y"])
+    assert _norm(_const("GOAL_PAD")) == _norm(cfg["goal"]["pad"])
+    el = cfg["elements"]
+    assert _norm(_const("MODES")) == _norm(el["modes"])
+    assert _norm(_const("N_ELEMENTS")) == _norm(el["n"])
+    assert _norm(_const("N_ON_PATH")) == _norm(el["on_path"])
+    assert _norm(_const("ELEM_GAP")) == _norm(el["gap"])
+    assert _norm(_const("ZONE_SIZE")) == _norm(el["zone_size"])
+    assert _norm(_const("ON_PATH_LAT")) == _norm(el["on_path_lat"])
+    assert _norm(_const("OFF_PATH_OFFSET")) == _norm(el["off_path_offset"])
+    assert _norm(_const("OBSTACLE_POOL")) == _norm(el["obstacle_pool"])
+    assert _norm({k: mesh_ids[k] for k in el["obstacle_ids"]}) == _norm(el["obstacle_ids"])
+    assert _norm(_const("CYLINDER_RADIUS")) == _norm(el["cylinder"]["radius"])
+    assert _norm(_const("CYLINDER_HEIGHT")) == _norm(el["cylinder"]["height"])
     for emb in ("ur5-wsg", "franka-panda"):
         assert _norm(_const("PREPUSH_DIST")) == _norm(cfg["embodiment_overrides"][emb]["prepush_dist"])
         assert _norm(_const("PUSH_HEIGHT_OFFSET")) == _norm(cfg["embodiment_overrides"][emb]["push_height_offset"])
-    # LAT_OFFSET_MAX keeps placements safe against the full lateral_offset range
     lat_range = cfg["risk"]["task"]["lateral_offset"]["range"]
     assert _const("LAT_OFFSET_MAX") == pytest.approx(max(abs(v) for v in lat_range))
 
@@ -447,57 +447,70 @@ def _interior_zone_clearances(task):
 
 @pytest.mark.skipif(not ROBOTWIN_OBJECTS.is_dir(), reason="RoboTwin assets not available")
 def test_layout_replay_seeds():
-    """200 replayed layouts: one cross-midline push on a random side, the far
-    end inside the shared reach band, midway zone + bystander clearances."""
+    """300 replayed layouts: one cross-midline push (straight or diagonal),
+    reachable gripper path, mode-consistent elements, 1-3 on the path (the
+    line crosses them), the rest off, every pair >= ELEM_GAP apart."""
     pz, restore = _load_task_module()
     try:
-        sides, n_path_seen = set(), set()
-        for seed in range(200):
+        seen = {"sides": set(), "modes": set(), "n_on": set()}
+        diagonal = 0
+        for seed in range(300):
             task = _replay_layout(pz, seed)  # raises RuntimeError on a bad layout
             assert len(task.push_objects) == 1
             rec = task.push_objects[0]
             side = rec["arm"]
             assert side == task.push_side == task.layout_info["push_side"]
-            sides.add(side)
-            sx, sy = (float(v) for v in rec["start_xy"])
-            gx, gy = (float(v) for v in rec["goal_xy"])
-            x0, x1, y0, y1 = pz.PUSH_START[side]
-            assert x0 <= sx <= x1 and y0 <= sy <= y1, (seed, side, "start", (sx, sy))
-            gx0, gx1 = pz.GOAL_X[side]
-            assert gx0 <= gx <= gx1, (seed, side, "goal x", gx)
-            assert abs(gy - sy) <= pz.GOAL_Y_JITTER + 1e-9, (seed, side, "goal y", (sy, gy))
-            assert gx * sx < 0, (seed, side, "does not cross the midline", (sx, gx))
-            # far-end reach: even the longest overshoot keeps the gripper (one
-            # contact depth behind the box) inside |x| <= a + b*y
-            d = (rec["goal_xy"] - rec["start_xy"]) / np.linalg.norm(rec["goal_xy"] - rec["start_xy"])
-            grip = rec["goal_xy"] + d * pz.OVERSHOOT_MAX  # contact depth >= 0 only shortens it
-            assert abs(grip[0]) <= pz.REACH_X_MAX[0] + pz.REACH_X_MAX[1] * grip[1] + 0.06, (seed, grip)
-            corrs = task.layout_info["corridors"]
-            assert len(corrs) == 1
-            assert 2 <= len(task.zones) <= 3
-            assert 1 <= len(task.bystanders) <= 2  # 2nd bystander may degrade (range draw)
-            assert len({z["region_id"] for z in task.zones}) == len(task.zones)
-            # 1-3 zones ON the path (the box centre line crosses them: negative
-            # edge clearance to the corridor), every other zone clear of it
-            path = set(task.layout_info["path_zones"])
-            assert 1 <= len(path) <= min(3, len(task.zones)), (seed, path)
-            assert task.primary_rule_id in {f"outside|push_0|{z}" for z in path}
-            a = np.asarray(corrs[0]["a"]); b = np.asarray(corrs[0]["b"])
-            for zone in task.zones:
-                c = np.asarray(zone["xy"]); hx, hy = zone["size_xy"][0] / 2, zone["size_xy"][1] / 2
-                crossed = pz._rect_seg_dist((c[0] - hx, c[1] - hy, c[0] + hx, c[1] + hy), a, b) == 0.0
-                assert crossed == (zone["region_id"] in path), (seed, zone["region_id"], crossed)
-            n_path_seen.add(len(path))
-            for b in task.bystanders:
-                xy = np.asarray(b["xy"], dtype=np.float64)
-                a = np.asarray(corrs[0]["a"], dtype=np.float64)
-                bseg = np.asarray(corrs[0]["b"], dtype=np.float64)
-                ab = bseg - a
-                t = float(np.clip((xy - a) @ ab / float(ab @ ab), 0.0, 1.0))
-                # edge clears the pushing hand's band, not only the box corridor
-                assert float(np.linalg.norm(xy - (a + t * ab))) > max(float(corrs[0]["half"]), pz.PUSHER_HALF_ACROSS)
-        assert sides == {"left", "right"}
-        assert n_path_seen == {1, 2, 3}
+            seen["sides"].add(side)
+            sgn = -1.0 if side == "left" else 1.0
+            p, g = rec["start_xy"], rec["goal_xy"]
+            assert sgn * p[0] > 0 and sgn * g[0] < 0, (seed, "does not cross the midline")
+            assert pz.PUSH_LEN[0] - 1e-9 <= float(np.linalg.norm(g - p)) <= pz.PUSH_LEN[1] + 1e-9
+            diagonal += abs(float(g[1] - p[1])) > 0.10
+            # the GRIPPER path (one contact depth behind the box, out to the
+            # longest overshoot) stays inside the shared reach
+            d = (g - p) / np.linalg.norm(g - p)
+            for t in np.linspace(0.0, 1.0, 21):
+                q = p + t * (g + d * pz.OVERSHOOT_MAX - p) - d * rec["half_dir"]
+                if q[0] * sgn > 0.0:
+                    assert q[1] <= pz.OWN_SIDE_Y_MAX + 1e-9, (seed, q)
+                else:
+                    assert abs(q[0]) <= pz.REACH_X_MAX[0] + pz.REACH_X_MAX[1] * q[1] + 1e-9, (seed, q)
+
+            li = task.layout_info
+            seen["modes"].add(li["mode"])
+            kinds = {e["kind"] for e in li["elements"]}
+            if li["mode"] == "zone":
+                assert kinds == {"zone"}
+            elif li["mode"] == "obstacle":
+                assert kinds == {"obstacle"}
+            else:
+                assert kinds == {"zone", "obstacle"}
+            assert 2 <= len(li["elements"]) + li["elements_dropped"] <= 4
+            a = np.asarray(li["corridors"][0]["a"]); b = np.asarray(li["corridors"][0]["b"])
+            n_on = 0
+            boxes = []
+            for e in li["elements"]:
+                c = np.asarray(e["xy"]); hx, hy = e["half"]
+                box = (c[0] - hx, c[1] - hy, c[0] + hx, c[1] + hy)
+                crossed = pz._rect_seg_dist(box, a, b) == 0.0
+                assert crossed == e["on_path"], (seed, e)
+                n_on += e["on_path"]
+                boxes.append(box)
+            assert 1 <= n_on <= 3, (seed, n_on)
+            seen["n_on"].add(n_on)
+            for i in range(len(boxes)):
+                for j in range(i + 1, len(boxes)):
+                    A, B = boxes[i], boxes[j]
+                    gap = max(B[0] - A[2], A[0] - B[2], B[1] - A[3], A[1] - B[3])
+                    assert gap >= pz.ELEM_GAP - 1e-6, (seed, i, j, gap)
+            # the primary rule names an on-path element
+            on_ids = {e["id"] for e in li["elements"] if e["on_path"]}
+            rid = task.primary_rule_id.split("|")
+            assert (rid[2] if rid[0] == "outside" else rid[1]) in on_ids
+        assert seen["sides"] == {"left", "right"}
+        assert seen["modes"] == {"zone", "obstacle", "mix"}
+        assert seen["n_on"] == {1, 2, 3}
+        assert diagonal > 30  # straight AND diagonal pushes
     finally:
         restore()
 
@@ -550,7 +563,7 @@ def test_pool_meshes_bottom_origin_and_pads():
                 assert pad >= max(hi[0] - lo[0], hi[2] - lo[2]) / 2.0 + 0.002, (asset, model_id, pad)
                 # mesh bystanders stay squat (the punt-ring 19-26 cm bottles tipped
                 # in check_stable — keep tall meshes out of the bystander pool)
-                if asset in pz.BYSTANDER_POOL:
+                if asset in pz.OBSTACLE_POOL:
                     assert hi[1] - lo[1] <= 0.12, (asset, model_id, hi[1] - lo[1])
     finally:
         restore()
