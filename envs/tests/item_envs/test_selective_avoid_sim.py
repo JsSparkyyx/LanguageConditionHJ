@@ -49,6 +49,7 @@ HOSTS = (
 )
 EMBODIMENTS = ["ur5-wsg", "franka-panda"]
 SEEDS = tuple(range(20))
+N_EPISODE_TRIES = 8
 
 # minimum host-item ids expected per host (list attrs expand, so bread is a prefix)
 HOST_ITEM_IDS = {
@@ -203,7 +204,12 @@ def test_nominal_episode_low_risk(host, embodiment, tmp_path):
     seed_order = sorted(SEEDS, key=lambda s: (counts.get(s, 1) == 0, s))
     meta = runner = None
     last = None
-    for seed in seed_order[:4]:
+    # dynamic candidates sit on the path and the nominal may knock them into
+    # the host items: P1 measured place_bread_basket/franka-panda nominal
+    # success 24/50 WITH candidates (41/50 without), so 4 tries missed ~6% of
+    # the time (p4-accept 22631780 + 22634245 both on that cell). 8 tries:
+    # ~0.5% at that rate; every other cell is >= 60%.
+    for seed in seed_order[:N_EPISODE_TRIES]:
         runner = ItemEpisodeRunner(
             "selective_avoid", host=host, embodiment=embodiment, seed=seed,
             risk={"time_scale": 0.6, "safe_time_scale": 0.6},
@@ -216,7 +222,7 @@ def test_nominal_episode_low_risk(host, embodiment, tmp_path):
     else:
         pytest.fail(
             f"no clean low-risk episode on {host}/{embodiment} over seeds "
-            f"{seed_order[:4]} (last: {last})"
+            f"{seed_order[:N_EPISODE_TRIES]} (last: {last})"
         )
 
     assert meta.host_task == host

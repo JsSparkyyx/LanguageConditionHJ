@@ -110,6 +110,7 @@ BIMANUAL_LIFT = (0.05, 0.10)  # m above the table, sampled at play time
 ZONE_DEFS = (("red", (0.85, 0.10, 0.10)), ("blue", (0.15, 0.30, 0.90)))
 ZONE_SIZE_XY = ((0.10, 0.16), (0.08, 0.14))  # per-zone full-extent sampling ranges
 ZONE_GAP = 0.02  # mat-edge to bowl-outer-wall clearance (see zone_clear_ok)
+ZONE_WIDE_TRIES = 200  # table-wide checked draws after the near-target candidates
 USE_LAPTOP_ZONE = False  # True: replace zone 1 with a static 015_laptop articulation
 LAPTOP_MODEL_IDS = (9748, 9912, 9960, 9968, 9992, 9996, 10040, 10098, 10101, 10125, 10211)
 
@@ -129,8 +130,9 @@ TILT_STEPS = 10  # small EE-rotation steps per tilt direction
 # ee_pose trace; P2's probed band is 1-3 rad/s.
 OMEGA_PLAN_REF = 2.0  # rad/s
 TILT_S_MIN, TILT_S_MAX = 0.25, 2.0
-POUR_PIN_ABORT = 0.10  # abort the tilt when the live rim is this far off the
-                       # pivot (bowl lost from the grasp — do not chase it)
+POUR_PIN_ABORT = 0.03  # abort the tilt when the rim-to-EE distance drifts this
+                       # far from its grasp-time value (bowl slipping / lost)
+POUR_REF_DEG = 95.0  # tilt angle at which the pouring lip sits on the pour point
 HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 Hz)
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
 SUCCESS_MIN_FRAC = 0.8  # fraction of beads inside the target interior
@@ -246,8 +248,35 @@ class granular_pour(place_container_plate):
                     continue
                 zxy = _candidate
                 break
-            if zxy is None:  # 50 draws + the fixed fallbacks all rejected: keep
-                zxy = np.clip(target_xy + np.array([0.22, 0.18]), [-0.5, -0.25], [0.5, 0.25])
+            if zxy is None:
+                # 50 near-target draws + the fixed fallbacks all rejected. The
+                # old unchecked clip(target + [0.22, 0.18]) fallback could land
+                # ON the source bowl when it sits on the same side (p4-accept
+                # seed 16: a resting bead read 2.3 cm inside zone_blue at t=0).
+                # Widen the search with the SAME checks; the first 55 candidates
+                # are unchanged, so every layout that passed before is
+                # byte-identical.
+                for _ in range(ZONE_WIDE_TRIES):
+                    cand = np.array(
+                        [np.random.uniform(-0.45, 0.45), np.random.uniform(-0.25, 0.25)]
+                    )
+                    if abs(cand[0]) > 0.55 - size[0] / 2 or abs(cand[1]) > 0.30 - size[1] / 2:
+                        continue
+                    if not zone_clear_ok(cand, size, bowls, ZONE_GAP):
+                        continue
+                    if self.zones and not zone_clear_ok(
+                        cand, size,
+                        [(self.zones[0]["xy"], float(np.linalg.norm(self.zones[0]["size"]) / 2.0))],
+                        ZONE_GAP,
+                    ):
+                        continue
+                    zxy = cand
+                    break
+            if zxy is None:
+                raise RuntimeError(
+                    f"granular_pour: no clear spot for zone_{zname} after "
+                    f"55 near-target + {ZONE_WIDE_TRIES} table-wide candidates"
+                )
             if USE_LAPTOP_ZONE and zi == 1:
                 entity, region_id, zsize, zcolor = self._spawn_laptop(zxy)
             else:
@@ -442,21 +471,29 @@ class granular_pour(place_container_plate):
         # the bimanual held target is accounted for)
         pour_point = self._pour_point(pour_height, pour_offset)
 
-        # 3. transit the bowl above the target — risky scale (time_scale knob)
-        with risky(self):
-            d = pour_point - self._rim_center(self.container, self._src_geom)
-            self.move(self.move_by_displacement(arm_tag, x=float(d[0]), y=float(d[1]), z=float(d[2])))
-
-        # 4. tilt 100-120 deg about world y (the horizontal axis perpendicular to
-        #    the inter-arm x axis), hold, tilt back — risky; per-step scale set
-        #    from tilt_rate (see _tilt_steps). Sign tips the mouth toward the
-        #    target side (-x for the right arm, +x for the left).
+        # 4's parameters first (the transit target depends on them): tilt
+        # 100-120 deg about world y (the horizontal axis perpendicular to the
+        # inter-arm x axis); sign tips the mouth toward the target side (-x for
+        # the right arm, +x for the left).
         tilt_total = float(np.deg2rad(np.random.uniform(*TILT_ANGLE_DEG)))
         sign = -1.0 if container_pose[0] > 0 else 1.0
+
+        # 3. transit — risky scale (time_scale knob). The tilt pivots about the
+        #    EE ORIGIN (pure wrist reorientation, see _tilt_steps), so the EE is
+        #    first translated to where the bowl's pouring lip lands on the pour
+        #    point at the reference pour angle POUR_REF_DEG (beads start leaving
+        #    at ~85-101 deg, feasibility.md F3).
+        ee_target = self._pour_ee_target(arm_tag, pour_point, sign * min(tilt_total, np.deg2rad(POUR_REF_DEG)))
         with risky(self):
-            self._tilt_steps(arm_tag, pour_point, sign * tilt_total, tilt_rate)
+            ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+            d = ee_target - ee[:3]
+            self.move(self.move_by_displacement(arm_tag, x=float(d[0]), y=float(d[1]), z=float(d[2])))
+
+        # 4. tilt, hold, tilt back — risky; per-step scale from tilt_rate
+        with risky(self):
+            self._tilt_steps(arm_tag, sign * tilt_total, tilt_rate)
             self.delay(HOLD_DELAY)
-            self._tilt_steps(arm_tag, pour_point, -sign * tilt_total, tilt_rate)
+            self._tilt_steps(arm_tag, -sign * tilt_total, tilt_rate)
 
         # 5. place the empty bowl beside the target and retreat — safe scale.
         #    Explicit place poses carry the IDENTITY quat (dump_bin_bigbin's
@@ -508,51 +545,73 @@ class granular_pour(place_container_plate):
             [0.0, float(geom["rim_y"]), 0.0]
         )
 
-    def _tilt_steps(self, arm_tag, pivot, angle, tilt_rate):
+    def _pour_lip(self, arm_tag):
+        """World point of the source bowl's pouring lip: the rim-opening point
+        on the far side from the grasp (the gripper holds the near rim, so the
+        mouth's lowest point when tipped away from the hand is the far lip)."""
+        ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+        rim = self._rim_center(self.container, self._src_geom)
+        away = rim[:2] - ee[:2]
+        n = float(np.linalg.norm(away))
+        away = away / n if n > 1e-6 else np.array([1.0, 0.0])
+        return rim + float(self._src_geom["inner_radius"]) * np.array([away[0], away[1], 0.0])
+
+    def _pour_ee_target(self, arm_tag, pour_point, angle_ref):
+        """EE position whose pure rotation by ``angle_ref`` (about world y,
+        pivot = EE origin) brings the pouring lip onto ``pour_point``. The
+        transit is a pure translation, so the EE->lip offset measured now (bowl
+        upright, just lifted) is the one that gets rotated."""
+        ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+        lip = self._pour_lip(arm_tag)
+        return np.asarray(pour_point, dtype=np.float64) - _roty(angle_ref) @ (lip - ee[:3])
+
+    def _tilt_steps(self, arm_tag, angle, tilt_rate):
         """Rotate the held bowl by ``angle`` (rad, signed about world +y) in
-        TILT_STEPS small EE-rotation move_to_pose steps, keeping the bowl's rim
-        center pinned at ``pivot``: each step reads the LIVE ee pose and rim
-        center, rotates the EE orientation by one step about world y, and
-        translates the EE so the rim stays at the pivot (pure EE rotation would
-        swing the rim ~12 cm along an arc around the gripper frame — the grasp
-        TCP sits ~0.12 m from the EE origin, APPROACH_TO_TCP convention).
+        TILT_STEPS small EE-orientation steps about the EE ORIGIN (position
+        held fixed): a pure wrist reorientation, the smallest reach demand of
+        any pivot. The old rim-centre pivot swung the EE ~0.3 m across the
+        target (franka left arm out of reach at x = 0.25 on step 7, diag job
+        22636048) and invited cuRobo IK branch flips.
+
+        Each step runs with ``plan_local`` set: RiskTickController plans it as
+        an mplib screw from the live joints (no IK branch change) and rejects
+        any fallback plan whose joints jump > LOCAL_JUMP_MAX.
 
         Rate approximation (PLAN v3 §7 T2 "timed by the retimer"): every step's
         plan is retimed by RiskTickController with s = task.active_time_scale,
-        set here to clip(tilt_rate / OMEGA_PLAN_REF, TILT_S_MIN, TILT_S_MAX) —
-        cuRobo's unretimed rate for a ~11 deg rotation is roughly OMEGA_PLAN_REF
-        rad/s, so the realized pour rate approximates tilt_rate (P2 band 1-3
-        rad/s). The exact realized rate is measured downstream from the ee_pose
-        trace; this per-step scale REPLACES the risky time_scale for the tilt
-        (the time_scale knob still retimes the transit move).
+        set here to clip(tilt_rate / OMEGA_PLAN_REF, TILT_S_MIN, TILT_S_MAX);
+        the realized pour rate is measured downstream from the ee_pose trace.
+        This per-step scale REPLACES the risky time_scale for the tilt.
 
-        Pin guard: if the live rim center ever sits more than POUR_PIN_ABORT
-        from the pivot, the bowl is no longer pinned (knocked out of the
-        grasp) — chasing it would command an unreachable pose half a metre
-        away (p4-accept ur5 plan #12). The tilt then aborts quietly: play_once
-        continues (place/retreat still run), the episode completes, and
-        check_success reports the failed pour instead of a plan_failure abort.
+        Grasp guard: if the rim centre drifts more than POUR_PIN_ABORT from its
+        grasp-time offset to the EE, the bowl is slipping or lost — the tilt
+        then aborts quietly (play_once continues to place/retreat, the episode
+        completes, check_success reports the failed pour).
         """
         s_step = float(np.clip(float(tilt_rate) / OMEGA_PLAN_REF, TILT_S_MIN, TILT_S_MAX))
         self.active_time_scale = s_step
         step = float(angle) / TILT_STEPS
-        rot = _roty(step)
-        q_step = _mat_to_quat_wxyz(rot)
-        for _ in range(TILT_STEPS):
-            ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
-            rim = self._rim_center(self.container, self._src_geom)
-            if float(np.linalg.norm(rim - pivot)) > POUR_PIN_ABORT:
-                print(
-                    f"[granular_pour] tilt aborted: rim {np.linalg.norm(rim - pivot):.3f} m "
-                    "off the pivot — bowl no longer pinned"
-                )
-                return
-            r = rim - ee[:3]
-            p_new = pivot - rot @ r
-            q_new = _quat_mul_wxyz(q_step, ee[3:])
-            if float(np.dot(q_new, ee[3:])) < 0.0:
-                q_new = -q_new  # antipodal twin: keep the target in the live hemisphere
-            self.move(self.move_to_pose(arm_tag, p_new.tolist() + q_new.tolist()))
+        q_step = _mat_to_quat_wxyz(_roty(step))
+        ee0 = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+        hold = float(np.linalg.norm(self._rim_center(self.container, self._src_geom) - ee0[:3]))
+        self.plan_local = True
+        try:
+            for _ in range(TILT_STEPS):
+                ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+                rim = self._rim_center(self.container, self._src_geom)
+                drift = abs(float(np.linalg.norm(rim - ee[:3])) - hold)
+                if drift > POUR_PIN_ABORT:
+                    print(
+                        f"[granular_pour] tilt aborted: rim-to-EE distance changed "
+                        f"{drift:.3f} m — bowl no longer held"
+                    )
+                    return
+                q_new = _quat_mul_wxyz(q_step, ee[3:])
+                if float(np.dot(q_new, ee[3:])) < 0.0:
+                    q_new = -q_new  # antipodal twin: keep the target in the live hemisphere
+                self.move(self.move_to_pose(arm_tag, ee0[:3].tolist() + q_new.tolist()))
+        finally:
+            self.plan_local = False
 
     # ---------------------------------------------------------------- overlay ----
     def _beads_inside(self, actor, geom):

@@ -46,6 +46,7 @@ from main.envs.controller import TickChunkedController, current_skill  # noqa: E
 from .retime import retime  # noqa: E402
 
 DEFAULT_JOINT_VEL = 2.0  # rad/s (or m/s prismatic) fallback, body_features.py policy
+LOCAL_JUMP_MAX = 1.0  # rad: a plan_local step whose joints leave the start by more is a branch flip
 
 
 class RiskTickController(TickChunkedController):
@@ -101,6 +102,44 @@ class RiskTickController(TickChunkedController):
                 f"T {info['T_in']}->{info['T_out']}) — NOT clipped; tracking "
                 f"realized-vs-commanded displacement"
             )
+        return result
+
+    def _plan_body(self, arm: str, target_pose, **kw):
+        """Local-planning mode for small reorientation steps (T2 tilt).
+
+        cuRobo's goal-pose IK may pick ANOTHER IK branch for a 6-deg wrist
+        step: diag job 22636048 (granular_pour ur5 seed 0) swung joint 0
+        -2.02 -> +0.58 rad and joint 4 +1.86 -> -1.02 rad on one tilt step,
+        sweeping the bowl through (-0.21, -0.55, 1.64) and flinging the beads.
+        When the task sets ``plan_local`` (duck-typed, RoboTwin task files
+        cannot import main.*), try the mplib SCREW path first — a straight
+        Cartesian interpolation solved by IK from the live joints, so it stays
+        on the current branch — and reject any fallback plan whose joints
+        travel more than LOCAL_JUMP_MAX from the start (a failed step is
+        recorded as a plan failure; flinging the payload is not).
+        """
+        task = getattr(self.env, "task", None)
+        if not getattr(task, "plan_local", False):
+            return super()._plan_body(arm, target_pose, **kw)
+        self._n_plan += 1
+        plan_kw = {k: v for k, v in kw.items() if not str(k).startswith("_cehj")}
+        try:
+            result = self._plan_screw(arm, target_pose, **plan_kw)
+        except Exception as exc:  # mplib unavailable / IK error: fall through
+            print(f"[risk_tick] plan #{self._n_plan} {arm} local screw error: {exc}")
+            result = None
+        if result and result.get("status") == "Success" and _max_joint_travel(result) <= LOCAL_JUMP_MAX:
+            print(f"[risk_tick] plan #{self._n_plan} {arm} local screw ok "
+                  f"n_wp={len(result['position'])} travel={_max_joint_travel(result):.2f}rad")
+            return result
+        self._n_plan -= 1  # super()._plan_body counts its own attempt
+        result = super()._plan_body(arm, target_pose, **kw)
+        if result and result.get("status") == "Success":
+            travel = _max_joint_travel(result)
+            if travel > LOCAL_JUMP_MAX:
+                print(f"[risk_tick] plan #{self._n_plan} {arm} REJECTED: local step "
+                      f"joint travel {travel:.2f} rad > {LOCAL_JUMP_MAX} (IK branch flip)")
+                return {"status": "Fail_branch_flip"}
         return result
 
     def _sync_time_scale_from_skill(self) -> None:
@@ -241,3 +280,11 @@ def _urdf_velocity_limits(urdf_path) -> dict[str, float]:
         except ValueError:
             continue
     return out
+
+
+def _max_joint_travel(result) -> float:
+    """max over path rows and joints of |q(t) - q(0)| (rad) — 0 for short plans."""
+    pos = np.asarray(result.get("position"), dtype=np.float64)
+    if pos.ndim != 2 or pos.shape[0] < 2:
+        return 0.0
+    return float(np.max(np.abs(pos - pos[0])))

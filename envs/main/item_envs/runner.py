@@ -915,6 +915,10 @@ def _fmt_margin(rule, value: float) -> str:
     name = getattr(consequence, "value", str(consequence))
     if name == "upright":
         return f"{float(np.rad2deg(value)):+.1f}deg"
+    if name == "stay":
+        # m_stay = min(d_tol - displacement [m], theta_tol - tilt [rad]): the
+        # binding term decides the unit, so show the raw value, not "cm"
+        return f"{float(value):+.3f}(m|rad)"
     return f"{float(value) * 100.0:+.1f}cm"
 
 

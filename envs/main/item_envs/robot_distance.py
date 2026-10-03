@@ -108,44 +108,69 @@ def _robot_side_psids(env) -> dict[int, str]:
     return cache
 
 
-def _contact_held_item_indices(env, specs: list, cehj) -> set[int]:
-    """Indices of items touched by a CLOSED gripper link this physics step.
+def _closed_gripper_contacts(env, key_by_psid: dict, entity_by_key: dict, cehj) -> dict:
+    """side -> key of the item a CLOSED gripper is holding this physics step.
 
-    The per_scene_id-keyed replacement for the CEHJ
-    ``_detect_held_from_contacts`` supplement (same scan shape as
-    HeldTracker.contact_held_sides): the item side is matched by psid, the
-    gripper side by NAME (``_is_gripper_entity`` is wrapper-safe) plus the
-    psid side map, and the arm must read closed (``_arm_is_holding``). One
-    item per arm, first contact wins.
+    Every item touched by a closed gripper link is a candidate; the HELD one
+    is the item touched by the most distinct gripper links (a pinch contacts
+    both fingers), ties broken by the item's distance to that arm's TCP.
+    "First contact wins" (the previous rule) latched a can brushing the
+    outside of a finger instead of the bread pinched between them (diag job
+    22636048, selective_avoid/place_bread_basket/franka seed 1): the can then
+    read avoid = +inf while the gripper was touching it, and the bread was
+    never counted as payload.
     """
+    side_psids = _robot_side_psids(env)
+    touch: dict[str, dict] = {}  # side -> key -> set of gripper link psids
+    try:
+        contacts = env.task.scene.get_contacts()
+    except Exception:
+        return {}  # transient (e.g. before the first step), distance.py's guard
+    for contact in contacts:
+        bodies = contact.bodies
+        for i in range(2):
+            key = key_by_psid.get(int(bodies[1 - i].entity.per_scene_id))
+            if key is None:
+                continue
+            grip_ent = bodies[i].entity
+            if not cehj._is_gripper_entity(env, grip_ent):
+                continue
+            side = side_psids.get(int(grip_ent.per_scene_id))
+            if side is None:
+                continue
+            touch.setdefault(side, {}).setdefault(key, set()).add(int(grip_ent.per_scene_id))
+    out: dict = {}
+    for side, cands in touch.items():
+        if not cehj._arm_is_holding(env, side):
+            continue
+        if len(cands) == 1:
+            out[side] = next(iter(cands))
+            continue
+
+        def _rank(key, _side=side, _cands=cands):
+            try:
+                d = float(cehj._hold_metrics(env, entity_by_key[key], _side)["origin_dist_tcp"])
+            except Exception:
+                d = float("inf")
+            return (-len(_cands[key]), d if d == d else float("inf"), str(key))
+
+        out[side] = min(cands, key=_rank)
+    return out
+
+
+def _contact_held_item_indices(env, specs: list, cehj) -> set[int]:
+    """Indices of items HELD by a closed gripper this physics step (one per
+    arm, chosen by ``_closed_gripper_contacts``: most gripper links in
+    contact, then nearest to the TCP). Item side matched by psid, gripper
+    side by name + psid side map, arm must read closed."""
     spec_by_psid: dict[int, int] = {}
     for i, spec in enumerate(specs):
         for psid in _item_entity_psids(spec):
             spec_by_psid.setdefault(psid, i)
     if not spec_by_psid:
         return set()
-    side_psids = _robot_side_psids(env)
-    held: set[int] = set()
-    found_sides: set[str] = set()
-    try:
-        contacts = env.task.scene.get_contacts()
-    except Exception:
-        return held  # transient (e.g. before the first step), same guard as distance.py
-    for contact in contacts:
-        bodies = contact.bodies
-        for i in range(2):
-            idx = spec_by_psid.get(int(bodies[1 - i].entity.per_scene_id))
-            if idx is None or idx in held:
-                continue
-            grip_ent = bodies[i].entity
-            if not cehj._is_gripper_entity(env, grip_ent):
-                continue
-            side = side_psids.get(int(grip_ent.per_scene_id))
-            if side is None or side in found_sides or not cehj._arm_is_holding(env, side):
-                continue
-            found_sides.add(side)
-            held.add(idx)
-    return held
+    entity_by_key = {i: spec.entity for i, spec in enumerate(specs)}
+    return set(_closed_gripper_contacts(env, spec_by_psid, entity_by_key, cehj).values())
 
 
 class HeldTracker:
@@ -172,32 +197,11 @@ class HeldTracker:
         return dict(self._latch)
 
     def contact_held_sides(self, env, cehj) -> dict[str, str]:
-        """side -> item_id for items touched by a CLOSED gripper link this step.
-
-        Same scan shape as ``_contact_held_item_indices`` but side-attributed:
-        one item per arm, first contact wins.
-        """
-        item_psids = self._item_psids
-        side_psids = _robot_side_psids(env)
-        found: dict[str, str] = {}
-        try:
-            contacts = env.task.scene.get_contacts()
-        except Exception:
-            contacts = []  # transient (e.g. before the first step), distance.py's guard
-        for contact in contacts:
-            bodies = contact.bodies
-            for i in range(2):
-                item_id = item_psids.get(int(bodies[1 - i].entity.per_scene_id))
-                if item_id is None:
-                    continue
-                grip_ent = bodies[i].entity
-                if not cehj._is_gripper_entity(env, grip_ent):
-                    continue
-                side = side_psids.get(int(grip_ent.per_scene_id))
-                if side is None or side in found or not cehj._arm_is_holding(env, side):
-                    continue
-                found[side] = item_id
-        return found
+        """side -> item_id held by a CLOSED gripper this step (same selection
+        as ``_contact_held_item_indices``: most gripper links in contact,
+        then nearest to the TCP)."""
+        entity_by_key = {s.item_id: s.entity for s in self._items}
+        return _closed_gripper_contacts(env, self._item_psids, entity_by_key, cehj)
 
     def held_indices(self, env) -> np.ndarray:
         """[2] item index held by left/right arm, -1 if none (contact latch)."""

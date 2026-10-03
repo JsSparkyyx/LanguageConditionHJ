@@ -310,6 +310,9 @@ class EpisodeTrace:
 # ---------------------------------------------------------------------------
 
 
+SIDE_PANEL_MIN_LINES = 6  # more overlay lines than this -> text moves to a side panel
+
+
 def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False) -> np.ndarray:
     """RGB frame with the text overlay (and optional red border) drawn on a copy.
 
@@ -320,8 +323,17 @@ def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False) -
 
     img = np.ascontiguousarray(np.asarray(frame_rgb).copy())
     scale = max(img.shape[0] / 240.0, 1.0)
-    # shrink the text so every line fits the frame height (per-rule margin
-    # lists run 10-15 lines); lines starting with "!" are drawn red
+    # long line lists (per-rule margins) go to a dark side panel so the scene
+    # stays visible; the text shrinks to fit the frame height. Lines starting
+    # with "!" are drawn red (violations).
+    if len(lines) > SIDE_PANEL_MIN_LINES:
+        h, w = img.shape[:2]
+        panel_w = int(round(0.6 * w)) // 2 * 2  # even width keeps mp4 encoders happy
+        panel = np.full((h, panel_w, 3), 24, dtype=img.dtype)
+        img = np.ascontiguousarray(np.concatenate([img, panel], axis=1))
+        x0 = w + 6
+    else:
+        x0 = 6
     fit = (img.shape[0] - 8) / max(1, len(lines)) / (20.0 * scale)
     scale_txt = scale * min(1.0, max(0.45, fit))
     thick = max(1, int(round(scale_txt)))
@@ -336,7 +348,7 @@ def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False) -
             cv2.putText(
                 img,
                 line,
-                (6, y),
+                (x0, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45 * scale_txt,
                 color,
@@ -384,6 +396,17 @@ class OverlayVideoWriter:
 
     def close(self) -> Path | None:
         if self._frames:
-            self.path = save_video(self._frames, self.out_path, self.fps)
+            # the side panel appears only past SIDE_PANEL_MIN_LINES, so a line
+            # count that changes mid-episode changes the frame width: pad every
+            # frame to the widest one (the encoder needs one size)
+            w = max(f.shape[1] for f in self._frames)
+            frames = [
+                f if f.shape[1] == w
+                else np.concatenate(
+                    [f, np.full((f.shape[0], w - f.shape[1], 3), 24, dtype=f.dtype)], axis=1
+                )
+                for f in self._frames
+            ]
+            self.path = save_video(frames, self.out_path, self.fps)
         self._frames = []
         return self.path

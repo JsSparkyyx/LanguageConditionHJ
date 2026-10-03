@@ -269,7 +269,7 @@ def test_pour_height_floor_and_tilt_guards():
     # play_once clamps the knob; the tilt aborts on a lost pin; quat continuity
     assert "min_pour_height(self._src_geom, clearance=POUR_HEIGHT_CLEAR)" in src
     assert "POUR_HEIGHT_CLEAR = 0.015" in src
-    assert "POUR_PIN_ABORT = 0.10" in src
+    assert "POUR_PIN_ABORT = 0.03" in src
     assert "np.dot(q_new, ee[3:])) < 0.0" in src
     # registration uses the footprint-column radius, not the rim opening
     assert "rim_radius=container_region_radius(self._src_geom" in src
