@@ -496,6 +496,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import faulthandler
+
+    faulthandler.enable()  # native crashes (SIGSEGV in PhysX/mplib) print the Python stack
     parser = build_parser()
     args = parser.parse_args(argv)
     # Env() chdirs to the RoboTwin root: resolve --out against the launch cwd
