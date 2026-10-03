@@ -53,7 +53,6 @@ from .granular_pour import (
     BEAD_MASS_RANGE,
     BEAD_R,
     BOWL_IDS,
-    BOWL_MASS_RANGE,
     BOWL_MODEL,
     CONTAINER_REGION_PAD,
     SPAWN_QUAT,
@@ -77,6 +76,10 @@ ZONE_EDGE_GAP = (0.02, 0.05)  # zone edge -> carried bowl's outer wall (m)
 
 # --- nominal motion ---
 GRASP_CONTACT_IDS = (0, 2)  # [right, left]: +x rim / -x rim (opposite pinches)
+GRIPPER_STIFFNESS = 5000.0  # gripper PD stiffness for the two rim pinches (RoboTwin default 1000)
+CARRY_BOWL_MASS_RANGE = (0.10, 0.20)  # kg — lighter than T2's (0.10, 0.40): two rim pinches carry bowl + beads
+PINCH_CLEAR_R = 0.025  # m: no top-layer beads within this of the rim at the pinch points
+PINCH_CLEAR_DEPTH = 0.015  # m below the rim plane
 CARRY_STEP = 0.03  # m per paired step (short steps keep the two pinches in lockstep)
 CARRY_SPEED = 0.10  # m/s at time_scale 1.0 (safe phases use safe_time_scale)
 CARRY_HEIGHT_DEFAULT = 0.08  # m lift above the table
@@ -105,7 +108,7 @@ class granular_carry(granular_pour):
             convex=True,
         )
         self._src_geom = bowl_geometry(BOWL_MODEL, self.container_id)
-        self._bowl_mass = float(np.random.uniform(*BOWL_MASS_RANGE))
+        self._bowl_mass = float(np.random.uniform(*CARRY_BOWL_MASS_RANGE))
         self.container.set_mass(self._bowl_mass)
 
         # brim-full: the grid over-fills, the layer cut keeps beads whose
@@ -117,6 +120,13 @@ class granular_carry(granular_pour):
         )
         masses_all = np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=N_BEADS_MAX)
         keep = local[:, 1] <= float(g["rim_y"]) - BRIM_CLEAR
+        # leave the top layers clear at the two rim pinch points (file +/-z =
+        # world +/-x): the inner finger of a rim pinch otherwise plows the
+        # brim-level beads over the rim during the grasp (diag job 22640284)
+        near_pinch = (np.abs(local[:, 2]) > float(g["inner_radius"]) - PINCH_CLEAR_R) & (
+            local[:, 1] > float(g["rim_y"]) - PINCH_CLEAR_DEPTH
+        )
+        keep &= ~near_pinch
         local, masses = local[keep], masses_all[keep]
         world_T = self.container.get_pose().to_transformation_matrix()
         bead_world = local @ world_T[:3, :3].T + world_T[:3, 3]
@@ -207,6 +217,15 @@ class granular_carry(granular_pour):
         v_safe = CARRY_SPEED * float(getattr(self, "_time_scale_safe", 0.6))
         v_risky = CARRY_SPEED * float(getattr(self, "_time_scale_risky", 1.0))
         cp = list((getattr(self, "embodiment_params", None) or {}).get("grasp_contact_ids", GRASP_CONTACT_IDS))
+
+        # firmer pinch: two rim pinches carry bowl + up to ~0.3 kg of beads;
+        # at RoboTwin's default gripper stiffness (1000) the bowl slid and
+        # pivoted 13 deg in the pinches during the lift (diag job 22640284)
+        k_grip = float((getattr(self, "embodiment_params", None) or {}).get("gripper_stiffness", GRIPPER_STIFFNESS))
+        for joints, damping in ((self.robot.left_gripper, self.robot.left_gripper_damping),
+                                (self.robot.right_gripper, self.robot.right_gripper_damping)):
+            for joint in joints:
+                joint[0].set_drive_property(stiffness=k_grip, damping=float(damping))
 
         # 1. both arms pinch opposite rim points — safe scale
         self.move(

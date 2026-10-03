@@ -432,7 +432,7 @@ def _push_quat(push_dir_xy):
 def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
                  prepush_dist=0.05, height_offset=0.0, seg_len=0.10, approach_gap=0.015,
                  max_segments=12, goal_tol=0.005, realign_tol=0.01,
-                 height_frac=0.6, lane_tol=0.05):
+                 height_frac=0.6, lane_tol=0.05, approach_lift=0.10):
     """Closed-loop table-top push of ``obj`` to ``goal_xy`` (plan v3 §7 T3).
 
     ``push()`` commands one fixed direction/distance from the pose at
@@ -503,10 +503,17 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
         return [float(xy[0]), float(xy[1]), z_contact + APPROACH_TO_TCP] + _push_quat(d)
 
     def _prepush(task):
+        # approach from ABOVE: the planner's world holds only the table, so a
+        # direct path to the pre-push pose can sweep through the box and knock
+        # it over before the push starts (diag job 22640284, ur5 seed 1: the
+        # coffee box ended rotated 98 deg at its start)
         d, _, face, zc = _live()
         state["d"] = state["d0"] = d
         state["line0"] = np.asarray(_unwrap(obj).get_pose().p, dtype=np.float64).reshape(3)[:2].copy()
-        return task.move_to_pose(arm_tag, _pose(face - d * float(prepush_dist), zc, d))
+        pre = face - d * float(prepush_dist)
+        above = _pose(pre, zc, d)
+        above[2] += float(approach_lift)
+        return arm_tag, task.move_to_pose(arm_tag, above)[1] + task.move_to_pose(arm_tag, _pose(pre, zc, d))[1]
 
     def _segment(task):
         if state["done"]:

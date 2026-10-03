@@ -48,6 +48,7 @@ from .retime import retime  # noqa: E402
 DEFAULT_JOINT_VEL = 2.0  # rad/s (or m/s prismatic) fallback, body_features.py policy
 PHYSICS_DT = 1.0 / 250.0  # one plan row per physics step (cuRobo interpolation_dt, mplib time_step)
 LOCAL_JUMP_MAX = 1.0  # rad: a plan_local step whose joints leave the start by more is a branch flip
+BRANCH_FLIP_TRAVEL = 2.0  # rad: any-joint travel above this triggers a local (screw) retry
 
 
 class RiskTickController(TickChunkedController):
@@ -133,7 +134,8 @@ class RiskTickController(TickChunkedController):
         """
         task = getattr(self.env, "task", None)
         if not getattr(task, "plan_local", False):
-            return super()._plan_body(arm, target_pose, **kw)
+            result = super()._plan_body(arm, target_pose, **kw)
+            return self._avoid_branch_flip(arm, target_pose, result, **kw)
         self._n_plan += 1
         plan_kw = {k: v for k, v in kw.items() if not str(k).startswith("_cehj")}
         try:
@@ -160,6 +162,31 @@ class RiskTickController(TickChunkedController):
                 print(f"[risk_tick] plan #{self._n_plan} {arm} REJECTED: local step "
                       f"joint travel {travel:.2f} rad > {LOCAL_JUMP_MAX} (IK branch flip)")
                 return {"status": "Fail_branch_flip"}
+        return result
+
+    def _avoid_branch_flip(self, arm: str, target_pose, result, **kw):
+        """cuRobo's goal IK sometimes returns ANOTHER IK branch: the ur5 arm
+        swung its shoulder pan 187 deg and wrist 2 167 deg around for a
+        modest EE move (T1 place_burger_fries seed 2, 6.4-7.4 s — a branch
+        flip, not a 2*pi wrap). When any joint travels more than
+        BRANCH_FLIP_TRAVEL, retry as an mplib screw from the live joints
+        (stays on the current branch) and keep it if it succeeds with less
+        travel; otherwise the original plan stands."""
+        if not result or result.get("status") != "Success":
+            return result
+        travel = _max_joint_travel(result)
+        if travel <= BRANCH_FLIP_TRAVEL:
+            return result
+        plan_kw = {k: v for k, v in kw.items() if not str(k).startswith("_cehj")}
+        try:
+            screw = self._plan_screw(arm, target_pose, **plan_kw)
+        except Exception:
+            screw = None
+        if screw and screw.get("status") == "Success" and _max_joint_travel(screw) < travel:
+            print(f"[risk_tick] plan #{self._n_plan} {arm} branch flip avoided: "
+                  f"{travel:.2f} rad -> screw {_max_joint_travel(screw):.2f} rad")
+            return screw
+        print(f"[risk_tick] plan #{self._n_plan} {arm} large joint travel {travel:.2f} rad kept (no local alternative)")
         return result
 
     def _unwrap_revolutions(self, arm: str, result) -> dict:
