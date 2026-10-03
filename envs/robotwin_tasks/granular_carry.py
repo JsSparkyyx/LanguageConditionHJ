@@ -71,8 +71,8 @@ PAD_COLOR = (0.55, 0.55, 0.55)
 N_BEADS_MAX = 240  # grid candidates; beads above rim_y - BRIM_CLEAR are dropped
 BRIM_CLEAR = 0.012  # m, top bead centre below the rim plane: spills beyond ~12 deg of tilt
 CARRY_BOWL_MASS_RANGE = (0.10, 0.20)  # kg
-PINCH_CLEAR_R = 0.035  # m: no top-layer beads within this of the rim at the pinch point
-PINCH_CLEAR_DEPTH = 0.020  # m below the rim plane
+PINCH_CLEAR_R = 0.050  # m: no top-layer beads within this of the rim at the pinch point
+PINCH_CLEAR_DEPTH = 0.025  # m below the rim plane
 
 # --- nominal motion ---
 GRASP_CONTACT_IDS = (0, 2)  # [right, left]: outer rim of the bowl (host idiom)
