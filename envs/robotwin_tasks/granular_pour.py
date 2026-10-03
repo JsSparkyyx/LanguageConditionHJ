@@ -566,8 +566,10 @@ class granular_pour(place_container_plate):
         Candidates in order: far lip (mouth toward the target, sign * x),
         then -y, then +y (never the near lip, under the fingers). Each gets
         ``_swing_clear`` (raise the pour point until the swept bowl hull clears
-        the target rim) and a dry run of the full tilted pose with the
-        runner-installed ``task.screw_plan_ok`` (RiskTickController.attach) —
+        the target rim) and a dry run of the SEQUENCE play_once will execute
+        (transit legs + every tilt step, chained screws from each step's end
+        joints) with the runner-installed ``task.screw_path_ok``
+        (RiskTickController.attach) —
         ur5-wsg's wrist 1 (+/-1.75 rad) blocks the far-lip tilt (diag job
         22636122). Without the capability (vanilla RoboTwin) the far lip is
         used. Recorded in ``self.pour_info``.
@@ -575,6 +577,7 @@ class granular_pour(place_container_plate):
         ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
         up = np.array([0.0, 0.0, 1.0])
         cands = [np.array([sign, 0.0, 0.0]), np.array([0.0, -1.0, 0.0]), np.array([0.0, 1.0, 0.0])]
+        check_path = getattr(self, "screw_path_ok", None)
         check = getattr(self, "screw_plan_ok", None)
         tried, chosen = [], None
         for m in cands:
@@ -584,7 +587,20 @@ class granular_pour(place_container_plate):
             ee_target = pp + (ee[:3] - lip)  # upright: lip on the pour point
             ee_final = pp + _rot_axis(axis, tilt_total) @ (ee[:3] - lip)
             q_final = _quat_mul_wxyz(_mat_to_quat_wxyz(_rot_axis(axis, tilt_total)), ee[3:])
-            ok = True if not callable(check) else bool(check(arm_tag, ee_final.tolist() + list(q_final)))
+            if callable(check_path):
+                # the sequence play_once will execute: transit legs, then
+                # every tilt step about the pinned lip
+                chain, p = [], ee[:3].copy()
+                for leg in self._transit_legs(arm_tag, ee_target):
+                    p = p + leg
+                    chain.append(p.tolist() + list(ee[3:]))
+                off0 = ee_target - pp
+                for k in range(1, TILT_STEPS + 1):
+                    R = _rot_axis(axis, k * tilt_total / TILT_STEPS)
+                    chain.append((pp + R @ off0).tolist() + list(_quat_mul_wxyz(_mat_to_quat_wxyz(R), ee[3:])))
+                ok = bool(check_path(arm_tag, chain))
+            else:
+                ok = True if not callable(check) else bool(check(arm_tag, ee_final.tolist() + list(q_final)))
             tried.append({"mouth": m.tolist(), "ok": ok, "swing_lift": round(lift, 4)})
             if ok or chosen is None:
                 chosen = (m, axis, ee_target, pp)  # first feasible; else keep the far lip

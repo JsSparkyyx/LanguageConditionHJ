@@ -427,7 +427,8 @@ def _push_quat(push_dir_xy):
 
 def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
                  prepush_dist=0.05, height_offset=0.0, seg_len=0.10, approach_gap=0.015,
-                 max_segments=12, goal_tol=0.005, realign_tol=0.01):
+                 max_segments=12, goal_tol=0.005, realign_tol=0.01,
+                 height_frac=0.6, lane_tol=0.05):
     """Closed-loop table-top push of ``obj`` to ``goal_xy`` (plan v3 §7 T3).
 
     ``push()`` commands one fixed direction/distance from the pose at
@@ -447,8 +448,11 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
     off 2 cm along the old heading first, so the sideways re-alignment never
     drags the box. Segments stop once the box is within ``goal_tol`` with
     the overshoot spent, or the box fell off the table, or the distance to
-    the goal grew on two consecutive segments (box lost — never chase it
-    around; empty action lists, ``move`` no-ops on them).
+    the goal grew on two consecutive segments, or the box left its
+    start->goal lane by more than ``lane_tol`` (box lost — never chase it
+    around; empty action lists, ``move`` no-ops on them). Contact height is
+    ``height_frac`` of the CoM height above the table (below the CoM: less
+    tipping torque), >= 1 cm.
 
     Gripper yaw: under TOP_DOWN_QUAT the finger axis (EE y; franka
     delta_matrix maps it onto panda_finger_joint's axis) is world x, so a
@@ -468,7 +472,8 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
 
     goal = np.asarray(goal_xy, dtype=np.float64).reshape(2)
     table_z = TABLE_TOP_Z + float(getattr(task, "table_z_bias", 0.0))
-    state = {"overshoot_left": float(overshoot), "done": False, "d": None, "d0": None, "dist": None, "grew": 0}
+    state = {"overshoot_left": float(overshoot), "done": False, "d": None, "d0": None, "dist": None, "grew": 0,
+             "line0": None}
 
     def _live():
         pose = _unwrap(obj).get_pose()
@@ -481,7 +486,11 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
         dist = float(np.linalg.norm(rem))
         d = rem / dist if dist > 1e-9 else (state["d"] if state["d"] is not None else np.array([1.0, 0.0]))
         depth = float(np.abs(rot.T @ np.array([d[0], d[1], 0.0])) @ half)
-        z_contact = max(float(center[2]) + float(height_offset), table_z + 0.01)
+        # contact BELOW the CoM (height_frac of its height above the table):
+        # a fingertip at CoM height rolled franka's tall tea box onto its side
+        # (diag job 22636635 seed 0: box z 0.741 -> 0.774, ~170 deg)
+        z_contact = max(table_z + float(height_frac) * (float(center[2]) - table_z) + float(height_offset),
+                        table_z + 0.01)
         perp = np.array([-d[1], d[0]], dtype=np.float64)
         face = center[:2] - d * depth + perp * float(lateral_offset)
         return d, dist, face, z_contact
@@ -492,6 +501,7 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
     def _prepush(task):
         d, _, face, zc = _live()
         state["d"] = state["d0"] = d
+        state["line0"] = np.asarray(_unwrap(obj).get_pose().p, dtype=np.float64).reshape(3)[:2].copy()
         return task.move_to_pose(arm_tag, _pose(face - d * float(prepush_dist), zc, d))
 
     def _segment(task):
@@ -513,6 +523,18 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
         else:
             state["grew"] = 0
         state["dist"] = dist
+        if state["line0"] is not None:
+            # lane guard: a box deflected off its start->goal line is LOST —
+            # chasing it sideways plowed franka's hand into both bystanders
+            # (diag job 22636635 seed 4); stop and let the outcome stand
+            line = goal - state["line0"]
+            n = float(np.linalg.norm(line))
+            if n > 1e-9:
+                c = np.asarray(_unwrap(obj).get_pose().p, dtype=np.float64).reshape(3)[:2] - state["line0"]
+                off = abs(float(c[0] * line[1] - c[1] * line[0]) / n)
+                if off > float(lane_tol):
+                    state["done"] = True
+                    return arm_tag, []
         pre = face - d * float(approach_gap)
         travel = dist + float(approach_gap)
         last = travel <= float(seg_len)

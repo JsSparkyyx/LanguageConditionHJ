@@ -123,3 +123,14 @@ def test_lost_box_stops_the_segment_loop(utils_mod):
         step = utils_mod.realize_step(task, entry)
         n_actions += len(step.step[1])
     assert n_actions == 0
+
+
+def test_lane_guard_stops_chasing_a_deflected_box(utils_mod):
+    box = _Box([-0.15, -0.10])
+    task = _Task(box, drift=0.0)
+    steps = utils_mod.push_to_goal(task, "left", box, np.array([0.15, -0.10]), seg_len=0.10)
+    task.execute(utils_mod.realize_step(task, steps[0])[1])
+    task.execute(utils_mod.realize_step(task, steps[1])[1])  # pre-push records the lane
+    box.p[1] += 0.08  # deflected 8 cm off the start->goal line
+    n_actions = sum(len(utils_mod.realize_step(task, e).step[1]) for e in steps[2:-1])
+    assert n_actions == 0

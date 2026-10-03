@@ -192,6 +192,34 @@ class RiskTickController(TickChunkedController):
         task = getattr(self.env, "task", None)
         if task is not None:
             task.screw_plan_ok = self.screw_plan_ok
+            task.screw_path_ok = self.screw_path_ok
+
+    def screw_path_ok(self, arm: str, poses) -> bool:
+        """Dry run of a whole pose SEQUENCE (nothing executes): chained mplib
+        screws, each from the previous plan's end joints (``last_qpos``) —
+        the way the task will actually execute it. A single start->final
+        screw was a weak proxy: it passed ur5's far-lip pour, whose stepwise
+        tilt then dead-ended after 1-2 steps (diag job 22639694)."""
+        mplib = self.robot.left_mplib_planner if arm == "left" else self.robot.right_mplib_planner
+        if mplib is None:
+            return True  # no screw planner: nothing to dry-run against
+        entity = self.robot.left_entity if arm == "left" else self.robot.right_entity
+        try:
+            q = np.asarray(entity.get_qpos(), dtype=np.float64).copy()
+            idx = np.asarray(mplib.planner.move_group_joint_indices, dtype=np.int64)
+        except Exception:
+            return False
+        for pose in poses:
+            try:
+                result = self._plan_screw(arm, list(pose), last_qpos=q)
+            except Exception:
+                return False
+            if not result or result.get("status") != "Success":
+                return False
+            pos = np.asarray(result.get("position"), dtype=np.float64)
+            if pos.ndim == 2 and pos.shape[0] > 0:
+                q[idx] = pos[-1]
+        return True
 
     def screw_plan_ok(self, arm: str, target_pose) -> bool:
         """Dry run (nothing executes, no plan counters move): is a screw path
