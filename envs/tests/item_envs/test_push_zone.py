@@ -215,8 +215,11 @@ def test_module_constants_mirror_yaml():
     assert _norm(_const("GOAL_Y_JITTER")) == _norm(cfg["goal"]["y_jitter"])
     assert _norm(_const("N_ZONES")) == _norm(cfg["zones"]["n"])
     assert _norm(_const("ZONE_SIZE_XY")) == _norm(cfg["zones"]["size_xy"])
-    assert _norm(_const("ZONE_MIDWAY_T")) == _norm(cfg["zones"]["midway_t"])
-    assert _norm(_const("ZONE_NEAR_LINE_GAP")) == _norm(cfg["zones"]["near_push_line"])
+    assert _norm(_const("N_PATH_ZONES")) == _norm(cfg["zones"]["path_n"])
+    assert _norm(_const("PATH_ZONE_ALONG")) == _norm(cfg["zones"]["path_along"])
+    assert _norm(_const("PATH_ZONE_ACROSS")) == _norm(cfg["zones"]["path_across"])
+    assert _norm(_const("PATH_ZONE_T")) == _norm(cfg["zones"]["path_t"])
+    assert _norm(_const("PATH_ZONE_GAP")) == _norm(cfg["zones"]["path_gap"])
     assert _norm(_const("ZONE_FREE_GAP")) == _norm(cfg["zones"]["free_gap"])
     assert _norm(_const("N_BYSTANDERS")) == _norm(cfg["bystanders"]["n"])
     assert _norm(_const("BYSTANDER_POOL")) == _norm(cfg["bystanders"]["pool"])
@@ -448,7 +451,7 @@ def test_layout_replay_seeds():
     end inside the shared reach band, midway zone + bystander clearances."""
     pz, restore = _load_task_module()
     try:
-        sides = set()
+        sides, n_path_seen = set(), set()
         for seed in range(200):
             task = _replay_layout(pz, seed)  # raises RuntimeError on a bad layout
             assert len(task.push_objects) == 1
@@ -474,14 +477,17 @@ def test_layout_replay_seeds():
             assert 2 <= len(task.zones) <= 3
             assert 1 <= len(task.bystanders) <= 2  # 2nd bystander may degrade (range draw)
             assert len({z["region_id"] for z in task.zones}) == len(task.zones)
-            clear = _interior_zone_clearances(task)
-            assert clear, seed
-            # no zone intersects the corridor interior...
-            assert min(c for _, _, c in clear) > 0.0, (seed, min(c for _, _, c in clear))
-            # ...and the midway guarantee: a zone near the midpoint (t in
-            # 0.3..0.7) with edge clearance in (0, 0.06]
-            near = [c for _, t, c in clear if 0.3 < t < 0.7]
-            assert any(0.0 < c <= 0.06 + 1e-6 for c in near), (seed, near)
+            # 1-3 zones ON the path (the box centre line crosses them: negative
+            # edge clearance to the corridor), every other zone clear of it
+            path = set(task.layout_info["path_zones"])
+            assert 1 <= len(path) <= min(3, len(task.zones)), (seed, path)
+            assert task.primary_rule_id in {f"outside|push_0|{z}" for z in path}
+            a = np.asarray(corrs[0]["a"]); b = np.asarray(corrs[0]["b"])
+            for zone in task.zones:
+                c = np.asarray(zone["xy"]); hx, hy = zone["size_xy"][0] / 2, zone["size_xy"][1] / 2
+                crossed = pz._rect_seg_dist((c[0] - hx, c[1] - hy, c[0] + hx, c[1] + hy), a, b) == 0.0
+                assert crossed == (zone["region_id"] in path), (seed, zone["region_id"], crossed)
+            n_path_seen.add(len(path))
             for b in task.bystanders:
                 xy = np.asarray(b["xy"], dtype=np.float64)
                 a = np.asarray(corrs[0]["a"], dtype=np.float64)
@@ -491,6 +497,7 @@ def test_layout_replay_seeds():
                 # edge clears the pushing hand's band, not only the box corridor
                 assert float(np.linalg.norm(xy - (a + t * ab))) > max(float(corrs[0]["half"]), pz.PUSHER_HALF_ACROSS)
         assert sides == {"left", "right"}
+        assert n_path_seen == {1, 2, 3}
     finally:
         restore()
 

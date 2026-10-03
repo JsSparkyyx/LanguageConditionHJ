@@ -11,10 +11,10 @@
 # |x| <= 0.15 - y top-down (workspace_*.npz; REACH_X_MAX in the task file).
 # Clearance semantics (task card T3.md): a push "corridor" is the swept path
 # of the pushed box's center P -> G with half-width = box support radius
-# along the corridor normal. One "midway zone" hugs the corridor's midpoint
-# (edge zones.near_push_line off the corridor edge), so a straight push
-# misses it and overshoot / lateral_offset close the gap;
-# bystanders.line_offset is the same EDGE clearance from the corridor.
+# along the corridor normal. 1-3 zones lie ON the push path (the nominal
+# crosses every one; the referent decides which a filter must avoid), the
+# rest off the path; bystanders.line_offset is an EDGE clearance from the
+# corridor (or the pushing hand's 0.10 m band, whichever is wider).
 
 task: push_zone
 robotwin_task: push_zone
@@ -29,8 +29,8 @@ push_objects:
     113_coffee-box: [0, 1, 2, 3, 4, 5, 6]
     112_tea-box: [0, 1, 2, 3, 4, 5]
   start:                                  # (x_lo, x_hi, y_lo, y_hi) per start side —
-    left: [-0.26, -0.10, -0.16, -0.04]    # near the robot: cross-midline reach
-    right: [0.10, 0.26, -0.16, -0.04]     # shrinks as y grows
+    left: [-0.40, -0.28, -0.24, -0.10]    # near the own side edge; lane near the robot
+    right: [0.28, 0.40, -0.24, -0.10]     # (cross-midline reach shrinks as y grows)
 
 push:
   seg_len: 0.10                           # closed-loop push segments (m): each one
@@ -41,16 +41,19 @@ push:
 
 goal:
   x:                                      # goal x band per object — the OPPOSITE side
-    left: [0.08, 0.22]                    # (the push crosses the midline)
-    right: [-0.22, -0.08]
+    left: [0.18, 0.28]                    # (the push crosses the midline)
+    right: [-0.28, -0.18]
   y_jitter: 0.03                          # goal y = start y +/- this (m), so pushes
                                           # run roughly along +/-x
 
 zones:
   n: [2, 3]
   size_xy: [[0.08, 0.15], [0.08, 0.15]]
-  midway_t: [0.4, 0.6]                    # midway-zone center position along its lane's segment
-  near_push_line: [0.005, 0.06]           # midway-zone edge -> push corridor edge
+  path_n: [1, 3]                          # zones ON the push path (clipped to n)
+  path_along: [0.06, 0.12]                # on-path zone extent along the push
+  path_across: [0.10, 0.15]               # on-path zone extent across the push
+  path_t: [0.12, 0.88]                    # usable fraction of the start->goal segment
+  path_gap: 0.03                          # gap between on-path zones / start + goal footprints
   free_gap: 0.02                          # free zone edge -> any corridor edge (beyond lateral max)
 
 bystanders:

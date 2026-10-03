@@ -153,7 +153,7 @@ from ._bootstrap import ensure_main_path
 ensure_main_path()  # main.envs.obstacle / main.envs.tasks live in the sibling CEHJ copy
 
 from main.envs import obstacle as ob  # noqa: E402  (sapien-free module import)
-from main.envs.tasks import TASK_SPECS, longest_corridor, resolve_arm  # noqa: E402
+from main.envs.tasks import TASK_SPECS, iter_corridors, longest_corridor, resolve_arm  # noqa: E402
 
 from . import physics  # noqa: E402
 from .items import ItemSpec, entity_of  # noqa: E402
@@ -1179,13 +1179,61 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
     # no try/finally: nothing below flips obstacle.py globals anymore
     # (_geometry_of measures meshes instead of set_obstacle_model), so there
     # is no module state to restore on the way out.
-    for attempt in range(MAX_LAYOUTS):
+    # fallback ladder (only used when EVERY layout of a tier fails to plan —
+    # the first tier is the historical longest corridor, so every seed that
+    # produced a layout before is byte-identical): longest corridor -> the
+    # host's other pick->place corridors -> the longest corridor with the
+    # on/near quota relaxed to 1. A layout-infeasible seed produced an
+    # obstacle-free T1 episode (franka stack_blocks_two seed 1: 40/40
+    # layouts failed on the 0.36 m corridor with 12 arm-link keepaways).
+    tiers = [(p0, p1, cfg)]
+    try:
+        others = sorted(iter_corridors(env.task, spec), key=lambda c: -float(np.linalg.norm(c[1] - c[0])))
+    except Exception:
+        others = []
+    for q0, q1, _label, _tgt in others:
+        if np.linalg.norm(np.asarray(q0)[:2] - np.asarray(p0)[:2]) + np.linalg.norm(np.asarray(q1)[:2] - np.asarray(p1)[:2]) > 1e-3:
+            tiers.append((q0, q1, cfg))
+    tiers.append((p0, p1, {**cfg, "min_on_or_near_path": 1}))
+    tier_i, attempt_total = 0, 0
+    report["fallback_tier"] = 0
+    while tier_i < len(tiers):
+        p0, p1, tier_cfg = tiers[tier_i]
+        planned = False
+        for attempt in range(MAX_LAYOUTS):
+            if attempt_total:
+                report["spawn_rejections"] += 1
+            attempt_total += 1
+            out = _layout_plan(
+                p0, p1, keepaways, tier_cfg, task_cfg, rng, pool, train_colors, t_range,
+                vis_band=vis_band, vis_cov=vis_cov,
+            )
+            if out is None:
+                report["layout_retries"] += 1
+                continue
+            planned = True
+            break
+        if planned:
+            break
+        tier_i += 1
+    if tier_i:
+        report["fallback_tier"] = int(tier_i)
+        report["corridor"] = {"p0": [float(v) for v in np.asarray(p0)[:2]], "p1": [float(v) for v in np.asarray(p1)[:2]]}
+        print(f"[spawn] layout fallback tier {tier_i} ({'other corridor' if tier_i < len(tiers) - 1 else 'relaxed quota'})")
+    if tier_i >= len(tiers):
+        attempts = []  # every tier infeasible: k = 0 (recorded, never a crash)
+    else:
+        attempts = range(MAX_LAYOUTS)
+        first_out = out
+    for attempt in attempts:
         if attempt:
             report["spawn_rejections"] += 1
-        out = _layout_plan(
-            p0, p1, keepaways, cfg, task_cfg, rng, pool, train_colors, t_range,
-            vis_band=vis_band, vis_cov=vis_cov,
-        )
+            out = _layout_plan(
+                p0, p1, keepaways, tiers[tier_i][2], task_cfg, rng, pool, train_colors, t_range,
+                vis_band=vis_band, vis_cov=vis_cov,
+            )
+        else:
+            out = first_out
         if out is None:
             report["layout_retries"] += 1
             continue

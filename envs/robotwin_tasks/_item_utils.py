@@ -44,7 +44,7 @@ def _unwrap(entity):
     return getattr(entity, "actor", entity)
 
 
-def zone_mat(scene, pose, size_xy, color, thickness=0.002, name=None):
+def zone_mat(scene, pose, size_xy, color, thickness=0.002, name=None, collision=True):
     """Spawn a thin static colored box that marks a zone on the table.
 
     ``pose`` is the CENTER pose of the mat (sapien convention);
@@ -62,7 +62,8 @@ def zone_mat(scene, pose, size_xy, color, thickness=0.002, name=None):
     NO Python attributes (pybind11 rejects them). ``size_xy`` reaches
     the CEHJ side through ``register_zone``'s meta dict instead;
     ``regions.zone_region`` derives the same footprint from the mat's
-    collision-shape AABB when no attribute is present.
+    collision-shape AABB when no attribute is present (so a collision-free
+    mat MUST be registered with its size_xy).
     """
     import sapien
 
@@ -72,9 +73,12 @@ def zone_mat(scene, pose, size_xy, color, thickness=0.002, name=None):
     material = getattr(scene, "default_physical_material", None)
     if material is None:
         material = scene.create_physical_material(0.5, 0.5, 0.0)
-    rigid = sapien.physx.PhysxRigidStaticComponent()
-    rigid.attach(sapien.physx.PhysxCollisionShapeBox(half_size=half, material=material))
-    entity.add_component(rigid)
+    if collision:
+        rigid = sapien.physx.PhysxRigidStaticComponent()
+        rigid.attach(sapien.physx.PhysxCollisionShapeBox(half_size=half, material=material))
+        entity.add_component(rigid)
+    # collision=False: a PAINTED region (render body only) — push_zone's
+    # on-path zones are slid over, and a 2 mm collision step catches the box
     try:  # query, not construction: get_system raises when absent
         scene.get_system("render")
         has_render = True

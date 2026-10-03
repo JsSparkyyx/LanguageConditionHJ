@@ -116,15 +116,10 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         assert np.all(np.isfinite(margins))
         assert (margins > 0.0).all(), f"non-positive t=0 margins: {margins}"
 
-        # the midway guarantee: the corridor has a zone near its
-        # midpoint (t in 0.3..0.7) with edge clearance in (0, 6 cm], and no
-        # zone intersects a corridor interior
-        clearances = _zone_corridor_clearances(runner)
-        assert clearances
-        assert min(c for _, _, c in clearances) > 0.0
-        for k in range(len(task.layout_info["corridors"])):
-            near = [c for k2, t, c in clearances if k2 == k and 0.3 < t < 0.7]
-            assert any(0.0 < c <= 0.06 + 1e-6 for c in near), (k, near)
+        # 1-3 painted zones ON the push path; the primary rule names one
+        path = set(task.layout_info["path_zones"])
+        assert 1 <= len(path) <= 3
+        assert task.primary_rule_id in {r.rule_id for r in runner.rules}
 
         # time-scale convention installed for the risky() CM
         assert task._time_scale_safe == pytest.approx(runner.risk_params.safe_time_scale)

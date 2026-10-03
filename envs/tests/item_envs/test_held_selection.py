@@ -80,3 +80,26 @@ def test_tall_cylinder_stands_upright():
     assert np.allclose(R @ geo.up_local, [0.0, 0.0, 1.0], atol=1e-9)
     assert np.allclose(np.abs(R) @ geo.half, geo.world_half, atol=1e-9)
     assert np.allclose(geo.world_half, [0.03, 0.03, 0.07])
+
+
+def test_joint_unwrap_takes_the_short_way():
+    import numpy as np
+    from types import SimpleNamespace
+    from main.item_envs.controller import RiskTickController
+
+    ctrl = RiskTickController.__new__(RiskTickController)
+    lim = np.array([[-2 * np.pi, 2 * np.pi]] * 6)
+    ctrl.robot = SimpleNamespace(left_entity=SimpleNamespace(get_qlimits=lambda: lim))
+    n = 50
+    pos = np.zeros((n, 6))
+    pos[:, 5] = np.linspace(0.1, 0.1 - np.radians(350), n)  # -350 deg spin
+    pos[:, 2] = np.linspace(0.0, 0.3, n)
+    out = ctrl._unwrap_revolutions("left", {"status": "Success", "position": pos})
+    assert np.isclose(out["position"][-1, 5] - out["position"][0, 5], np.radians(10))
+    assert np.allclose(out["position"][:, 2], pos[:, 2])  # other joints untouched
+    # a genuine > pi move that cannot wrap inside the limits stays as planned
+    lim2 = lim.copy(); lim2[5] = [-0.2, 0.2 + np.radians(350)]
+    ctrl.robot = SimpleNamespace(left_entity=SimpleNamespace(get_qlimits=lambda: lim2))
+    pos2 = pos.copy(); pos2[:, 5] = np.linspace(-0.1, -0.1 + np.radians(200), n)
+    out2 = ctrl._unwrap_revolutions("left", {"status": "Success", "position": pos2})
+    assert out2["position"] is pos2 or np.allclose(out2["position"], pos2)

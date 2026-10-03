@@ -234,7 +234,8 @@ class ItemEpisodeRunner:
         for d in getattr(task, "region_meta", []) or []:
             kind = d.get("kind", "zone")
             if kind == "zone":
-                self.regions.append(zone_region(d["entity"], d.get("color"), region_id=d["region_id"]))
+                self.regions.append(zone_region(d["entity"], d.get("color"), region_id=d["region_id"],
+                                                size_xy=d.get("size_xy")))
             elif kind == "container":
                 self.regions.append(
                     container_region(

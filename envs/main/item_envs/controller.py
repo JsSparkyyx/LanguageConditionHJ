@@ -75,6 +75,7 @@ class RiskTickController(TickChunkedController):
         if not result or result.get("status") != "Success":
             self.n_plan_failures += 1
             return result
+        result = self._unwrap_revolutions(arm, result)
         pos = np.asarray(result.get("position"), dtype=np.float64)
         vel_raw = result.get("velocity")
         vel = np.zeros_like(pos) if vel_raw is None else np.asarray(vel_raw, dtype=np.float64)
@@ -160,6 +161,45 @@ class RiskTickController(TickChunkedController):
                       f"joint travel {travel:.2f} rad > {LOCAL_JUMP_MAX} (IK branch flip)")
                 return {"status": "Fail_branch_flip"}
         return result
+
+    def _unwrap_revolutions(self, arm: str, result) -> dict:
+        """Shortest-way joint ends: a revolute joint at b and at b +/- 2*pi is
+        the SAME configuration, but cuRobo's goal IK sometimes returns the far
+        one — the ur5 wrist then spins ~350 deg instead of ~10 deg (T1
+        place_burger_fries seed 2, 5-7 s). Any joint whose net travel exceeds
+        pi gets its end wrapped to the nearest equivalent inside its limits;
+        the column keeps the plan's own time profile (normalized progress
+        s(t) = (q(t) - q0) / (q1 - q0)), every other joint is untouched."""
+        pos = np.asarray(result.get("position"), dtype=np.float64)
+        if pos.ndim != 2 or pos.shape[0] < 2:
+            return result
+        try:
+            entity = self.robot.left_entity if arm == "left" else self.robot.right_entity
+            limits = np.asarray(entity.get_qlimits(), dtype=np.float64)
+        except Exception:  # no joint-limit source (mock robots): leave the plan alone
+            return result
+        q0, q1 = pos[0], pos[-1]
+        new_pos = pos.copy()
+        changed = []
+        for j in range(min(pos.shape[1], limits.shape[0])):
+            d = float(q1[j] - q0[j])
+            if abs(d) <= np.pi:
+                continue
+            lo, hi = float(limits[j, 0]), float(limits[j, 1])
+            target = float(q1[j]) - 2.0 * np.pi * round(d / (2.0 * np.pi))
+            if not (lo - 1e-6 <= target <= hi + 1e-6) or abs(target - q0[j]) >= abs(d) - 1e-6:
+                continue
+            s_prog = (pos[:, j] - q0[j]) / d
+            new_pos[:, j] = q0[j] + s_prog * (target - q0[j])
+            changed.append((j, d, target - float(q0[j])))
+        if not changed:
+            return result
+        out = dict(result)
+        out["position"] = new_pos
+        out["velocity"] = np.gradient(new_pos, PHYSICS_DT, axis=0)
+        print(f"[risk_tick] {arm} joint unwrap " + ", ".join(
+            f"j{j}: {np.degrees(a):+.0f}deg -> {np.degrees(b):+.0f}deg" for j, a, b in changed))
+        return out
 
     def _sync_time_scale_from_skill(self) -> None:
         """T1 path: set task.active_time_scale from the current skill label.

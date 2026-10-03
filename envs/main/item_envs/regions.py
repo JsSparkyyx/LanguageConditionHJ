@@ -156,14 +156,19 @@ def table_region(task) -> Region:
     )
 
 
-def zone_region(mat_actor, color: str | None, region_id: str | None = None) -> Region:
+def zone_region(mat_actor, color: str | None, region_id: str | None = None, size_xy=None) -> Region:
     """A zone mat's footprint as a nameable region, following the mat.
 
     The polygon is the mat's xy footprint in the mat frame (from its
     ``size_xy`` attribute or its box collision shapes); the frame follows the
     mat's pose every tick. kind="zone" — margins use the xy polygon only.
     """
-    sx, sy = _mat_size_xy(mat_actor)
+    # registered size first (task.region_meta): collision-free (painted) mats
+    # have no box shape for the AABB fallback
+    if size_xy is not None:
+        sx, sy = (float(v) for v in np.asarray(size_xy, dtype=np.float64).reshape(-1)[:2])
+    else:
+        sx, sy = _mat_size_xy(mat_actor)
     if region_id is None:
         region_id = f"zone_{color}" if color else "zone"
     return Region(
