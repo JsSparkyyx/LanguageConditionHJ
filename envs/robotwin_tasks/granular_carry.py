@@ -76,6 +76,8 @@ PINCH_CLEAR_DEPTH = 0.025  # m below the rim plane
 
 # --- nominal motion ---
 GRASP_CONTACT_IDS = (0, 2)  # [right, left]: outer rim of the bowl (host idiom)
+GRASP_DIS = 0.0  # m: grasp target stops this short of the contact point along the approach (shallower rim pinch)
+GRASP_RADIAL_OUT = 0.0  # m: grasp target shifted radially outward (centres the fingers on the wall)
 GRIPPER_STIFFNESS = 5000.0  # gripper PD stiffness (RoboTwin default 1000) — firmer rim pinch
 LIFTOFF = 0.015  # m: first lift, then level
 LEVEL_ITERS = 2  # leveling passes after lift-off
@@ -231,8 +233,22 @@ class granular_carry(granular_pour):
             joint[0].set_drive_property(stiffness=k_grip, damping=float(damping))
 
         # 1. grasp the outer rim with the arm on the bowl's side — safe scale
-        self.move(self.grasp_actor(self.container, arm_tag=arm,
-                                   contact_point_id=int(cp[int(arm == "left")]), pre_grasp_dis=0.1))
+        # (grasp_dis / grasp_radial_out: risk-knob override for sweeps, else the
+        # embodiment override, else the module default)
+        g_dis = float(knobs.get("grasp_dis", eparams.get("grasp_dis", GRASP_DIS)))
+        g_out = float(knobs.get("grasp_radial_out", eparams.get("grasp_radial_out", GRASP_RADIAL_OUT)))
+        arm_tag, acts = self.grasp_actor(self.container, arm_tag=arm,
+                                         contact_point_id=int(cp[int(arm == "left")]),
+                                         pre_grasp_dis=0.1, grasp_dis=g_dis)
+        if g_out and acts:
+            c = np.asarray(self.container.get_pose().p, dtype=np.float64)
+            for act in acts:
+                if act.action == "move" and any(act.target_pose):
+                    u = np.asarray(act.target_pose[:2], dtype=np.float64) - c[:2]
+                    u /= max(float(np.linalg.norm(u)), 1e-9)
+                    act.target_pose[0] += g_out * float(u[0])
+                    act.target_pose[1] += g_out * float(u[1])
+        self.move((arm_tag, acts))
         # 2. lift off, then level the sagging bowl about the pinch
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         self._steps_to(arm, np.concatenate([ee[:3] + [0.0, 0.0, LIFTOFF], ee[3:]]), v_safe)

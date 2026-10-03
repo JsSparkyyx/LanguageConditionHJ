@@ -12,7 +12,7 @@
 # printed by `probe episode` is collected into <out_root>/summary.jsonl.
 set -u
 JOBS=${1:?jobs file}
-OUT=$(readlink -f "${2:?out root}")
+mkdir -p "${2:?out root}"; OUT=$(readlink -f "$2")
 PAR=${3:-4}
 PY=${PY:-/work/nvme/bifq/conda/envs/RoboTwin/bin/python}
 export PYTHONUNBUFFERED=1  # stream episode logs live (block-buffered when redirected)

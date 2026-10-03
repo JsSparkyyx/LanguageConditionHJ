@@ -503,6 +503,10 @@ def test_layout_replay_seeds():
                     A, B = boxes[i], boxes[j]
                     gap = max(B[0] - A[2], A[0] - B[2], B[1] - A[3], A[1] - B[3])
                     assert gap >= pz.ELEM_GAP - 1e-6, (seed, i, j, gap)
+            # flat mats stay visible: no zone in an excluded (table-colored) color
+            zone_ids = [e["id"] for e in li["elements"] if e["kind"] == "zone"]
+            assert not any(zid.split("_", 1)[1] in pz.ZONE_EXCLUDE_COLORS for zid in zone_ids), (seed, zone_ids)
+            assert len(set(zone_ids)) == len(zone_ids), (seed, zone_ids)
             # the primary rule names an on-path element
             on_ids = {e["id"] for e in li["elements"] if e["on_path"]}
             rid = task.primary_rule_id.split("|")

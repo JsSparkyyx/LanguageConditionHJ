@@ -39,28 +39,17 @@ seed -> table_z_bias uniform -> head-cam randn(3) -> uniform):
   push side -> push object -> element on-path permutation -> element
   geometry -> on-path gap shares -> per on-path lateral -> off-path tries ->
   primary pick.
-(superseded detail below kept for the push object draws:)
-  n_zones -> n_byst -> palette permutation -> push side ->
-  push object: asset -> [prim: sx, sy, sz (+palette color) | mesh: model_id]
-  -> mass -> per layout try: start x -> start y -> goal x -> goal y jitter ->
-  on-path zones: n_on -> per zone: along -> across -> t jitter -> lateral
-  -> primary pick ->
-  free zones (until n_zones): per try: sx -> sy -> x -> y ->
-  per bystander: asset -> [cylinder: r, h (+palette color) | cup: model_id]
-  -> mass -> per try: anchor line -> t -> edge gap -> side (the other side
-  of the same spot is then probed as a fallback within the same try — no
-  extra draws).
+  (push object: asset -> [prim: sx, sy, sz (+palette color) | mesh:
+  model_id] -> mass -> per layout try: start |x| -> start y -> goal |x| ->
+  goal y.)
 
-Push lines and clearances (task card T3.md has the full geometry): a push
-"corridor" is the swept path of the pushed box's center from P to G, with
-half-width = the box's support radius along the corridor normal. The plan's
-"zone within 6 cm of a push line" / "bystander 2-8 cm off the push lines"
-are implemented as EDGE clearances from that corridor (a fat box pushed past
-a bystander needs the bystander edge — not its center — clear of the swept
-path, or the nominal would always knock it): the midway zone edge sits
-``near_push_line`` = U(0.005, 0.06) clear of the corridor edge, bystander
-edges U(0.02, 0.08) clear. ``lateral_offset`` (±2 cm) and ``overshoot``
-(0-8 cm) close those gaps — that is the risk structure.
+Push corridor and clearances (task card T3.md has the full geometry): the
+corridor is the swept path of the pushed box's centre from start to goal,
+half-width = the box's support radius across the line. On-path elements sit
+on the line (centre within ON_PATH_LAT); off-path elements keep their edge
+OFF_PATH_OFFSET beyond the corridor (+ LAT_OFFSET_MAX for zones, the pushing
+hand's band PUSHER_HALF_ACROSS for obstacles). ``lateral_offset`` (+-2 cm)
+and ``overshoot`` (0-8 cm) close those gaps — that is the risk structure.
 
 Risk knobs (read per episode from ``task.risk_knobs``, installed by the
 runner from ``risk.task``; the defaults match the yaml's low end so vanilla
@@ -130,6 +119,8 @@ OBSTACLE_POOL = ("021_cup", "prim_tall_cylinder")  # 001_bottle: punt-ring bases
 PUSHER_HALF_ACROSS = 0.10  # swept half-width of the PUSHING HAND across the push line (franka hand ~20 cm along its finger axis, which push_to_goal turns across the push); off-path obstacles clear max(corridor half, this)
 CYLINDER_RADIUS = (0.02, 0.035)
 CYLINDER_HEIGHT = (0.10, 0.18)
+
+ZONE_EXCLUDE_COLORS = ("white",)  # flat mats: white is invisible on the white table top
 
 MASS_RANGES = {"box": (0.05, 0.15), "tea_box": (0.05, 0.30), "coffee_box": (0.05, 0.30), "cup": (0.05, 0.25), "cylinder": (0.05, 0.20)}
 
@@ -337,13 +328,19 @@ class push_zone(Base_Task):
             "goals": {rec["item_id"]: [float(v) for v in rec["goal_xy"]] for rec in self.push_objects},
         }
 
-    def _next_color(self, palette):
-        if self._palette_next < len(palette):
-            color = palette[self._palette_next]
-        else:  # more colored items than train colors: reuse (category words disambiguate)
-            color = TRAIN_COLORS[int(np.random.randint(len(TRAIN_COLORS)))]
+    def _next_color(self, palette, exclude=()):
+        """Next unused palette color, skipping ``exclude`` (zones skip
+        ZONE_EXCLUDE_COLORS: a white mat is invisible on the white table)."""
+        for i in range(self._palette_next, len(palette)):
+            if palette[i] not in exclude:
+                color = palette[i]
+                palette[self._palette_next], palette[i] = palette[i], palette[self._palette_next]
+                self._palette_next += 1
+                return color
+        # palette exhausted: reuse (category words disambiguate)
+        pool = [c for c in TRAIN_COLORS if c not in exclude]
         self._palette_next += 1
-        return color
+        return pool[int(np.random.randint(len(pool)))]
 
     def _place_push_object(self, k, side, z, placed, corridors, palette):
         item_id = f"push_{k}"
@@ -564,7 +561,7 @@ class push_zone(Base_Task):
             nonlocal n_obst
             spec = specs[k]
             if spec["kind"] == "zone":
-                rid = self._create_zone(self._next_color(palette), xy, (2 * spec["hx"], 2 * spec["hy"]), z)
+                rid = self._create_zone(self._next_color(palette, ZONE_EXCLUDE_COLORS), xy, (2 * spec["hx"], 2 * spec["hy"]), z)
             else:
                 rid = self._create_obstacle(n_obst, spec["ob"], xy, z, palette)
                 n_obst += 1
