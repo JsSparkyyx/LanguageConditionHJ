@@ -313,7 +313,44 @@ class EpisodeTrace:
 SIDE_PANEL_MIN_LINES = 6  # more overlay lines than this -> text moves to a side panel
 
 
-def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False) -> np.ndarray:
+def _draw_plot(img, x0, y0, w, h, plot, scale_txt) -> None:
+    """Sparkline box: each series [(values, rgb, label)], zero line, autoscale."""
+    import cv2
+
+    series = [s for s in plot.get("series", []) if len(s[0]) > 0]
+    cv2.rectangle(img, (x0, y0), (x0 + w, y0 + h), (60, 60, 60), 1)
+    if not series:
+        return
+    allv = np.concatenate([np.asarray(v, dtype=np.float64)[np.isfinite(v)] for v, _, _ in series] or [np.zeros(1)])
+    if allv.size == 0:
+        return
+    lo, hi = float(min(allv.min(), 0.0)), float(max(allv.max(), 0.0))
+    if hi - lo < 1e-6:
+        hi = lo + 1.0
+    pad = 0.08 * (hi - lo)
+    lo, hi = lo - pad, hi + pad
+    n_max = max(int(plot.get("n", 0)), max(len(v) for v, _, _ in series), 2)
+
+    def ypix(v):
+        return int(round(y0 + h - (v - lo) / (hi - lo) * h))
+
+    cv2.line(img, (x0, ypix(0.0)), (x0 + w, ypix(0.0)), (150, 150, 150), 1)  # h = 0: safety boundary
+    for k, (vals, rgb, label) in enumerate(series):
+        v = np.asarray(vals, dtype=np.float64)
+        pts = [(int(x0 + i * w / (n_max - 1)), ypix(float(np.clip(val, lo, hi))))
+               for i, val in enumerate(v) if np.isfinite(val)]
+        if len(pts) >= 2:
+            cv2.polylines(img, [np.array(pts, dtype=np.int32)], False, tuple(int(c) for c in rgb), 2)
+        cv2.putText(img, f"{label} {v[-1]:+.2f}" if np.isfinite(v[-1]) else label,
+                    (x0 + 4, y0 + int(14 * scale_txt) * (k + 1)), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.40 * scale_txt, tuple(int(c) for c in rgb), 1, cv2.LINE_AA)
+    cv2.putText(img, f"{hi:+.1f}", (x0 + w - int(42 * scale_txt), y0 + int(12 * scale_txt)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35 * scale_txt, (180, 180, 180), 1, cv2.LINE_AA)
+    cv2.putText(img, f"{lo:+.1f}", (x0 + w - int(42 * scale_txt), y0 + h - 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35 * scale_txt, (180, 180, 180), 1, cv2.LINE_AA)
+
+
+def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False, plot: dict | None = None) -> np.ndarray:
     """RGB frame with the text overlay (and optional red border) drawn on a copy.
 
     Shared by OverlayVideoWriter and the runner's keyframe writer so videos
@@ -326,7 +363,7 @@ def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False) -
     # long line lists (per-rule margins) go to a dark side panel so the scene
     # stays visible; the text shrinks to fit the frame height. Lines starting
     # with "!" are drawn red (violations).
-    if len(lines) > SIDE_PANEL_MIN_LINES:
+    if len(lines) > SIDE_PANEL_MIN_LINES or plot:
         h, w = img.shape[:2]
         panel_w = int(round(0.6 * w)) // 2 * 2  # even width keeps mp4 encoders happy
         panel = np.full((h, panel_w, 3), 24, dtype=img.dtype)
@@ -334,7 +371,8 @@ def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False) -
         x0 = w + 6
     else:
         x0 = 6
-    fit = (img.shape[0] - 8) / max(1, len(lines)) / (20.0 * scale)
+    text_h = img.shape[0] * (0.62 if plot else 1.0)  # bottom 38% of the panel holds the h(t) plot
+    fit = (text_h - 8) / max(1, len(lines)) / (20.0 * scale)
     scale_txt = scale * min(1.0, max(0.45, fit))
     thick = max(1, int(round(scale_txt)))
     y = int(round(18 * scale_txt))
@@ -356,6 +394,9 @@ def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False) -
                 cv2.LINE_AA,
             )
         y += dy
+    if plot:
+        H, W = img.shape[:2]
+        _draw_plot(img, x0, int(H * 0.64), W - x0 - 8, int(H * 0.34), plot, scale_txt)
     if flash:
         cv2.rectangle(
             img,
@@ -388,11 +429,11 @@ class OverlayVideoWriter:
         """Arm the red border for the next frames (first violation)."""
         self._flash_left = self.flash_frames
 
-    def add(self, frame_rgb: np.ndarray, lines: list[str]) -> None:
+    def add(self, frame_rgb: np.ndarray, lines: list[str], plot: dict | None = None) -> None:
         flash = self._flash_left > 0
         if flash:
             self._flash_left -= 1
-        self._frames.append(draw_overlay(frame_rgb, lines, flash=flash))
+        self._frames.append(draw_overlay(frame_rgb, lines, flash=flash, plot=plot))
 
     def close(self) -> Path | None:
         if self._frames:

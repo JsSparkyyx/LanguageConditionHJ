@@ -267,6 +267,8 @@ class ItemEpisodeRunner:
             objects_cfg=physics.load_objects_cfg(),
             splits_cfg=resolve_splits(splits_yaml, self.task_name),
         )
+        if self.active_rule_id == "primary":  # CLI shorthand: the task's at-risk rule
+            self.active_rule_id = self._primary_rule_id(task)
         # stay rules reference the item pose at rule activation (t = 0)
         self._stay_ref = {
             r.rule_id: _item_position(item_map[r.item_ids[0]])
@@ -419,6 +421,7 @@ class ItemEpisodeRunner:
         if self._held_error is not None:
             meta.diag["held_error"] = self._held_error
         meta.diag["primary_rule"] = self._primary_rule_id(task)
+        meta.active_rule_id = self.active_rule_id
         return error
 
     def _primary_rule_id(self, task) -> str | None:
@@ -543,18 +546,19 @@ class ItemEpisodeRunner:
 
         frame = self._observer_frame(task, state)
         lines = _overlay_lines(self, rec.margins, rec.tick)
+        plot = _h_plot(self, rec.margins)
         if want_start:
-            state.keyframes["00_start"] = draw_overlay(frame, lines)
+            state.keyframes["00_start"] = draw_overlay(frame, lines, plot=plot)
         for item_id in new_contacts:
             state.contacted.add(item_id)
-            state.keyframes[f"10_contact_{item_id}"] = draw_overlay(frame, lines)
+            state.keyframes[f"10_contact_{item_id}"] = draw_overlay(frame, lines, plot=plot)
         if first_violation:
             state.violated_once = True
-            state.keyframes["20_violation"] = draw_overlay(frame, lines, flash=True)
+            state.keyframes["20_violation"] = draw_overlay(frame, lines, flash=True, plot=plot)
             if video is not None:
                 video.flash()
         if video is not None:
-            video.add(frame, lines)
+            video.add(frame, lines, plot=plot)
 
     def _observer_frame(self, task, state: "_TickState") -> np.ndarray:
         """Raw observer RGB frame (blank + warn-once when rendering fails)."""
@@ -911,8 +915,11 @@ def _overlay_lines(runner: ItemEpisodeRunner, margins: np.ndarray, tick: int) ->
     if active is not None:
         j = rules.index(active)
         phrase = active.phrases[0] if active.phrases else active.rule_id
+        k = _kappa(active)
         lines.append(f"rule: {phrase}")
+        lines.append(f"  = {active.rule_id}")
         lines.append(f"m(active)={_fmt_margin(active, margins[j])}")
+        lines.append(f"h = k*m = {k * float(margins[j]):+.3f}  (k={k:g}/{'rad' if k < 10 else 'm'})")
     else:
         lines.append("rule: (none active)")
     if margins.size and rules:
@@ -935,6 +942,42 @@ def _overlay_lines(runner: ItemEpisodeRunner, margins: np.ndarray, tick: int) ->
         except Exception as exc:  # diagnostics must never kill an episode
             lines.append(f"overlay_lines error: {type(exc).__name__}")
     return lines
+
+
+_KAPPA_CACHE: dict = {}
+
+
+def _kappa(rule) -> float:
+    """physics.yaml downstream kappa for a rule's consequence (20/m distance-
+    type, 2/rad upright) — what the buffer h is: h = kappa * margin."""
+    if not _KAPPA_CACHE:
+        try:
+            cfg = _load_yaml(Path(__file__).resolve().parent / "configs" / "physics.yaml")
+            _KAPPA_CACHE.update({str(k): float(v) for k, v in (cfg.get("kappa") or {}).items()})
+        except Exception:
+            _KAPPA_CACHE.update({"upright": 2.0})
+    name = getattr(getattr(rule, "consequence", None), "value", "")
+    if name.startswith("particles"):
+        name = "particles"
+    return float(_KAPPA_CACHE.get(name, 20.0))
+
+
+def _h_plot(runner, margins: np.ndarray) -> dict | None:
+    """h(t) history for the video side panel: the active rule's h (orange)
+    and the min over all rules of kappa_j * m_j (cyan); h < 0 = violation."""
+    rules = list(runner.rules)
+    if not rules or margins.size == 0:
+        return None
+    hist = runner.__dict__.setdefault("_h_hist", {"active": [], "all": []})
+    hs = np.array([_kappa(r) * float(m) for r, m in zip(rules, margins)], dtype=np.float64)
+    hist["all"].append(float(np.min(hs)))
+    series = []
+    j = next((i for i, r in enumerate(rules) if r.rule_id == runner.active_rule_id), None)
+    if j is not None:
+        hist["active"].append(float(hs[j]))
+        series.append((list(hist["active"]), (255, 170, 40), "h active"))
+    series.append((list(hist["all"]), (80, 220, 255), "h min(all)"))
+    return {"series": series, "n": max(int(runner.max_steps // 10), len(hist["all"]))}
 
 
 def _fmt_margin(rule, value: float) -> str:
