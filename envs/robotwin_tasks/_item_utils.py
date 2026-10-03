@@ -44,6 +44,25 @@ def _unwrap(entity):
     return getattr(entity, "actor", entity)
 
 
+GOAL_FRAME_COLOR = (0.10, 0.10, 0.12)  # near-black: high contrast on the white table, unlike any filled zone
+
+
+def goal_frame(scene, center_xy, z, size, width, color=GOAL_FRAME_COLOR, name="goal_frame"):
+    """Hollow square outline (4 render-only strips) marking a goal — visual
+    only, never a rule referent; its outline shape tells it apart from the
+    filled zone mats. Returns the 4 entities."""
+    import sapien
+
+    s, w = float(size), float(width)
+    strips = [(0.0, (s - w) / 2.0, s, w), (0.0, -(s - w) / 2.0, s, w),
+              ((s - w) / 2.0, 0.0, w, s - 2.0 * w), (-(s - w) / 2.0, 0.0, w, s - 2.0 * w)]
+    return [
+        zone_mat(scene, sapien.Pose([float(center_xy[0]) + dx, float(center_xy[1]) + dy, float(z) + 0.0006]),
+                 size_xy=(sx, sy), color=color, name=f"{name}_{k}", collision=False)
+        for k, (dx, dy, sx, sy) in enumerate(strips)
+    ]
+
+
 def zone_mat(scene, pose, size_xy, color, thickness=0.002, name=None, collision=True):
     """Spawn a thin static colored box that marks a zone on the table.
 
@@ -768,6 +787,70 @@ def bead_grid_positions(n, r, inner_radius, floor_y, bands=None, spacing_factor=
         jitter[:, 1] = 0.0  # keep the layer height exact
         out = out + jitter
     return out
+
+
+def bead_random_positions(n, r, geom, rng, gap=5e-4, column=0.10, max_tries=200000):
+    """[n, 3] RANDOM non-overlapping bead centres in the bowl up-frame (y up,
+    origin at the exterior bottom): random sequential addition inside the
+    taper-aware interior (``geom`` = bowl_geometry dict) and, above the rim,
+    a loose column of the rim's inner radius up to ``column`` above it. The
+    beads settle into a RANDOM pack — a hex lattice (bead_grid_positions)
+    settles into a crystal that holds far past the angle of repose (P2
+    finding F3: pour start ~85 deg), so a full lattice bowl barely spills.
+    ``rng``: anything with .uniform (the seeded global numpy RNG)."""
+    import math
+
+    import numpy as np
+
+    inner = float(geom["inner_radius"])
+    floor_y, rim_y = float(geom["floor_y"]), float(geom["rim_y"])
+    bands = geom.get("bands")
+    d_min2 = (2.0 * r + gap) ** 2
+    cell = 2.0 * r + gap
+    grid: dict = {}
+    pts = []
+
+    def wall(y):
+        if bands is None or y - r >= rim_y:
+            return inner
+        return _wall_radius_interval(bands, y - r, min(y + r, rim_y))
+
+    y_lo = floor_y + r + 5e-4
+    y_hi = min(rim_y, y_lo + 0.02)
+    fails = 0
+    tries = 0
+    while len(pts) < n and tries < max_tries:
+        tries += 1
+        y = float(rng.uniform(y_lo, y_hi))
+        rad = max(0.0, wall(y) - r - 0.001)
+        rho = rad * math.sqrt(float(rng.uniform(0.0, 1.0)))
+        th = float(rng.uniform(0.0, 2.0 * math.pi))
+        p = (rho * math.cos(th), y, rho * math.sin(th))
+        key = (int(math.floor(p[0] / cell)), int(math.floor(p[1] / cell)), int(math.floor(p[2] / cell)))
+        ok = True
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for q in grid.get((key[0] + dx, key[1] + dy, key[2] + dz), ()):
+                        if (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2 < d_min2:
+                            ok = False
+                            break
+                    if not ok:
+                        break
+                if not ok:
+                    break
+        if not ok:
+            fails += 1
+            if fails > 400:  # this slab is saturated: grow the sampling column
+                y_hi = min(y_hi + 0.004, rim_y + column)
+                fails = 0
+            continue
+        fails = 0
+        grid.setdefault(key, []).append(p)
+        pts.append(p)
+    if len(pts) < n:
+        raise ValueError(f"bead_random_positions: placed {len(pts)} / {n}")
+    return np.asarray(pts, dtype=np.float64)
 
 
 def spawn_beads(scene, positions_world, radius, masses, color=(0.85, 0.15, 0.15), name_prefix="bead"):

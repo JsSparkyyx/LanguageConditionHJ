@@ -92,6 +92,8 @@ def test_constants_mirror_yaml():
     assert _f(_const("PAD_SIZE")) == _f(cfg["target"]["pad_size"])
     assert _const("N_BEADS_MAX") == cfg["beads"]["n_max"]
     assert _f(_const("BRIM_CLEAR")) == _f(cfg["beads"]["brim_clear"])
+    assert _const("BEAD_PACK") == cfg["beads"]["pack"]
+    assert _f(_const("PACK_FILL")) == _f(cfg["beads"]["pack_fill"])
     assert _f(_const("CARRY_STEP")) == _f(cfg["carry"]["step"])
     assert _f(_const("CARRY_SPEED")) == _f(cfg["carry"]["speed"])
     assert _f(_const("LIFTOFF")) == _f(cfg["carry"]["liftoff"])

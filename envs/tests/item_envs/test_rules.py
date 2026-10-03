@@ -593,6 +593,9 @@ def test_task_yamls_parse_and_rule_entries_enumerate():
         "outside|box_1|zone_red",
         "upright|bottle_1|-",
         "stay|bottle_1|-",
+        # region_set: pairs (A-A scenarios); one bystander -> no stay pair
+        "outside|box_0|zone_green+zone_red",
+        "outside|box_1|zone_green+zone_red",
     ]
     assert all(r.phrases and not any(c.isdigit() for c in p) for r in rules for p in r.phrases)
     # a tea-box push object would be held out
@@ -622,3 +625,32 @@ def test_entity_of_duck_typing():
     assert entity_of(item) is raw
     plain = object()
     assert entity_of(plain) is plain  # no wrapper attributes -> returned as-is
+
+
+def test_pair_rule_modes_and_joint_phrases():
+    """set_rule: pairs / region_set: pairs emit one rule per 2-combination,
+    and every phrase names both members."""
+    objects_cfg = yaml.safe_load((CONFIGS / "objects.yaml").read_text())
+    items, regions = t3_scene()
+    items = {**items, "cyl_0": make_item("cyl_0", "cylinder", color="blue", role="bystander")}
+    cfg = {"rules": [
+        {"consequence": "outside", "items": {"role": "candidate", "group": "push"},
+         "regions": {"kind": "zone"}, "region_set": "pairs"},
+        {"consequence": "stay", "items": {"role": "bystander"}, "set_rule": "pairs",
+         "d_tol": 0.03, "theta_tol_deg": 20},
+    ]}
+    rules = enumerate_rules(items, regions, cfg, objects_cfg=objects_cfg, rng=np.random.RandomState(0))
+    by_id = {r.rule_id: r for r in rules}
+    assert set(by_id) == {
+        "outside|box_0|zone_green+zone_red", "outside|box_1|zone_green+zone_red",
+        "stay|bottle_1+cyl_0|-",
+    }
+    for phrase in by_id["outside|box_0|zone_green+zone_red"].phrases:
+        assert "green" in phrase and "red" in phrase, phrase
+    stay = by_id["stay|bottle_1+cyl_0|-"]
+    assert stay.params["theta_tol"] == pytest.approx(np.deg2rad(20))
+    for phrase in stay.phrases:
+        assert "blue" in phrase and " and the " in phrase, phrase
+    with pytest.raises(ValueError):
+        enumerate_rules(items, regions, {"rules": [
+            {"consequence": "outside", "items": {"group": "push"}, "regions": {"kind": "zone"}, "region_set": "bogus"}]})

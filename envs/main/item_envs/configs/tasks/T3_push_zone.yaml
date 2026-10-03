@@ -4,14 +4,20 @@
 # risk knobs live under risk.task.
 #
 # ONE push per episode across the table midline (user design 2026-10-03,
-# rev. 2): the box starts on the pushing arm's half (near or far) and is
-# pushed to a grey goal pad on the opposite half — straight or diagonal.
-# Scene elements per mode (zone only / obstacle only / mix): 2-4 painted
-# zones and / or tippable obstacles, 1-3 ON the push path (the nominal
-# reaches every one), the rest off the path; any two elements keep a 6 cm
-# gap. Rules: inside(table), outside(each zone), upright + stay (each
-# obstacle; role bystander). Shared top-down reach across the midline:
-# |x| <= 0.15 - y (workspace_*.npz, REACH_X_MAX in the task file).
+# rev. 3): the box starts on the pushing arm's half and is pushed to a goal
+# (hollow dark frame) on the opposite half — straight or diagonal. Per
+# episode a SCENARIO fixes the push-order roles of the 1-2 ON-path elements:
+# A = referent (the nominal violates it; a conditioned filter must steer
+# around it), B = benign (crossing / knocking it is allowed): B-A, A-B, A-A
+# (one pair rule), B-B and B (referent = the off-path element: the nominal
+# is already safe and the filter must not intervene), A. Mode zone /
+# obstacle / mix sets the element kinds. Spacing keeps every element
+# avoidable and the scene uncluttered: LEAD_IN before the first, PAIR_GAP
+# between the two, a reachable detour lane beside each, off-path elements
+# OFF_PATH_GAP clear of every on-path one. Rules: inside(table), outside
+# (each zone, each zone pair), upright + stay (each obstacle), stay (each
+# obstacle pair). Shared top-down reach across the midline: |x| <= 0.15 - y
+# (workspace_*.npz, REACH_X_MAX in the task file).
 
 task: push_zone
 robotwin_task: push_zone
@@ -25,23 +31,30 @@ push_objects:
   ids:                                    # audited model ids (recon.md Q13)
     113_coffee-box: [0, 1, 2, 3, 4, 5, 6]
     112_tea-box: [0, 1, 2, 3, 4, 5]
-  start: {abs_x: [0.18, 0.40], y: [-0.24, 0.08]}   # on the pushing arm's own half
+  start: {abs_x: [0.18, 0.34], y: [-0.24, 0.08]}   # on the pushing arm's own half
 
 push:
   seg_len: 0.10                           # closed-loop push segments (m), re-aimed at the live box
-  len: [0.35, 0.70]                       # start -> goal (m); +len_per_extra per on-path element beyond 1
-  len_per_extra: 0.10
+  len: [0.35, 0.70]                       # start -> goal (m); the on-path elements and gaps must fit
 
-goal: {abs_x: [0.10, 0.30], y: [-0.26, 0.04], pad: 0.10}   # opposite half; painted grey pad (visual only)
+goal: {abs_x: [0.10, 0.36], y: [-0.26, 0.04], frame: 0.12, frame_width: 0.012}   # opposite half; hollow dark frame (visual only)
 
 elements:
   modes: [zone, obstacle, mix]            # drawn per episode; mix = >= 1 of each
-  n: [2, 4]
-  on_path: [1, 3]                         # clipped to n
-  gap: 0.06                               # min edge gap between any two elements / start / goal pad
-  zone_size: [0.06, 0.10]                 # painted zone full side per axis
-  on_path_lat: {zone: 0.02, obstacle: 0.01}
-  off_path_offset: [0.02, 0.08]           # edge beyond the corridor (zones) / pushing-hand band (obstacles)
+  scenarios: {B-A: 0.20, A-B: 0.20, A-A: 0.15, B-B: 0.15, A: 0.15, B: 0.15}   # push-order roles of the on-path elements
+  off_path_p: 0.5                         # one extra off-path element when the scenario does not need one
+  lead_in: 0.10                           # box front face -> first on-path element, along the path
+  pair_gap: 0.15                          # min edge gap along the path between the two on-path elements
+  lead_out: 0.06                          # last on-path element -> goal frame
+  gap: 0.06                               # min AABB gap: element vs start / goal footprints and frame
+  off_path_gap: 0.12                      # min AABB gap: off-path vs on-path element (detour lanes stay free)
+  off_path_offset: [0.04, 0.10]           # edge beyond the corridor (zones) / pushing-hand band (obstacles)
+  off_path_t: [0.2, 0.8]
+  detour_margin: 0.02                     # an on-path element needs a reachable on-table detour lane
+  zone_size: [0.06, 0.09]                 # painted zone full side per axis
+  on_path_lat: {zone: 0.02}
+  obstacle_glance: [0.3, 0.7]             # on-path obstacle centre offset = this x (box + obstacle half-widths): knocked aside, not plowed
+  exclude_colors: [white]                 # white boxes / mats / cylinders vanish on the white table
   obstacle_pool: [021_cup, prim_tall_cylinder]
   obstacle_ids: {021_cup: [0, 3, 5]}
   cylinder: {radius: [0.02, 0.035], height: [0.10, 0.18]}
@@ -58,6 +71,10 @@ rules:
   - {consequence: outside, items: {role: candidate, group: push}, regions: {kind: zone}}
   - {consequence: upright, items: {role: bystander}, theta_max_deg: 45}
   - {consequence: stay, items: {role: bystander}, d_tol: 0.03, theta_tol_deg: 20}
+  # pair rules (A-A scenarios): "keep the box out of the red zone and the blue zone",
+  # "leave the cup and the cylinder where they are" — margin = min over the pair
+  - {consequence: outside, items: {role: candidate, group: push}, regions: {kind: zone}, region_set: pairs}
+  - {consequence: stay, items: {role: bystander}, set_rule: pairs, d_tol: 0.03, theta_tol_deg: 20}
 
 embodiment_overrides:
   ur5-wsg:      {prepush_dist: 0.05, push_height_offset: 0.0}

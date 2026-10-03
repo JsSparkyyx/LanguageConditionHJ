@@ -272,9 +272,10 @@ class ItemEpisodeRunner:
             self.active_rule_id = self._primary_rule_id(task)
         # stay rules reference the item pose at rule activation (t = 0)
         self._stay_ref = {
-            r.rule_id: _item_position(item_map[r.item_ids[0]])
+            stay_ref_key(r.rule_id, iid): _item_position(item_map[iid])
             for r in self.rules
             if r.consequence is Consequence.STAY
+            for iid in r.item_ids
         }
 
         # held detection keys on per_scene_id (C++-assigned, wrapper-stable)
@@ -422,6 +423,10 @@ class ItemEpisodeRunner:
         if self._held_error is not None:
             meta.diag["held_error"] = self._held_error
         meta.diag["primary_rule"] = self._primary_rule_id(task)
+        layout = getattr(task, "layout_info", None)
+        if isinstance(layout, dict) and "scenario" in layout:
+            # T3 rev. 3: scenario / roles / referent for per-scenario calibration
+            meta.diag["layout"] = {k: layout[k] for k in ("scenario", "mode", "referent", "elements") if k in layout}
         meta.active_rule_id = self.active_rule_id
         return error
 
@@ -439,6 +444,8 @@ class ItemEpisodeRunner:
         hint = getattr(task, "primary_rule_id", None)
         if hint in ids:
             return hint
+        if hint is not None:
+            print(f"[runner] WARNING: task primary_rule_id {hint!r} is not in the rule table — falling back")
         if self._spawn_report:
             placements = self._spawn_report.get("placements") or []
             for cls in ("on_path", "near_path"):
@@ -661,6 +668,11 @@ def _load_yaml(path) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def stay_ref_key(rule_id: str, item_id: str) -> str:
+    """stay_ref key: one reference pose per (rule, member item)."""
+    return f"{rule_id}#{item_id}"
+
+
 def rule_margins(env, items, regions, rules, stay_ref, dists=None) -> np.ndarray:
     """[R] margins in rule-table order, raw SI, positive = safe."""
     if dists is None:
@@ -685,23 +697,27 @@ def one_margin(rule, indexed, regs, dists, stay_ref) -> float:
         ]
         return margin_fns.set_rule_margin(per_item)
     if consequence in (Consequence.INSIDE, Consequence.OUTSIDE):
-        region = regs[0]
-        world_T_region = region.world_T()
-        per_item = []
-        for _k, spec in indexed:
-            pts_world = geometry.footprint(
-                _world_T(spec), spec.obb_center_local, spec.half_extents, spec.up_axis_local
-            )
-            pts_region = geometry.to_frame(pts_world, world_T_region)
-            if consequence is Consequence.INSIDE:
-                per_item.append(
-                    margin_fns.m_inside(
-                        pts_region, region, require_on_surface=region.kind == "surface"
-                    )
+        # several regions (region_set: pairs): outside every one of them =
+        # min over regions; inside any of them = max over regions
+        per_region = []
+        for region in regs:
+            world_T_region = region.world_T()
+            per_item = []
+            for _k, spec in indexed:
+                pts_world = geometry.footprint(
+                    _world_T(spec), spec.obb_center_local, spec.half_extents, spec.up_axis_local
                 )
-            else:
-                per_item.append(margin_fns.m_outside(pts_region, region))
-        return margin_fns.set_rule_margin(per_item)
+                pts_region = geometry.to_frame(pts_world, world_T_region)
+                if consequence is Consequence.INSIDE:
+                    per_item.append(
+                        margin_fns.m_inside(
+                            pts_region, region, require_on_surface=region.kind == "surface"
+                        )
+                    )
+                else:
+                    per_item.append(margin_fns.m_outside(pts_region, region))
+            per_region.append(margin_fns.set_rule_margin(per_item))
+        return float(max(per_region) if consequence is Consequence.INSIDE else min(per_region))
     if consequence is Consequence.UPRIGHT:
         per_item = [
             margin_fns.m_upright(
@@ -713,10 +729,11 @@ def one_margin(rule, indexed, regs, dists, stay_ref) -> float:
     if consequence is Consequence.STAY:
         per_item = []
         for _k, spec in indexed:
-            p_ref = stay_ref.get(rule.rule_id)
+            key = stay_ref_key(rule.rule_id, spec.item_id)  # per member: set rules hold several refs
+            p_ref = stay_ref.get(key)
             if p_ref is None:
                 p_ref = _item_position(spec)
-                stay_ref[rule.rule_id] = p_ref
+                stay_ref[key] = p_ref
             per_item.append(
                 margin_fns.m_stay(
                     _item_position(spec),

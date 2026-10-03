@@ -10,11 +10,17 @@ Phrase templates live here (PLAN v3 §6), not in a YAML. Task-YAML rule entries
     {consequence: outside, items: {role: candidate, group: push}, regions: {kind: zone}}
     {consequence: upright, items: {role: bystander}, theta_max_deg: 45}
     {consequence: stay, items: {role: bystander}, d_tol: 0.03, theta_tol_deg: 20}
+    {consequence: outside, items: {role: candidate, group: push}, regions: {kind: zone}, region_set: pairs}
+    {consequence: stay, items: {role: bystander}, set_rule: pairs, d_tol: 0.03, theta_tol_deg: 20}
 
 Item selectors match key/value pairs against item attributes; the directive
 same_category_min keeps only items whose category has at least that many
 members. set_rule: true emits one rule per qualifying category (item_ids = all
-members), set_rule: all a single rule over every matched item. Region
+members), set_rule: all a single rule over every matched item, set_rule: pairs one rule
+per 2-combination of matched items (margin = min over the pair).
+region_set: pairs (inside / outside) emits one rule per 2-combination of the
+matched regions ("keep the box out of the red zone and the blue zone",
+outside margin = min over the regions, inside = max). Region
 selectors are a list of region ids or a dict matched against region
 attributes (e.g. {kind: zone} expands to every zone region).
 """
@@ -22,6 +28,7 @@ attributes (e.g. {kind: zone} expands to every zone region).
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -71,6 +78,8 @@ TEMPLATES: dict[Consequence, list[str]] = {
 # from the shared category's names/synonyms, or a generic word for mixed sets.
 SET_TEMPLATES: dict[Consequence, list[str]] = {
     Consequence.AVOID: ["don't touch any {category}", "avoid all the {category}s"],
+    # {items}: every member's spoken name, "the red cylinder and the cup"
+    Consequence.STAY: ["don't disturb the {items}", "leave the {items} where they are"],
 }
 
 # Fallback names when a category is missing from objects.yaml or a set mixes categories.
@@ -81,7 +90,7 @@ _REGIONAL = {Consequence.INSIDE, Consequence.OUTSIDE, Consequence.PARTICLES_INSI
 # Consequences whose regions together form ONE rule (vs one rule per region).
 _REGION_SET = {Consequence.PARTICLES_INSIDE, Consequence.PARTICLES_OUTSIDE}
 
-_TEMPLATE_RESERVED = {"consequence", "items", "regions", "set_rule"}
+_TEMPLATE_RESERVED = {"consequence", "items", "regions", "set_rule", "region_set"}
 
 
 def enumerate_rules(items, regions, task_cfg, *, objects_cfg=None, splits_cfg=None, rng=None) -> list[RuleSpec]:
@@ -146,6 +155,11 @@ def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState
     item_names = _item_names(rule, objects_cfg)
     category_names = _category_names(rule, objects_cfg)
     region_names = [nm for rid in rule.region_ids for nm in _region_names(rid, objects_cfg)]
+    # several regions in ONE per-region-kind rule (region_set: pairs): every
+    # phrase names them all ("the red zone and the blue zone")
+    joint_regions = len(rule.region_ids) > 1 and consequence not in _REGION_SET
+    region_lists = [_colored_first(_region_names(rid, objects_cfg), objects_cfg) for rid in rule.region_ids]
+    member_lists = [_member_names(rule, objects_cfg, k) for k in range(len(rule.item_ids))] if is_set else []
     phrases: list[str] = []
     attempts = 0
     while len(phrases) < n and attempts < 20 * max(n, 1) and templates:
@@ -155,10 +169,18 @@ def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState
             template = template.replace("{item}", item_names[int(rng.randint(len(item_names)))])
         if "{category}" in template:
             template = template.replace("{category}", category_names[int(rng.randint(len(category_names)))])
+        if "{items}" in template:
+            template = template.replace(
+                "{items}", " and the ".join(names[int(rng.randint(len(names)))] for names in member_lists)
+            )
         if "{region}" in template:
             if not region_names:
                 continue
-            template = template.replace("{region}", region_names[int(rng.randint(len(region_names)))])
+            if joint_regions:
+                joined = " and the ".join(names[int(rng.randint(len(names)))] for names in region_lists)
+                template = template.replace("{region}", joined)
+            else:
+                template = template.replace("{region}", region_names[int(rng.randint(len(region_names)))])
         if not _has_digit(template) and template not in phrases:
             phrases.append(template)
     return phrases
@@ -227,6 +249,8 @@ def _item_groups(entry: dict, item_map: dict) -> list[tuple]:
         return [tuple(by_cat[cat]) for cat in sorted(by_cat)]
     if set_rule == "all":
         return [tuple(matched)] if matched else []
+    if set_rule == "pairs":
+        return [tuple(pair) for pair in itertools.combinations(matched, 2)]
     raise ValueError(f"unknown set_rule mode: {set_rule!r}")
 
 
@@ -243,6 +267,11 @@ def _region_groups(entry: dict, region_map: dict, consequence: Consequence) -> l
         ids = [rid for rid in (selector or []) if rid in region_map]
     if consequence in _REGION_SET:
         return [tuple(ids)] if ids else []
+    region_set = entry.get("region_set")
+    if region_set == "pairs":
+        return [tuple(pair) for pair in itertools.combinations(ids, 2)]
+    if region_set not in (None, False):
+        raise ValueError(f"unknown region_set mode: {region_set!r}")
     return [(rid,) for rid in ids]
 
 
@@ -310,6 +339,32 @@ def _item_names(rule: RuleSpec, objects_cfg: dict) -> list[str]:
         fallback = re.sub(r"[\d_]+", " ", category).strip()
         names = [fallback] if fallback else list(_GENERIC_NAMES)
     return names
+
+
+def _member_names(rule: RuleSpec, objects_cfg: dict, k: int) -> list[str]:
+    """Spoken names for set-rule member k (its own category, color-prefixed
+    when colored — a pair phrase must tell the members apart)."""
+    categories = rule.params.get("categories") or ()
+    colors = rule.params.get("colors") or ()
+    category = str(categories[k]) if k < len(categories) else _strip_item_index(rule.item_ids[k])
+    color = colors[k] if k < len(colors) else None
+    entry = (objects_cfg.get("categories", {}) or {}).get(category, {}) or {}
+    names = [str(nm) for nm in list(entry.get("names", [])) + list(entry.get("synonyms", []))]
+    if color:
+        names = [f"{color} {nm}" for nm in names]
+    names = [nm for nm in names if not _has_digit(nm)]
+    if not names:
+        fallback = re.sub(r"[\d_]+", " ", category).strip()
+        names = [fallback] if fallback else list(_GENERIC_NAMES)
+    return names
+
+
+def _colored_first(names: list[str], objects_cfg: dict) -> list[str]:
+    """The color-prefixed names when there are any (pair phrases must name
+    which zone), else all names."""
+    colors = set(_all_colors(objects_cfg))
+    colored = [nm for nm in names if nm.split(" ", 1)[0] in colors]
+    return colored or names
 
 
 def _category_names(rule: RuleSpec, objects_cfg: dict) -> list[str]:

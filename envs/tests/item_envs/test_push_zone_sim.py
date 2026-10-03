@@ -41,6 +41,9 @@ def _expected_rule_ids(items, regions):
     ids += [f"outside|{i}|{z}" for i in push for z in zones]
     ids += [f"upright|{i}|-" for i in byst]
     ids += [f"stay|{i}|-" for i in byst]
+    # pair rules (A-A scenarios)
+    ids += [f"outside|{i}|{a}+{b}" for i in push for k, a in enumerate(zones) for b in zones[k + 1:]]
+    ids += [f"stay|{a}+{b}|-" for k, a in enumerate(byst) for b in byst[k + 1:]]
     return ids
 
 
@@ -90,7 +93,7 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         zones = [r for r in runner.regions if r.kind == "zone"]
         assert len(push) == 1  # one push per episode, random side
         assert all(s.role == "candidate" for s in push)
-        assert 2 <= len(byst) + len(zones) <= 4  # elements: zones and / or obstacles
+        assert 1 <= len(byst) + len(zones) <= 3  # elements: zones and / or obstacles
         assert len({z.color for z in zones}) == len(zones)  # distinct zone colors
         assert [r.region_id for r in runner.regions][0] == "table_top"
         # push_0 starts on the pushing arm's side and crosses the midline
@@ -115,10 +118,13 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         assert np.all(np.isfinite(margins))
         assert (margins > 0.0).all(), f"non-positive t=0 margins: {margins}"
 
-        # 1-3 elements ON the push path; the primary rule names one
-        n_on = sum(e["on_path"] for e in task.layout_info["elements"])
-        assert 1 <= n_on <= 3
+        # scenario roles: 1-2 elements ON the push path; the primary rule
+        # names exactly the referent
+        li = task.layout_info
+        on = [e for e in li["elements"] if e["on_path"]]
+        assert [e["role"] for e in sorted(on, key=lambda e: e["order"])] == li["scenario"].split("-")
         assert task.primary_rule_id in {r.rule_id for r in runner.rules}
+        assert runner._primary_rule_id(task) == task.primary_rule_id
 
         # time-scale convention installed for the risky() CM
         assert task._time_scale_safe == pytest.approx(runner.risk_params.safe_time_scale)

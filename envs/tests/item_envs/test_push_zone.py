@@ -48,6 +48,10 @@ EXPECTED_RULE_IDS = [
     "upright|bystander_1|-",
     "stay|bystander_0|-",
     "stay|bystander_1|-",
+    # pair rules (A-A scenarios)
+    "outside|push_0|zone_blue+zone_red",
+    "outside|push_1|zone_blue+zone_red",
+    "stay|bystander_0+bystander_1|-",
 ]
 
 
@@ -139,9 +143,11 @@ def test_t3_yaml_required_keys():
     # play_once's knob defaults sit at the low end of the sampled ranges
     assert risk["task"]["overshoot"]["range"][0] <= 0.0 <= risk["task"]["overshoot"]["range"][1]
     assert risk["task"]["lateral_offset"]["range"][0] <= 0.0 <= risk["task"]["lateral_offset"]["range"][1]
-    # the four plan rules entries, in order
+    # the four plan rules entries + the two pair-rule entries, in order
     entries = cfg["rules"]
-    assert [e["consequence"] for e in entries] == ["inside", "outside", "upright", "stay"]
+    assert [e["consequence"] for e in entries] == ["inside", "outside", "upright", "stay", "outside", "stay"]
+    assert entries[4]["region_set"] == "pairs" and entries[4]["regions"] == {"kind": "zone"}
+    assert entries[5]["set_rule"] == "pairs" and entries[5]["items"] == {"role": "bystander"}
     assert entries[0]["items"] == {"role": "candidate", "group": "push"}
     assert entries[0]["regions"] == ["table_top"]
     assert entries[1]["items"] == {"role": "candidate", "group": "push"}
@@ -183,7 +189,7 @@ def test_push_rule_semantics():
         if consequence in ("inside", "outside"):
             assert item_part in ("push_0", "push_1")
         else:
-            assert item_part in ("bystander_0", "bystander_1")
+            assert item_part in ("bystander_0", "bystander_1", "bystander_0+bystander_1")
     assert by_id["upright|bystander_0|-"].params["theta_max"] == pytest.approx(np.deg2rad(45))
     stay = by_id["stay|bystander_1|-"]
     assert stay.params["d_tol"] == pytest.approx(0.03)
@@ -191,6 +197,17 @@ def test_push_rule_semantics():
     # colored items name their color in the naming metadata
     assert by_id["inside|push_0|table_top"].params["color"] == "red"
     assert by_id["upright|bystander_1|-"].params["color"] == "yellow"
+    # pair rules name BOTH members in every phrase
+    pair_zone = by_id["outside|push_0|zone_blue+zone_red"]
+    assert pair_zone.region_ids == ("zone_blue", "zone_red")
+    for phrase in pair_zone.phrases:
+        assert "blue" in phrase and "red" in phrase, phrase
+    pair_stay = by_id["stay|bystander_0+bystander_1|-"]
+    assert pair_stay.item_ids == ("bystander_0", "bystander_1")
+    assert pair_stay.params["d_tol"] == pytest.approx(0.03)
+    for phrase in pair_stay.phrases:
+        assert "bottle" in phrase or "cylinder" in phrase, phrase
+        assert " and " in phrase, phrase
     # splits.yaml: tea_box is a heldout item category for push_zone
     assert by_id["inside|push_1|table_top"].split == "heldout_item"
     assert by_id["inside|push_0|table_top"].split == "train"
@@ -212,18 +229,28 @@ def test_module_constants_mirror_yaml():
     assert _norm({k: mesh_ids[k] for k in cfg["push_objects"]["ids"]}) == _norm(cfg["push_objects"]["ids"])
     assert _norm(_const("PUSH_SEG_LEN")) == _norm(cfg["push"]["seg_len"])
     assert _norm(_const("PUSH_LEN")) == _norm(cfg["push"]["len"])
-    assert _norm(_const("PATH_LEN_PER_EXTRA")) == _norm(cfg["push"]["len_per_extra"])
     assert _norm(_const("GOAL_ABS_X")) == _norm(cfg["goal"]["abs_x"])
     assert _norm(_const("GOAL_Y")) == _norm(cfg["goal"]["y"])
-    assert _norm(_const("GOAL_PAD")) == _norm(cfg["goal"]["pad"])
+    assert _norm(_const("GOAL_FRAME")) == _norm(cfg["goal"]["frame"])
+    assert _norm(_const("GOAL_FRAME_W")) == _norm(cfg["goal"]["frame_width"])
     el = cfg["elements"]
     assert _norm(_const("MODES")) == _norm(el["modes"])
-    assert _norm(_const("N_ELEMENTS")) == _norm(el["n"])
-    assert _norm(_const("N_ON_PATH")) == _norm(el["on_path"])
+    assert _norm(_const("SCENARIOS")) == _norm(tuple(el["scenarios"]))
+    assert _norm(_const("SCENARIO_P")) == _norm(tuple(el["scenarios"].values()))
+    assert sum(_const("SCENARIO_P")) == pytest.approx(1.0)
+    assert _norm(_const("OFF_PATH_P")) == _norm(el["off_path_p"])
+    assert _norm(_const("LEAD_IN")) == _norm(el["lead_in"])
+    assert _norm(_const("PAIR_GAP")) == _norm(el["pair_gap"])
+    assert _norm(_const("LEAD_OUT")) == _norm(el["lead_out"])
     assert _norm(_const("ELEM_GAP")) == _norm(el["gap"])
+    assert _norm(_const("OFF_PATH_GAP")) == _norm(el["off_path_gap"])
+    assert _norm(_const("OFF_PATH_OFFSET")) == _norm(el["off_path_offset"])
+    assert _norm(_const("OFF_PATH_T")) == _norm(el["off_path_t"])
+    assert _norm(_const("DETOUR_MARGIN")) == _norm(el["detour_margin"])
     assert _norm(_const("ZONE_SIZE")) == _norm(el["zone_size"])
     assert _norm(_const("ON_PATH_LAT")) == _norm(el["on_path_lat"])
-    assert _norm(_const("OFF_PATH_OFFSET")) == _norm(el["off_path_offset"])
+    assert _norm(_const("OBST_GLANCE")) == _norm(el["obstacle_glance"])
+    assert _norm(_const("EXCLUDE_COLORS")) == _norm(el["exclude_colors"])
     assert _norm(_const("OBSTACLE_POOL")) == _norm(el["obstacle_pool"])
     assert _norm({k: mesh_ids[k] for k in el["obstacle_ids"]}) == _norm(el["obstacle_ids"])
     assert _norm(_const("CYLINDER_RADIUS")) == _norm(el["cylinder"]["radius"])
@@ -447,73 +474,85 @@ def _interior_zone_clearances(task):
 
 @pytest.mark.skipif(not ROBOTWIN_OBJECTS.is_dir(), reason="RoboTwin assets not available")
 def test_layout_replay_seeds():
-    """300 replayed layouts: one cross-midline push (straight or diagonal),
-    reachable gripper path, mode-consistent elements, 1-3 on the path (the
-    line crosses them), the rest off, every pair >= ELEM_GAP apart."""
+    """300 replayed layouts (rev. 3): one cross-midline push (straight or
+    diagonal), reachable gripper path; the scenario fixes the push-order
+    roles of the 1-2 on-path elements (A = referent, B = benign); spacing
+    LEAD_IN / PAIR_GAP / LEAD_OUT along the line; off-path elements
+    OFF_PATH_GAP clear of every on-path one; the primary rule names exactly
+    the referent; no white item."""
     pz, restore = _load_task_module()
     try:
-        seen = {"sides": set(), "modes": set(), "n_on": set()}
+        seen = {"sides": set(), "modes": set(), "scenarios": set()}
         diagonal = 0
         for seed in range(300):
             task = _replay_layout(pz, seed)  # raises RuntimeError on a bad layout
             assert len(task.push_objects) == 1
             rec = task.push_objects[0]
-            side = rec["arm"]
-            assert side == task.push_side == task.layout_info["push_side"]
-            seen["sides"].add(side)
-            sgn = -1.0 if side == "left" else 1.0
-            p, g = rec["start_xy"], rec["goal_xy"]
-            assert sgn * p[0] > 0 and sgn * g[0] < 0, (seed, "does not cross the midline")
-            assert pz.PUSH_LEN[0] - 1e-9 <= float(np.linalg.norm(g - p)) <= pz.PUSH_LEN[1] + 1e-9
-            diagonal += abs(float(g[1] - p[1])) > 0.10
-            # the GRIPPER path (one contact depth behind the box, out to the
-            # longest overshoot) stays inside the shared reach
-            d = (g - p) / np.linalg.norm(g - p)
+            seen["sides"].add(rec["arm"])
+            p, g = np.asarray(rec["start_xy"]), np.asarray(rec["goal_xy"])
+            sgn = -1.0 if rec["arm"] == "left" else 1.0
+            assert p[0] * sgn > 0.0 and g[0] * sgn < 0.0, (seed, p, g)  # crosses the midline
+            L = float(np.linalg.norm(g - p))
+            assert pz.PUSH_LEN[0] - 1e-9 <= L <= pz.PUSH_LEN[1] + 1e-9
+            d = (g - p) / L
+            perp = np.array([-d[1], d[0]])
+            half_perp = rec["half_perp"]
+            if abs(np.degrees(np.arctan2(d[1], abs(d[0])))) > 10.0:
+                diagonal += 1
             for t in np.linspace(0.0, 1.0, 21):
                 q = p + t * (g + d * pz.OVERSHOOT_MAX - p) - d * rec["half_dir"]
-                if q[0] * sgn > 0.0:
-                    assert q[1] <= pz.OWN_SIDE_Y_MAX + 1e-9, (seed, q)
-                else:
-                    assert abs(q[0]) <= pz.REACH_X_MAX[0] + pz.REACH_X_MAX[1] * q[1] + 1e-9, (seed, q)
+                assert pz.push_zone._reach_ok(q, sgn), (seed, q)
+            assert rec["color"] not in pz.EXCLUDE_COLORS
 
             li = task.layout_info
             seen["modes"].add(li["mode"])
-            kinds = {e["kind"] for e in li["elements"]}
-            if li["mode"] == "zone":
-                assert kinds == {"zone"}
-            elif li["mode"] == "obstacle":
-                assert kinds == {"obstacle"}
-            else:
-                assert kinds == {"zone", "obstacle"}
-            assert 2 <= len(li["elements"]) + li["elements_dropped"] <= 4
-            a = np.asarray(li["corridors"][0]["a"]); b = np.asarray(li["corridors"][0]["b"])
-            n_on = 0
-            boxes = []
-            for e in li["elements"]:
+            seen["scenarios"].add(li["scenario"])
+            roles = li["scenario"].split("-")
+            els = li["elements"]
+            on = sorted((e for e in els if e["on_path"]), key=lambda e: e["order"])
+            off = [e for e in els if not e["on_path"]]
+            assert [e["role"] for e in on] == roles, (seed, li["scenario"], on)
+            assert len(off) <= 1 and len(els) <= 3
+            kinds = {e["kind"] for e in els}
+            assert kinds == ({"zone", "obstacle"} if li["mode"] == "mix" else {li["mode"]}), (seed, li["mode"], kinds)
+            boxes = {}
+            for e in els:
                 c = np.asarray(e["xy"]); hx, hy = e["half"]
-                box = (c[0] - hx, c[1] - hy, c[0] + hx, c[1] + hy)
-                crossed = pz._rect_seg_dist(box, a, b) == 0.0
+                boxes[e["id"]] = (c[0] - hx, c[1] - hy, c[0] + hx, c[1] + hy)
+                # on path = the box's swept corridor overlaps the element
+                # (zones sit on the line; obstacles are hit glancingly)
+                crossed = pz._rect_seg_dist(boxes[e["id"]], p, g) < half_perp - 1e-9
                 assert crossed == e["on_path"], (seed, e)
-                n_on += e["on_path"]
-                boxes.append(box)
-            assert 1 <= n_on <= 3, (seed, n_on)
-            seen["n_on"].add(n_on)
-            for i in range(len(boxes)):
-                for j in range(i + 1, len(boxes)):
-                    A, B = boxes[i], boxes[j]
+                if e["on_path"] and e["kind"] == "zone":
+                    assert pz._rect_seg_dist(boxes[e["id"]], p, g) == 0.0
+            # along-path spacing: lead-in, pair gap, lead-out
+            ext = [pz._support_half(e["half"][0], e["half"][1], d) for e in on]
+            s_c = [float((np.asarray(e["xy"]) - p) @ d) for e in on]
+            assert s_c[0] - ext[0] >= rec["half_dir"] + pz.LEAD_IN - 1e-6, seed
+            if len(on) == 2:
+                assert s_c[1] > s_c[0]
+                assert (s_c[1] - ext[1]) - (s_c[0] + ext[0]) >= pz.PAIR_GAP - 1e-6, seed
+            assert s_c[-1] + ext[-1] <= L - max(rec["half_dir"], pz.GOAL_FRAME / 2.0) - pz.LEAD_OUT + 1e-6, seed
+            # off-path elements keep the detour lanes free
+            for e in off:
+                for o in on:
+                    A, B = boxes[e["id"]], boxes[o["id"]]
                     gap = max(B[0] - A[2], A[0] - B[2], B[1] - A[3], A[1] - B[3])
-                    assert gap >= pz.ELEM_GAP - 1e-6, (seed, i, j, gap)
-            # flat mats stay visible: no zone in an excluded (table-colored) color
-            zone_ids = [e["id"] for e in li["elements"] if e["kind"] == "zone"]
-            assert not any(zid.split("_", 1)[1] in pz.ZONE_EXCLUDE_COLORS for zid in zone_ids), (seed, zone_ids)
-            assert len(set(zone_ids)) == len(zone_ids), (seed, zone_ids)
-            # the primary rule names an on-path element
-            on_ids = {e["id"] for e in li["elements"] if e["on_path"]}
+                    assert gap >= pz.OFF_PATH_GAP - 1e-6, (seed, e["id"], o["id"], gap)
+            # the referent: the A elements, else the off-path element
+            avoid = sorted(e["id"] for e in els if e["role"] in ("A", "ref"))
+            assert avoid == li["referent"], (seed, avoid, li["referent"])
+            assert ("A" in roles) == (not any(e["role"] == "ref" for e in els))
+            assert len({e["kind"] for e in els if e["id"] in avoid}) == 1  # pair rules are one kind
             rid = task.primary_rule_id.split("|")
-            assert (rid[2] if rid[0] == "outside" else rid[1]) in on_ids
+            named = rid[2].split("+") if rid[0] == "outside" else rid[1].split("+")
+            assert sorted(named) == avoid, (seed, task.primary_rule_id)
+            # flat mats / boxes / cylinders stay visible: no white item
+            for zid in li["path_zones"] + [e["id"] for e in els if e["kind"] == "zone"]:
+                assert zid.split("_", 1)[1] not in pz.EXCLUDE_COLORS, (seed, zid)
         assert seen["sides"] == {"left", "right"}
         assert seen["modes"] == {"zone", "obstacle", "mix"}
-        assert seen["n_on"] == {1, 2, 3}
+        assert seen["scenarios"] == set(pz.SCENARIOS)
         assert diagonal > 30  # straight AND diagonal pushes
     finally:
         restore()

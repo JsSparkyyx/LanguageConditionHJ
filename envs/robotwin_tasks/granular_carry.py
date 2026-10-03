@@ -30,6 +30,8 @@ start y -> bowl id -> bowl mass -> bead grid jitter -> bead masses -> target
 dx -> target dy.
 """
 
+import os
+
 from ._base_task import Base_Task
 from .utils import *
 import sapien
@@ -37,12 +39,14 @@ import sapien
 from ._item_utils import (
     APPROACH_TO_TCP,
     bead_grid_positions,
+    bead_random_positions,
     bowl_geometry,
     container_region_radius,
     register_item,
     register_zone,
     risky,
     spawn_beads,
+    goal_frame,
     zone_mat,
 )
 from .granular_pour import (
@@ -66,12 +70,15 @@ START_Y = (-0.06, 0.04)
 TARGET_DX = (-0.06, 0.06)  # target pad centre = start + (dx, -dy), kept on the bowl's side
 TARGET_DY = (0.12, 0.18)  # the carry runs toward the robot
 TARGET_MIN_ABS_X = 0.10
-PAD_SIZE = 0.16  # painted target pad, full side (m)
-PAD_COLOR = (0.55, 0.55, 0.55)
+PAD_SIZE = 0.16  # target marker: hollow dark frame, outer side (m) — visual only
+PAD_FRAME_W = 0.012  # frame strip width (m)
 N_BEADS_MAX = 240  # grid candidates; beads above rim_y - BRIM_CLEAR are dropped
 BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitch 12.6 mm -> 11-19 mm by bowl id)
+BEAD_PACK = "random"  # "lattice" (hex grid, settles into a crystal) | "random" (random sequential addition, settles into a random pack)
+PACK_FILL = 1.2  # random pack: bead count = this x the lattice count at BRIM_CLEAR / DOME_H
+DOME_H = 0.0  # m: extra fill height at the bowl centre (parabolic in radius, 0 at the wall) — a heaped bowl
 CARRY_BOWL_MASS_RANGE = (0.10, 0.20)  # kg
-PINCH_CLEAR_R = 0.050  # m: no top-layer beads within this of the rim at the pinch point
+PINCH_CLEAR_R = 0.030  # m: no top-layer beads within this of the rim at the pinch point (0.05 emptied the whole pinch-side half)
 PINCH_CLEAR_DEPTH = 0.025  # m below the rim plane
 
 # --- nominal motion ---
@@ -86,7 +93,9 @@ CARRY_STEP = 0.03  # m per step
 CARRY_SPEED = 0.10  # m/s at time_scale 1.0 (safe phases use safe_time_scale)
 CARRY_HEIGHT_DEFAULT = 0.08  # m lift above the table
 CARRY_TILT_DEFAULT = 0.0  # deg
+STEP_MIN_T = 0.25  # s: step-duration floor for the regular carry steps
 PLACE_CLEAR = 0.004  # m, bowl bottom above the table at release
+PLACE_XY_TOL = 0.005  # m: re-centre over the pad after re-leveling when farther than this
 PLACE_TOL = 0.008  # m: residual gap that triggers a correction step
 SUCCESS_TOL = 0.03  # bowl centre within this of the pad centre (m)
 SUCCESS_TILT_DEG = 10.0  # and upright within this
@@ -121,15 +130,28 @@ class granular_carry(granular_pour):
             N_BEADS_MAX, BEAD_R, g["inner_radius"], g["floor_y"], bands=g["bands"], rng=np.random
         )
         masses_all = np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=N_BEADS_MAX)
-        keep = local[:, 1] <= float(g["rim_y"]) - BRIM_CLEAR
+        # fill line: BRIM_CLEAR under the rim at the wall, heaped by DOME_H at the
+        # centre (ITEM_T4_DOME_H: diag-only override for fill sweeps)
+        dome_h = float(os.environ.get("ITEM_T4_DOME_H", DOME_H))
+        rho = np.linalg.norm(local[:, [0, 2]], axis=1)
+        y_cap = float(g["rim_y"]) - BRIM_CLEAR + dome_h * np.clip(1.0 - (rho / float(g["inner_radius"])) ** 2, 0.0, 1.0)
+        keep = local[:, 1] <= y_cap
         # top layers clear at the pinch point (outer rim: file z sign = world
         # x sign of the bowl's side); the inner finger otherwise plows beads
         pinch_side = side  # cp 0 / 2 grasp the OUTER rim (+x for the right arm)
-        near_pinch = (pinch_side * local[:, 2] > float(g["inner_radius"]) - PINCH_CLEAR_R) & (
+        pinch_r = float(os.environ.get("ITEM_T4_PINCH_R", PINCH_CLEAR_R))  # diag-only override
+        near_pinch = (pinch_side * local[:, 2] > float(g["inner_radius"]) - pinch_r) & (
             local[:, 1] > float(g["rim_y"]) - PINCH_CLEAR_DEPTH
         )
         keep &= ~near_pinch
         local, masses = local[keep], masses_all[keep]
+        pack = os.environ.get("ITEM_T4_PACK", BEAD_PACK)  # diag-only override
+        if pack == "random":
+            n_fill = int(round(len(local) * float(os.environ.get("ITEM_T4_PACK_N", PACK_FILL))))
+            local = bead_random_positions(n_fill, BEAD_R, g, np.random)
+            extra = max(0, n_fill - len(masses_all))
+            masses_all = np.concatenate([masses_all, np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=extra)])
+            masses = masses_all[:n_fill]
         world_T = self.container.get_pose().to_transformation_matrix()
         bead_world = local @ world_T[:3, :3].T + world_T[:3, 3]
         self.beads = spawn_beads(self.scene, bead_world, BEAD_R, masses, color=BEAD_COLOR)
@@ -143,10 +165,7 @@ class granular_carry(granular_pour):
             tx = side * TARGET_MIN_ABS_X
         self.target_xy = np.array([tx, y - dy], dtype=np.float64)
         self.start_xy = np.array([x, y], dtype=np.float64)
-        self.pad = zone_mat(
-            self.scene, sapien.Pose([float(self.target_xy[0]), float(self.target_xy[1]), TABLE_Z + 0.0005]),
-            size_xy=(PAD_SIZE, PAD_SIZE), color=PAD_COLOR, name="target_pad", collision=False,
-        )
+        self.pad = goal_frame(self.scene, self.target_xy, TABLE_Z, PAD_SIZE, PAD_FRAME_W, name="target_pad")
         self.zones = []
 
         register_item(
@@ -167,7 +186,7 @@ class granular_carry(granular_pour):
         )
 
     # ------------------------------------------------------------------ play ----
-    def _steps_to(self, arm, target_pose, speed):
+    def _steps_to(self, arm, target_pose, speed, min_t=STEP_MIN_T):
         """Absolute-target step chain from the live pose to ``target_pose``
         (position AND orientation interpolated; slerp-free: orientation steps
         are small), local screws retimed to step length / speed."""
@@ -179,7 +198,7 @@ class granular_carry(granular_pour):
         ang = 2.0 * float(np.arccos(np.clip(abs(float(np.dot(p0[3:], p1[3:]))), -1.0, 1.0)))
         n = max(1, int(np.ceil(max(length / CARRY_STEP, ang / np.deg2rad(5.0)))))
         self.plan_local = True
-        self.plan_duration_target = max(length / n / max(float(speed), 1e-3), 0.25)
+        self.plan_duration_target = max(length / n / max(float(speed), 1e-3), float(min_t))
         try:
             for k in range(1, n + 1):
                 t = k / n
@@ -268,8 +287,13 @@ class granular_carry(granular_pour):
         dxy = self.target_xy - bowl_xy
         with risky(self):
             self._steps_to(arm, np.concatenate([ee[:3] + [dxy[0], dxy[1], 0.0], ee[3:]]), v_risky)
-        # 5. undo the knob tilt (re-level) and lower onto the pad — safe scale
+        # 5. undo the knob tilt (re-level) and lower onto the pad — safe scale;
+        # leveling rotates about the pinch and shifts the bowl: re-centre it
         self._level(arm, v_safe)
+        err = self.target_xy - np.asarray(self.container.get_pose().p, dtype=np.float64)[:2]
+        if float(np.linalg.norm(err)) > PLACE_XY_TOL:
+            ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
+            self._steps_to(arm, np.concatenate([ee[:3] + [err[0], err[1], 0.0], ee[3:]]), v_safe)
         for _ in range(3):
             gap = float(self.container.get_pose().p[2]) - (TABLE_Z + PLACE_CLEAR)  # origin = exterior bottom
             if gap <= PLACE_TOL:
