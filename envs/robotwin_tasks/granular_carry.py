@@ -78,13 +78,14 @@ ZONE_EDGE_GAP = (0.02, 0.05)  # zone edge -> carried bowl's outer wall (m)
 GRASP_CONTACT_IDS = (0, 2)  # [right, left]: +x rim / -x rim (opposite pinches)
 GRIPPER_STIFFNESS = 5000.0  # gripper PD stiffness for the two rim pinches (RoboTwin default 1000)
 CARRY_BOWL_MASS_RANGE = (0.10, 0.20)  # kg — lighter than T2's (0.10, 0.40): two rim pinches carry bowl + beads
-PINCH_CLEAR_R = 0.025  # m: no top-layer beads within this of the rim at the pinch points
-PINCH_CLEAR_DEPTH = 0.015  # m below the rim plane
+PINCH_CLEAR_R = 0.035  # m: no top-layer beads within this of the rim at the pinch points
+PINCH_CLEAR_DEPTH = 0.020  # m below the rim plane
 CARRY_STEP = 0.03  # m per paired step (short steps keep the two pinches in lockstep)
 CARRY_SPEED = 0.10  # m/s at time_scale 1.0 (safe phases use safe_time_scale)
 CARRY_HEIGHT_DEFAULT = 0.08  # m lift above the table
 CARRY_TILT_DEFAULT = 0.0  # deg
 PLACE_CLEAR = 0.004  # m, bowl bottom above the table at release
+PLACE_TOL = 0.008  # m: residual gap above PLACE_CLEAR that triggers a correction step
 SUCCESS_TOL = 0.03  # bowl centre within this of the pad centre (m)
 SUCCESS_TILT_DEG = 10.0  # and upright within this
 
@@ -192,20 +193,28 @@ class granular_carry(granular_pour):
     def _paired(self, delta_left, delta_right, speed):
         """Move both pinches by their displacements in short lockstep steps:
         each step is a paired move whose two plans are local screws retimed
-        to the SAME duration (step length / speed)."""
+        to the SAME duration (step length / speed). Step targets are ABSOLUTE
+        poses interpolated from the poses at the call — a loaded arm lags its
+        target at the end of each short step, and live-pose-relative steps
+        compounded that lag (ur5: a 5.2 cm lowering covered 2.5 cm, the bowl
+        was released 3.6 cm up and tipped 56 deg, diag job 22640468)."""
         dl = np.asarray(delta_left, dtype=np.float64)
         dr = np.asarray(delta_right, dtype=np.float64)
         length = float(max(np.linalg.norm(dl), np.linalg.norm(dr)))
         if length < 1e-4:
             return
         n = max(1, int(np.ceil(length / CARRY_STEP)))
+        pl0 = np.asarray(self.get_arm_pose("left"), dtype=np.float64).reshape(7)
+        pr0 = np.asarray(self.get_arm_pose("right"), dtype=np.float64).reshape(7)
         self.plan_local = True
         self.plan_duration_target = (length / n) / max(float(speed), 1e-3)
         try:
-            for _ in range(n):
-                a_l = self.move_by_displacement("left", x=float(dl[0] / n), y=float(dl[1] / n), z=float(dl[2] / n))
-                a_r = self.move_by_displacement("right", x=float(dr[0] / n), y=float(dr[1] / n), z=float(dr[2] / n))
-                self.move(a_l, a_r)
+            for k in range(1, n + 1):
+                tl = pl0.copy()
+                tr = pr0.copy()
+                tl[:3] += dl * (k / n)
+                tr[:3] += dr * (k / n)
+                self.move(self.move_to_pose("left", tl.tolist()), self.move_to_pose("right", tr.tolist()))
         finally:
             self.plan_local = False
             self.plan_duration_target = None
@@ -250,6 +259,12 @@ class granular_carry(granular_pour):
         bottom = float(self.container.get_pose().p[2])  # 002_bowl origin = exterior bottom
         down = -(bottom - (TABLE_Z + PLACE_CLEAR))
         self._paired([0.0, 0.0, down - 0.5 * dz_tilt], [0.0, 0.0, down + 0.5 * dz_tilt], v_safe)
+        # closed loop: never release a hanging bowl — correct the residual
+        for _ in range(2):
+            gap = float(self.container.get_pose().p[2]) - (TABLE_Z + PLACE_CLEAR)
+            if gap <= PLACE_TOL:
+                break
+            self._paired([0.0, 0.0, -gap], [0.0, 0.0, -gap], v_safe)
         # 5. release both pinches together, retreat up
         self.move(self.open_gripper("left"), self.open_gripper("right"))
         self.move(self.move_by_displacement("left", z=0.06), self.move_by_displacement("right", z=0.06))

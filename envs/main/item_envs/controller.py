@@ -49,6 +49,7 @@ DEFAULT_JOINT_VEL = 2.0  # rad/s (or m/s prismatic) fallback, body_features.py p
 PHYSICS_DT = 1.0 / 250.0  # one plan row per physics step (cuRobo interpolation_dt, mplib time_step)
 LOCAL_JUMP_MAX = 1.0  # rad: a plan_local step whose joints leave the start by more is a branch flip
 BRANCH_FLIP_TRAVEL = 2.0  # rad: any-joint travel above this triggers a local (screw) retry
+BRANCH_FLIP_REPLANS = 2  # cuRobo re-plans when no local path exists (least travel wins)
 
 
 class RiskTickController(TickChunkedController):
@@ -186,8 +187,19 @@ class RiskTickController(TickChunkedController):
             print(f"[risk_tick] plan #{self._n_plan} {arm} branch flip avoided: "
                   f"{travel:.2f} rad -> screw {_max_joint_travel(screw):.2f} rad")
             return screw
-        print(f"[risk_tick] plan #{self._n_plan} {arm} large joint travel {travel:.2f} rad kept (no local alternative)")
-        return result
+        # no local path: cuRobo's goal IK is seeded randomly — re-plan and keep
+        # the least-travel success
+        best, best_travel = result, travel
+        for _ in range(BRANCH_FLIP_REPLANS):
+            self._n_plan -= 1  # keep plan numbering per request
+            again = super()._plan_body(arm, target_pose, **kw)
+            if again and again.get("status") == "Success" and _max_joint_travel(again) < best_travel:
+                best, best_travel = again, _max_joint_travel(again)
+            if best_travel <= BRANCH_FLIP_TRAVEL:
+                break
+        print(f"[risk_tick] plan #{self._n_plan} {arm} large joint travel {travel:.2f} rad -> "
+              f"{best_travel:.2f} rad after re-plans")
+        return best
 
     def _unwrap_revolutions(self, arm: str, result) -> dict:
         """Shortest-way joint ends: a revolute joint at b and at b +/- 2*pi is
