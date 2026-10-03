@@ -488,7 +488,8 @@ def test_layout_replay_seeds():
                 bseg = np.asarray(corrs[0]["b"], dtype=np.float64)
                 ab = bseg - a
                 t = float(np.clip((xy - a) @ ab / float(ab @ ab), 0.0, 1.0))
-                assert float(np.linalg.norm(xy - (a + t * ab))) > float(corrs[0]["half"])
+                # edge clears the pushing hand's band, not only the box corridor
+                assert float(np.linalg.norm(xy - (a + t * ab))) > max(float(corrs[0]["half"]), pz.PUSHER_HALF_ACROSS)
         assert sides == {"left", "right"}
     finally:
         restore()

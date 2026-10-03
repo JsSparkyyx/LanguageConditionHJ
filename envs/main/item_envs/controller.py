@@ -141,8 +141,15 @@ class RiskTickController(TickChunkedController):
             print(f"[risk_tick] plan #{self._n_plan} {arm} local screw error: {exc}")
             result = None
         if result and result.get("status") == "Success" and _max_joint_travel(result) <= LOCAL_JUMP_MAX:
+            # keep the screw's END joints (IK on the live branch) but replace
+            # its path with a minimum-jerk joint interpolation: mplib's screw
+            # timing has velocity spikes, and duration-targeted retimes of 7-11x
+            # (T2 tilt at 1 rad/s) hit v_ratio 3 and shook the bowl out of the
+            # grasp (diag job 22636542). For a 6-11 deg wrist step the joint-
+            # space path tracks the screw path; peak speed = 1.875 x average.
+            result = _min_jerk_resample(result)
             print(f"[risk_tick] plan #{self._n_plan} {arm} local screw ok "
-                  f"n_wp={len(result['position'])} travel={_max_joint_travel(result):.2f}rad")
+                  f"n_wp={len(result['position'])} travel={_max_joint_travel(result):.2f}rad (min-jerk)")
             return result
         self._n_plan -= 1  # super()._plan_body counts its own attempt
         result = super()._plan_body(arm, target_pose, **kw)
@@ -317,3 +324,20 @@ def _max_joint_travel(result) -> float:
     if pos.ndim != 2 or pos.shape[0] < 2:
         return 0.0
     return float(np.max(np.abs(pos - pos[0])))
+
+
+def _min_jerk_resample(result) -> dict:
+    """Same rows / endpoints, minimum-jerk profile q0 -> q1 (velocity rows =
+    analytic derivative at PHYSICS_DT spacing). Leaves degenerate plans alone."""
+    pos = np.asarray(result.get("position"), dtype=np.float64)
+    if pos.ndim != 2 or pos.shape[0] < 3:
+        return result
+    n = pos.shape[0]
+    tau = np.linspace(0.0, 1.0, n)[:, None]
+    shape = 10.0 * tau**3 - 15.0 * tau**4 + 6.0 * tau**5
+    dshape = (30.0 * tau**2 - 60.0 * tau**3 + 30.0 * tau**4) / ((n - 1) * PHYSICS_DT)
+    q0, q1 = pos[0], pos[-1]
+    out = dict(result)
+    out["position"] = q0 + shape * (q1 - q0)
+    out["velocity"] = dshape * (q1 - q0)
+    return out

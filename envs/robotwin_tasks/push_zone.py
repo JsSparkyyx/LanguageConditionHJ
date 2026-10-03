@@ -123,6 +123,7 @@ ZONE_FREE_GAP = 0.02  # free zone edge -> any push corridor edge (beyond lateral
 N_BYSTANDERS = (1, 2)
 BYSTANDER_POOL = ("021_cup", "prim_tall_cylinder")  # 001_bottle: punt-ring bases tip in check_stable
 BYSTANDER_LINE_OFFSET = (0.02, 0.08)  # bystander edge -> push corridor edge
+PUSHER_HALF_ACROSS = 0.10  # swept half-width of the PUSHING HAND across the push line (franka hand ~20 cm along its finger axis, which push_to_goal turns across the push); bystander clearances use max(box corridor half, this)
 BYSTANDER_T = (0.05, 0.95)  # bystander position along the push segment — nearly the
                             # whole line: the mid-band of each full-table corridor is
                             # reserved for its midway zone, and the outer bands pinch
@@ -570,6 +571,10 @@ class push_zone(Base_Task):
                 # 40 tries while the other line's band was empty)
                 line_k = int(np.random.randint(len(corridors)))
                 a, b, half = corridors[line_k]
+                # tall bystanders must clear the pushing HAND's swept band,
+                # not only the box's (diag job 22636542: the yawed franka
+                # hand knocked both cylinders over at 7.5 cm off the line)
+                half = max(half, PUSHER_HALF_ACROSS)
                 d = _unit(b - a)
                 perp = _perp(d)
                 t = float(np.random.uniform(*BYSTANDER_T))
@@ -590,7 +595,7 @@ class push_zone(Base_Task):
                     for k2, (a2, b2, h2) in enumerate(corridors):
                         if k2 == line_k:
                             continue
-                        if _pt_seg_dist(xy, a2, b2) < h2 + pad + 0.01:
+                        if _pt_seg_dist(xy, a2, b2) < max(h2, PUSHER_HALF_ACROSS) + pad + 0.01:
                             ok = False
                             break
                     if not ok:
