@@ -130,6 +130,8 @@ TILT_STEPS = 10  # small EE-rotation steps per tilt direction
 POUR_PIN_ABORT = 0.03  # abort the tilt when the rim-to-EE distance drifts this
                        # far from its grasp-time value (bowl slipping / lost)
 SWING_CLEAR = 0.03  # m: source-bowl hull above the target rim during transit and tilt swing
+POUR_REF_DEG = 85.0  # mid-pour angle (100 beads start leaving at ~55-60 deg) at which the lip sits on the pour point
+PIVOT_ALPHAS = (0.0, 0.25, 0.5, 0.75, 1.0)  # pivot = lip + alpha * (EE - lip); smallest executable wins
 HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 Hz)
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
 SUCCESS_MIN_FRAC = 0.8  # fraction of beads inside the target interior
@@ -481,7 +483,7 @@ class granular_pour(place_container_plate):
         # fallbacks — never the near lip, which sits under the fingers.
         tilt_total = float(np.deg2rad(np.random.uniform(*TILT_ANGLE_DEG)))
         sign = -1.0 if container_pose[0] > 0 else 1.0
-        mouth, axis, ee_target, pour_point = self._choose_pour(arm_tag, pour_point, sign, tilt_total)
+        mouth, axis, ee_target, pivot = self._choose_pour(arm_tag, pour_point, sign, tilt_total)
 
         # 3. transit — risky scale (time_scale knob): the chosen pouring lip
         #    goes onto the pour point; the tilt then pivots about that lip
@@ -492,9 +494,9 @@ class granular_pour(place_container_plate):
 
         # 4. tilt, hold, tilt back — risky; per-step scale from tilt_rate
         with risky(self):
-            self._tilt_steps(arm_tag, axis, tilt_total, tilt_rate, pour_point)
+            self._tilt_steps(arm_tag, axis, tilt_total, tilt_rate, pivot)
             self.delay(HOLD_DELAY)
-            self._tilt_steps(arm_tag, axis, -tilt_total, tilt_rate, pour_point)
+            self._tilt_steps(arm_tag, axis, -tilt_total, tilt_rate, pivot)
 
         # 5. place the empty bowl beside the target and retreat — safe scale.
         #    Explicit place poses carry the IDENTITY quat (dump_bin_bigbin's
@@ -554,61 +556,66 @@ class granular_pour(place_container_plate):
         return rim + float(self._src_geom["inner_radius"]) * m
 
     def _choose_pour(self, arm_tag, pour_point, sign, tilt_total):
-        """(mouth, axis, ee_target, pour_point) of the first pour direction
-        whose FULL tilted pose the arm can reach on its current IK branch.
+        """(mouth, axis, ee_target, pivot) of the first executable pour.
 
-        The tilt pivots about the POURING LIP (the rim point on the ``mouth``
-        side), pinned at the pour point — the beads leave from one spot. An
-        EE-origin pivot was tried and dropped (diag job 22636182): with 100
-        beads the pour starts at ~55-60 deg, and the lip swept ~16 cm over the
-        pouring range, wider than the target mouth (2/100 beads landed in it).
+        The tilt rotates the bowl about a PIVOT on the segment from the
+        pouring lip (rim point on the ``mouth`` side) to the EE origin:
+        ``pivot0 = lip + alpha * (ee - lip)`` (bowl upright, just lifted).
 
-        Candidates in order: far lip (mouth toward the target, sign * x),
-        then -y, then +y (never the near lip, under the fingers). Each gets
-        ``_swing_clear`` (raise the pour point until the swept bowl hull clears
-        the target rim) and a dry run of the SEQUENCE play_once will execute
-        (transit legs + every tilt step, chained screws from each step's end
-        joints) with the runner-installed ``task.screw_path_ok``
-        (RiskTickController.attach) —
-        ur5-wsg's wrist 1 (+/-1.75 rad) blocks the far-lip tilt (diag job
-        22636122). Without the capability (vanilla RoboTwin) the far lip is
-        used. Recorded in ``self.pour_info``.
+          alpha = 0  lip pinned: beads leave from one spot, but the EE swings
+                     ~0.3 m — beyond ur5-wsg's wrist (dry runs: every
+                     direction infeasible, diag job 22639777);
+          alpha = 1  EE-origin pivot: a pure wrist rotation, but the lip
+                     sweeps ~16 cm over the pour (2/100 beads landed, diag
+                     job 22636182).
+
+        The pivot is placed so the lip sits on ``pour_point`` at the
+        reference angle POUR_REF_DEG (mid-pour); the lip arc shrinks with
+        alpha. Search order: far lip (mouth toward the target — the only
+        tilt whose axis is perpendicular to the rim pinch; side lips rotate
+        about the pinch line and the bowl pivots out of the grasp, diag job
+        22636635) for alpha ascending, then -y, +y. Each candidate gets
+        ``_swing_clear`` and a dry run of the SEQUENCE play_once executes
+        (transit legs + every tilt step, chained screws) with the
+        runner-installed ``task.screw_path_ok``. Without the capability
+        (vanilla RoboTwin) the far lip with alpha = 0 is used. Recorded in
+        ``self.pour_info``.
         """
         ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
         up = np.array([0.0, 0.0, 1.0])
         cands = [np.array([sign, 0.0, 0.0]), np.array([0.0, -1.0, 0.0]), np.array([0.0, 1.0, 0.0])]
         check_path = getattr(self, "screw_path_ok", None)
-        check = getattr(self, "screw_plan_ok", None)
+        r_ref = float(np.deg2rad(POUR_REF_DEG)) * float(np.sign(tilt_total))
         tried, chosen = [], None
         for m in cands:
             axis = np.cross(up, m)
-            lip = self._pour_lip(m)
-            pp, lift = self._swing_clear(lip, pour_point, axis, tilt_total)
-            ee_target = pp + (ee[:3] - lip)  # upright: lip on the pour point
-            ee_final = pp + _rot_axis(axis, tilt_total) @ (ee[:3] - lip)
-            q_final = _quat_mul_wxyz(_mat_to_quat_wxyz(_rot_axis(axis, tilt_total)), ee[3:])
-            if callable(check_path):
-                # the sequence play_once will execute: transit legs, then
-                # every tilt step about the pinned lip
-                chain, p = [], ee[:3].copy()
-                for leg in self._transit_legs(arm_tag, ee_target):
-                    p = p + leg
-                    chain.append(p.tolist() + list(ee[3:]))
-                off0 = ee_target - pp
-                for k in range(1, TILT_STEPS + 1):
-                    R = _rot_axis(axis, k * tilt_total / TILT_STEPS)
-                    chain.append((pp + R @ off0).tolist() + list(_quat_mul_wxyz(_mat_to_quat_wxyz(R), ee[3:])))
-                ok = bool(check_path(arm_tag, chain))
-            else:
-                ok = True if not callable(check) else bool(check(arm_tag, ee_final.tolist() + list(q_final)))
-            tried.append({"mouth": m.tolist(), "ok": ok, "swing_lift": round(lift, 4)})
-            if ok or chosen is None:
-                chosen = (m, axis, ee_target, pp)  # first feasible; else keep the far lip
-            if ok:
+            lip0 = self._pour_lip(m)
+            for alpha in PIVOT_ALPHAS:
+                pivot0 = lip0 + float(alpha) * (ee[:3] - lip0)
+                pivot = np.asarray(pour_point, dtype=np.float64) - _rot_axis(axis, r_ref) @ (lip0 - pivot0)
+                pivot, lift = self._swing_clear(pivot0, pivot, axis, tilt_total)
+                ee_target = pivot + (ee[:3] - pivot0)
+                ok = True
+                if callable(check_path):
+                    chain, p = [], ee[:3].copy()
+                    for leg in self._transit_legs(arm_tag, ee_target):
+                        p = p + leg
+                        chain.append(p.tolist() + list(ee[3:]))
+                    off0 = ee_target - pivot
+                    for k in range(1, TILT_STEPS + 1):
+                        R = _rot_axis(axis, k * tilt_total / TILT_STEPS)
+                        chain.append((pivot + R @ off0).tolist() + list(_quat_mul_wxyz(_mat_to_quat_wxyz(R), ee[3:])))
+                    ok = bool(check_path(arm_tag, chain))
+                tried.append({"mouth": m.tolist(), "alpha": float(alpha), "ok": ok, "swing_lift": round(lift, 4)})
+                if chosen is None or ok:
+                    chosen = (m, axis, ee_target, pivot, float(alpha))  # first feasible; else far lip, alpha 0
+                if ok:
+                    break
+            if tried[-1]["ok"]:
                 break
-        self.pour_info = {"mouth": chosen[0].tolist(), "tried": tried}
-        print(f"[granular_pour] pour mouth {chosen[0].tolist()} (dry runs {tried})")
-        return chosen
+        self.pour_info = {"mouth": chosen[0].tolist(), "alpha": chosen[4], "tried": tried}
+        print(f"[granular_pour] pour mouth {chosen[0].tolist()} alpha {chosen[4]} (dry runs {tried})")
+        return chosen[:4]
 
     def _bowl_hull_world(self):
         """[32, 3] world points bounding the source bowl: its rim ring (outer
@@ -627,14 +634,15 @@ class granular_pour(place_container_plate):
         rim = self._rim_center(self.target, self._target_geom)
         return rim, float(self._target_geom["outer_radius"]) + 0.01, float(rim[2])
 
-    def _swing_clear(self, lip, pour_point, axis, tilt_total, clearance=SWING_CLEAR):
-        """(lifted pour point, lift): raise ``pour_point`` until the source
-        bowl's hull — translated so ``lip`` sits on the pour point, then
-        rotated about it over the whole tilt — stays ``clearance`` above the
-        target rim wherever it is horizontally over the target (a bowl
-        swung through the static target was knocked out of the grasp and
-        launched the beads, diag job 22636122 seed 2: 6688 N)."""
-        offs = self._bowl_hull_world() - np.asarray(lip, dtype=np.float64)
+    def _swing_clear(self, pivot0, pivot, axis, tilt_total, clearance=SWING_CLEAR):
+        """(lifted pivot, lift): raise ``pivot`` until the source bowl's hull
+        — translated so ``pivot0`` (the pivot's upright position) sits on
+        ``pivot``, then rotated about it over the whole tilt — stays
+        ``clearance`` above the target rim wherever it is horizontally over
+        the target (a bowl swung through the static target was knocked out of
+        the grasp and launched the beads, diag job 22636122 seed 2: 6688 N)."""
+        pour_point = pivot
+        offs = self._bowl_hull_world() - np.asarray(pivot0, dtype=np.float64)
         c, r, z_rim = self._target_disc()
         need = 0.0
         for th in np.linspace(0.0, float(tilt_total), 25):
