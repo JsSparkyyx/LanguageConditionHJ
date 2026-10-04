@@ -98,8 +98,9 @@ MUG_MODEL = "039_mug"  # handled source container (user review 6, ur5-wsg): the 
 MUG_IDS = (0, 1, 2, 5, 10, 11)  # mouth radius >= 4 cm, rim 9-12 cm, handle bar 1.0-2.3 cm wide (mug_geometry)
 MUG_INTERIOR_DEPTH = 0.04  # raised floor in the mug: ~3 bead layers (the full mug would hold 300-500 beads — too heavy for a handle pinch)
 FLOOR_PLATE_T = 0.004  # raised floor: top plate thickness (reaches the wall; the body follows the foot)
-GRASP_POS_TOL = 0.008  # mug slide-in: re-issue once if the EE ends farther than this from the grasp pose
-PRE_GRASP_RISE = 0.10  # mug: the hand turns into the grasp orientation this far above the pre-grasp
+GRASP_POS_TOL = 0.008  # mug slide-in: correct while the EE ends farther than this (or > 3 deg) from the grasp pose ...
+GRASP_CORRECT_ITERS = 3  # ... at most this many times
+MUG_PRE_GRASP_BACK = 0.15  # mug: pre-grasp this far back along the approach (the slide-in is a local screw)
 MUG_TIP_CLEAR = 0.006  # fingertips stop this far from the mug body wall (the handle bar is 2.8-4.1 cm out)
 SRC_CONTAINER = {"ur5-wsg": "mug", "franka-panda": "bowl"}  # per embodiment (yaml src.container); diag override ITEM_SRC_CONTAINER
 TARGET_BOWL_MODEL = "002_bowl_deep"  # the TARGET: 002_bowl stretched to a 9 cm deep, 1.2x wider interior (robotwin_assets/, scripts/item_envs/make_bowl_variant.py; user review 6: poured beads bounced out of the plain bowl)
@@ -550,35 +551,40 @@ class granular_pour(place_container_plate):
         ee_grasp = pinch - a * APPROACH_TO_TCP
         self.grip_info = {"pour_style": "wrist_roll", "container": "mug" if mug else "bowl", "pitch_deg": float(np.rad2deg(beta)),
                           "pinch": pinch.tolist(), "gripper_stiffness": k_grip}
-        # 1. tangent rim / handle grasp — safe: pre-grasp 10 cm back along a
-        #    (mug: reached from PRE_GRASP_RISE above, so the wrist turns over
-        #    the mug instead of sweeping the fingers through its mouth — d50
-        #    seed 136 knocked 7 beads out on the way), slide in, close
+        # 1. tangent rim / handle grasp — safe: pre-grasp back along a, slide
+        #    in, close
         self.move(self.open_gripper(arm_tag))
         if mug:
-            self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10 + np.array([0.0, 0.0, PRE_GRASP_RISE])).tolist() + q0))
-            # straight descent (local screw): cuRobo's goal plan for this
-            # 10 cm drop failed (franka seed 153 -> 8 cm-high fallback grasp)
-            # or flipped the IK branch (franka seed 152: 5.5 rad, d51)
-            self.plan_local = True
-            try:
-                self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10).tolist() + q0))
-            finally:
-                self.plan_local = False
+            # pre-grasp MUG_PRE_GRASP_BACK back along a: the wrist turns into
+            # the grasp orientation with the fingertips ~9 cm behind the
+            # handle and above the rim, clear of the mouth (10 cm back swept
+            # them through it, d50 seed 136; a raised waypoint + descent left
+            # franka on an IK branch with no way down: 5.5 rad flips, d51/d52)
+            self.move(self.move_to_pose(arm_tag, (ee_grasp - a * MUG_PRE_GRASP_BACK).tolist() + q0))
         else:
             self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10).tolist() + q0))
         if mug:
             # slide in as a straight local screw from the live joints, then
-            # correct once: cuRobo's goal plan ended the right-arm slide-in
-            # ~3 cm low and turned ~8 deg about the approach (d51, 4/4 right
-            # arm grasps closed below the handle)
+            # close the loop on the planner's IK: for ur5's RIGHT arm both
+            # planners return joints that put the hand 2.4-3 cm low and
+            # 11 deg off this pose (the joints are reached exactly; the hand
+            # lands below the handle, d51-d53 4/4 misses) — re-command the
+            # goal shifted by the remaining error until it lands
             self.plan_local = True
+            cmd_p, cmd_q = ee_grasp.copy(), np.asarray(q0, dtype=np.float64)
             try:
-                for _ in range(2):
-                    self.move(self.move_to_pose(arm_tag, ee_grasp.tolist() + q0))
+                for _ in range(GRASP_CORRECT_ITERS + 1):
+                    self.move(self.move_to_pose(arm_tag, cmd_p.tolist() + [float(v) for v in cmd_q]))
                     ee_now = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
-                    if float(np.linalg.norm(ee_now[:3] - ee_grasp)) < GRASP_POS_TOL:
+                    q_now = ee_now[3:] / max(float(np.linalg.norm(ee_now[3:])), 1e-9)
+                    ang = 2.0 * float(np.arccos(np.clip(abs(float(np.dot(q_now, np.asarray(q0)))), 0.0, 1.0)))
+                    if float(np.linalg.norm(ee_now[:3] - ee_grasp)) < GRASP_POS_TOL and ang < np.deg2rad(3.0):
                         break
+                    cmd_p = cmd_p + (ee_grasp - ee_now[:3])
+                    # orientation: pre-apply the remaining rotation q0 * q_now^-1
+                    q_inv = np.array([q_now[0], -q_now[1], -q_now[2], -q_now[3]])
+                    cmd_q = _quat_mul_wxyz(_quat_mul_wxyz(np.asarray(q0, dtype=np.float64), q_inv), cmd_q)
+                    cmd_q = cmd_q / float(np.linalg.norm(cmd_q))
             finally:
                 self.plan_local = False
             ee_now = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
