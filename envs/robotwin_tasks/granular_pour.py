@@ -98,7 +98,8 @@ MUG_MODEL = "039_mug"  # handled source container (user review 6, ur5-wsg): the 
 MUG_IDS = (0, 1, 2, 5, 10, 11)  # mouth radius >= 4 cm, rim 9-12 cm, handle bar 1.0-2.3 cm wide (mug_geometry)
 MUG_INTERIOR_DEPTH = 0.04  # raised floor in the mug: ~3 bead layers (the full mug would hold 300-500 beads — too heavy for a handle pinch)
 FLOOR_PLATE_T = 0.004  # raised floor: top plate thickness (reaches the wall; the body follows the foot)
-GRASP_POS_TOL = 0.008  # mug slide-in: correct while the EE ends farther than this (or > 3 deg) from the grasp pose ...
+GRASP_POS_TOL = 0.012  # mug slide-in: correct while the EE ends farther than this (or GRASP_ANG_TOL_DEG) from the grasp pose ...
+GRASP_ANG_TOL_DEG = 5.0  # (franka lands 0.7-0.8 cm / 3.6 deg off and grasps fine; ur5's right arm 2.4-3 cm / 11 deg misses)
 GRASP_CORRECT_ITERS = 3  # ... at most this many times
 MUG_PRE_GRASP_BACK = 0.15  # mug: pre-grasp this far back along the approach (the slide-in is a local screw)
 MUG_TIP_CLEAR = 0.006  # fingertips stop this far from the mug body wall (the handle bar is 2.8-4.1 cm out)
@@ -185,7 +186,10 @@ class granular_pour(place_container_plate):
             depth = float(os.environ.get("ITEM_SRC_DEPTH", MUG_INTERIOR_DEPTH))
             # handle (body frame -z -> world -x under SPAWN_QUAT) turned to face
             # the robot (world -y): +90 deg about world z
-            q = _quat_mul_wxyz(np.array([0.7071067811865476, 0.0, 0.0, 0.7071067811865476]), np.asarray(SPAWN_QUAT))
+            # diag-only ITEM_T2_MUG_YAW_DEG: turn the handle toward the pouring
+            # arm's side by this much (mirrored per side)
+            yaw = np.deg2rad(90.0 + float(os.environ.get("ITEM_T2_MUG_YAW_DEG", 0.0)) * (1.0 if container_pose.p[0] > 0 else -1.0))
+            q = _quat_mul_wxyz(np.array([np.cos(0.5 * yaw), 0.0, 0.0, np.sin(0.5 * yaw)]), np.asarray(SPAWN_QUAT))
             container_pose = sapien.Pose(list(container_pose.p), [float(v) for v in q])
             self.container, self._src_geom = create_mug_container(self, container_pose, self.container_id, depth)
         else:
@@ -501,7 +505,7 @@ class granular_pour(place_container_plate):
         the beads leave) ends over the target after the roll."""
         g = self._src_geom
         side = 1.0 if str(arm_tag) == "right" else -1.0
-        beta = np.deg2rad(float(eparams.get("roll_pitch_deg", ROLL_PITCH_DEG)))
+        beta = np.deg2rad(float(os.environ.get("ITEM_T2_ROLL_PITCH_DEG", eparams.get("roll_pitch_deg", ROLL_PITCH_DEG))))  # env: diag-only
         mug = getattr(self, "src_kind", "bowl") == "mug"
         Tc = np.asarray(self.container.get_pose().to_transformation_matrix(), dtype=np.float64)
         if mug:
@@ -541,7 +545,12 @@ class granular_pour(place_container_plate):
             # fingertips (tip_len past the EE origin; the TCP model sits at
             # APPROACH_TO_TCP) stop MUG_TIP_CLEAR short of the body wall —
             # the bar then sits nearer the fingertips than the TCP
-            bar = Tc[:3, :3] @ np.asarray(g["handle_point"], dtype=np.float64) + Tc[:3, 3]
+            hp = np.asarray(g["handle_point"], dtype=np.float64).copy()
+            frac = os.environ.get("ITEM_T2_HANDLE_FRAC")  # diag-only: grasp height along the bar (0.5 = mid)
+            if frac is not None and g.get("handle_y_range"):
+                lo, hi = g["handle_y_range"]
+                hp[1] = float(lo) + float(frac) * (float(hi) - float(lo))
+            bar = Tc[:3, :3] @ hp + Tc[:3, 3]
             tip_extra = float(eparams.get("tip_len", APPROACH_TO_TCP)) - APPROACH_TO_TCP
             gap = abs(float(g["handle_point"][2])) - float(g["outer_radius"]) - MUG_TIP_CLEAR
             back = float(np.clip(tip_extra - gap / np.cos(beta), 0.0, max(tip_extra - 0.008, 0.0)))
@@ -573,12 +582,18 @@ class granular_pour(place_container_plate):
             self.plan_local = True
             cmd_p, cmd_q = ee_grasp.copy(), np.asarray(q0, dtype=np.float64)
             try:
-                for _ in range(GRASP_CORRECT_ITERS + 1):
+                for it in range(GRASP_CORRECT_ITERS + 1):
                     self.move(self.move_to_pose(arm_tag, cmd_p.tolist() + [float(v) for v in cmd_q]))
+                    if it > 0 and not self.plan_success:
+                        # an unreachable correction: the arm did not move — keep
+                        # the last landing (RoboTwin skips every move after a
+                        # failed plan; franka seed 153 lost its grasp so, d54)
+                        self.plan_success = True
+                        break
                     ee_now = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
                     q_now = ee_now[3:] / max(float(np.linalg.norm(ee_now[3:])), 1e-9)
                     ang = 2.0 * float(np.arccos(np.clip(abs(float(np.dot(q_now, np.asarray(q0)))), 0.0, 1.0)))
-                    if float(np.linalg.norm(ee_now[:3] - ee_grasp)) < GRASP_POS_TOL and ang < np.deg2rad(3.0):
+                    if float(np.linalg.norm(ee_now[:3] - ee_grasp)) < GRASP_POS_TOL and ang < np.deg2rad(GRASP_ANG_TOL_DEG):
                         break
                     cmd_p = cmd_p + (ee_grasp - ee_now[:3])
                     # orientation: pre-apply the remaining rotation q0 * q_now^-1

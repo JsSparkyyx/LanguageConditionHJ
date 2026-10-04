@@ -850,6 +850,7 @@ def mug_geometry(model_id, modelname="039_mug", obj_root=None):
             near = arc
         g["handle_point"] = [float(near[:, 0].mean()), y_mid, 0.5 * (float(near[:, 2].min()) + float(near[:, 2].max()))]
         g["handle_width"] = float(near[:, 0].max() - near[:, 0].min())
+        g["handle_y_range"] = [float(arc[:, 1].min()), float(arc[:, 1].max())]  # outer bar, bottom -> top
     else:
         g["handle_point"] = None
     g["handle_dir"] = [0.0, 0.0, -1.0]

@@ -50,6 +50,7 @@ def main():
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--moves", type=int, default=8)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--stop-after", type=int, default=0, help="abort the episode after this many moves (0 = run it out)")
     args = ap.parse_args()
 
     runner = ItemEpisodeRunner(args.task, embodiment=args.embodiment, seed=args.seed, render="none",
@@ -95,6 +96,10 @@ def main():
                       f"{np.round(q_now[:n], 3).tolist()} max|dq| {np.abs(q_end[:n] - q_now[:n]).max():.3f} rad")
             for n0, n1, sep, imp in _robot_contacts(task, robot_names):
                 print(f"[diag]    contact {n0} <-> {n1} sep {sep * 1000:.1f} mm impulse {imp:.4f}")
+        if args.stop_after and count["n"] >= args.stop_after:
+            print("[diag] stop-after reached", flush=True)
+            import os
+            os._exit(0)
         return ret
 
     task.move = move
