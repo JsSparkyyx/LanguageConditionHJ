@@ -94,7 +94,7 @@ from ._item_utils import (
 BOWL_MODEL = "002_bowl"  # the TARGET bowl (deep: catches the pour)
 SRC_BOWL_MODEL = "002_bowl"  # the SOURCE bowl ...
 SRC_INTERIOR_DEPTH = 0.025  # ... with a raised floor: rim 2.5 cm above it (create_bowl_raised_floor; user review 5: a low container spills at small tilts and in transit)
-SRC_FILL_FRAC = 0.8  # shallow source: beads = this x its random-pack rim capacity (capped at N_BEADS)
+SRC_FILL_FRAC = 0.65  # low source: beads = this x its random-pack rim capacity (capped at N_BEADS); 0.8 put the surface where the pinch's inner finger enters (T4 d46)
 BOWL_IDS = (1, 2, 3, 5)  # P2 rest-containment PASS at (60 beads, 6 mm), feasibility.md
 BOWL_MASS_RANGE = (0.10, 0.40)  # objects.yaml categories.bowl.mass_range
 SPAWN_QUAT = (0.5, 0.5, 0.5, 0.5)  # RoboTwin glb-upright convention (file y -> world z)

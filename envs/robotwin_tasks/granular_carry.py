@@ -84,7 +84,7 @@ CARRY_BEAD_R = BEAD_R  # m: T4 bead radius (diag override ITEM_T4_BEAD_R); small
 BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitch 12.6 mm -> 11-19 mm by bowl id)
 CARRY_BOWL_MODEL = "002_bowl"
 CARRY_INTERIOR_DEPTH = 0.025  # raised floor: rim 2.5 cm above it (create_bowl_raised_floor; user review 5): spills at small tilts, needs velocity control
-TABLE_FILL_FRAC = 0.85  # table mode: beads = this x the bowl's random-pack rim capacity
+TABLE_FILL_FRAC = 0.65  # table mode: beads = this x the bowl's random-pack rim capacity (0.85 put the surface where the pinch's inner finger enters: 1-11 beads knocked out at the grasp, diag d46)
 CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill TABLE_FILL_FRAC); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
 CARRY_MODE_P = (0.3, 0.7)  # held is the cleanly avoidable regime (spills during the carry, not at the grasp)
 HELD_PACK_FILL = 1.0  # held mode fills to this x the bowl's rim capacity (bowl_bead_capacity, random pack phi 0.58): LEVEL-full — 1.15 heaped the low bowl and the heap kept rolling off right after t = 0, before any motion (diag d46)
