@@ -532,7 +532,7 @@ class granular_pour(place_container_plate):
         q0 = list(_mat_to_quat_wxyz(R0))
         r_pinch = 0.5 * (float(g["inner_radius"]) + float(g["outer_radius"]))
 
-        k_grip = eparams.get("gripper_stiffness")
+        k_grip = os.environ.get("ITEM_T2_GRIP_K", eparams.get("gripper_stiffness"))  # env: diag-only
         if k_grip is not None:
             for joints, damping in ((self.robot.left_gripper, self.robot.left_gripper_damping),
                                     (self.robot.right_gripper, self.robot.right_gripper_damping)):
@@ -581,6 +581,7 @@ class granular_pour(place_container_plate):
             # goal shifted by the remaining error until it lands
             self.plan_local = True
             cmd_p, cmd_q = ee_grasp.copy(), np.asarray(q0, dtype=np.float64)
+            best = None  # (score, cmd_p, cmd_q) of the best landing so far
             try:
                 for it in range(GRASP_CORRECT_ITERS + 1):
                     self.move(self.move_to_pose(arm_tag, cmd_p.tolist() + [float(v) for v in cmd_q]))
@@ -593,8 +594,19 @@ class granular_pour(place_container_plate):
                     ee_now = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
                     q_now = ee_now[3:] / max(float(np.linalg.norm(ee_now[3:])), 1e-9)
                     ang = 2.0 * float(np.arccos(np.clip(abs(float(np.dot(q_now, np.asarray(q0)))), 0.0, 1.0)))
-                    if float(np.linalg.norm(ee_now[:3] - ee_grasp)) < GRASP_POS_TOL and ang < np.deg2rad(GRASP_ANG_TOL_DEG):
+                    err = float(np.linalg.norm(ee_now[:3] - ee_grasp))
+                    if err < GRASP_POS_TOL and ang < np.deg2rad(GRASP_ANG_TOL_DEG):
                         break
+                    score = err / GRASP_POS_TOL + ang / np.deg2rad(GRASP_ANG_TOL_DEG)
+                    if best is not None and score >= best[0]:
+                        # the correction made it worse (an IK branch that does
+                        # not reach this pose diverged to 9 cm / 41 deg, d55):
+                        # return to the best landing and stop
+                        self.move(self.move_to_pose(arm_tag, best[1].tolist() + [float(v) for v in best[2]]))
+                        if not self.plan_success:
+                            self.plan_success = True
+                        break
+                    best = (score, cmd_p.copy(), cmd_q.copy())
                     cmd_p = cmd_p + (ee_grasp - ee_now[:3])
                     # orientation: pre-apply the remaining rotation q0 * q_now^-1
                     q_inv = np.array([q_now[0], -q_now[1], -q_now[2], -q_now[3]])
