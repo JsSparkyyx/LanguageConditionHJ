@@ -47,6 +47,7 @@ categories:
   box:          {names: [box], synonyms: [crate], mass_range: [0.05, 0.15], colored: true}
   cylinder:     {names: [cylinder, tall cylinder], synonyms: [], mass_range: [0.05, 0.20], colored: true}
   beads:        {names: [beads], synonyms: [beans, rice, grains], mass_range: [0.0005, 0.002]}  # per particle
+  carry_beads:  {names: [beads], synonyms: [beans, rice, grains], mass_range: [0.0003, 0.0008]}  # per particle; T4 (a brim-full bowl of 1.25 g beads slipped out of the rim pinch, diag d40)
   small_beads:  {names: [beads], synonyms: [beans, rice, grains], mass_range: [0.00015, 0.0006]}  # per particle, r = 4 mm (T4 option; mass ~ r^3)
   bowl:         {names: [bowl], synonyms: [], mass_range: [0.10, 0.40]}
   carry_bowl:   {names: [bowl], synonyms: [], mass_range: [0.10, 0.20]}   # T4's carried bowl: a single rim pinch slips above ~0.3 kg + beads

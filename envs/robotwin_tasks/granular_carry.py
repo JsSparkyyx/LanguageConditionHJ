@@ -78,7 +78,7 @@ N_BEADS_MAX = 240  # grid candidates at BEAD_R (scaled by (BEAD_R / r)^3 for sma
 CARRY_BEAD_R = BEAD_R  # m: T4 bead radius (diag override ITEM_T4_BEAD_R); smaller than BEAD_R -> category "small_beads" (lighter per bead)
 BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitch 12.6 mm -> 11-19 mm by bowl id)
 CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill PACK_FILL); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
-CARRY_MODE_P = (0.5, 0.5)
+CARRY_MODE_P = (0.3, 0.7)  # held is the cleanly avoidable regime (spills during the carry, not at the grasp)
 HELD_PACK_FILL = 1.15  # held mode over-fills to this x the bowl's rim capacity (bowl_bead_capacity, random pack phi 0.58); the pre-roll spills the excess and leaves a brim-full bowl (1.4 x the lattice count left bowls 2 / 5 at 65-74 % of capacity, diag d38)
 HELD_SETTLE_STEPS = 250  # physics steps (1 s) the levelled bowl is held still before t = 0
 BEAD_PACK = "random"  # "lattice" (hex grid, settles into a crystal) | "random" (random sequential addition, settles into a random pack)
@@ -97,7 +97,7 @@ LIFTOFF = 0.015  # m: first lift, then level
 LEVEL_ITERS = 2  # leveling passes after lift-off
 LEVEL_TOL_DEG = 1.0  # skip a leveling pass below this tilt
 CARRY_STEP = 0.03  # m per step
-CARRY_SPEED = 0.20  # m/s at time_scale 1.0 (risky lift + carry: 0.10-0.26 m/s over time_scale 0.5-1.3; safe phases use safe_time_scale) — at 0.10 m/s a table-mode carry never spilled (diag d33)
+CARRY_SPEED = 0.25  # m/s at time_scale 1.0 (risky lift + carry: 0.125-0.325 m/s over time_scale 0.5-1.3; safe phases use safe_time_scale) — at 0.10 m/s a table-mode carry never spilled (diag d33)
 CARRY_HEIGHT_DEFAULT = 0.08  # m lift above the table
 CARRY_TILT_DEFAULT = 0.0  # deg
 STEP_MIN_T = 0.25  # s: step-duration floor for the SAFE steps (lift-off, leveling, lowering)
@@ -196,7 +196,7 @@ class granular_carry(granular_pour):
         )
         register_item(
             self, "beads", self.beads[0],
-            category="beads" if self._bead_r >= BEAD_R - 1e-9 else "small_beads", color="",
+            category="carry_beads" if self._bead_r >= BEAD_R - 1e-9 else "small_beads", color="",
             kind="particle_set", role="candidate",
             particles=self.beads, half_extents=[self._bead_r] * 3,
         )
