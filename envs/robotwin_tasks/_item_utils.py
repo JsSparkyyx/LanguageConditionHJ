@@ -853,7 +853,8 @@ def bead_random_positions(n, r, geom, rng, gap=5e-4, column=0.10, max_tries=2000
     return np.asarray(pts, dtype=np.float64)
 
 
-def spawn_beads(scene, positions_world, radius, masses, color=(0.85, 0.15, 0.15), name_prefix="bead"):
+def spawn_beads(scene, positions_world, radius, masses, color=(0.85, 0.15, 0.15), name_prefix="bead",
+                sleep_threshold=None):
     """Spawn the bead spheres as raw entities; returns the entity list.
 
     Same raw-Entity idiom as ``zone_mat`` above (no ActorBuilder, render body
@@ -876,6 +877,10 @@ def spawn_beads(scene, positions_world, radius, masses, color=(0.85, 0.15, 0.15)
             material = scene.create_physical_material(0.5, 0.5, 0.0)
         rigid = sapien.physx.PhysxRigidDynamicComponent()
         rigid.attach(sapien.physx.PhysxCollisionShapeSphere(radius=float(radius), material=material))
+        if sleep_threshold is not None:
+            # PhysX default 0.005 (mass-normalized KE): bodies slower than ~0.1 m/s
+            # fall asleep, so a slowly tilting pile can stay frozen as one block
+            rigid.set_sleep_threshold(float(sleep_threshold))
         entity.add_component(rigid)
         try:  # query, not construction: get_system raises when absent
             scene.get_system("render")

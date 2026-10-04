@@ -72,10 +72,11 @@ TARGET_DY = (0.12, 0.18)  # the carry runs toward the robot
 TARGET_MIN_ABS_X = 0.10
 PAD_SIZE = 0.16  # target marker: hollow dark frame, outer side (m) — visual only
 PAD_FRAME_W = 0.012  # frame strip width (m)
-N_BEADS_MAX = 240  # grid candidates; beads above rim_y - BRIM_CLEAR are dropped
+N_BEADS_MAX = 240  # grid candidates at BEAD_R (scaled by (BEAD_R / r)^3 for smaller beads); beads above the fill line are dropped
+CARRY_BEAD_R = BEAD_R  # m: T4 bead radius (diag override ITEM_T4_BEAD_R); smaller than BEAD_R -> category "small_beads" (lighter per bead)
 BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitch 12.6 mm -> 11-19 mm by bowl id)
 BEAD_PACK = "random"  # "lattice" (hex grid, settles into a crystal) | "random" (random sequential addition, settles into a random pack)
-PACK_FILL = 1.0  # random pack: bead count = this x the lattice count at BRIM_CLEAR / DOME_H
+PACK_FILL = 1.1  # random pack: bead count = this x the lattice count at BRIM_CLEAR / DOME_H
 DOME_H = 0.0  # m: extra fill height at the bowl centre (parabolic in radius, 0 at the wall) — a heaped bowl
 CARRY_BOWL_MASS_RANGE = (0.10, 0.20)  # kg
 PINCH_CLEAR_R = 0.030  # m: no top-layer beads within this of the rim at the pinch point (0.05 emptied the whole pinch-side half)
@@ -127,10 +128,13 @@ class granular_carry(granular_pour):
         self.container.set_mass(self._bowl_mass)
 
         g = self._src_geom
+        bead_r = float(os.environ.get("ITEM_T4_BEAD_R", CARRY_BEAD_R))
+        self._bead_r = bead_r
+        n_cand = int(np.ceil(N_BEADS_MAX * (BEAD_R / bead_r) ** 3))
         local = bead_grid_positions(
-            N_BEADS_MAX, BEAD_R, g["inner_radius"], g["floor_y"], bands=g["bands"], rng=np.random
+            n_cand, bead_r, g["inner_radius"], g["floor_y"], bands=g["bands"], rng=np.random
         )
-        masses_all = np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=N_BEADS_MAX)
+        masses_all = np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=n_cand) * (bead_r / BEAD_R) ** 3
         # fill line: BRIM_CLEAR under the rim at the wall, heaped by DOME_H at the
         # centre (ITEM_T4_DOME_H: diag-only override for fill sweeps)
         dome_h = float(os.environ.get("ITEM_T4_DOME_H", DOME_H))
@@ -149,13 +153,15 @@ class granular_carry(granular_pour):
         pack = os.environ.get("ITEM_T4_PACK", BEAD_PACK)  # diag-only override
         if pack == "random":
             n_fill = int(round(len(local) * float(os.environ.get("ITEM_T4_PACK_N", PACK_FILL))))
-            local = bead_random_positions(n_fill, BEAD_R, g, np.random)
+            local = bead_random_positions(n_fill, bead_r, g, np.random)
             extra = max(0, n_fill - len(masses_all))
             masses_all = np.concatenate([masses_all, np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=extra)])
             masses = masses_all[:n_fill]
         world_T = self.container.get_pose().to_transformation_matrix()
         bead_world = local @ world_T[:3, :3].T + world_T[:3, 3]
-        self.beads = spawn_beads(self.scene, bead_world, BEAD_R, masses, color=BEAD_COLOR)
+        sleep = os.environ.get("ITEM_T4_BEAD_SLEEP")  # diag-only override of the PhysX sleep threshold
+        self.beads = spawn_beads(self.scene, bead_world, bead_r, masses, color=BEAD_COLOR,
+                                 sleep_threshold=None if sleep is None else float(sleep))
         self._bead_names = {b.get_name() for b in self.beads}
         self.n_beads = len(self.beads)
 
@@ -177,8 +183,9 @@ class granular_carry(granular_pour):
         )
         register_item(
             self, "beads", self.beads[0],
-            category="beads", color="", kind="particle_set", role="candidate",
-            particles=self.beads, half_extents=[BEAD_R, BEAD_R, BEAD_R],
+            category="beads" if self._bead_r >= BEAD_R - 1e-9 else "small_beads", color="",
+            kind="particle_set", role="candidate",
+            particles=self.beads, half_extents=[self._bead_r] * 3,
         )
         register_zone(
             self, "bowl_src_interior", self.container, color="", kind="container",

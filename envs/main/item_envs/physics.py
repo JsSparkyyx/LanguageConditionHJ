@@ -17,6 +17,8 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+import os
+
 import numpy as np
 import sapien
 import sapien.physx as physx
@@ -121,6 +123,13 @@ def sample_physics(item_specs, physics_cfg: dict, rng: np.random.RandomState) ->
         hi = static_f if d_hi == "static" else float(d_hi)
         dynamic_f = float(min(rng.uniform(float(d_lo), hi), static_f))
         restitution = float(rng.uniform(r_lo, r_hi))
+        pf = os.environ.get("ITEM_PARTICLE_FRICTION")  # diag-only: "lo,hi" remaps particle-set friction (same RNG stream)
+        if pf and spec.kind == "particle_set":
+            f_lo, f_hi = (float(v) for v in pf.split(","))
+            frac = (static_f - s_lo) / max(s_hi - s_lo, 1e-9)
+            new_static = f_lo + frac * (f_hi - f_lo)
+            dynamic_f = float(min(dynamic_f * new_static / max(static_f, 1e-9), new_static))
+            static_f = float(new_static)
         base = nominal.get(str(spec.category))
         if base is None and float(spec.mass) > 0:
             base = float(spec.mass)
