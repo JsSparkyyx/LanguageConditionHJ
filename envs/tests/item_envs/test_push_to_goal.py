@@ -134,3 +134,22 @@ def test_lane_guard_stops_chasing_a_deflected_box(utils_mod):
     box.p[1] += 0.08  # deflected 8 cm off the start->goal line
     n_actions = sum(len(utils_mod.realize_step(task, e).step[1]) for e in steps[2:-1])
     assert n_actions == 0
+
+
+def test_tip_len_sets_fingertips_above_the_table(utils_mod):
+    """push_tip_len (user review 5): every push pose keeps the closed-finger
+    bottoms tip_clear above the table, whatever the box height — the TCP
+    model drove the fingertips 3-4 cm into the table (diag d36-d41)."""
+    for half in (0.017, 0.045):  # a low and a tall box
+        box = _Box([-0.15, -0.10], half=half)
+        task = _Task(box, 0.0)
+        steps = utils_mod.push_to_goal(task, "left", box, np.array([0.15, -0.10]), seg_len=0.10,
+                                       tip_len=0.164, tip_clear=0.008)
+        zs = []
+        for entry in steps:
+            step = utils_mod.realize_step(task, entry)
+            arm_actions = step.step if isinstance(step, utils_mod.RiskyStep) else step
+            zs += [float(a.pose[2]) for a in arm_actions[1] if a.kind == "move"]
+            task.execute(arm_actions[1])
+        push_z = min(zs)  # the pre-push approach comes from above; pushes sit at the minimum
+        assert push_z == pytest.approx(0.74 + 0.008 + 0.164), (half, push_z)

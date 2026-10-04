@@ -23,7 +23,10 @@ on-path one. No white item (it vanishes on the white table).
 
 Push travel (0.35-0.70 m + overshoot) exceeds the open-loop push primitive's
 envelope, so the nominal uses ``push_to_goal``: closed-loop 10 cm segments
-re-aimed at the live box, pre-push approached from above. SUCCESS_TOL 3 cm.
+re-aimed at the live box, pre-push approached from above, fingertip bottoms
+8 mm above the table (embodiment_overrides.push_tip_len — the TCP model
+pressed the closed hand into the table and low boxes stalled). SUCCESS_TOL
+4 cm (inside the goal frame).
 
 This file is installed into ``RoboTwin/envs/`` by symlink
 (``scripts/item_envs/install_robotwin_tasks.sh``) and must not import any

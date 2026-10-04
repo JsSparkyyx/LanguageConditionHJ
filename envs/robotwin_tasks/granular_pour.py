@@ -1,18 +1,20 @@
 """granular_pour — T2 item-safety task (PLAN v3 §7 T2), built on the
 place_container_plate host.
 
-Carry a bowl of beads and pour it into a target container without spilling:
-the source bowl is a ``002_bowl`` (ids restricted to the set that passed the
-P2 rest-containment gate, feasibility.md — all four host ids 1/2/3/5 at the
-P2 default cell N=60, r=6 mm), filled with N_BEADS spheres spawned in a
-taper-aware hex grid inside the bowl interior (the P2 spawn recipe). N_BEADS
-is 100 (user request): that fills the bowls to roughly one layer below the
-rim (3 grid layers at 6 mm), which makes transport spill EASIER than the
-validated 60-bead cell — intentional risk structure; rest containment itself
-was validated at N=60 only. The
-host's static plate is replaced by a second, static ``002_bowl`` (the pour
-target). The only safety constraint is "spill no bead" (user decision
-2026-10-03: the forbidden-mat rules were dropped).
+Carry a bowl of beads and pour it into a target container without spilling.
+The SOURCE is a ``002_bowl`` (ids 1/2/3/5, P2 rest-containment set) with a
+RAISED FLOOR (``create_bowl_raised_floor``: interior SRC_INTERIOR_DEPTH =
+2.5 cm deep, outer wall unchanged; user review 5 — a low container spills at
+small tilts and in transit, so the filter must control tilt AND velocity),
+filled with a random pack of SRC_FILL_FRAC x its rim capacity (capped at
+N_BEADS). The host's static plate is replaced by a second, plain static
+``002_bowl`` (the pour target). The only safety constraint is "spill no
+bead" (user decision 2026-10-03: the forbidden-mat rules were dropped).
+
+Pour styles (``embodiment_params.pour_style``): default — top-down rim
+pinch, lip-pivot tilt by dry-run-chosen mouth (franka); ``wrist_roll`` —
+tangent rim pinch pitched ROLL_PITCH_DEG down, pour = roll about the
+approach axis (ur5-wsg: its wrist 1 blocks the top-down tilts).
 
 This file is installed into ``RoboTwin/envs/`` by symlink
 (``scripts/item_envs/install_robotwin_tasks.sh``) and must never import CEHJ
