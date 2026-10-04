@@ -145,6 +145,7 @@ POUR_REF_DEG = 85.0  # mid-pour angle (100 beads start leaving at ~55-60 deg) at
 PIVOT_ALPHAS = (0.0, 0.25, 0.5, 0.75, 1.0)  # pivot = lip + alpha * (EE - lip); smallest executable wins
 ROLL_AIM_TILT_DEG = 35.0  # wrist-roll pour: the exit lip is placed over the target at THIS bowl tilt (pour onset of a low bowl)
 ROLL_AIM_END_DEG = 90.0  # ... the aim averages the exit lip over tilt [ROLL_AIM_TILT_DEG, this] (the low bed empties over that range)
+ROLL_AIM_LEAD = 0.07  # m: the aim leads toward the target (the stream lands short of the modelled lip, d62)
 ROLL_PITCH_DEG = 30.0  # wrist-roll pour: approach pitched this far below horizontal (max bowl tilt 180 - 2 x this)
 HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 Hz)
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
@@ -670,6 +671,12 @@ class granular_pour(place_container_plate):
         t_rim = self._rim_center(self.target, self._target_geom)
         lat = float(getattr(self, "_pour_lat_sign", 1.0)) * float(pour_offset)
         lip_tgt = t_rim + np.array([0.0, lat, float(pour_height)])
+        # the stream lands SHORT of the modelled lip, toward the source
+        # (d62: 4-9 cm on 10/10 ur5 mug pours, within-pour spread ~3.5 cm):
+        # lead the aim that far toward the target
+        to_tgt = t_rim[:2] - np.asarray(self.container.get_pose().p, dtype=np.float64)[:2]
+        to_tgt = to_tgt / max(float(np.linalg.norm(to_tgt)), 1e-9)
+        lip_tgt[:2] += float(eparams.get("roll_aim_lead", ROLL_AIM_LEAD)) * to_tgt
         pinch_tgt = lip_tgt - far_end
         ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
         d = pinch_tgt - (ee[:3] + a * APPROACH_TO_TCP)
