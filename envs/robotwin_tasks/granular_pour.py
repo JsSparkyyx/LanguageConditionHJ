@@ -98,6 +98,7 @@ MUG_MODEL = "039_mug"  # handled source container (user review 6, ur5-wsg): the 
 MUG_IDS = (0, 1, 2, 5, 10, 11)  # mouth radius >= 4 cm, rim 9-12 cm, handle bar 1.0-2.3 cm wide (mug_geometry)
 MUG_INTERIOR_DEPTH = 0.04  # raised floor in the mug: ~3 bead layers (the full mug would hold 300-500 beads — too heavy for a handle pinch)
 FLOOR_PLATE_T = 0.004  # raised floor: top plate thickness (reaches the wall; the body follows the foot)
+GRASP_POS_TOL = 0.008  # mug slide-in: re-issue once if the EE ends farther than this from the grasp pose
 PRE_GRASP_RISE = 0.10  # mug: the hand turns into the grasp orientation this far above the pre-grasp
 MUG_TIP_CLEAR = 0.006  # fingertips stop this far from the mug body wall (the handle bar is 2.8-4.1 cm out)
 SRC_CONTAINER = {"ur5-wsg": "mug", "franka-panda": "bowl"}  # per embodiment (yaml src.container); diag override ITEM_SRC_CONTAINER
@@ -557,7 +558,24 @@ class granular_pour(place_container_plate):
         if mug:
             self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10 + np.array([0.0, 0.0, PRE_GRASP_RISE])).tolist() + q0))
         self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10).tolist() + q0))
-        self.move(self.move_to_pose(arm_tag, ee_grasp.tolist() + q0))
+        if mug:
+            # slide in as a straight local screw from the live joints, then
+            # correct once: cuRobo's goal plan ended the right-arm slide-in
+            # ~3 cm low and turned ~8 deg about the approach (d51, 4/4 right
+            # arm grasps closed below the handle)
+            self.plan_local = True
+            try:
+                for _ in range(2):
+                    self.move(self.move_to_pose(arm_tag, ee_grasp.tolist() + q0))
+                    ee_now = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+                    if float(np.linalg.norm(ee_now[:3] - ee_grasp)) < GRASP_POS_TOL:
+                        break
+            finally:
+                self.plan_local = False
+            ee_now = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+            self.grip_info["grasp_pos_err"] = float(np.linalg.norm(ee_now[:3] - ee_grasp))
+        else:
+            self.move(self.move_to_pose(arm_tag, ee_grasp.tolist() + q0))
         self.move(self.close_gripper(arm_tag))
         # 2. lift — safe (world z)
         self.move(self.move_by_displacement(arm_tag, z=0.10))

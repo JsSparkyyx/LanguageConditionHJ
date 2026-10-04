@@ -90,6 +90,8 @@ CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 
 CARRY_MODE_P = (0.3, 0.7)  # held is the cleanly avoidable regime (spills during the carry, not at the grasp)
 HELD_PACK_FILL = 1.0  # held mode: beads = this x the LATTICE rim capacity — a random pack of that count is level-full (1.15 x the volume estimate heaped the low bowl, d46)
 HELD_SETTLE_STEPS = 500  # physics steps (2 s) the levelled bowl is held still before t = 0
+HELD_RELEVEL_ITERS = 2  # held pre-roll: re-level passes after the settle if the bowl sagged ...
+HELD_RELEVEL_DEG = 4.0  # ... past this tilt
 BEAD_PACK = "random"  # "lattice" (hex grid, settles into a crystal) | "random" (random sequential addition, settles into a random pack)
 PACK_FILL = 1.1  # random pack: bead count = this x the lattice count at BRIM_CLEAR / DOME_H
 DOME_H = 0.0  # m: extra fill height at the bowl centre (parabolic in radius, 0 at the wall) — a heaped bowl
@@ -315,6 +317,14 @@ class granular_carry(granular_pour):
         self._grasp_and_level(self.carry_arm, v_safe, knobs, eparams)
         for _ in range(HELD_SETTLE_STEPS):
             self.scene.step()
+        for _ in range(HELD_RELEVEL_ITERS):
+            # the loaded bowl can sag in the pinch while held (ur5 seed 1:
+            # 12 deg at t = 0, sim test d51): level again and re-settle
+            if self._bowl_tilt_deg() <= HELD_RELEVEL_DEG:
+                break
+            self._level(self.carry_arm, v_safe)
+            for _ in range(HELD_SETTLE_STEPS // 2):
+                self.scene.step()
         self._remove_spilled_beads()
         self.episode_info.update(n_beads_removed=int(self.n_beads_removed), n_beads=int(self.n_beads))
         if float(self.container.get_pose().p[2]) - TABLE_Z < 0.0015:
