@@ -88,6 +88,11 @@ def main():
                 print(f"[diag] move {count['n']} {arm}: target {np.round(tgt[:3], 3).tolist()} "
                       f"ee {np.round(ee[:3], 3).tolist()} pos_err {np.linalg.norm(ee[:3] - tgt[:3]) * 100:.1f} cm "
                       f"ang_err {_quat_angle_deg(ee[3:], tgt[3:]):.1f} deg")
+            cont = getattr(task, "container", None)
+            if cont is not None:
+                cp = cont.get_pose()
+                up = np.asarray(cp.to_transformation_matrix())[:3, 1]
+                print(f"[diag]    container z {float(cp.p[2]):.4f} tilt {np.degrees(np.arccos(np.clip(up[2], -1, 1))):.1f} deg")
             for arm, q_end in last_plan.items():
                 q_now = np.asarray(task.robot.get_left_arm_jointState() if arm == "left"
                                    else task.robot.get_right_arm_jointState(), dtype=np.float64).reshape(-1)

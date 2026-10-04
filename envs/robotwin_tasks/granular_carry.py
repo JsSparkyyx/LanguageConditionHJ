@@ -172,7 +172,7 @@ class granular_carry(granular_pour):
         pack = os.environ.get("ITEM_T4_PACK", BEAD_PACK)  # diag-only override
         if pack == "random":
             if self.carry_mode == "held":
-                n_fill = int(round(bowl_lattice_capacity(g, bead_r) * HELD_PACK_FILL))
+                n_fill = int(round(bowl_lattice_capacity(g, bead_r) * float(os.environ.get("ITEM_T4_HELD_FILL", HELD_PACK_FILL))))  # env: diag-only
             elif self._src_geom.get("raised_floor"):  # low bowl: fill to a capacity fraction
                 n_fill = int(round(bowl_lattice_capacity(g, bead_r) * TABLE_FILL_FRAC))
             else:
@@ -352,9 +352,22 @@ class granular_carry(granular_pour):
         knobs = getattr(self, "risk_knobs", None) or {}
         eparams = getattr(self, "embodiment_params", None) or {}
         v_safe = SAFE_SPEED * float(getattr(self, "_time_scale_safe", 0.6))
+        diag = bool(os.environ.get("ITEM_DIAG_PREROLL"))  # diag-only: trace the held pre-roll
+
+        def _trace(tag):
+            if diag:
+                p = self.container.get_pose().p
+                print(f"[preroll] {tag}: bowl z-table {1000.0 * (float(p[2]) - TABLE_Z):.1f} mm tilt "
+                      f"{self._bowl_tilt_deg():.1f} deg plan_success {self.plan_success} "
+                      f"gripper {self.robot.get_left_gripper_val() if self.carry_arm == 'left' else self.robot.get_right_gripper_val():.3f}",
+                      flush=True)
+
+        _trace("start")
         self._grasp_and_level(self.carry_arm, v_safe, knobs, eparams)
+        _trace("grasped+levelled")
         for _ in range(HELD_SETTLE_STEPS):
             self.scene.step()
+        _trace("settled")
         for _ in range(HELD_RELEVEL_ITERS):
             # the loaded bowl can sag in the pinch while held (ur5 seed 1:
             # 12 deg at t = 0, sim test d51): level again and re-settle
@@ -364,6 +377,7 @@ class granular_carry(granular_pour):
             for _ in range(HELD_SETTLE_STEPS // 2):
                 self.scene.step()
         self._remove_spilled_beads()
+        _trace("cleaned")
         self.episode_info.update(n_beads_removed=int(self.n_beads_removed), n_beads=int(self.n_beads))
         if float(self.container.get_pose().p[2]) - TABLE_Z < 0.0015:
             # the pre-roll grasp did not lift the bowl (a bowl resting on the
