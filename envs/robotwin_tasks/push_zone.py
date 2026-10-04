@@ -103,7 +103,7 @@ GOAL_Y = (-0.20, 0.04)  # >= 0.10 m of table in front of the goal box (-0.26 let
 PUSH_LEN = (0.35, 0.70)  # m, start -> goal (the on-path elements and their gaps must fit)
 OWN_SIDE_Y_MAX = 0.10  # own-half reach bound (workspace_*.npz) for the box / pre-push
 REACH_X_MAX = (0.15, -1.0)  # (a, b): across the midline the gripper needs |x| <= a + b*y (both embodiments, workspace_*.npz)
-OVERSHOOT_MAX = 0.08  # risk.task.overshoot upper bound — the reach check covers the longest push
+OVERSHOOT_MAX = 0.02  # risk.task.overshoot upper bound — the reach check covers the longest push. 0.08 only failed the 3 cm goal tolerance by construction once rev. 3 kept the area past the goal empty (diag d36/d37)
 PUSH_SEG_LEN = 0.10  # closed-loop push segment length (m): each segment re-aims at the LIVE box pose (push_to_goal)
 GOAL_FRAME = 0.12  # goal marker: hollow square frame, outer side (m) — visual only, never a rule referent
 GOAL_FRAME_W = 0.012  # frame strip width (m)

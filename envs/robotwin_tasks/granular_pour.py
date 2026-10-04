@@ -66,6 +66,8 @@ manager, RiskTickController); approach / grasp / place / retreat run at
 ``safe_time_scale`` like the host.
 """
 
+import os
+
 from ._base_task import Base_Task
 from .place_container_plate import place_container_plate
 from .utils import *
@@ -190,8 +192,9 @@ class granular_pour(place_container_plate):
         # 3. beads: taper-aware hex grid inside the source bowl interior (P2
         #    recipe — the bowls narrow toward the floor, so each layer is sized
         #    by the measured wall-radius bands, not the rim radius).
+        n_beads = int(os.environ.get("ITEM_T2_N", N_BEADS))  # diag-only override
         local = bead_grid_positions(
-            N_BEADS,
+            n_beads,
             BEAD_R,
             self._src_geom["inner_radius"],
             self._src_geom["floor_y"],
@@ -200,7 +203,7 @@ class granular_pour(place_container_plate):
         )
         world_T = self.container.get_pose().to_transformation_matrix()
         bead_world = local @ world_T[:3, :3].T + world_T[:3, 3]
-        masses = np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=N_BEADS)
+        masses = np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=n_beads)
         self.beads = spawn_beads(self.scene, bead_world, BEAD_R, masses, color=BEAD_COLOR)
         self._bead_names = {b.get_name() for b in self.beads}
 

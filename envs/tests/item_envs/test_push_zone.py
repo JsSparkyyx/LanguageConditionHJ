@@ -138,7 +138,7 @@ def test_t3_yaml_required_keys():
     risk = cfg["risk"]
     assert risk["time_scale"] == {"dist": "choice", "values": [0.5, 0.75, 1.0, 1.15, 1.3]}
     assert risk["safe_time_scale"] == 0.6
-    assert risk["task"]["overshoot"] == {"dist": "uniform", "range": [0.0, 0.08]}
+    assert risk["task"]["overshoot"] == {"dist": "uniform", "range": [0.0, 0.02]}
     assert risk["task"]["lateral_offset"] == {"dist": "uniform", "range": [-0.02, 0.02]}
     # play_once's knob defaults sit at the low end of the sampled ranges
     assert risk["task"]["overshoot"]["range"][0] <= 0.0 <= risk["task"]["overshoot"]["range"][1]
