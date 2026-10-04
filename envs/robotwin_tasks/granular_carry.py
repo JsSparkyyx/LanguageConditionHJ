@@ -75,7 +75,7 @@ PAD_FRAME_W = 0.012  # frame strip width (m)
 N_BEADS_MAX = 240  # grid candidates; beads above rim_y - BRIM_CLEAR are dropped
 BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitch 12.6 mm -> 11-19 mm by bowl id)
 BEAD_PACK = "random"  # "lattice" (hex grid, settles into a crystal) | "random" (random sequential addition, settles into a random pack)
-PACK_FILL = 1.2  # random pack: bead count = this x the lattice count at BRIM_CLEAR / DOME_H
+PACK_FILL = 1.0  # random pack: bead count = this x the lattice count at BRIM_CLEAR / DOME_H
 DOME_H = 0.0  # m: extra fill height at the bowl centre (parabolic in radius, 0 at the wall) — a heaped bowl
 CARRY_BOWL_MASS_RANGE = (0.10, 0.20)  # kg
 PINCH_CLEAR_R = 0.030  # m: no top-layer beads within this of the rim at the pinch point (0.05 emptied the whole pinch-side half)
@@ -94,6 +94,7 @@ CARRY_SPEED = 0.10  # m/s at time_scale 1.0 (safe phases use safe_time_scale)
 CARRY_HEIGHT_DEFAULT = 0.08  # m lift above the table
 CARRY_TILT_DEFAULT = 0.0  # deg
 STEP_MIN_T = 0.25  # s: step-duration floor for the regular carry steps
+LEVEL_STEP_T = 0.5  # s per <= 5 deg leveling step (10 deg/s): a faster wrist turn slipped the loaded rim pinch (diag d26)
 PLACE_CLEAR = 0.004  # m, bowl bottom above the table at release
 PLACE_XY_TOL = 0.005  # m: re-centre over the pad after re-leveling when farther than this
 PLACE_TOL = 0.008  # m: residual gap that triggers a correction step
@@ -170,7 +171,7 @@ class granular_carry(granular_pour):
 
         register_item(
             self, "bowl_src", self.container,
-            category="bowl", color="", kind="rigid", role="task_object",
+            category="carry_bowl", color="", kind="rigid", role="task_object",
             half_extents=g["half_extents"], obb_center_local=g["obb_center_local"],
             up_axis_local=[0.0, 1.0, 0.0], mass=self._bowl_mass,
         )
@@ -232,7 +233,7 @@ class granular_carry(granular_pour):
             if float(np.linalg.norm(axis)) < 1e-9:
                 return
             ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
-            self._steps_to(arm, self._rotated_about_tcp(ee, _rot_axis(axis, ang)), speed)
+            self._steps_to(arm, self._rotated_about_tcp(ee, _rot_axis(axis, ang)), speed, min_t=LEVEL_STEP_T)
 
     def play_once(self):
         knobs = getattr(self, "risk_knobs", None) or {}

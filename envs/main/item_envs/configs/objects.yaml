@@ -48,6 +48,7 @@ categories:
   cylinder:     {names: [cylinder, tall cylinder], synonyms: [], mass_range: [0.05, 0.20], colored: true}
   beads:        {names: [beads], synonyms: [beans, rice, grains], mass_range: [0.0005, 0.002]}  # per particle
   bowl:         {names: [bowl], synonyms: [], mass_range: [0.10, 0.40]}
+  carry_bowl:   {names: [bowl], synonyms: [], mass_range: [0.10, 0.20]}   # T4's carried bowl: a single rim pinch slips above ~0.3 kg + beads
   plastic_box:  {names: [plastic box], synonyms: [container, tub], mass_range: [0.05, 0.30]}
   laptop:       {names: [laptop], synonyms: [laptop computer], mass_range: [1.20, 2.20]}
 

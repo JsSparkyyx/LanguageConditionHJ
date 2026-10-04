@@ -252,6 +252,7 @@ def test_module_constants_mirror_yaml():
     assert _norm(_const("OBST_GLANCE")) == _norm(el["obstacle_glance"])
     assert _norm(_const("EXCLUDE_COLORS")) == _norm(el["exclude_colors"])
     assert _norm(_const("OBSTACLE_POOL")) == _norm(el["obstacle_pool"])
+    assert _norm(_const("ON_PATH_OBSTACLE_POOL")) == _norm(el["on_path_obstacle_pool"])
     assert _norm({k: mesh_ids[k] for k in el["obstacle_ids"]}) == _norm(el["obstacle_ids"])
     assert _norm(_const("CYLINDER_RADIUS")) == _norm(el["cylinder"]["radius"])
     assert _norm(_const("CYLINDER_HEIGHT")) == _norm(el["cylinder"]["height"])
@@ -512,6 +513,8 @@ def test_layout_replay_seeds():
             on = sorted((e for e in els if e["on_path"]), key=lambda e: e["order"])
             off = [e for e in els if not e["on_path"]]
             assert [e["role"] for e in on] == roles, (seed, li["scenario"], on)
+            # an obstacle is only ever the last on-path element
+            assert all(e["kind"] == "zone" for e in on[:-1]), (seed, on)
             assert len(off) <= 1 and len(els) <= 3
             kinds = {e["kind"] for e in els}
             assert kinds == ({"zone", "obstacle"} if li["mode"] == "mix" else {li["mode"]}), (seed, li["mode"], kinds)

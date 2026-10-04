@@ -96,10 +96,10 @@ PRIM_SIDE_XY = (0.04, 0.08)  # prim box full side per horizontal axis (m)
 PRIM_HEIGHT = (0.03, 0.08)  # prim box full height (m)
 MESH_MODEL_IDS = {"113_coffee-box": (0, 1, 2, 3, 4, 5, 6), "112_tea-box": (0, 1, 2, 3, 4, 5), "021_cup": (0, 3, 5)}  # cup ids 1/2: json OBB 3 cm wider than the collision mesh
 # start / goal sampling (user design 2026-10-03: straight AND diagonal pushes)
-START_ABS_X = (0.18, 0.34)  # start |x| on the pushing arm's own half (0.40: franka transit clipped a tea box at |x| 0.39, diag d23 seed 6)
+START_ABS_X = (0.18, 0.36)  # start |x| on the pushing arm's own half (0.40: franka transit clipped a tea box at |x| 0.39, diag d23 seed 6)
 START_Y = (-0.24, 0.08)  # near (robot side) to far
-GOAL_ABS_X = (0.10, 0.36)  # goal |x| on the OPPOSITE half (the push crosses the midline)
-GOAL_Y = (-0.26, 0.04)
+GOAL_ABS_X = (0.10, 0.32)  # goal |x| on the OPPOSITE half (the push crosses the midline)
+GOAL_Y = (-0.20, 0.04)  # >= 0.10 m of table in front of the goal box (-0.26 let drifting boxes fall off the front edge, diag d25)
 PUSH_LEN = (0.35, 0.70)  # m, start -> goal (the on-path elements and their gaps must fit)
 OWN_SIDE_Y_MAX = 0.10  # own-half reach bound (workspace_*.npz) for the box / pre-push
 REACH_X_MAX = (0.15, -1.0)  # (a, b): across the midline the gripper needs |x| <= a + b*y (both embodiments, workspace_*.npz)
@@ -130,8 +130,9 @@ OFF_PATH_TRIES = 40
 DETOUR_MARGIN = 0.02  # an avoid element needs a reachable, on-table detour lane: box centre this far beyond it
 ZONE_SIZE = (0.06, 0.09)  # zone full side per axis (m)
 ON_PATH_LAT = {"zone": 0.02}  # zones: max centre offset across the line (m)
-OBST_GLANCE = (0.3, 0.7)  # on-path obstacles: centre offset across the line = this x (box + obstacle half-widths), random side — the box knocks them ASIDE (dead-centre hits plowed a cup ahead into the goal, diag d23 seed 5)
-OBSTACLE_POOL = ("021_cup", "prim_tall_cylinder")  # 001_bottle: punt-ring bases tip in check_stable
+OBST_GLANCE = (0.5, 0.8)  # on-path obstacles: centre offset across the line = this x (box + obstacle half-widths), random side — an edge hit topples them OUT of the lane (dead-centre / shallow hits plowed them along, diag d23 seed 5, d25)
+OBSTACLE_POOL = ("021_cup", "prim_tall_cylinder")  # off-path obstacles (001_bottle: punt-ring bases tip in check_stable)
+ON_PATH_OBSTACLE_POOL = ("prim_tall_cylinder",)  # on-path obstacles topple when hit; cups slide along with the box and jam it
 PUSHER_HALF_ACROSS = 0.10  # swept half-width of the PUSHING HAND across the push line (franka hand ~20 cm along its finger axis, which push_to_goal turns across the push); off-path obstacles clear max(corridor half, this)
 CYLINDER_RADIUS = (0.02, 0.035)
 CYLINDER_HEIGHT = (0.10, 0.18)
@@ -305,8 +306,13 @@ class push_zone(Base_Task):
 
         # 1. scenario (push-order roles of the on-path elements), mode, kinds
         self.scenario = SCENARIOS[int(np.random.choice(len(SCENARIOS), p=np.asarray(SCENARIO_P)))]
-        self.mode = MODES[int(np.random.randint(len(MODES)))]
         roles = tuple(self.scenario.split("-"))
+        # an obstacle is only ever the LAST on-path element: a knocked-over
+        # obstacle lies in the lane and jams the push, so anything behind it
+        # would never be reached (diag d26) — two-element scenarios use the
+        # zone / mix modes (mix: zone first, obstacle second; A-A: zone pair)
+        modes = MODES if len(roles) == 1 else tuple(m for m in MODES if m != "obstacle")
+        self.mode = modes[int(np.random.randint(len(modes)))]
         n_off = 1 if "A" not in roles else int(np.random.uniform() < OFF_PATH_P)
         kinds_on, kinds_off = self._draw_kinds(self.mode, roles, n_off)
         side = PUSH_SIDES[int(np.random.randint(len(PUSH_SIDES)))]
@@ -314,7 +320,7 @@ class push_zone(Base_Task):
 
         # 2. geometry draws that stay fixed across layout resamples
         push = self._draw_push_object()
-        on_specs = [self._draw_element(k) for k in kinds_on]
+        on_specs = [self._draw_element(k, pool=ON_PATH_OBSTACLE_POOL) for k in kinds_on]
         off_specs = [self._draw_element(k) for k in kinds_off]
 
         # 3. whole-layout resampling (pure numpy): start / goal, on-path
@@ -382,26 +388,27 @@ class push_zone(Base_Task):
 
     @staticmethod
     def _draw_kinds(mode, roles, n_off):
-        """Element kinds. zone / obstacle mode: one kind. mix keeps >= 1 zone
-        and >= 1 obstacle: two on-path elements of different kinds, or (A-A —
-        its pair rule is outside(zone pair) / stay(obstacle pair) — and one
-        on-path element) a single on-path kind plus an off-path element of
-        the other kind."""
+        """Element kinds. zone / obstacle mode: one kind (obstacle mode only
+        with one on-path element). mix keeps >= 1 zone and >= 1 obstacle:
+        two on-path elements are zone THEN obstacle (an obstacle is always
+        last on the path), A-A is a zone pair (+ an off-path obstacle), one
+        on-path element gets an off-path element of the other kind."""
         n_on = len(roles)
         if mode in ("zone", "obstacle"):
             return [mode] * n_on, [mode] * n_off
         kinds = ("zone", "obstacle")
         if n_on == 2 and roles != ("A", "A"):
-            kinds_on = [kinds[int(i)] for i in np.random.permutation(2)]
-            return kinds_on, [kinds[int(np.random.randint(2))] for _ in range(n_off)]
+            return ["zone", "obstacle"], [kinds[int(np.random.randint(2))] for _ in range(n_off)]
+        if n_on == 2:  # A-A in mix: a zone pair + an off-path obstacle
+            return ["zone", "zone"], ["obstacle"]
         k = int(np.random.randint(2))
-        return [kinds[k]] * n_on, [kinds[1 - k]]
+        return [kinds[k]], [kinds[1 - k]]
 
-    def _draw_element(self, kind):
+    def _draw_element(self, kind, pool=OBSTACLE_POOL):
         if kind == "zone":
             sx, sy = float(np.random.uniform(*ZONE_SIZE)), float(np.random.uniform(*ZONE_SIZE))
             return {"kind": "zone", "hx": sx / 2.0, "hy": sy / 2.0}
-        ob = self._draw_obstacle()
+        ob = self._draw_obstacle(pool)
         return {"kind": "obstacle", "hx": ob["pad"], "hy": ob["pad"], "ob": ob}
 
     def _draw_push_object(self):
@@ -609,9 +616,9 @@ class push_zone(Base_Task):
         )
         return region_id
 
-    def _draw_obstacle(self):
+    def _draw_obstacle(self, pool=OBSTACLE_POOL):
         """(asset, model_id, r, h, pad, category, mass) for one obstacle draw."""
-        asset = OBSTACLE_POOL[int(np.random.randint(len(OBSTACLE_POOL)))]
+        asset = pool[int(np.random.randint(len(pool)))]
         if asset == "prim_tall_cylinder":
             r = float(np.random.uniform(*CYLINDER_RADIUS))
             h = float(np.random.uniform(*CYLINDER_HEIGHT))

@@ -31,13 +31,13 @@ push_objects:
   ids:                                    # audited model ids (recon.md Q13)
     113_coffee-box: [0, 1, 2, 3, 4, 5, 6]
     112_tea-box: [0, 1, 2, 3, 4, 5]
-  start: {abs_x: [0.18, 0.34], y: [-0.24, 0.08]}   # on the pushing arm's own half
+  start: {abs_x: [0.18, 0.36], y: [-0.24, 0.08]}   # on the pushing arm's own half
 
 push:
   seg_len: 0.10                           # closed-loop push segments (m), re-aimed at the live box
   len: [0.35, 0.70]                       # start -> goal (m); the on-path elements and gaps must fit
 
-goal: {abs_x: [0.10, 0.36], y: [-0.26, 0.04], frame: 0.12, frame_width: 0.012}   # opposite half; hollow dark frame (visual only)
+goal: {abs_x: [0.10, 0.32], y: [-0.20, 0.04], frame: 0.12, frame_width: 0.012}   # opposite half; hollow dark frame (visual only)
 
 elements:
   modes: [zone, obstacle, mix]            # drawn per episode; mix = >= 1 of each
@@ -53,9 +53,10 @@ elements:
   detour_margin: 0.02                     # an on-path element needs a reachable on-table detour lane
   zone_size: [0.06, 0.09]                 # painted zone full side per axis
   on_path_lat: {zone: 0.02}
-  obstacle_glance: [0.3, 0.7]             # on-path obstacle centre offset = this x (box + obstacle half-widths): knocked aside, not plowed
+  obstacle_glance: [0.5, 0.8]             # on-path obstacle centre offset = this x (box + obstacle half-widths): an edge hit topples it out of the lane
   exclude_colors: [white]                 # white boxes / mats / cylinders vanish on the white table
-  obstacle_pool: [021_cup, prim_tall_cylinder]
+  obstacle_pool: [021_cup, prim_tall_cylinder]   # off-path
+  on_path_obstacle_pool: [prim_tall_cylinder]    # on-path: topples when hit (cups slide along and jam the box)
   obstacle_ids: {021_cup: [0, 3, 5]}
   cylinder: {radius: [0.02, 0.035], height: [0.10, 0.18]}
 
