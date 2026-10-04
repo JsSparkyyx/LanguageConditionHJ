@@ -676,6 +676,7 @@ class push_zone(Base_Task):
         params = getattr(self, "embodiment_params", None) or getattr(self, "push_params", None) or {}
         prepush = float(params.get("prepush_dist", PREPUSH_DIST))
         h_off = float(params.get("push_height_offset", PUSH_HEIGHT_OFFSET))
+        tip_len = params.get("push_tip_len")  # EE origin -> closed-finger bottom (embodiment_overrides)
         z = TABLE_TOP_Z + float(self.table_z_bias)
 
         steps_by_arm = {"left": [], "right": []}
@@ -690,6 +691,7 @@ class push_zone(Base_Task):
                 self, rec["arm"], rec["push_obj"], rec["goal_xy"],
                 overshoot=overshoot, lateral_offset=lateral,
                 prepush_dist=prepush, height_offset=h_off, seg_len=PUSH_SEG_LEN,
+                tip_len=None if tip_len is None else float(tip_len),
             )
             self.last_push_info.append(
                 {

@@ -78,7 +78,10 @@ rules:
   - {consequence: stay, items: {role: bystander}, set_rule: pairs, d_tol: 0.03, theta_tol_deg: 20}
 
 embodiment_overrides:
-  ur5-wsg:      {prepush_dist: 0.05, push_height_offset: 0.0}
-  franka-panda: {prepush_dist: 0.05, push_height_offset: 0.0}
+  # push_tip_len: EE origin -> bottom of the closed fingers, measured as the
+  # EE z floor of a push resting on the table (diag d36-d41: 0.904 / 0.892 m
+  # at table 0.74) — pushes now keep the fingertips 8 mm above the table
+  ur5-wsg:      {prepush_dist: 0.05, push_height_offset: 0.0, push_tip_len: 0.164}
+  franka-panda: {prepush_dist: 0.05, push_height_offset: 0.0, push_tip_len: 0.152}
 
 risk_collect: null                        # filled by calibration (Phase 4 §8)

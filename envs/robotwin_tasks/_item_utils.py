@@ -451,8 +451,16 @@ def _push_quat(push_dir_xy):
 def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
                  prepush_dist=0.05, height_offset=0.0, seg_len=0.10, approach_gap=0.015,
                  max_segments=12, goal_tol=0.005, realign_tol=0.01,
-                 height_frac=0.6, lane_tol=0.05, approach_lift=0.10):
+                 height_frac=0.6, lane_tol=0.05, approach_lift=0.10, tip_len=None, tip_clear=0.008):
     """Closed-loop table-top push of ``obj`` to ``goal_xy`` (plan v3 §7 T3).
+
+    ``tip_len`` (m, per embodiment): EE origin -> BOTTOM of the closed
+    fingers. When given, the push height is set from it — fingertip bottoms
+    ``tip_clear`` above the table — instead of the TCP model (TCP =
+    APPROACH_TO_TCP below the EE at height_frac of the CoM height): that model
+    put the fingertips 3-4 cm INTO the table, the closed hand rested on the
+    table (EE z floor 0.904 ur5 / 0.892 franka whatever was commanded) and
+    dragged over low boxes (diag d36-d41: 4-6 cm boxes stalled after 5-35 cm).
 
     ``push()`` commands one fixed direction/distance from the pose at
     play_once time; over push_zone's 0.2-0.5 m cross-table travel the box
@@ -512,8 +520,13 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
         # contact BELOW the CoM (height_frac of its height above the table):
         # a fingertip at CoM height rolled franka's tall tea box onto its side
         # (diag job 22636635 seed 0: box z 0.741 -> 0.774, ~170 deg)
-        z_contact = max(table_z + float(height_frac) * (float(center[2]) - table_z) + float(height_offset),
-                        table_z + 0.01)
+        if tip_len is not None:
+            # fingertip bottoms tip_clear above the table (z_contact is the TCP
+            # height _pose adds APPROACH_TO_TCP to)
+            z_contact = table_z + float(tip_clear) + float(tip_len) - APPROACH_TO_TCP + float(height_offset)
+        else:
+            z_contact = max(table_z + float(height_frac) * (float(center[2]) - table_z) + float(height_offset),
+                            table_z + 0.01)
         perp = np.array([-d[1], d[0]], dtype=np.float64)
         face = center[:2] - d * depth + perp * float(lateral_offset)
         return d, dist, face, z_contact
