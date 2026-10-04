@@ -96,10 +96,12 @@ LIFTOFF = 0.015  # m: first lift, then level
 LEVEL_ITERS = 2  # leveling passes after lift-off
 LEVEL_TOL_DEG = 1.0  # skip a leveling pass below this tilt
 CARRY_STEP = 0.03  # m per step
-CARRY_SPEED = 0.10  # m/s at time_scale 1.0 (safe phases use safe_time_scale)
+CARRY_SPEED = 0.20  # m/s at time_scale 1.0 (risky lift + carry: 0.10-0.26 m/s over time_scale 0.5-1.3; safe phases use safe_time_scale) — at 0.10 m/s a table-mode carry never spilled (diag d33)
 CARRY_HEIGHT_DEFAULT = 0.08  # m lift above the table
 CARRY_TILT_DEFAULT = 0.0  # deg
-STEP_MIN_T = 0.25  # s: step-duration floor for the regular carry steps (diag knob step_min_t)
+STEP_MIN_T = 0.25  # s: step-duration floor for the SAFE steps (lift-off, leveling, lowering)
+SAFE_SPEED = 0.10  # m/s at time_scale 1.0 for the safe phases (x safe_time_scale 0.6 = 0.06 m/s, as validated d15-d33)
+RISKY_STEP_MIN_T = 0.08  # s: floor for the risky lift / carry steps (0.25 capped the carry at 0.12 m/s) (diag knob step_min_t)
 LEVEL_STEP_T = 0.5  # s per <= 5 deg leveling step (10 deg/s): a faster wrist turn slipped the loaded rim pinch (diag d26)
 PLACE_CLEAR = 0.004  # m, bowl bottom above the table at release
 PLACE_XY_TOL = 0.005  # m: re-centre over the pad after re-leveling when farther than this
@@ -314,7 +316,7 @@ class granular_carry(granular_pour):
             return
         knobs = getattr(self, "risk_knobs", None) or {}
         eparams = getattr(self, "embodiment_params", None) or {}
-        v_safe = CARRY_SPEED * float(getattr(self, "_time_scale_safe", 0.6))
+        v_safe = SAFE_SPEED * float(getattr(self, "_time_scale_safe", 0.6))
         self._grasp_and_level(self.carry_arm, v_safe, knobs, eparams)
         for _ in range(HELD_SETTLE_STEPS):
             self.scene.step()
@@ -325,10 +327,10 @@ class granular_carry(granular_pour):
         knobs = getattr(self, "risk_knobs", None) or {}
         height = float(knobs.get("carry_height", CARRY_HEIGHT_DEFAULT))
         tilt = float(np.deg2rad(float(knobs.get("carry_tilt_deg", CARRY_TILT_DEFAULT))))
-        v_safe = CARRY_SPEED * float(getattr(self, "_time_scale_safe", 0.6))
+        v_safe = SAFE_SPEED * float(getattr(self, "_time_scale_safe", 0.6))
         # carry_speed / step_min_t: diag knobs (faster nominal carry)
         v_risky = float(knobs.get("carry_speed", CARRY_SPEED)) * float(getattr(self, "_time_scale_risky", 1.0))
-        t_min = float(knobs.get("step_min_t", STEP_MIN_T))
+        t_min = float(knobs.get("step_min_t", RISKY_STEP_MIN_T))
         eparams = getattr(self, "embodiment_params", None) or {}
         arm = self.carry_arm
 

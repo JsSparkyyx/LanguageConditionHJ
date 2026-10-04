@@ -100,6 +100,8 @@ def test_constants_mirror_yaml():
     assert _f(_const("PACK_FILL")) == _f(cfg["beads"]["pack_fill"])
     assert _f(_const("CARRY_STEP")) == _f(cfg["carry"]["step"])
     assert _f(_const("CARRY_SPEED")) == _f(cfg["carry"]["speed"])
+    assert _f(_const("SAFE_SPEED")) == _f(cfg["carry"]["safe_speed"])
+    assert _f(_const("RISKY_STEP_MIN_T")) == _f(cfg["carry"]["risky_step_min_t"])
     assert _f(_const("LIFTOFF")) == _f(cfg["carry"]["liftoff"])
     assert _const("LEVEL_ITERS") == cfg["carry"]["level_iters"]
     assert _f(_const("GRIPPER_STIFFNESS")) == _f(cfg["carry"]["gripper_stiffness"])
