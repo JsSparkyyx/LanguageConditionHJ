@@ -77,6 +77,8 @@ PAD_FRAME_W = 0.012  # frame strip width (m)
 N_BEADS_MAX = 240  # grid candidates at BEAD_R (scaled by (BEAD_R / r)^3 for smaller beads); beads above the fill line are dropped
 CARRY_BEAD_R = BEAD_R  # m: T4 bead radius (diag override ITEM_T4_BEAD_R); smaller than BEAD_R -> category "small_beads" (lighter per bead)
 BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitch 12.6 mm -> 11-19 mm by bowl id)
+CARRY_BOWL_MODEL = "002_bowl_shallow"  # 002_bowl squashed to a 2.5 cm interior depth (robotwin_assets/, user review 5): spills at small tilts, needs velocity control
+TABLE_FILL_FRAC = 0.85  # table mode: beads = this x the bowl's random-pack rim capacity
 CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill PACK_FILL); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
 CARRY_MODE_P = (0.3, 0.7)  # held is the cleanly avoidable regime (spills during the carry, not at the grasp)
 HELD_PACK_FILL = 1.15  # held mode over-fills to this x the bowl's rim capacity (bowl_bead_capacity, random pack phi 0.58); the pre-roll spills the excess and leaves a brim-full bowl (1.4 x the lattice count left bowls 2 / 5 at 65-74 % of capacity, diag d38)
@@ -124,16 +126,17 @@ class granular_carry(granular_pour):
         x = side * float(np.random.uniform(*START_ABS_X))
         y = float(np.random.uniform(*START_Y))
         self.carry_arm = "right" if side > 0 else "left"
-        self.actor_name = BOWL_MODEL
+        self.bowl_model = os.environ.get("ITEM_T4_MODEL", CARRY_BOWL_MODEL)  # diag-only override
+        self.actor_name = self.bowl_model
         self.container_id = int(np.random.choice(list(BOWL_IDS)))
         self.container = create_actor(
             self,
             pose=sapien.Pose([x, y, TABLE_Z], list(SPAWN_QUAT)),
-            modelname=BOWL_MODEL,
+            modelname=self.bowl_model,
             model_id=self.container_id,
             convex=True,
         )
-        self._src_geom = bowl_geometry(BOWL_MODEL, self.container_id)
+        self._src_geom = bowl_geometry(self.bowl_model, self.container_id)
         self._bowl_mass = float(np.random.uniform(*CARRY_BOWL_MASS_RANGE))
         self.container.set_mass(self._bowl_mass)
 
@@ -164,6 +167,8 @@ class granular_carry(granular_pour):
         if pack == "random":
             if self.carry_mode == "held":
                 n_fill = int(round(bowl_bead_capacity(g, bead_r) * HELD_PACK_FILL))
+            elif self.bowl_model != BOWL_MODEL:  # shallow bowl: fill to a capacity fraction
+                n_fill = int(round(bowl_bead_capacity(g, bead_r) * TABLE_FILL_FRAC))
             else:
                 n_fill = int(round(len(local) * float(os.environ.get("ITEM_T4_PACK_N", PACK_FILL))))
             local = bead_random_positions(n_fill, bead_r, g, np.random)

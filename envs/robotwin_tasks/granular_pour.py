@@ -76,6 +76,8 @@ import sapien
 from ._item_utils import (
     APPROACH_TO_TCP,
     bead_grid_positions,
+    bead_random_positions,
+    bowl_bead_capacity,
     bowl_geometry,
     container_region_radius,
     min_pour_height,
@@ -87,7 +89,9 @@ from ._item_utils import (
 
 # --- scene layout (must match main/item_envs/configs/tasks/T2_granular_pour.yaml;
 #     tests/item_envs/test_granular_pour.py source-greps this contract) ---
-BOWL_MODEL = "002_bowl"
+BOWL_MODEL = "002_bowl"  # the TARGET bowl (deep: catches the pour)
+SRC_BOWL_MODEL = "002_bowl_shallow"  # the SOURCE bowl: 002_bowl squashed to a 2.5 cm interior depth (robotwin_assets/, user review 5: a low container spills at small tilts and in transit)
+SRC_FILL_FRAC = 0.8  # shallow source: beads = this x its random-pack rim capacity (capped at N_BEADS)
 BOWL_IDS = (1, 2, 3, 5)  # P2 rest-containment PASS at (60 beads, 6 mm), feasibility.md
 BOWL_MASS_RANGE = (0.10, 0.40)  # objects.yaml categories.bowl.mass_range
 SPAWN_QUAT = (0.5, 0.5, 0.5, 0.5)  # RoboTwin glb-upright convention (file y -> world z)
@@ -121,6 +125,7 @@ POUR_PIN_ABORT = 0.03  # abort the tilt when the rim-to-EE distance drifts this
 SWING_CLEAR = 0.03  # m: source-bowl hull above the target rim during transit and tilt swing
 POUR_REF_DEG = 85.0  # mid-pour angle (100 beads start leaving at ~55-60 deg) at which the lip sits on the pour point
 PIVOT_ALPHAS = (0.0, 0.25, 0.5, 0.75, 1.0)  # pivot = lip + alpha * (EE - lip); smallest executable wins
+ROLL_PITCH_DEG = 30.0  # wrist-roll pour: approach pitched this far below horizontal (max bowl tilt 180 - 2 x this)
 HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 Hz)
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
 GRASP_DIS = 0.0  # m: grasp target short of the contact point along the approach (embodiment_overrides)
@@ -152,16 +157,18 @@ class granular_pour(place_container_plate):
                 rotate_rand=False,
                 qpos=list(SPAWN_QUAT),
             )
-        self.actor_name = BOWL_MODEL
+        src_model = os.environ.get("ITEM_SRC_MODEL", SRC_BOWL_MODEL)  # diag-only override
+        self.src_model = src_model
+        self.actor_name = src_model
         self.container_id = int(np.random.choice(list(BOWL_IDS)))
         self.container = create_actor(
             self,
             pose=container_pose,
-            modelname=BOWL_MODEL,
+            modelname=src_model,
             model_id=self.container_id,
             convex=True,
         )
-        self._src_geom = bowl_geometry(BOWL_MODEL, self.container_id)
+        self._src_geom = bowl_geometry(src_model, self.container_id)
         self._bowl_mass = float(np.random.uniform(*BOWL_MASS_RANGE))
         self.container.set_mass(self._bowl_mass)
 
@@ -194,14 +201,21 @@ class granular_pour(place_container_plate):
         #    recipe — the bowls narrow toward the floor, so each layer is sized
         #    by the measured wall-radius bands, not the rim radius).
         n_beads = int(os.environ.get("ITEM_T2_N", N_BEADS))  # diag-only override
-        local = bead_grid_positions(
-            n_beads,
-            BEAD_R,
-            self._src_geom["inner_radius"],
-            self._src_geom["floor_y"],
-            bands=self._src_geom["bands"],
-            rng=np.random,
-        )
+        if self.src_model != BOWL_MODEL:
+            # shallow source: a random pack (a hex lattice settles into a
+            # crystal that holds far past the angle of repose, T4 diag d21-d32)
+            # filled to SRC_FILL_FRAC of the rim capacity
+            n_beads = min(n_beads, int(round(SRC_FILL_FRAC * bowl_bead_capacity(self._src_geom, BEAD_R))))
+            local = bead_random_positions(n_beads, BEAD_R, self._src_geom, np.random)
+        else:
+            local = bead_grid_positions(
+                n_beads,
+                BEAD_R,
+                self._src_geom["inner_radius"],
+                self._src_geom["floor_y"],
+                bands=self._src_geom["bands"],
+                rng=np.random,
+            )
         world_T = self.container.get_pose().to_transformation_matrix()
         bead_world = local @ world_T[:3, :3].T + world_T[:3, 3]
         masses = np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=n_beads)
@@ -443,23 +457,26 @@ class granular_pour(place_container_plate):
         return self.info
 
     def _play_wrist_roll(self, arm_tag, knobs, eparams, pour_height, pour_offset, tilt_rate, container_pose):
-        """Pour by a pure roll about the gripper's approach axis
-        (embodiment_params.pour_style = "wrist_roll"; ur5-wsg, user review 4).
+        """Pour by a roll about the gripper's approach axis
+        (embodiment_params.pour_style = "wrist_roll"; ur5-wsg, user review 5).
 
         ur5-wsg's wrist 1 (+/-1.75 rad) blocks every top-down-grasp tilt but a
         side-lip one, whose plans failed or flung the bowl (diag d37 / d39).
-        Here the rim is pinched with the approach axis a HORIZONTAL and
-        tangent to the rim (fingers straddle the wall, closing radially), so
-        the pour is a rotation about a — through the EE origin AND the TCP —
-        i.e. essentially a wrist-3 roll, which has no practical limit. The
-        far lip swings straight down under the pinch, so the pinch is brought
-        above the target and the beads leave over its centre."""
+        Here the rim is pinched with the approach axis a along the rim
+        TANGENT, pitched ROLL_PITCH_DEG down (a horizontal approach put the
+        wrist at table height — unreachable, d43); the fingers straddle the
+        wall and close radially. The pour is a rotation about a — through the
+        EE origin AND the TCP, i.e. essentially a wrist-3 roll, which has no
+        practical limit. With a pitched axis the bowl tips at most
+        180 - 2 x pitch deg (a half-turn); the roll angle for the sampled tilt
+        is solved numerically, and the pinch is placed so the FAR lip (where
+        the beads leave) ends over the target after the roll."""
         g = self._src_geom
         side = 1.0 if str(arm_tag) == "right" else -1.0
-        u = np.array([side, 0.0, 0.0])  # pinch on the bowl's outer (arm-side) rim
-        a = np.array([0.0, 1.0, 0.0])  # approach: from the robot side, along the rim tangent
-        zc = np.cross(a, u)
-        R0 = np.column_stack([a, u, zc])  # EE x = approach, EE y = finger closing axis
+        beta = np.deg2rad(float(eparams.get("roll_pitch_deg", ROLL_PITCH_DEG)))
+        u = np.array([side, 0.0, 0.0])  # pinch on the bowl's outer (arm-side) rim, closing radially
+        a = np.array([0.0, np.cos(beta), -np.sin(beta)])  # approach: from the robot side, along the tangent, pitched down
+        R0 = np.column_stack([a, u, np.cross(a, u)])  # EE x = approach, EE y = finger closing axis
         q0 = list(_mat_to_quat_wxyz(R0))
         r_pinch = 0.5 * (float(g["inner_radius"]) + float(g["outer_radius"]))
 
@@ -471,23 +488,41 @@ class granular_pour(place_container_plate):
                     joint[0].set_drive_property(stiffness=float(k_grip), damping=float(damping))
 
         rim = self._rim_center(self.container, g)
-        pinch = rim + u * r_pinch - np.array([0.0, 0.0, float(eparams.get("roll_pinch_depth", 0.012))])
+        pinch = rim + u * r_pinch - np.array([0.0, 0.0, float(eparams.get("roll_pinch_depth", 0.008))])
         ee_grasp = pinch - a * APPROACH_TO_TCP
-        self.grip_info = {"pour_style": "wrist_roll", "pinch": pinch.tolist(), "gripper_stiffness": k_grip}
-        # 1. horizontal rim grasp — safe: pre-grasp 10 cm back along a, slide in, close
+        self.grip_info = {"pour_style": "wrist_roll", "pitch_deg": float(np.rad2deg(beta)),
+                          "pinch": pinch.tolist(), "gripper_stiffness": k_grip}
+        # 1. tangent rim grasp — safe: pre-grasp 10 cm back along a, slide in, close
         self.move(self.open_gripper(arm_tag))
         self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10).tolist() + q0))
         self.move(self.move_to_pose(arm_tag, ee_grasp.tolist() + q0))
         self.move(self.close_gripper(arm_tag))
-        # 2. lift — safe (world z: the arm axis is horizontal here)
+        # 2. lift — safe (world z)
         self.move(self.move_by_displacement(arm_tag, z=0.10))
 
-        # 3. transit — risky: the pinch goes above the target, high enough for
-        #    the far lip (one rim diameter below the pinch at 90 deg) to clear
-        #    the target rim by pour_height; lateral pour_offset along world y
+        # the roll: sign sends the far lip DOWN; angle for the sampled tilt
+        tilt_total = float(np.deg2rad(np.random.uniform(*TILT_ANGLE_DEG)))
+        far0 = -2.0 * r_pinch * u  # far lip relative to the pinch (bowl upright)
+        sgn = 1.0 if (_rot_axis(a, np.deg2rad(10.0)) @ far0)[2] < 0.0 else -1.0
+        phis = np.deg2rad(np.arange(0.0, 180.5, 0.5))
+        tilts = np.array([np.arccos(np.clip((_rot_axis(a, sgn * ph) @ np.array([0.0, 0.0, 1.0]))[2], -1.0, 1.0))
+                          for ph in phis])
+        phi_total = float(phis[int(np.argmin(np.abs(tilts - tilt_total)))])
+        R_end = _rot_axis(a, sgn * phi_total)
+        # exit point = the LOWEST rim point after the roll (a pitched roll swings
+        # the mouth sideways: the diametrically far lip is not the lowest one)
+        rim_c = rim - pinch  # rim centre relative to the pinch
+        ths = np.linspace(0.0, 2.0 * np.pi, 72, endpoint=False)
+        ring = np.stack([rim_c + float(g["inner_radius"]) * np.array([np.cos(t), np.sin(t), 0.0]) for t in ths])
+        ring_end = ring @ R_end.T
+        far_end = ring_end[int(np.argmin(ring_end[:, 2]))]  # exit lip relative to the pinch after the roll
+
+        # 3. transit — risky: put the pinch where the far lip ends over the
+        #    target centre (+ lateral pour_offset), pour_height above its rim
         t_rim = self._rim_center(self.target, self._target_geom)
         lat = float(getattr(self, "_pour_lat_sign", 1.0)) * float(pour_offset)
-        pinch_tgt = t_rim + np.array([0.0, lat, float(pour_height) + 2.0 * r_pinch])
+        lip_tgt = t_rim + np.array([0.0, lat, float(pour_height)])
+        pinch_tgt = lip_tgt - far_end
         ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
         d = pinch_tgt - (ee[:3] + a * APPROACH_TO_TCP)
         with risky(self):
@@ -496,30 +531,30 @@ class granular_pour(place_container_plate):
             if d[2] < 0.0:
                 self.move(self.move_by_displacement(arm_tag, z=float(d[2])))
 
-        # 4. roll about a — risky, duration-targeted at tilt_rate; the sign
-        #    sends the far lip (-u from the pinch) DOWN
-        tilt_total = float(np.deg2rad(np.random.uniform(*TILT_ANGLE_DEG)))
-        sgn = 1.0 if (_rot_axis(a, np.deg2rad(10.0)) @ (-u))[2] < 0.0 else -1.0
+        # 4. roll about a — risky, duration-targeted at tilt_rate (rad of
+        #    BOWL tilt per second: the roll step is scaled by dphi / dtilt)
         ee0 = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
         step = np.deg2rad(5.0)
-        n = int(np.ceil(tilt_total / step))
+        n = max(1, int(np.ceil(phi_total / step)))
+        dt_step = max((tilt_total / n) / max(float(tilt_rate), 1e-3), 0.04)  # >= one control tick
+        self.pour_info = {"style": "wrist_roll", "phi_deg": float(np.rad2deg(phi_total)),
+                          "tilt_deg": float(np.rad2deg(tilt_total)), "lip_target": lip_tgt.tolist()}
 
         def _roll(angles):
             self.plan_local = True
             try:
                 for ang in angles:
-                    Rr = _rot_axis(a, sgn * float(ang))
-                    q = _quat_mul_wxyz(_mat_to_quat_wxyz(Rr), ee0[3:])
-                    self.plan_duration_target = max(step / max(float(tilt_rate), 1e-3), 0.04)  # >= one control tick
+                    q = _quat_mul_wxyz(_mat_to_quat_wxyz(_rot_axis(a, sgn * float(ang))), ee0[3:])
+                    self.plan_duration_target = dt_step
                     self.move(self.move_to_pose(arm_tag, ee0[:3].tolist() + [float(v) for v in q]))
             finally:
                 self.plan_local = False
                 self.plan_duration_target = None
 
         with risky(self):
-            _roll([tilt_total * (k + 1) / n for k in range(n)])
+            _roll([phi_total * (k + 1) / n for k in range(n)])
             self.delay(HOLD_DELAY)
-            _roll([tilt_total * (n - 1 - k) / n for k in range(n)])
+            _roll([phi_total * (n - 1 - k) / n for k in range(n)])
 
         # 5. place the empty bowl beside the target, release, back out — safe
         outward = 1.0 if container_pose[0] > 0 else -1.0
@@ -529,12 +564,12 @@ class granular_pour(place_container_plate):
         bowl = np.asarray(self.container.get_pose().p, dtype=np.float64)
         self.move(self.move_by_displacement(arm_tag, z=-float(max(bowl[2] - (TABLE_Z + 0.005), 0.0))))
         self.move(self.open_gripper(arm_tag))
-        self.move(self.move_by_displacement(arm_tag, x=float(-a[0] * 0.08), y=float(-a[1] * 0.08)))
+        self.move(self.move_by_displacement(arm_tag, x=float(-a[0] * 0.08), y=float(-a[1] * 0.08), z=float(-a[2] * 0.08)))
         self.move(self.move_by_displacement(arm_tag, z=0.08))
 
         self.info["info"] = {
             "{A}": f"002_bowl/base{self.target_id}",
-            "{B}": f"002_bowl/base{self.container_id}",
+            "{B}": f"{self.src_model}/base{self.container_id}",
             "{a}": str(arm_tag),
         }
         return self.info

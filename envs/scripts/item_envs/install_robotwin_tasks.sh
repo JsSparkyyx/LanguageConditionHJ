@@ -49,6 +49,26 @@ for src in "${TASK_SRC}"/*.py; do
 done
 echo "installed ${#installed[@]} task file(s) into ${TASK_DST}"
 
+# asset variants (robotwin_assets/<model>/, e.g. 002_bowl_shallow — new
+# model folders whose json rescales an existing mesh): linked into
+# RoboTwin/assets/objects/, never over a real folder
+ASSET_SRC="${REPO_ROOT}/robotwin_assets"
+ASSET_DST="${ROBOTWIN_ROOT}/assets/objects"
+if [[ -d "${ASSET_SRC}" ]]; then
+    for src in "${ASSET_SRC}"/*/; do
+        src="${src%/}"
+        name="$(basename "${src}")"
+        dst="${ASSET_DST}/${name}"
+        if [[ -e "${dst}" && ! -L "${dst}" ]]; then
+            echo "REFUSING to overwrite real RoboTwin asset folder: ${dst}" >&2
+            exit 1
+        fi
+        ln -sfn "${src}" "${dst}"
+        [[ -e "${dst}" ]] || { echo "broken asset symlink: ${dst}" >&2; exit 1; }
+        echo "linked ${dst} -> ${src}"
+    done
+fi
+
 PYTHON_BIN="${PYTHON_BIN:-python}"
 # login-node-safe syntax check (importing envs.<task> executes RoboTwin's
 # robot/planner chain, which needs cuRobo — only --check-import does that)
