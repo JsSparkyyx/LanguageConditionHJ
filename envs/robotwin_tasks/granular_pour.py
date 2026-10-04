@@ -146,6 +146,7 @@ PIVOT_ALPHAS = (0.0, 0.25, 0.5, 0.75, 1.0)  # pivot = lip + alpha * (EE - lip); 
 ROLL_AIM_TILT_DEG = 35.0  # wrist-roll pour: the exit lip is placed over the target at THIS bowl tilt (pour onset of a low bowl)
 ROLL_AIM_END_DEG = 90.0  # ... the aim averages the exit lip over tilt [ROLL_AIM_TILT_DEG, this] (the low bed empties over that range)
 ROLL_AIM_LEAD = 0.07  # m: the aim leads toward the target (the stream lands short of the modelled lip, d62)
+ROLL_AIM_SIDE = 0.10  # m: ... and leads along the approach axis' horizontal direction (the stream leaves back toward the robot, d64)
 ROLL_PITCH_DEG = 30.0  # wrist-roll pour: approach pitched this far below horizontal (max bowl tilt 180 - 2 x this)
 HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 Hz)
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
@@ -677,6 +678,12 @@ class granular_pour(place_container_plate):
         to_tgt = t_rim[:2] - np.asarray(self.container.get_pose().p, dtype=np.float64)[:2]
         to_tgt = to_tgt / max(float(np.linalg.norm(to_tgt)), 1e-9)
         lip_tgt[:2] += float(eparams.get("roll_aim_lead", ROLL_AIM_LEAD)) * to_tgt
+        # ... and the pitched roll keeps the mouth tipped back along -a (its
+        # component along a is -sin(pitch)): the beads leave toward the
+        # robot and landed 6-19 cm that way (d64) — lead along +a's
+        # horizontal direction
+        a_h = np.array([a[0], a[1]]) / max(float(np.hypot(a[0], a[1])), 1e-9)
+        lip_tgt[:2] += float(eparams.get("roll_aim_side", ROLL_AIM_SIDE)) * a_h
         pinch_tgt = lip_tgt - far_end
         ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
         d = pinch_tgt - (ee[:3] + a * APPROACH_TO_TCP)
