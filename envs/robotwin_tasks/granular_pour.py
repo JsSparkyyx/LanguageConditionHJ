@@ -90,7 +90,8 @@ from ._item_utils import (
 # --- scene layout (must match main/item_envs/configs/tasks/T2_granular_pour.yaml;
 #     tests/item_envs/test_granular_pour.py source-greps this contract) ---
 BOWL_MODEL = "002_bowl"  # the TARGET bowl (deep: catches the pour)
-SRC_BOWL_MODEL = "002_bowl_shallow"  # the SOURCE bowl: 002_bowl squashed to a 2.5 cm interior depth (robotwin_assets/, user review 5: a low container spills at small tilts and in transit)
+SRC_BOWL_MODEL = "002_bowl"  # the SOURCE bowl ...
+SRC_INTERIOR_DEPTH = 0.025  # ... with a raised floor: rim 2.5 cm above it (create_bowl_raised_floor; user review 5: a low container spills at small tilts and in transit)
 SRC_FILL_FRAC = 0.8  # shallow source: beads = this x its random-pack rim capacity (capped at N_BEADS)
 BOWL_IDS = (1, 2, 3, 5)  # P2 rest-containment PASS at (60 beads, 6 mm), feasibility.md
 BOWL_MASS_RANGE = (0.10, 0.40)  # objects.yaml categories.bowl.mass_range
@@ -161,14 +162,9 @@ class granular_pour(place_container_plate):
         self.src_model = src_model
         self.actor_name = src_model
         self.container_id = int(np.random.choice(list(BOWL_IDS)))
-        self.container = create_actor(
-            self,
-            pose=container_pose,
-            modelname=src_model,
-            model_id=self.container_id,
-            convex=True,
-        )
-        self._src_geom = bowl_geometry(src_model, self.container_id)
+        depth = float(os.environ.get("ITEM_SRC_DEPTH", SRC_INTERIOR_DEPTH))  # diag-only override (0 = plain bowl)
+        self.container, self._src_geom = create_bowl_raised_floor(
+            self, container_pose, src_model, self.container_id, depth)
         self._bowl_mass = float(np.random.uniform(*BOWL_MASS_RANGE))
         self.container.set_mass(self._bowl_mass)
 
@@ -201,8 +197,8 @@ class granular_pour(place_container_plate):
         #    recipe — the bowls narrow toward the floor, so each layer is sized
         #    by the measured wall-radius bands, not the rim radius).
         n_beads = int(os.environ.get("ITEM_T2_N", N_BEADS))  # diag-only override
-        if self.src_model != BOWL_MODEL:
-            # shallow source: a random pack (a hex lattice settles into a
+        if self._src_geom.get("raised_floor"):
+            # low (raised-floor) source: a random pack (a hex lattice settles into a
             # crystal that holds far past the angle of repose, T4 diag d21-d32)
             # filled to SRC_FILL_FRAC of the rim capacity
             n_beads = min(n_beads, int(round(SRC_FILL_FRAC * bowl_bead_capacity(self._src_geom, BEAD_R))))
@@ -823,6 +819,53 @@ class granular_pour(place_container_plate):
 # quaternion helpers (wxyz, matching sapien/RoboTwin pose convention)
 # ---------------------------------------------------------------------------
 
+
+
+def create_bowl_raised_floor(task, pose, modelname, model_id, depth, color=(0.62, 0.55, 0.45)):
+    """002_bowl with a solid insert raising its interior floor so the rim
+    sits only ``depth`` above it (user review 5: a LOW container spills at
+    small tilts and needs velocity control). The OUTSIDE stays the full bowl
+    — the rim pinch keeps its 5-7 cm of wall (a height-squashed bowl was too
+    low to grasp: the fingers reach 3-4 cm below the TCP, diag d44). The
+    insert is one cylinder in the bowl's file frame (y = up, origin at the
+    exterior bottom), radius = the narrowest wall radius over its height
+    minus 1 mm, rendered in a neutral colour. Returns (Actor, geometry dict
+    with floor_y raised and the wall bands trimmed). depth <= 0 or >= the
+    bowl's own depth: the plain bowl (RoboTwin's create_actor)."""
+    import json
+    from pathlib import Path
+
+    geom = dict(bowl_geometry(modelname, model_id))
+    floor0, rim = float(geom["floor_y"]), float(geom["rim_y"])
+    raise_h = (rim - floor0) - float(depth)
+    if depth <= 0.0 or raise_h <= 0.002:
+        return create_actor(task, pose=pose, modelname=modelname, model_id=model_id, convex=True), geom
+    from .utils.create_actor import get_glb_or_obj_file, preprocess
+    from .utils.actor_utils import Actor
+
+    scene, pose = preprocess(task, pose)
+    modeldir = Path("assets/objects") / modelname
+    model_data = json.loads((modeldir / f"model_data{int(model_id)}.json").read_text())
+    scale = model_data["scale"]
+    collision_file = get_glb_or_obj_file(modeldir / "collision", model_id)
+    visual_file = get_glb_or_obj_file(modeldir / "visual", model_id)
+    builder = scene.create_actor_builder()
+    builder.set_physx_body_type("dynamic")
+    builder.add_multiple_convex_collisions_from_file(filename=str(collision_file), scale=scale)
+    builder.add_visual_from_file(filename=str(visual_file), scale=scale)
+    bands = [b for b in (geom.get("bands") or []) if b[0] < floor0 + raise_h]
+    r_ins = (min(float(b[1]) for b in bands) if bands else float(geom["inner_radius"])) - 0.001
+    # SAPIEN cylinders run along local x: rotate +90 deg about z -> along y (up)
+    ins_pose = sapien.Pose([0.0, floor0 + 0.5 * raise_h, 0.0], [0.7071067811865476, 0.0, 0.0, 0.7071067811865476])
+    builder.add_cylinder_collision(pose=ins_pose, radius=r_ins, half_length=0.5 * raise_h)
+    builder.add_cylinder_visual(pose=ins_pose, radius=r_ins, half_length=0.5 * raise_h, material=tuple(color))
+    entity = builder.build(name=modelname)
+    entity.set_name(modelname)
+    entity.set_pose(pose)
+    geom["floor_y"] = floor0 + raise_h
+    geom["bands"] = [b for b in (geom.get("bands") or []) if b[0] >= floor0 + raise_h]
+    geom["raised_floor"] = raise_h
+    return Actor(entity, model_data), geom
 
 def _roty(th):
     """3x3 rotation matrix about the world +y axis by th radians."""
