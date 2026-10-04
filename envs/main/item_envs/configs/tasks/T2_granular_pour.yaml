@@ -57,7 +57,11 @@ embodiment_overrides:                     # installed as task.embodiment_params 
   # tangent rim pinch let the bowl turn 40-70 deg in the grip (d47); the
   # flat handle loop fills the pads. tip_len = EE origin -> closed fingertips
   # (measured, T3 push_tip_len) keeps the fingertips off the mug body.
-  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006, pour_style: wrist_roll, tip_len: 0.164}
+  # roll_pitch_deg 40 (ur5): at 30 deg both planners land the RIGHT arm's
+  # hand 2-3 cm / 11 deg off the handle grasp (the two UR5 mounts differ),
+  # at 40 deg within 0.7 cm / 0.4 deg (d55); the roll then tips the mug at
+  # most 180 - 2 x 40 = 100 deg, enough to empty the 4 cm interior (d56)
+  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006, pour_style: wrist_roll, tip_len: 0.164, roll_pitch_deg: 40}
   franka-panda: {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.0125, grasp_radial_out: 0.006, tip_len: 0.152}
 
 risk_collect: null                       # filled by calibration
