@@ -74,6 +74,7 @@ from .utils import *
 import sapien
 
 from ._item_utils import (
+    APPROACH_TO_TCP,
     bead_grid_positions,
     bowl_geometry,
     container_region_radius,
@@ -316,6 +317,11 @@ class granular_pour(place_container_plate):
         arm_tag = ArmTag("right" if container_pose[0] > 0 else "left")
         other_tag = ArmTag("left" if arm_tag == "right" else "right")
 
+        eparams_ = getattr(self, "embodiment_params", None) or {}
+        if knobs.get("pour_style", eparams_.get("pour_style")) == "wrist_roll":  # knob: diag override
+            return self._play_wrist_roll(arm_tag, knobs, eparams_, pour_height, pour_offset, tilt_rate,
+                                         container_pose)
+
         # 1. grasp the source bowl — safe scale. Contact ids per embodiment
         #    (embodiment_params.grasp_contact_ids = [right, left]; host idiom
         #    [0, 2]). 002_bowl's ids 1/3 grasp the same rim point with the
@@ -428,6 +434,103 @@ class granular_pour(place_container_plate):
                     dis=0.03,
                 ))
             self.move(self.move_by_displacement(other_tag, z=0.08, move_axis="arm"))
+
+        self.info["info"] = {
+            "{A}": f"002_bowl/base{self.target_id}",
+            "{B}": f"002_bowl/base{self.container_id}",
+            "{a}": str(arm_tag),
+        }
+        return self.info
+
+    def _play_wrist_roll(self, arm_tag, knobs, eparams, pour_height, pour_offset, tilt_rate, container_pose):
+        """Pour by a pure roll about the gripper's approach axis
+        (embodiment_params.pour_style = "wrist_roll"; ur5-wsg, user review 4).
+
+        ur5-wsg's wrist 1 (+/-1.75 rad) blocks every top-down-grasp tilt but a
+        side-lip one, whose plans failed or flung the bowl (diag d37 / d39).
+        Here the rim is pinched with the approach axis a HORIZONTAL and
+        tangent to the rim (fingers straddle the wall, closing radially), so
+        the pour is a rotation about a — through the EE origin AND the TCP —
+        i.e. essentially a wrist-3 roll, which has no practical limit. The
+        far lip swings straight down under the pinch, so the pinch is brought
+        above the target and the beads leave over its centre."""
+        g = self._src_geom
+        side = 1.0 if str(arm_tag) == "right" else -1.0
+        u = np.array([side, 0.0, 0.0])  # pinch on the bowl's outer (arm-side) rim
+        a = np.array([0.0, 1.0, 0.0])  # approach: from the robot side, along the rim tangent
+        zc = np.cross(a, u)
+        R0 = np.column_stack([a, u, zc])  # EE x = approach, EE y = finger closing axis
+        q0 = list(_mat_to_quat_wxyz(R0))
+        r_pinch = 0.5 * (float(g["inner_radius"]) + float(g["outer_radius"]))
+
+        k_grip = eparams.get("gripper_stiffness")
+        if k_grip is not None:
+            for joints, damping in ((self.robot.left_gripper, self.robot.left_gripper_damping),
+                                    (self.robot.right_gripper, self.robot.right_gripper_damping)):
+                for joint in joints:
+                    joint[0].set_drive_property(stiffness=float(k_grip), damping=float(damping))
+
+        rim = self._rim_center(self.container, g)
+        pinch = rim + u * r_pinch - np.array([0.0, 0.0, float(eparams.get("roll_pinch_depth", 0.012))])
+        ee_grasp = pinch - a * APPROACH_TO_TCP
+        self.grip_info = {"pour_style": "wrist_roll", "pinch": pinch.tolist(), "gripper_stiffness": k_grip}
+        # 1. horizontal rim grasp — safe: pre-grasp 10 cm back along a, slide in, close
+        self.move(self.open_gripper(arm_tag))
+        self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10).tolist() + q0))
+        self.move(self.move_to_pose(arm_tag, ee_grasp.tolist() + q0))
+        self.move(self.close_gripper(arm_tag))
+        # 2. lift — safe (world z: the arm axis is horizontal here)
+        self.move(self.move_by_displacement(arm_tag, z=0.10))
+
+        # 3. transit — risky: the pinch goes above the target, high enough for
+        #    the far lip (one rim diameter below the pinch at 90 deg) to clear
+        #    the target rim by pour_height; lateral pour_offset along world y
+        t_rim = self._rim_center(self.target, self._target_geom)
+        lat = float(getattr(self, "_pour_lat_sign", 1.0)) * float(pour_offset)
+        pinch_tgt = t_rim + np.array([0.0, lat, float(pour_height) + 2.0 * r_pinch])
+        ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+        d = pinch_tgt - (ee[:3] + a * APPROACH_TO_TCP)
+        with risky(self):
+            self.move(self.move_by_displacement(arm_tag, z=float(max(d[2], 0.0))))
+            self.move(self.move_by_displacement(arm_tag, x=float(d[0]), y=float(d[1])))
+            if d[2] < 0.0:
+                self.move(self.move_by_displacement(arm_tag, z=float(d[2])))
+
+        # 4. roll about a — risky, duration-targeted at tilt_rate; the sign
+        #    sends the far lip (-u from the pinch) DOWN
+        tilt_total = float(np.deg2rad(np.random.uniform(*TILT_ANGLE_DEG)))
+        sgn = 1.0 if (_rot_axis(a, np.deg2rad(10.0)) @ (-u))[2] < 0.0 else -1.0
+        ee0 = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+        step = np.deg2rad(5.0)
+        n = int(np.ceil(tilt_total / step))
+
+        def _roll(angles):
+            self.plan_local = True
+            try:
+                for ang in angles:
+                    Rr = _rot_axis(a, sgn * float(ang))
+                    q = _quat_mul_wxyz(_mat_to_quat_wxyz(Rr), ee0[3:])
+                    self.plan_duration_target = max(step / max(float(tilt_rate), 1e-3), 0.04)  # >= one control tick
+                    self.move(self.move_to_pose(arm_tag, ee0[:3].tolist() + [float(v) for v in q]))
+            finally:
+                self.plan_local = False
+                self.plan_duration_target = None
+
+        with risky(self):
+            _roll([tilt_total * (k + 1) / n for k in range(n)])
+            self.delay(HOLD_DELAY)
+            _roll([tilt_total * (n - 1 - k) / n for k in range(n)])
+
+        # 5. place the empty bowl beside the target, release, back out — safe
+        outward = 1.0 if container_pose[0] > 0 else -1.0
+        place_xy = np.asarray(self._target_home[:2], dtype=np.float64) + np.array([outward * PLACE_DX, 0.0])
+        bowl = np.asarray(self.container.get_pose().p, dtype=np.float64)
+        self.move(self.move_by_displacement(arm_tag, x=float(place_xy[0] - bowl[0]), y=float(place_xy[1] - bowl[1])))
+        bowl = np.asarray(self.container.get_pose().p, dtype=np.float64)
+        self.move(self.move_by_displacement(arm_tag, z=-float(max(bowl[2] - (TABLE_Z + 0.005), 0.0))))
+        self.move(self.open_gripper(arm_tag))
+        self.move(self.move_by_displacement(arm_tag, x=float(-a[0] * 0.08), y=float(-a[1] * 0.08)))
+        self.move(self.move_by_displacement(arm_tag, z=0.08))
 
         self.info["info"] = {
             "{A}": f"002_bowl/base{self.target_id}",
