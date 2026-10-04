@@ -76,7 +76,9 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         mod = __import__(type(task).__module__, fromlist=["x"])
         if task._src_geom.get("raised_floor"):
             cap = mod.bowl_bead_capacity(task._src_geom, mod.BEAD_R)
-            assert len(beads.particles) == min(mod.N_BEADS, int(round(mod.SRC_FILL_FRAC * cap)))
+            n_spawn = min(mod.N_BEADS, int(round(mod.SRC_FILL_FRAC * cap)))
+            # prepare_episode deletes the few beads the settle bounced out
+            assert 0.9 * n_spawn <= len(beads.particles) <= n_spawn
         else:
             assert len(beads.particles) == mod.N_BEADS
         margins = runner._rule_margins()

@@ -295,38 +295,16 @@ class granular_carry(granular_pour):
         self._steps_to(arm, np.concatenate([ee[:3] + [0.0, 0.0, LIFTOFF], ee[3:]]), v_safe)
         self._level(arm, v_safe)
 
-    def _remove_spilled_beads(self):
-        """Delete every bead not inside the bowl's INNER wall (spilled, or
-        perched on the rim lip); the bead list is shared with the registered
-        particle set, so it is edited in place."""
-        T = np.asarray(self.container.get_pose().to_transformation_matrix(), dtype=np.float64)
-        g = self._src_geom
-        keep, gone = [], []
-        for b in self.beads:
-            p_loc = T[:3, :3].T @ (np.asarray(b.get_pose().p, dtype=np.float64) - T[:3, 3])
-            rho = float(np.hypot(p_loc[0], p_loc[2]))  # file y = up
-            inside = (rho <= float(g["inner_radius"]) - 0.5 * self._bead_r
-                      and float(g["floor_y"]) - 0.005 < p_loc[1] <= float(g["rim_y"]) + self._bead_r)
-            # (beads perched > one radius above the rim plane would roll off at
-            # the first touch — a spill no filter could prevent)
-            (keep if inside else gone).append(b)
-        for b in gone:
-            self.scene.remove_entity(b)
-        self.beads[:] = keep
-        # two steps flush PhysX's contact buffers of the removed bodies (reading
-        # stale contacts segfaults the gripper-contact query, diag d33)
-        for _ in range(2):
-            self.scene.step()
-        self._bead_names = {b.get_name() for b in self.beads}
-        self.n_beads = len(self.beads)
-        self.n_beads_removed = len(gone)
-
     def prepare_episode(self):
         """Runner hook, BEFORE t = 0 (nothing recorded). held mode: grasp,
         lift off and level the over-filled bowl, hold it still, then delete
         every bead that left it — the episode starts with a brim-full,
         levelled bowl in hand, and every spill is caused by the carry."""
         if getattr(self, "carry_mode", "table") != "held":
+            # table mode: only the setup cleanup (beads the random-pack settle
+            # bounced out of the bowl, granular_pour.prepare_episode)
+            super().prepare_episode()
+            self.episode_info.update(n_beads_removed=int(self.n_beads_removed), n_beads=int(self.n_beads))
             return
         knobs = getattr(self, "risk_knobs", None) or {}
         eparams = getattr(self, "embodiment_params", None) or {}

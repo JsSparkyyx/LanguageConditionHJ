@@ -577,6 +577,39 @@ class granular_pour(place_container_plate):
         }
         return self.info
 
+    def _remove_spilled_beads(self):
+        """Delete every bead not inside the bowl's INNER wall (spilled, or
+        perched on the rim lip); the bead list is shared with the registered
+        particle set, so it is edited in place."""
+        T = np.asarray(self.container.get_pose().to_transformation_matrix(), dtype=np.float64)
+        g = self._src_geom
+        keep, gone = [], []
+        for b in self.beads:
+            p_loc = T[:3, :3].T @ (np.asarray(b.get_pose().p, dtype=np.float64) - T[:3, 3])
+            rho = float(np.hypot(p_loc[0], p_loc[2]))  # file y = up
+            inside = (rho <= float(g["inner_radius"]) - 0.5 * getattr(self, "_bead_r", BEAD_R)
+                      and float(g["floor_y"]) - 0.005 < p_loc[1] <= float(g["rim_y"]) + getattr(self, "_bead_r", BEAD_R))
+            # (beads perched > one radius above the rim plane would roll off at
+            # the first touch — a spill no filter could prevent)
+            (keep if inside else gone).append(b)
+        for b in gone:
+            self.scene.remove_entity(b)
+        self.beads[:] = keep
+        # two steps flush PhysX's contact buffers of the removed bodies (reading
+        # stale contacts segfaults the gripper-contact query, diag d33)
+        for _ in range(2):
+            self.scene.step()
+        self._bead_names = {b.get_name() for b in self.beads}
+        self.n_beads = len(self.beads)
+        self.n_beads_removed = len(gone)
+
+    def prepare_episode(self):
+        """Runner hook, BEFORE t = 0 (unrecorded): delete the beads RoboTwin's
+        setup settle bounced out of the source bowl (a random pack fills part
+        of its loose spawn column above the rim; ~1 in 4 seeds left a bead or
+        two on the table and the episode started violated, sim test d48)."""
+        self._remove_spilled_beads()
+
     def _pour_point(self, pour_height, pour_offset):
         """World point the source bowl's rim center is brought to: the target's
         rim center + pour_height up + pour_offset sideways."""
