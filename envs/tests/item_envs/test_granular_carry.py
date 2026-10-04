@@ -110,8 +110,12 @@ def test_constants_mirror_yaml():
     assert _f(_const("CARRY_BOWL_MASS_RANGE")) == _f(cfg["carry"]["bowl_mass"])
     assert _f(_const("GRASP_DIS")) == _f(cfg["carry"]["grasp_dis"])
     assert _f(_const("GRASP_RADIAL_OUT")) == _f(cfg["carry"]["grasp_radial_out"])
-    lo, hi = cfg["risk"]["task"]["carry_tilt_deg"]["range"]
-    assert lo <= _const("CARRY_TILT_DEFAULT") <= hi
+    spec = cfg["risk"]["task"]["carry_tilt_deg"]
+    lo, hi = spec["range"]
+    assert spec["dist"] == "uniform_abs" and 0.0 < lo < hi  # |tilt| past the spill onset, random sign
+    assert -hi <= _const("CARRY_TILT_DEFAULT") <= hi
+    assert _f(_const("CARRY_ACCEL_DIST")) == _f(cfg["carry"]["accel_dist"])
+    assert _f(_const("CARRY_STOP_DIST")) == _f(cfg["carry"]["stop_dist"])
     lo, hi = cfg["risk"]["task"]["carry_height"]["range"]
     assert lo <= _const("CARRY_HEIGHT_DEFAULT") <= hi
 

@@ -675,12 +675,26 @@ class granular_pour(place_container_plate):
                           "tilt_deg": float(np.rad2deg(tilt_total)), "lip_target": lip_tgt.tolist()}
 
         def _roll(angles):
+            # ONE continuous roll through the 5-deg step poses (controller via
+            # path, minimum jerk at the average tilt_rate): a chain of
+            # rest-to-rest steps stopped the mug every 5 deg (user review 7);
+            # the step chain stays as the fallback
+            poses = [ee0[:3].tolist() + [float(v) for v in
+                     _quat_mul_wxyz(_mat_to_quat_wxyz(_rot_axis(a, sgn * float(ang))), ee0[3:])] for ang in angles]
+            ok_before = bool(self.plan_success)
             self.plan_local = True
+            self.plan_via = poses[:-1]
+            self.plan_profile = {"kind": "minjerk", "duration": len(poses) * dt_step}
             try:
-                for ang in angles:
-                    q = _quat_mul_wxyz(_mat_to_quat_wxyz(_rot_axis(a, sgn * float(ang))), ee0[3:])
-                    self.plan_duration_target = dt_step
-                    self.move(self.move_to_pose(arm_tag, ee0[:3].tolist() + [float(v) for v in q]))
+                self.move(self.move_to_pose(arm_tag, poses[-1]))
+            finally:
+                self.plan_via, self.plan_profile = None, None
+            try:
+                if ok_before and not self.plan_success:
+                    self.plan_success = True
+                    for pose in poses:
+                        self.plan_duration_target = dt_step
+                        self.move(self.move_to_pose(arm_tag, pose))
             finally:
                 self.plan_local = False
                 self.plan_duration_target = None

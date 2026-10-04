@@ -114,6 +114,8 @@ CARRY_TILT_DEFAULT = 0.0  # deg
 STEP_MIN_T = 0.25  # s: step-duration floor for the SAFE steps (lift-off, leveling, lowering)
 SAFE_SPEED = 0.10  # m/s at time_scale 1.0 for the safe phases (x safe_time_scale 0.6 = 0.06 m/s, as validated d15-d33)
 RISKY_STEP_MIN_T = 0.08  # s: floor for the risky lift / carry steps (0.25 capped the carry at 0.12 m/s) (diag knob step_min_t)
+CARRY_ACCEL_DIST = 0.06  # m: the risky carry's smooth start (velocity smoothstep 0 -> v)
+CARRY_STOP_DIST = 0.02  # m: ... and its brake at the pad: peak decel 0.75 v^2 / this (0.6 m/s^2 at 0.125 m/s, 4.0 m/s^2 at 0.325 m/s)
 LEVEL_STEP_T = 0.5  # s per <= 5 deg leveling step (10 deg/s): a faster wrist turn slipped the loaded rim pinch (diag d26)
 PLACE_CLEAR = 0.004  # m, bowl bottom above the table at release
 PLACE_XY_TOL = 0.005  # m: re-centre over the pad after re-leveling when farther than this
@@ -218,10 +220,18 @@ class granular_carry(granular_pour):
         )
 
     # ------------------------------------------------------------------ play ----
-    def _steps_to(self, arm, target_pose, speed, min_t=STEP_MIN_T):
-        """Absolute-target step chain from the live pose to ``target_pose``
-        (position AND orientation interpolated; slerp-free: orientation steps
-        are small), local screws retimed to step length / speed."""
+    def _steps_to(self, arm, target_pose, speed, min_t=STEP_MIN_T, stop=False):
+        """Live pose -> ``target_pose`` along a straight line (position AND
+        orientation interpolated; nlerp: orientation steps are small) at
+        ``speed`` m/s, as ONE continuous trajectory through the step poses
+        (task.plan_via, the controller's via path): the old chain of
+        rest-to-rest local steps stopped the bowl every 5 cm — "move and
+        stop" damped the slosh (user review 7). Timing: minimum jerk over
+        n x max(step / speed, min_t) (the old average speed), or with
+        ``stop`` the risky carry's hard_stop law — smooth start, cruise at
+        ``speed``, brake within CARRY_STOP_DIST (peak deceleration
+        0.75 v^2 / CARRY_STOP_DIST: a fast carry sloshes beads over the low
+        rim at the pad). Falls back to the step chain if no via path exists."""
         p0 = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         p1 = np.asarray(target_pose, dtype=np.float64).reshape(7)
         if float(np.dot(p0[3:], p1[3:])) < 0.0:
@@ -229,15 +239,33 @@ class granular_carry(granular_pour):
         length = float(np.linalg.norm(p1[:3] - p0[:3]))
         ang = 2.0 * float(np.arccos(np.clip(abs(float(np.dot(p0[3:], p1[3:]))), -1.0, 1.0)))
         n = max(1, int(np.ceil(max(length / CARRY_STEP, ang / np.deg2rad(5.0)))))
+        poses = []
+        for k in range(1, n + 1):
+            t = k / n
+            q = (1.0 - t) * p0[3:] + t * p1[3:]
+            q = q / float(np.linalg.norm(q))
+            poses.append((p0[:3] + t * (p1[:3] - p0[:3])).tolist() + q.tolist())
+        step_t = max(length / n / max(float(speed), 1e-3), float(min_t))
+        if stop and length > 1e-3:
+            profile = {"kind": "hard_stop", "length": length, "v": float(speed),
+                       "accel_dist": CARRY_ACCEL_DIST, "stop_dist": CARRY_STOP_DIST}
+        else:
+            profile = {"kind": "minjerk", "duration": n * step_t}
+        ok_before = bool(self.plan_success)
         self.plan_local = True
-        self.plan_duration_target = max(length / n / max(float(speed), 1e-3), float(min_t))
+        self.plan_via, self.plan_profile = poses[:-1], profile
         try:
-            for k in range(1, n + 1):
-                t = k / n
-                q = (1.0 - t) * p0[3:] + t * p1[3:]
-                q = q / float(np.linalg.norm(q))
-                pos = p0[:3] + t * (p1[:3] - p0[:3])
-                self.move(self.move_to_pose(arm, pos.tolist() + q.tolist()))
+            self.move(self.move_to_pose(arm, poses[-1]))
+        finally:
+            self.plan_via, self.plan_profile = None, None
+        try:
+            if ok_before and not self.plan_success:
+                # no via path on this branch: the old step chain from where the
+                # arm is now (it did not move)
+                self.plan_success = True
+                self.plan_duration_target = step_t
+                for pose in poses:
+                    self.move(self.move_to_pose(arm, pose))
         finally:
             self.plan_local = False
             self.plan_duration_target = None
@@ -375,7 +403,8 @@ class granular_carry(granular_pour):
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         dxy = self.target_xy - bowl_xy
         with risky(self):
-            self._steps_to(arm, np.concatenate([ee[:3] + [dxy[0], dxy[1], 0.0], ee[3:]]), v_risky, min_t=t_min)
+            self._steps_to(arm, np.concatenate([ee[:3] + [dxy[0], dxy[1], 0.0], ee[3:]]), v_risky, min_t=t_min,
+                           stop=True)
         # 5. undo the knob tilt (re-level) and lower onto the pad — safe scale;
         # leveling rotates about the pinch and shifts the bowl: re-centre it
         self._level(arm, v_safe)

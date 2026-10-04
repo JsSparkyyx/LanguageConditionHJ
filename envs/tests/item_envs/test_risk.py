@@ -120,3 +120,12 @@ def test_risk_collect_invalid_weights_raise():
             pass
         else:
             raise AssertionError(f"expected ValueError for cells={cells}")
+
+
+def test_uniform_abs_magnitude_and_both_signs():
+    rng = np.random.RandomState(0)
+    cfg = {"risk": {"task": {"tilt": {"dist": "uniform_abs", "range": [12.0, 35.0]}}}}
+    vals = np.array([sample_risk(cfg, rng).task["tilt"] for _ in range(400)])
+    assert ((np.abs(vals) >= 12.0) & (np.abs(vals) <= 35.0)).all()
+    assert 0.35 < (vals > 0).mean() < 0.65
+

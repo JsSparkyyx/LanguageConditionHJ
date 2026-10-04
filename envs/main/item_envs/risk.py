@@ -30,7 +30,7 @@ class RiskParams:
 def sample_risk(task_cfg: dict, rng: np.random.RandomState) -> RiskParams:
     """Sample RiskParams from task_cfg["risk"].
 
-    Each knob is {"dist": "uniform"|"choice", "range"/"values": ...} or a plain
+    Each knob is {"dist": "uniform"|"uniform_abs"|"choice", "range"/"values": ...} or a plain
     scalar constant. task_cfg["risk"]["task"] holds the task-specific knobs.
 
     When task_cfg["risk_collect"] has a non-empty "cells" list (filled by the
@@ -79,6 +79,12 @@ def _sample_knob(spec, rng: np.random.RandomState):
     if dist == "uniform":
         lo, hi = spec["range"]
         return float(rng.uniform(lo, hi))
+    if dist == "uniform_abs":
+        # magnitude U(lo, hi) with a random sign: a knob whose size, not its
+        # direction, sets the risk (T4 carry tilt >= the spill threshold)
+        lo, hi = spec["range"]
+        mag = float(rng.uniform(lo, hi))
+        return mag if rng.rand() < 0.5 else -mag
     if dist == "choice":
         values = list(spec["values"])
         return _to_python(values[int(rng.randint(len(values)))])

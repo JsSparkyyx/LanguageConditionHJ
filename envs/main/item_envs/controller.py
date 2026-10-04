@@ -44,6 +44,7 @@ ensure_main_path()  # main.envs.controller lives in the sibling CEHJ copy
 from main.envs.controller import TickChunkedController, current_skill  # noqa: E402
 
 from .retime import retime  # noqa: E402
+from .via_path import path_fractions, profiled_via_path  # noqa: E402
 
 DEFAULT_JOINT_VEL = 2.0  # rad/s (or m/s prismatic) fallback, body_features.py policy
 PHYSICS_DT = 1.0 / 250.0  # one plan row per physics step (cuRobo interpolation_dt, mplib time_step)
@@ -86,6 +87,12 @@ class RiskTickController(TickChunkedController):
             # retime needs >= 2 rows; never crash a sweep on a short plan.
             return result
         task = getattr(self.env, "task", None)
+        if result.get("_item_profiled"):
+            # a via path already carries its own time law (speed set by the
+            # task, risky time_scale included): never rescale it again
+            self.retime_log.append({"arm": arm, "s": 1.0, "T_in": int(pos.shape[0]), "T_out": int(pos.shape[0]),
+                                    "via": True})
+            return result
         s = float(getattr(task, "active_time_scale", 1.0))
         # duration-targeted retime: a task that knows how long a step should
         # take (T2 tilt: |step angle| / tilt_rate) sets plan_duration_target;
@@ -139,6 +146,8 @@ class RiskTickController(TickChunkedController):
             return self._avoid_branch_flip(arm, target_pose, result, **kw)
         self._n_plan += 1
         plan_kw = {k: v for k, v in kw.items() if not str(k).startswith("_cehj")}
+        if getattr(task, "plan_via", None) is not None:  # [] = a one-segment via path
+            return self._plan_via(arm, target_pose, task, plan_kw)
         try:
             result = self._plan_screw(arm, target_pose, **plan_kw)
         except Exception as exc:  # mplib unavailable / IK error: fall through
@@ -164,6 +173,49 @@ class RiskTickController(TickChunkedController):
                       f"joint travel {travel:.2f} rad > {LOCAL_JUMP_MAX} (IK branch flip)")
                 return {"status": "Fail_branch_flip"}
         return result
+
+    def _plan_via(self, arm: str, target_pose, task, plan_kw):
+        """ONE continuous local trajectory through ``task.plan_via`` (the
+        intermediate EE poses, then ``target_pose``): chained mplib screws
+        from the live joints give the IK of every waypoint on the current
+        branch; via_path joins them with a cubic spline over the Cartesian
+        path fraction and times it with ``task.plan_profile`` (minjerk /
+        hard_stop). Replaces a chain of rest-to-rest steps, which stopped
+        the payload at every boundary (user review 7). Any segment that
+        fails or travels > LOCAL_JUMP_MAX fails the whole move."""
+        poses = [list(p) for p in task.plan_via] + [list(target_pose)]
+        mplib = self.robot.left_mplib_planner if arm == "left" else self.robot.right_mplib_planner
+        entity = self.robot.left_entity if arm == "left" else self.robot.right_entity
+        if mplib is None:
+            return {"status": "Fail_via_no_mplib"}
+        q = np.asarray(entity.get_qpos(), dtype=np.float64).copy()
+        idx = np.asarray(mplib.planner.move_group_joint_indices, dtype=np.int64)
+        qs = [q[idx].copy()]
+        for k, pose in enumerate(poses):
+            try:
+                res = self._plan_screw(arm, pose, last_qpos=q, **plan_kw)
+            except Exception as exc:
+                print(f"[risk_tick] plan #{self._n_plan} {arm} via {k}/{len(poses)} screw error: {exc}")
+                return {"status": "Fail_via"}
+            if not res or res.get("status") != "Success" or _max_joint_travel(res) > LOCAL_JUMP_MAX:
+                print(f"[risk_tick] plan #{self._n_plan} {arm} via {k}/{len(poses)} failed "
+                      f"({None if not res else res.get('status')})")
+                return {"status": "Fail_via"}
+            end = np.asarray(res["position"], dtype=np.float64)
+            if end.ndim == 2 and len(end):
+                q[idx] = end[-1]
+            qs.append(q[idx].copy())
+        W = np.stack(qs)
+        ee0 = np.asarray(task.get_arm_pose(arm), dtype=np.float64).reshape(7)
+        pts = np.stack([ee0[:3]] + [np.asarray(p[:3], dtype=np.float64) for p in poses])
+        quats = [ee0[3:]] + [np.asarray(p[3:], dtype=np.float64) for p in poses]
+        angs = [2.0 * np.arccos(np.clip(abs(float(np.dot(a, b)) / max(np.linalg.norm(a) * np.linalg.norm(b), 1e-12)),
+                                        0.0, 1.0)) for a, b in zip(quats[:-1], quats[1:])]
+        profile = dict(getattr(task, "plan_profile", None) or {"kind": "minjerk", "duration": 1.0})
+        pos, vel = profiled_via_path(W, path_fractions(pts, np.asarray(angs)), profile, dt=PHYSICS_DT)
+        print(f"[risk_tick] plan #{self._n_plan} {arm} via path ok: {len(poses)} waypoints, "
+              f"{profile.get('kind')} {len(pos) * PHYSICS_DT:.2f}s travel={float(np.max(np.abs(W - W[0]))):.2f}rad")
+        return {"status": "Success", "position": pos, "velocity": vel, "_item_profiled": True}
 
     def _avoid_branch_flip(self, arm: str, target_pose, result, **kw):
         """cuRobo's goal IK sometimes returns ANOTHER IK branch: the ur5 arm
