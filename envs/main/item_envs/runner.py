@@ -319,6 +319,12 @@ class ItemEpisodeRunner:
                 if r.consequence is Consequence.STAY
                 for iid in r.item_ids
             }
+        # one physics step: PhysX's contact list still holds the bodies of
+        # entities removed since the last step (T1 spawn rejections, T4's
+        # deleted beads); the first gripper-contact query would segfault on
+        # them. Here so the Phase-5 path (build_item_training_env ->
+        # RolloutController, which never calls _play) gets it too.
+        task.scene.step()
 
     def close(self) -> None:
         if self.env is not None:

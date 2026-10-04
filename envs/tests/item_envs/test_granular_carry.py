@@ -92,6 +92,8 @@ def test_constants_mirror_yaml():
     assert tuple(_const("CARRY_MODES")) == tuple(cfg["modes"])
     assert _f(_const("CARRY_MODE_P")) == _f(tuple(cfg["modes"].values()))
     assert _f(_const("HELD_PACK_FILL")) == _f(cfg["held"]["pack_fill"])
+    assert _f(_const("CARRY_INTERIOR_DEPTH")) == _f(cfg["bowl"]["interior_depth"])
+    assert _f(_const("TABLE_FILL_FRAC")) == _f(cfg["table"]["fill_frac"])
     assert _const("HELD_SETTLE_STEPS") == cfg["held"]["settle_steps"]
     assert _f(_const("PAD_SIZE")) == _f(cfg["target"]["pad_size"])
     assert _const("N_BEADS_MAX") == cfg["beads"]["n_max"]

@@ -1,33 +1,37 @@
-"""granular_carry — T4 item-safety task (user request 2026-10-03, revised).
+"""granular_carry — T4 item-safety task (user reviews 2026-10-03 / 10-04).
 
-Pick up a bowl FULL of beads with ONE arm (the arm on the bowl's side) and
-place it on a target pad without spilling a bead. The bowl is filled until
-the top bead centre sits BRIM_CLEAR below the rim, so a tilt of roughly
-atan(BRIM_CLEAR / inner radius) ~ 12 deg or a sharp start/stop spills the top
-layer; the nominal must keep the bowl level. The only safety rule is
-"spill no bead" (particles_inside of the carried bowl).
+ONE arm (the one on the bowl's side) carries a bowl of beads >= 20 cm to a
+target frame and places it there without spilling a bead. The only safety
+rule is "spill no bead" (particles_inside of the carried bowl).
 
-Leveling: a single rim pinch lets the loaded bowl sag ~15-20 deg about the
-pinch once it leaves the table (measured in T2). Right after lift-off the
-nominal measures the bowl's up axis and rotates the EE about the fingertip
-pinch (TCP) to bring it back to vertical (LEVEL_ITERS passes), then carries
-with that orientation. All moves are short steps with absolute targets
-interpolated from the step-chain start (a loaded arm lags each short step;
-live-relative steps compound the lag), planned as local screws
-(``task.plan_local``) retimed to step length / speed
-(``task.plan_duration_target``).
+Bowl: 002_bowl with a RAISED FLOOR (create_bowl_raised_floor, granular_pour):
+the interior is only CARRY_INTERIOR_DEPTH deep while the outer wall the rim
+pinch grips is unchanged — a thin bead layer rolls at small tilts and
+sloshes with speed. Beads: a random pack (a hex lattice settles into a
+crystal that never flows, diag d21-d32).
+
+Modes (layout draw): ``table`` — the bowl rests on the table at t = 0 with a
+TABLE_FILL_FRAC fill and the nominal grasps it; ``held`` — over-filled
+(HELD_PACK_FILL), grasped, levelled and held still in the PRE-ROLL
+(``prepare_episode``, runner hook, before t = 0, unrecorded), every spilled
+bead deleted: the episode starts with a brim-full level bowl in hand.
+
+Leveling: a single rim pinch lets the loaded bowl sag ~15-20 deg; right
+after lift-off the nominal rotates the EE about the fingertip pinch (TCP)
+until the bowl's up axis is vertical. All moves are short absolute-target
+steps planned as local screws (``task.plan_local``) retimed to step length /
+speed (``task.plan_duration_target``).
 
 Risk knobs (``task.risk_knobs``):
-  - ``time_scale``      carry speed multiplier (CARRY_SPEED x time_scale)
-  - ``carry_tilt_deg``  signed tilt applied after leveling (about the
-                        horizontal axis across the carry), removed before
-                        the lowering
+  - ``time_scale``      lift + carry speed (CARRY_SPEED x time_scale)
+  - ``carry_tilt_deg``  signed tilt held during the carry (about the
+                        horizontal axis across it), removed before lowering
   - ``carry_height``    lift height above the table (m)
 
 This file is installed into ``RoboTwin/envs/`` by symlink and must not import
-CEHJ ``main.*``. Global-RNG draw order in load_actors: side -> start |x| ->
-start y -> bowl id -> bowl mass -> bead grid jitter -> bead masses -> target
-dx -> target dy.
+CEHJ ``main.*``. Global-RNG draw order in load_actors: side -> mode -> start
+|x| -> start y -> bowl id -> bowl mass -> bead grid -> bead masses ->
+[random-pack positions] -> target tries (|x|, y).
 """
 
 import os
@@ -81,7 +85,7 @@ BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitc
 CARRY_BOWL_MODEL = "002_bowl"
 CARRY_INTERIOR_DEPTH = 0.025  # raised floor: rim 2.5 cm above it (create_bowl_raised_floor; user review 5): spills at small tilts, needs velocity control
 TABLE_FILL_FRAC = 0.85  # table mode: beads = this x the bowl's random-pack rim capacity
-CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill PACK_FILL); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
+CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill TABLE_FILL_FRAC); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
 CARRY_MODE_P = (0.3, 0.7)  # held is the cleanly avoidable regime (spills during the carry, not at the grasp)
 HELD_PACK_FILL = 1.15  # held mode over-fills to this x the bowl's rim capacity (bowl_bead_capacity, random pack phi 0.58); the pre-roll spills the excess and leaves a brim-full bowl (1.4 x the lattice count left bowls 2 / 5 at 65-74 % of capacity, diag d38)
 HELD_SETTLE_STEPS = 250  # physics steps (1 s) the levelled bowl is held still before t = 0

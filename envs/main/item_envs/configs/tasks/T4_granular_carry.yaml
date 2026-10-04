@@ -1,13 +1,14 @@
-# T4 granular_carry — pick up a FULL bowl of beads with ONE arm (the arm on
-# the bowl's side) and place it on a target pad without spilling a bead
-# (user request 2026-10-03, revised: single arm, no forbidden mats).
+# T4 granular_carry — ONE arm (the arm on the bowl's side) carries a bowl of
+# beads >= 20 cm to a target frame and places it without spilling a bead
+# (user reviews 2026-10-03 / 10-04).
 #
 # robotwin_tasks/granular_carry.py owns the layout; the constants below
 # mirror its module constants (tests/item_envs/test_granular_carry.py).
-# The bowl is filled until the top bead centre is >= brim_clear below the rim,
-# so a tilt of ~12 deg or a sharp start / stop spills the top layer. The
-# nominal levels the bowl right after lift-off (a single rim pinch lets it
-# sag ~15-20 deg) and carries it level.
+# The bowl has a RAISED FLOOR (interior 2.5 cm deep, outer rim unchanged):
+# a thin random-pack bead layer that rolls at small tilts and sloshes with
+# speed. Modes: table (grasp at t >= 0) / held (brim-full bowl grasped and
+# levelled in the pre-roll, spilled beads deleted before t = 0). The nominal
+# levels the bowl after lift-off (a single rim pinch lets it sag ~15-20 deg).
 #
 # Expected rule table:
 #   particles_inside|beads|bowl_src_interior     ("don't spill the beans")
@@ -16,10 +17,12 @@ task: granular_carry
 robotwin_task: granular_carry
 embodiments: [ur5-wsg, franka-panda]
 bowl_model: 002_bowl
+bowl: {interior_depth: 0.025}   # raised floor: rim this far above the interior floor (create_bowl_raised_floor)
+table: {fill_frac: 0.85}        # table mode: beads = this x the raised-floor bowl's random-pack rim capacity
 bowl_ids: [1, 2, 3, 5]
 modes: {table: 0.3, held: 0.7}   # table: grasp at t >= 0; held: brim-full bowl grasped + levelled BEFORE t = 0, spilled beads removed
 held: {pack_fill: 1.15, settle_steps: 250}   # x the bowl's random-pack rim capacity (volume-based)
-beads: {n_max: 240, radius: 0.006, mass: [0.0005, 0.002], brim_clear: 0.010, pack: random, pack_fill: 1.1}   # top-layer gap to the rim 11-19 mm by bowl id (12.6 mm layer pitch)
+beads: {n_max: 240, radius: 0.006, mass: [0.0005, 0.002], brim_clear: 0.010, pack: random, pack_fill: 1.1}   # spawn mass only (physics resamples objects.yaml carry_beads 0.3-0.8 g); brim_clear / pack_fill: plain-bowl (depth 0) fill
 start: {abs_x: [0.15, 0.28], y: [-0.02, 0.08]}       # side drawn per episode; that side's arm carries
 target: {abs_x: [0.08, 0.30], y: [-0.24, -0.12], min_dist: 0.20, pad_size: 0.16}   # pad on the bowl's side, toward the robot, >= min_dist away (dark frame)
 carry: {step: 0.03, speed: 0.25, safe_speed: 0.10, risky_step_min_t: 0.08, liftoff: 0.015, level_iters: 2, gripper_stiffness: 5000, bowl_mass: [0.10, 0.20],

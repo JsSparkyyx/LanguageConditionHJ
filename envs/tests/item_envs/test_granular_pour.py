@@ -145,6 +145,9 @@ def test_t2_task_file_matches_yaml():
     ids = ", ".join(str(i) for i in cfg["bowl_ids"])
     assert f"BOWL_IDS = ({ids})" in src
     assert cfg["bowl_model"] == "002_bowl"
+    # low source: raised floor + capacity fill (user review 5)
+    assert f"SRC_INTERIOR_DEPTH = {cfg['src']['interior_depth']}" in src
+    assert f"SRC_FILL_FRAC = {cfg['src']['fill_frac']}" in src
 
     assert f"BIMANUAL = {cfg['bimanual']}" in src  # False vs False
 
