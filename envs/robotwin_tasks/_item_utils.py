@@ -789,6 +789,18 @@ def bead_grid_positions(n, r, inner_radius, floor_y, bands=None, spacing_factor=
     return out
 
 
+def bowl_bead_capacity(geom, r, phi=0.58):
+    """Beads of radius r a random pack (volume fraction phi) holds up to the
+    rim: interior volume from the measured wall-radius bands (band height
+    POUR_BAND_H) / bead volume."""
+    import numpy as np
+
+    b = np.asarray(geom["bands"], dtype=np.float64)
+    m = (b[:, 0] >= float(geom["floor_y"])) & (b[:, 0] + POUR_BAND_H <= float(geom["rim_y"]))
+    vol = float(np.sum(np.pi * np.clip(b[m, 1] - 0.0005, 0.0, None) ** 2 * POUR_BAND_H))
+    return int(round(phi * vol / (4.0 / 3.0 * np.pi * float(r) ** 3)))
+
+
 def bead_random_positions(n, r, geom, rng, gap=5e-4, column=0.10, max_tries=200000):
     """[n, 3] RANDOM non-overlapping bead centres in the bowl up-frame (y up,
     origin at the exterior bottom): random sequential addition inside the

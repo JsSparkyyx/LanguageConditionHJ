@@ -18,7 +18,7 @@ embodiments: [ur5-wsg, franka-panda]
 bowl_model: 002_bowl
 bowl_ids: [1, 2, 3, 5]
 modes: {table: 0.5, held: 0.5}   # table: grasp at t >= 0; held: brim-full bowl grasped + levelled BEFORE t = 0, spilled beads removed
-held: {pack_fill: 1.4, settle_steps: 250}
+held: {pack_fill: 1.15, settle_steps: 250}   # x the bowl's random-pack rim capacity (volume-based)
 beads: {n_max: 240, radius: 0.006, mass: [0.0005, 0.002], brim_clear: 0.010, pack: random, pack_fill: 1.1}   # top-layer gap to the rim 11-19 mm by bowl id (12.6 mm layer pitch)
 start: {abs_x: [0.15, 0.28], y: [-0.02, 0.08]}       # side drawn per episode; that side's arm carries
 target: {abs_x: [0.08, 0.30], y: [-0.24, -0.12], min_dist: 0.20, pad_size: 0.16}   # pad on the bowl's side, toward the robot, >= min_dist away (dark frame)

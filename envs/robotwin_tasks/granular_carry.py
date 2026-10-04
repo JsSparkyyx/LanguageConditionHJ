@@ -40,6 +40,7 @@ from ._item_utils import (
     APPROACH_TO_TCP,
     bead_grid_positions,
     bead_random_positions,
+    bowl_bead_capacity,
     bowl_geometry,
     container_region_radius,
     register_item,
@@ -78,7 +79,7 @@ CARRY_BEAD_R = BEAD_R  # m: T4 bead radius (diag override ITEM_T4_BEAD_R); small
 BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitch 12.6 mm -> 11-19 mm by bowl id)
 CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill PACK_FILL); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
 CARRY_MODE_P = (0.5, 0.5)
-HELD_PACK_FILL = 1.4  # held mode over-fills; the pre-roll spills the excess and leaves a brim-full bowl
+HELD_PACK_FILL = 1.15  # held mode over-fills to this x the bowl's rim capacity (bowl_bead_capacity, random pack phi 0.58); the pre-roll spills the excess and leaves a brim-full bowl (1.4 x the lattice count left bowls 2 / 5 at 65-74 % of capacity, diag d38)
 HELD_SETTLE_STEPS = 250  # physics steps (1 s) the levelled bowl is held still before t = 0
 BEAD_PACK = "random"  # "lattice" (hex grid, settles into a crystal) | "random" (random sequential addition, settles into a random pack)
 PACK_FILL = 1.1  # random pack: bead count = this x the lattice count at BRIM_CLEAR / DOME_H
@@ -161,8 +162,10 @@ class granular_carry(granular_pour):
         local, masses = local[keep], masses_all[keep]
         pack = os.environ.get("ITEM_T4_PACK", BEAD_PACK)  # diag-only override
         if pack == "random":
-            fill = HELD_PACK_FILL if self.carry_mode == "held" else PACK_FILL
-            n_fill = int(round(len(local) * float(os.environ.get("ITEM_T4_PACK_N", fill))))
+            if self.carry_mode == "held":
+                n_fill = int(round(bowl_bead_capacity(g, bead_r) * HELD_PACK_FILL))
+            else:
+                n_fill = int(round(len(local) * float(os.environ.get("ITEM_T4_PACK_N", PACK_FILL))))
             local = bead_random_positions(n_fill, bead_r, g, np.random)
             extra = max(0, n_fill - len(masses_all))
             masses_all = np.concatenate([masses_all, np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=extra)])
