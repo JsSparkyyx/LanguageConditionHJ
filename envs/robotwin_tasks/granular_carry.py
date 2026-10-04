@@ -267,6 +267,8 @@ class granular_carry(granular_pour):
     def _grasp_and_level(self, arm, v_safe, knobs, eparams):
         """Stiffen the pinch, grasp the outer rim, lift off, level."""
         cp = list(eparams.get("grasp_contact_ids", GRASP_CONTACT_IDS))
+        if os.environ.get("ITEM_T4_CONTACT_IDS"):  # diag-only override "right,left"
+            cp = [int(v) for v in os.environ["ITEM_T4_CONTACT_IDS"].split(",")]
         # firmer pinch for the loaded rim grasp
         k_grip = float(knobs.get("gripper_stiffness", eparams.get("gripper_stiffness", GRIPPER_STIFFNESS)))
         joints, damping = ((self.robot.left_gripper, self.robot.left_gripper_damping) if arm == "left"

@@ -154,6 +154,8 @@ def test_t2_task_file_matches_yaml():
     assert "MUG_IDS = (" + ", ".join(str(i) for i in cfg["mug"]["ids"]) + ")" in src
     assert f"MUG_INTERIOR_DEPTH = {cfg['mug']['interior_depth']}" in src
     assert f'TARGET_BOWL_MODEL = "{cfg["target"]["model"]}"' in src
+    lo, hi = _load("objects.yaml")["categories"]["pour_mug"]["mass_range"]
+    assert f"MUG_MASS_RANGE = ({lo}, {hi})" in src
     for emb, ov in cfg["embodiment_overrides"].items():
         assert ov.get("tip_len", 0.0) > 0.12, emb  # past the TCP model (APPROACH_TO_TCP)
 

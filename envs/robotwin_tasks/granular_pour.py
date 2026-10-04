@@ -98,6 +98,7 @@ MUG_MODEL = "039_mug"  # handled source container (user review 6, ur5-wsg): the 
 MUG_IDS = (0, 1, 2, 5, 10, 11)  # mouth radius >= 4 cm, rim 9-12 cm, handle bar 1.0-2.3 cm wide (mug_geometry)
 MUG_INTERIOR_DEPTH = 0.04  # raised floor in the mug: ~3 bead layers (the full mug would hold 300-500 beads — too heavy for a handle pinch)
 FLOOR_PLATE_T = 0.004  # raised floor: top plate thickness (reaches the wall; the body follows the foot)
+PRE_GRASP_RISE = 0.10  # mug: the hand turns into the grasp orientation this far above the pre-grasp
 MUG_TIP_CLEAR = 0.006  # fingertips stop this far from the mug body wall (the handle bar is 2.8-4.1 cm out)
 SRC_CONTAINER = {"ur5-wsg": "mug", "franka-panda": "bowl"}  # per embodiment (yaml src.container); diag override ITEM_SRC_CONTAINER
 TARGET_BOWL_MODEL = "002_bowl_deep"  # the TARGET: 002_bowl stretched to a 9 cm deep, 1.2x wider interior (robotwin_assets/, scripts/item_envs/make_bowl_variant.py; user review 6: poured beads bounced out of the plain bowl)
@@ -106,6 +107,7 @@ SRC_INTERIOR_DEPTH = 0.032  # ... with a raised floor: rim 3.2 cm above it = two
 SRC_FILL_FRAC = 0.8  # low source: beads = this x its LATTICE rim capacity (bowl_lattice_capacity), capped at N_BEADS
 BOWL_IDS = (1, 2, 3, 5)  # P2 rest-containment PASS at (60 beads, 6 mm), feasibility.md
 BOWL_MASS_RANGE = (0.10, 0.40)  # objects.yaml categories.bowl.mass_range
+MUG_MASS_RANGE = (0.06, 0.14)  # objects.yaml categories.pour_mug.mass_range (a light mug: the handle pinch pivots under a heavy one, d50)
 SPAWN_QUAT = (0.5, 0.5, 0.5, 0.5)  # RoboTwin glb-upright convention (file y -> world z)
 TABLE_Z = 0.741  # rand_pose's default object rest plane (host convention)
 
@@ -192,7 +194,8 @@ class granular_pour(place_container_plate):
             self.container, self._src_geom = create_bowl_raised_floor(
                 self, container_pose, src_model, self.container_id, depth)
         self.actor_name = self.src_model
-        self._bowl_mass = float(np.random.uniform(*BOWL_MASS_RANGE))
+        self._src_category = "pour_mug" if self.src_kind == "mug" else "bowl"
+        self._bowl_mass = float(np.random.uniform(*(MUG_MASS_RANGE if self.src_kind == "mug" else BOWL_MASS_RANGE)))
         self.container.set_mass(self._bowl_mass)
 
         # 2. target container where the host puts the plate: a second 002_bowl
@@ -258,7 +261,7 @@ class granular_pour(place_container_plate):
         #    for why the static default target registers as a region only).
         register_item(
             self, "bowl_src", self.container,
-            category="bowl", color="", kind="rigid", role="task_object",
+            category=getattr(self, "_src_category", "bowl"), color="", kind="rigid", role="task_object",
             half_extents=self._src_geom["half_extents"],
             obb_center_local=self._src_geom["obb_center_local"],
             up_axis_local=[0.0, 1.0, 0.0],
@@ -510,10 +513,15 @@ class granular_pour(place_container_plate):
             u = np.array([side, 0.0, 0.0])  # pinch on the bowl's outer (arm-side) rim, closing radially
             d_h = np.array([0.0, 1.0, 0.0])  # approach from the robot side along the rim tangent
         u = np.array([u[0], u[1], 0.0]) / max(float(np.hypot(u[0], u[1])), 1e-9)
-        if mug and u[0] * side < 0.0:
-            u = -u  # same wrist handedness as the bowl path (the jaw is symmetric)
+
         d_h = np.array([d_h[0], d_h[1], 0.0]) / max(float(np.hypot(d_h[0], d_h[1])), 1e-9)
         a = np.cos(beta) * d_h - np.sin(beta) * np.array([0.0, 0.0, 1.0])  # approach, pitched down
+        if mug and np.cross(a, u)[2] < 0.0:
+            # the jaw is symmetric: of the two hand orientations take the one
+            # with the EE z axis up — the MIRROR image of the other arm's (the
+            # flipped one deflected the right-arm grasp ~12 deg and ran the
+            # roll into the wrist-3 limit: IK branch-flip rejections 5/5, d50)
+            u = -u
         R0 = np.column_stack([a, u, np.cross(a, u)])  # EE x = approach, EE y = finger closing axis
         q0 = list(_mat_to_quat_wxyz(R0))
         r_pinch = 0.5 * (float(g["inner_radius"]) + float(g["outer_radius"]))
@@ -541,8 +549,13 @@ class granular_pour(place_container_plate):
         ee_grasp = pinch - a * APPROACH_TO_TCP
         self.grip_info = {"pour_style": "wrist_roll", "container": "mug" if mug else "bowl", "pitch_deg": float(np.rad2deg(beta)),
                           "pinch": pinch.tolist(), "gripper_stiffness": k_grip}
-        # 1. tangent rim grasp — safe: pre-grasp 10 cm back along a, slide in, close
+        # 1. tangent rim / handle grasp — safe: pre-grasp 10 cm back along a
+        #    (mug: reached from PRE_GRASP_RISE above, so the wrist turns over
+        #    the mug instead of sweeping the fingers through its mouth — d50
+        #    seed 136 knocked 7 beads out on the way), slide in, close
         self.move(self.open_gripper(arm_tag))
+        if mug:
+            self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10 + np.array([0.0, 0.0, PRE_GRASP_RISE])).tolist() + q0))
         self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10).tolist() + q0))
         self.move(self.move_to_pose(arm_tag, ee_grasp.tolist() + q0))
         self.move(self.close_gripper(arm_tag))
