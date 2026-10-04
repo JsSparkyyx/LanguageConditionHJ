@@ -454,6 +454,9 @@ class ItemEpisodeRunner:
         if self._held_error is not None:
             meta.diag["held_error"] = self._held_error
         meta.diag["primary_rule"] = self._primary_rule_id(task)
+        info = getattr(task, "episode_info", None)
+        if isinstance(info, dict):  # task-reported episode facts (T4: mode, pre-roll outcome)
+            meta.diag["task"] = dict(info)
         layout = getattr(task, "layout_info", None)
         if isinstance(layout, dict) and "scenario" in layout:
             # T3 rev. 3: scenario / roles / referent for per-scenario calibration

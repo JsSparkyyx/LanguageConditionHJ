@@ -183,6 +183,8 @@ class granular_carry(granular_pour):
                                  sleep_threshold=None if sleep is None else float(sleep))
         self._bead_names = {b.get_name() for b in self.beads}
         self.n_beads = len(self.beads)
+        self.episode_info = {"carry_mode": self.carry_mode, "n_beads_spawned": self.n_beads,
+                             "interior_depth": float(depth), "held_fallback": False}
 
         # pad on the bowl's side, toward the robot, >= MIN_CARRY_DIST away
         for _ in range(LAYOUT_TRIES):
@@ -333,6 +335,14 @@ class granular_carry(granular_pour):
         for _ in range(HELD_SETTLE_STEPS):
             self.scene.step()
         self._remove_spilled_beads()
+        self.episode_info.update(n_beads_removed=int(self.n_beads_removed), n_beads=int(self.n_beads))
+        if float(self.container.get_pose().p[2]) - TABLE_Z < 0.004:
+            # the pre-roll grasp did not lift the bowl: release, back off, and
+            # let play_once grasp it from the table (recorded, not silent)
+            self.move(self.open_gripper(self.carry_arm))
+            self.move(self.move_by_displacement(self.carry_arm, z=0.06))
+            self.episode_info["held_fallback"] = True
+            return
         self._prerolled = True
 
     def play_once(self):
