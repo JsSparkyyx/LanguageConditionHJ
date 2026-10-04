@@ -336,9 +336,11 @@ class granular_carry(granular_pour):
             self.scene.step()
         self._remove_spilled_beads()
         self.episode_info.update(n_beads_removed=int(self.n_beads_removed), n_beads=int(self.n_beads))
-        if float(self.container.get_pose().p[2]) - TABLE_Z < 0.004:
-            # the pre-roll grasp did not lift the bowl: release, back off, and
-            # let play_once grasp it from the table (recorded, not silent)
+        if float(self.container.get_pose().p[2]) - TABLE_Z < 0.0015:
+            # the pre-roll grasp did not lift the bowl (a bowl resting on the
+            # table reads exactly TABLE_Z; a held but sagging heavy bowl sits
+            # only ~2-5 mm up — 4 mm misfired on 4/8 held runs, diag d47):
+            # release, back off, and let play_once grasp it from the table
             self.move(self.open_gripper(self.carry_arm))
             self.move(self.move_by_displacement(self.carry_arm, z=0.06))
             self.episode_info["held_fallback"] = True
