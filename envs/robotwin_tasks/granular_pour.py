@@ -557,7 +557,16 @@ class granular_pour(place_container_plate):
         self.move(self.open_gripper(arm_tag))
         if mug:
             self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10 + np.array([0.0, 0.0, PRE_GRASP_RISE])).tolist() + q0))
-        self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10).tolist() + q0))
+            # straight descent (local screw): cuRobo's goal plan for this
+            # 10 cm drop failed (franka seed 153 -> 8 cm-high fallback grasp)
+            # or flipped the IK branch (franka seed 152: 5.5 rad, d51)
+            self.plan_local = True
+            try:
+                self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10).tolist() + q0))
+            finally:
+                self.plan_local = False
+        else:
+            self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10).tolist() + q0))
         if mug:
             # slide in as a straight local screw from the live joints, then
             # correct once: cuRobo's goal plan ended the right-arm slide-in
