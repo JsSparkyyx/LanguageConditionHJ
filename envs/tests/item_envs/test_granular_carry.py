@@ -86,9 +86,13 @@ def test_constants_mirror_yaml():
     cfg = _load("tasks/T4_granular_carry.yaml")
     assert _f(_const("START_ABS_X")) == _f(cfg["start"]["abs_x"])
     assert _f(_const("START_Y")) == _f(cfg["start"]["y"])
-    assert _f(_const("TARGET_DX")) == _f(cfg["target"]["dx"])
-    assert _f(_const("TARGET_DY")) == _f(cfg["target"]["dy"])
-    assert _f(_const("TARGET_MIN_ABS_X")) == _f(cfg["target"]["min_abs_x"])
+    assert _f(_const("TARGET_ABS_X")) == _f(cfg["target"]["abs_x"])
+    assert _f(_const("TARGET_Y")) == _f(cfg["target"]["y"])
+    assert _f(_const("MIN_CARRY_DIST")) == _f(cfg["target"]["min_dist"])
+    assert tuple(_const("CARRY_MODES")) == tuple(cfg["modes"])
+    assert _f(_const("CARRY_MODE_P")) == _f(tuple(cfg["modes"].values()))
+    assert _f(_const("HELD_PACK_FILL")) == _f(cfg["held"]["pack_fill"])
+    assert _const("HELD_SETTLE_STEPS") == cfg["held"]["settle_steps"]
     assert _f(_const("PAD_SIZE")) == _f(cfg["target"]["pad_size"])
     assert _const("N_BEADS_MAX") == cfg["beads"]["n_max"]
     assert _f(_const("BRIM_CLEAR")) == _f(cfg["beads"]["brim_clear"])

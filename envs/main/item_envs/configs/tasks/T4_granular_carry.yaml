@@ -17,9 +17,11 @@ robotwin_task: granular_carry
 embodiments: [ur5-wsg, franka-panda]
 bowl_model: 002_bowl
 bowl_ids: [1, 2, 3, 5]
+modes: {table: 0.5, held: 0.5}   # table: grasp at t >= 0; held: brim-full bowl grasped + levelled BEFORE t = 0, spilled beads removed
+held: {pack_fill: 1.4, settle_steps: 250}
 beads: {n_max: 240, radius: 0.006, mass: [0.0005, 0.002], brim_clear: 0.010, pack: random, pack_fill: 1.1}   # top-layer gap to the rim 11-19 mm by bowl id (12.6 mm layer pitch)
-start: {abs_x: [0.15, 0.25], y: [-0.06, 0.04]}       # side drawn per episode; that side's arm carries
-target: {dx: [-0.06, 0.06], dy: [0.12, 0.18], min_abs_x: 0.10, pad_size: 0.16}   # pad = start + (dx, -dy)
+start: {abs_x: [0.15, 0.28], y: [-0.02, 0.08]}       # side drawn per episode; that side's arm carries
+target: {abs_x: [0.08, 0.30], y: [-0.24, -0.12], min_dist: 0.20, pad_size: 0.16}   # pad on the bowl's side, toward the robot, >= min_dist away (dark frame)
 carry: {step: 0.03, speed: 0.10, liftoff: 0.015, level_iters: 2, gripper_stiffness: 5000, bowl_mass: [0.10, 0.20],
         grasp_dis: 0.02, grasp_radial_out: 0.006}   # shallow, wall-centred rim pinch: a deep pinch flicks top beads out
 risk:

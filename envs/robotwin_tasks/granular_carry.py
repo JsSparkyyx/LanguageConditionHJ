@@ -65,16 +65,21 @@ from .granular_pour import (
 )
 
 # --- layout (mirrors main/item_envs/configs/tasks/T4_granular_carry.yaml) ---
-START_ABS_X = (0.15, 0.25)  # bowl centre |x| on its (randomly drawn) side
-START_Y = (-0.06, 0.04)
-TARGET_DX = (-0.06, 0.06)  # target pad centre = start + (dx, -dy), kept on the bowl's side
-TARGET_DY = (0.12, 0.18)  # the carry runs toward the robot
-TARGET_MIN_ABS_X = 0.10
+START_ABS_X = (0.15, 0.28)  # bowl centre |x| on its (randomly drawn) side
+START_Y = (-0.02, 0.08)  # farther back than the pad (user review 4: not next to the goal)
+TARGET_ABS_X = (0.08, 0.30)  # pad centre |x|, on the bowl's side (the carrying arm's half)
+TARGET_Y = (-0.24, -0.12)  # toward the robot; the bowl (outer r <= 7 cm) stays on the table
+MIN_CARRY_DIST = 0.20  # m: start -> pad, resampled until at least this
+LAYOUT_TRIES = 200
 PAD_SIZE = 0.16  # target marker: hollow dark frame, outer side (m) — visual only
 PAD_FRAME_W = 0.012  # frame strip width (m)
 N_BEADS_MAX = 240  # grid candidates at BEAD_R (scaled by (BEAD_R / r)^3 for smaller beads); beads above the fill line are dropped
 CARRY_BEAD_R = BEAD_R  # m: T4 bead radius (diag override ITEM_T4_BEAD_R); smaller than BEAD_R -> category "small_beads" (lighter per bead)
 BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitch 12.6 mm -> 11-19 mm by bowl id)
+CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill PACK_FILL); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
+CARRY_MODE_P = (0.5, 0.5)
+HELD_PACK_FILL = 1.4  # held mode over-fills; the pre-roll spills the excess and leaves a brim-full bowl
+HELD_SETTLE_STEPS = 250  # physics steps (1 s) the levelled bowl is held still before t = 0
 BEAD_PACK = "random"  # "lattice" (hex grid, settles into a crystal) | "random" (random sequential addition, settles into a random pack)
 PACK_FILL = 1.1  # random pack: bead count = this x the lattice count at BRIM_CLEAR / DOME_H
 DOME_H = 0.0  # m: extra fill height at the bowl centre (parabolic in radius, 0 at the wall) — a heaped bowl
@@ -94,7 +99,7 @@ CARRY_STEP = 0.03  # m per step
 CARRY_SPEED = 0.10  # m/s at time_scale 1.0 (safe phases use safe_time_scale)
 CARRY_HEIGHT_DEFAULT = 0.08  # m lift above the table
 CARRY_TILT_DEFAULT = 0.0  # deg
-STEP_MIN_T = 0.25  # s: step-duration floor for the regular carry steps
+STEP_MIN_T = 0.25  # s: step-duration floor for the regular carry steps (diag knob step_min_t)
 LEVEL_STEP_T = 0.5  # s per <= 5 deg leveling step (10 deg/s): a faster wrist turn slipped the loaded rim pinch (diag d26)
 PLACE_CLEAR = 0.004  # m, bowl bottom above the table at release
 PLACE_XY_TOL = 0.005  # m: re-centre over the pad after re-leveling when farther than this
@@ -111,6 +116,8 @@ class granular_carry(granular_pour):
     # ------------------------------------------------------------------ build ----
     def load_actors(self):
         side = 1.0 if np.random.uniform() < 0.5 else -1.0
+        self.carry_mode = CARRY_MODES[int(np.random.choice(len(CARRY_MODES), p=np.asarray(CARRY_MODE_P)))]
+        self.carry_mode = os.environ.get("ITEM_T4_MODE", self.carry_mode)  # diag-only override
         x = side * float(np.random.uniform(*START_ABS_X))
         y = float(np.random.uniform(*START_Y))
         self.carry_arm = "right" if side > 0 else "left"
@@ -152,7 +159,8 @@ class granular_carry(granular_pour):
         local, masses = local[keep], masses_all[keep]
         pack = os.environ.get("ITEM_T4_PACK", BEAD_PACK)  # diag-only override
         if pack == "random":
-            n_fill = int(round(len(local) * float(os.environ.get("ITEM_T4_PACK_N", PACK_FILL))))
+            fill = HELD_PACK_FILL if self.carry_mode == "held" else PACK_FILL
+            n_fill = int(round(len(local) * float(os.environ.get("ITEM_T4_PACK_N", fill))))
             local = bead_random_positions(n_fill, bead_r, g, np.random)
             extra = max(0, n_fill - len(masses_all))
             masses_all = np.concatenate([masses_all, np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=extra)])
@@ -165,12 +173,12 @@ class granular_carry(granular_pour):
         self._bead_names = {b.get_name() for b in self.beads}
         self.n_beads = len(self.beads)
 
-        dx = float(np.random.uniform(*TARGET_DX))
-        dy = float(np.random.uniform(*TARGET_DY))
-        tx = x + dx
-        if abs(tx) < TARGET_MIN_ABS_X:
-            tx = side * TARGET_MIN_ABS_X
-        self.target_xy = np.array([tx, y - dy], dtype=np.float64)
+        # pad on the bowl's side, toward the robot, >= MIN_CARRY_DIST away
+        for _ in range(LAYOUT_TRIES):
+            t = np.array([side * float(np.random.uniform(*TARGET_ABS_X)), float(np.random.uniform(*TARGET_Y))])
+            if float(np.linalg.norm(t - np.array([x, y]))) >= MIN_CARRY_DIST:
+                break
+        self.target_xy = t.astype(np.float64)
         self.start_xy = np.array([x, y], dtype=np.float64)
         self.pad = goal_frame(self.scene, self.target_xy, TABLE_Z, PAD_SIZE, PAD_FRAME_W, name="target_pad")
         self.zones = []
@@ -242,16 +250,9 @@ class granular_carry(granular_pour):
             ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
             self._steps_to(arm, self._rotated_about_tcp(ee, _rot_axis(axis, ang)), speed, min_t=LEVEL_STEP_T)
 
-    def play_once(self):
-        knobs = getattr(self, "risk_knobs", None) or {}
-        height = float(knobs.get("carry_height", CARRY_HEIGHT_DEFAULT))
-        tilt = float(np.deg2rad(float(knobs.get("carry_tilt_deg", CARRY_TILT_DEFAULT))))
-        v_safe = CARRY_SPEED * float(getattr(self, "_time_scale_safe", 0.6))
-        v_risky = CARRY_SPEED * float(getattr(self, "_time_scale_risky", 1.0))
-        eparams = getattr(self, "embodiment_params", None) or {}
+    def _grasp_and_level(self, arm, v_safe, knobs, eparams):
+        """Stiffen the pinch, grasp the outer rim, lift off, level."""
         cp = list(eparams.get("grasp_contact_ids", GRASP_CONTACT_IDS))
-        arm = self.carry_arm
-
         # firmer pinch for the loaded rim grasp
         k_grip = float(knobs.get("gripper_stiffness", eparams.get("gripper_stiffness", GRIPPER_STIFFNESS)))
         joints, damping = ((self.robot.left_gripper, self.robot.left_gripper_damping) if arm == "left"
@@ -280,6 +281,59 @@ class granular_carry(granular_pour):
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         self._steps_to(arm, np.concatenate([ee[:3] + [0.0, 0.0, LIFTOFF], ee[3:]]), v_safe)
         self._level(arm, v_safe)
+
+    def _remove_spilled_beads(self):
+        """Delete every bead not inside the bowl's INNER wall (spilled, or
+        perched on the rim lip); the bead list is shared with the registered
+        particle set, so it is edited in place."""
+        T = np.asarray(self.container.get_pose().to_transformation_matrix(), dtype=np.float64)
+        g = self._src_geom
+        keep, gone = [], []
+        for b in self.beads:
+            p_loc = T[:3, :3].T @ (np.asarray(b.get_pose().p, dtype=np.float64) - T[:3, 3])
+            rho = float(np.hypot(p_loc[0], p_loc[2]))  # file y = up
+            inside = rho <= float(g["inner_radius"]) - 0.5 * self._bead_r and p_loc[1] > float(g["floor_y"]) - 0.005
+            (keep if inside else gone).append(b)
+        for b in gone:
+            self.scene.remove_entity(b)
+        self.beads[:] = keep
+        # two steps flush PhysX's contact buffers of the removed bodies (reading
+        # stale contacts segfaults the gripper-contact query, diag d33)
+        for _ in range(2):
+            self.scene.step()
+        self._bead_names = {b.get_name() for b in self.beads}
+        self.n_beads = len(self.beads)
+        self.n_beads_removed = len(gone)
+
+    def prepare_episode(self):
+        """Runner hook, BEFORE t = 0 (nothing recorded). held mode: grasp,
+        lift off and level the over-filled bowl, hold it still, then delete
+        every bead that left it — the episode starts with a brim-full,
+        levelled bowl in hand, and every spill is caused by the carry."""
+        if getattr(self, "carry_mode", "table") != "held":
+            return
+        knobs = getattr(self, "risk_knobs", None) or {}
+        eparams = getattr(self, "embodiment_params", None) or {}
+        v_safe = CARRY_SPEED * float(getattr(self, "_time_scale_safe", 0.6))
+        self._grasp_and_level(self.carry_arm, v_safe, knobs, eparams)
+        for _ in range(HELD_SETTLE_STEPS):
+            self.scene.step()
+        self._remove_spilled_beads()
+        self._prerolled = True
+
+    def play_once(self):
+        knobs = getattr(self, "risk_knobs", None) or {}
+        height = float(knobs.get("carry_height", CARRY_HEIGHT_DEFAULT))
+        tilt = float(np.deg2rad(float(knobs.get("carry_tilt_deg", CARRY_TILT_DEFAULT))))
+        v_safe = CARRY_SPEED * float(getattr(self, "_time_scale_safe", 0.6))
+        # carry_speed / step_min_t: diag knobs (faster nominal carry)
+        v_risky = float(knobs.get("carry_speed", CARRY_SPEED)) * float(getattr(self, "_time_scale_risky", 1.0))
+        t_min = float(knobs.get("step_min_t", STEP_MIN_T))
+        eparams = getattr(self, "embodiment_params", None) or {}
+        arm = self.carry_arm
+
+        if not getattr(self, "_prerolled", False):  # table mode: grasp from the table
+            self._grasp_and_level(arm, v_safe, knobs, eparams)
         # 3. rest of the lift + the knob tilt (about the axis across the carry)
         seg = self.target_xy - self.start_xy
         d = seg / float(np.linalg.norm(seg))
@@ -288,13 +342,13 @@ class granular_carry(granular_pour):
         up_pose = np.concatenate([ee[:3] + [0.0, 0.0, max(0.0, height - LIFTOFF)], ee[3:]])
         with risky(self):
             self._steps_to(arm, self._rotated_about_tcp(up_pose, _rot_axis(tilt_axis, tilt))
-                           if abs(tilt) > 1e-6 else up_pose, v_risky)
+                           if abs(tilt) > 1e-6 else up_pose, v_risky, min_t=t_min)
         # 4. carry over the pad — risky scale
         bowl_xy = np.asarray(self.container.get_pose().p, dtype=np.float64)[:2]
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         dxy = self.target_xy - bowl_xy
         with risky(self):
-            self._steps_to(arm, np.concatenate([ee[:3] + [dxy[0], dxy[1], 0.0], ee[3:]]), v_risky)
+            self._steps_to(arm, np.concatenate([ee[:3] + [dxy[0], dxy[1], 0.0], ee[3:]]), v_risky, min_t=t_min)
         # 5. undo the knob tilt (re-level) and lower onto the pad — safe scale;
         # leveling rotates about the pinch and shifts the bowl: re-centre it
         self._level(arm, v_safe)

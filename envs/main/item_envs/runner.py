@@ -300,6 +300,26 @@ class ItemEpisodeRunner:
         overrides = (self.task_cfg.get("embodiment_overrides") or {}).get(self.embodiment) or {}
         task.embodiment_params = dict(overrides)
 
+        # optional task pre-roll BEFORE t = 0 (never recorded): T4's held mode
+        # grasps + levels the brim-full bowl and deletes the beads it spilled.
+        # Item poses move, so the stay references are re-latched afterwards.
+        prepare = getattr(task, "prepare_episode", None)
+        if callable(prepare):
+            prepare()
+            # the pre-roll may delete particles (spilled beads): a particle
+            # set's handle entity must be a live member, and the held-detection
+            # per_scene_id map is rebuilt from the live entities
+            for s in self.items:
+                if s.kind == "particle_set" and s.particles:
+                    s.entity = s.particles[0]
+            self._item_psids = {int(entity_of(s).per_scene_id): s.item_id for s in self.items}
+            self._stay_ref = {
+                stay_ref_key(r.rule_id, iid): _item_position(item_map[iid])
+                for r in self.rules
+                if r.consequence is Consequence.STAY
+                for iid in r.item_ids
+            }
+
     def close(self) -> None:
         if self.env is not None:
             try:

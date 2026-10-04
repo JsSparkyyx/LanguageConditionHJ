@@ -120,6 +120,8 @@ POUR_REF_DEG = 85.0  # mid-pour angle (100 beads start leaving at ~55-60 deg) at
 PIVOT_ALPHAS = (0.0, 0.25, 0.5, 0.75, 1.0)  # pivot = lip + alpha * (EE - lip); smallest executable wins
 HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 Hz)
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
+GRASP_DIS = 0.0  # m: grasp target short of the contact point along the approach (embodiment_overrides)
+GRASP_RADIAL_OUT = 0.0  # m: grasp target shifted radially outward (embodiment_overrides)
 SUCCESS_MIN_FRAC = 0.8  # fraction of beads inside the target interior
 CONTAINER_REGION_PAD = 0.002  # container region radius = outer radius + this
                               # (container_region_radius — footprint column)
@@ -330,14 +332,30 @@ class granular_pour(place_container_plate):
                                     (self.robot.right_gripper, self.robot.right_gripper_damping)):
                 for joint in joints:
                     joint[0].set_drive_property(stiffness=float(k_grip), damping=float(damping))
-        self.grip_info = {"grasp_contact_ids": cp_ids, "gripper_stiffness": k_grip}
-        self.move(
-            self.grasp_actor(
-                self.container,
-                arm_tag=arm_tag,
-                contact_point_id=int(cp_ids[int(arm_tag == "left")]),
-                pre_grasp_dis=0.1,
-            ))
+        # shallow, wall-centred rim pinch (embodiment_params grasp_dis /
+        # grasp_radial_out, as T4): the default pinch closed its inner finger
+        # into the full bead pile and ejected most beads at the grasp (ur5,
+        # diag d34: 73 / 100 beads on the table before the pour)
+        g_dis = float(knobs.get("grasp_dis", eparams.get("grasp_dis", GRASP_DIS)))
+        g_out = float(knobs.get("grasp_radial_out", eparams.get("grasp_radial_out", GRASP_RADIAL_OUT)))
+        self.grip_info = {"grasp_contact_ids": cp_ids, "gripper_stiffness": k_grip,
+                          "grasp_dis": g_dis, "grasp_radial_out": g_out}
+        g_tag, g_acts = self.grasp_actor(
+            self.container,
+            arm_tag=arm_tag,
+            contact_point_id=int(cp_ids[int(arm_tag == "left")]),
+            pre_grasp_dis=0.1,
+            grasp_dis=g_dis,
+        )
+        if g_out and g_acts:
+            c = np.asarray(self.container.get_pose().p, dtype=np.float64)
+            for act in g_acts:
+                if act.action == "move" and any(act.target_pose):
+                    u = np.asarray(act.target_pose[:2], dtype=np.float64) - c[:2]
+                    u /= max(float(np.linalg.norm(u)), 1e-9)
+                    act.target_pose[0] += g_out * float(u[0])
+                    act.target_pose[1] += g_out * float(u[1])
+        self.move((g_tag, g_acts))
         # 2. lift 0.1 m along the arm axis — safe scale
         self.move(self.move_by_displacement(arm_tag, z=0.1, move_axis="arm"))
 

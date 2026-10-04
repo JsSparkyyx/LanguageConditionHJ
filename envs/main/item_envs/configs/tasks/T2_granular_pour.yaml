@@ -44,7 +44,10 @@ embodiment_overrides:                     # installed as task.embodiment_params 
   # only pour over the -y side lip; franka pours over the far lip.)
   # gripper_stiffness (optional): firmer rim pinch for ur5's side-lip tilt,
   # which rotates about the pinch line (RoboTwin default 1000).
-  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000}
-  franka-panda: {grasp_contact_ids: [0, 2]}
+  # grasp_dis / grasp_radial_out: shallow, wall-centred pinch (T4 values,
+  # diag d15-d27) — the default pinch ejected the pile at the grasp (d34);
+  # franka's soft pinch slipped during the tilt in 5/8 d34 pours -> 5000.
+  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006}
+  franka-panda: {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.0125, grasp_radial_out: 0.006}
 
 risk_collect: null                       # filled by calibration
