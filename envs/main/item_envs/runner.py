@@ -384,6 +384,11 @@ class ItemEpisodeRunner:
         video = OverlayVideoWriter(self.out_dir / "video.mp4", fps=self.video_fps) if self.video_enabled else None
         state = _TickState()
 
+        # one physics step first: PhysX's contact list still holds the bodies
+        # of entities removed since the last step (T1 spawn rejections, T4's
+        # spilled beads) and reading them segfaults the gripper-contact query
+        # (diag d33 / d34). Nothing moves on purpose in one 4 ms step.
+        task.scene.step()
         # initial tick (t = 0), before play_once moves anything
         self._capture_tick(env, trace, video, state, n_physics=0)
 
