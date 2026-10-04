@@ -10,7 +10,7 @@
 # skipped), so a 1-h slice killed mid-way is simply resubmitted.
 set -u
 CMDS=${1:?cmds file}
-LOGDIR=$(readlink -f "${2:?log dir}")
+mkdir -p "${2:?log dir}"; LOGDIR=$(readlink -f "$2")
 PAR=${3:-12}
 export PY=${PY:-/work/nvme/bifq/conda/envs/RoboTwin/bin/python}
 export PYTHONUNBUFFERED=1

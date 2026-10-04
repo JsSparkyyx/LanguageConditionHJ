@@ -11,7 +11,7 @@
 # line of each group is printed at the end.
 set -u
 GROUPS_FILE=${1:?groups file}
-LOGDIR=$(readlink -f "${2:?log dir}")
+mkdir -p "${2:?log dir}"; LOGDIR=$(readlink -f "$2")
 PAR=${3:-6}
 PY=${PY:-/work/nvme/bifq/conda/envs/RoboTwin/bin/python}
 export PYTHONUNBUFFERED=1
