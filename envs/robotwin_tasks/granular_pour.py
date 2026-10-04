@@ -126,6 +126,7 @@ POUR_PIN_ABORT = 0.03  # abort the tilt when the rim-to-EE distance drifts this
 SWING_CLEAR = 0.03  # m: source-bowl hull above the target rim during transit and tilt swing
 POUR_REF_DEG = 85.0  # mid-pour angle (100 beads start leaving at ~55-60 deg) at which the lip sits on the pour point
 PIVOT_ALPHAS = (0.0, 0.25, 0.5, 0.75, 1.0)  # pivot = lip + alpha * (EE - lip); smallest executable wins
+ROLL_AIM_TILT_DEG = 35.0  # wrist-roll pour: the exit lip is placed over the target at THIS bowl tilt (pour onset of a low bowl)
 ROLL_PITCH_DEG = 30.0  # wrist-roll pour: approach pitched this far below horizontal (max bowl tilt 180 - 2 x this)
 HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 Hz)
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
@@ -504,14 +505,18 @@ class granular_pour(place_container_plate):
         tilts = np.array([np.arccos(np.clip((_rot_axis(a, sgn * ph) @ np.array([0.0, 0.0, 1.0]))[2], -1.0, 1.0))
                           for ph in phis])
         phi_total = float(phis[int(np.argmin(np.abs(tilts - tilt_total)))])
-        R_end = _rot_axis(a, sgn * phi_total)
-        # exit point = the LOWEST rim point after the roll (a pitched roll swings
-        # the mouth sideways: the diametrically far lip is not the lowest one)
+        # aim: the exit lip = the LOWEST rim point (a pitched roll swings the
+        # mouth sideways — the diametrically far lip is not the lowest) at the
+        # pour ONSET tilt goes over the target: a low (raised-floor) bowl
+        # empties from ~30-40 deg on, long before the final tilt (diag d45:
+        # aiming at the final tilt put the beads 20-60 cm off target)
+        aim_tilt = min(np.deg2rad(float(eparams.get("roll_aim_tilt_deg", ROLL_AIM_TILT_DEG))), tilt_total)
+        phi_aim = float(phis[int(np.argmin(np.abs(tilts - aim_tilt)))])
         rim_c = rim - pinch  # rim centre relative to the pinch
         ths = np.linspace(0.0, 2.0 * np.pi, 72, endpoint=False)
         ring = np.stack([rim_c + float(g["inner_radius"]) * np.array([np.cos(t), np.sin(t), 0.0]) for t in ths])
-        ring_end = ring @ R_end.T
-        far_end = ring_end[int(np.argmin(ring_end[:, 2]))]  # exit lip relative to the pinch after the roll
+        ring_aim = ring @ _rot_axis(a, sgn * phi_aim).T
+        far_end = ring_aim[int(np.argmin(ring_aim[:, 2]))]  # exit lip relative to the pinch at the aim tilt
 
         # 3. transit — risky: put the pinch where the far lip ends over the
         #    target centre (+ lateral pour_offset), pour_height above its rim

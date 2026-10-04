@@ -48,7 +48,10 @@ embodiment_overrides:                     # installed as task.embodiment_params 
   # grasp_dis / grasp_radial_out: shallow, wall-centred pinch (T4 values,
   # diag d15-d27) — the default pinch ejected the pile at the grasp (d34);
   # franka's soft pinch slipped during the tilt in 5/8 d34 pours -> 5000.
-  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006}
+  # pour_style wrist_roll (ur5, user-approved 2026-10-04): wrist 1 (+/-1.75 rad) blocks every
+  # top-down-grasp tilt but a side-lip one, which failed to plan / flung the bowl (d37, d39);
+  # instead a tangent rim grasp pitched 30 deg down + a roll about the approach axis (d45)
+  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006, pour_style: wrist_roll}
   franka-panda: {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.0125, grasp_radial_out: 0.006}
 
 risk_collect: null                       # filled by calibration
