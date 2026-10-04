@@ -87,8 +87,8 @@ CARRY_INTERIOR_DEPTH = 0.025  # raised floor: rim 2.5 cm above it (create_bowl_r
 TABLE_FILL_FRAC = 0.85  # table mode: beads = this x the bowl's random-pack rim capacity
 CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill TABLE_FILL_FRAC); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
 CARRY_MODE_P = (0.3, 0.7)  # held is the cleanly avoidable regime (spills during the carry, not at the grasp)
-HELD_PACK_FILL = 1.15  # held mode over-fills to this x the bowl's rim capacity (bowl_bead_capacity, random pack phi 0.58); the pre-roll spills the excess and leaves a brim-full bowl (1.4 x the lattice count left bowls 2 / 5 at 65-74 % of capacity, diag d38)
-HELD_SETTLE_STEPS = 250  # physics steps (1 s) the levelled bowl is held still before t = 0
+HELD_PACK_FILL = 1.0  # held mode fills to this x the bowl's rim capacity (bowl_bead_capacity, random pack phi 0.58): LEVEL-full — 1.15 heaped the low bowl and the heap kept rolling off right after t = 0, before any motion (diag d46)
+HELD_SETTLE_STEPS = 500  # physics steps (2 s) the levelled bowl is held still before t = 0
 BEAD_PACK = "random"  # "lattice" (hex grid, settles into a crystal) | "random" (random sequential addition, settles into a random pack)
 PACK_FILL = 1.1  # random pack: bead count = this x the lattice count at BRIM_CLEAR / DOME_H
 DOME_H = 0.0  # m: extra fill height at the bowl centre (parabolic in radius, 0 at the wall) — a heaped bowl
@@ -303,7 +303,10 @@ class granular_carry(granular_pour):
         for b in self.beads:
             p_loc = T[:3, :3].T @ (np.asarray(b.get_pose().p, dtype=np.float64) - T[:3, 3])
             rho = float(np.hypot(p_loc[0], p_loc[2]))  # file y = up
-            inside = rho <= float(g["inner_radius"]) - 0.5 * self._bead_r and p_loc[1] > float(g["floor_y"]) - 0.005
+            inside = (rho <= float(g["inner_radius"]) - 0.5 * self._bead_r
+                      and float(g["floor_y"]) - 0.005 < p_loc[1] <= float(g["rim_y"]) + self._bead_r)
+            # (beads perched > one radius above the rim plane would roll off at
+            # the first touch — a spill no filter could prevent)
             (keep if inside else gone).append(b)
         for b in gone:
             self.scene.remove_entity(b)
