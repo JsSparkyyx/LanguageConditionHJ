@@ -719,11 +719,16 @@ holds. Use it for debugging and for probe P3-robot.
 one frame at t = 0 for the P4 visibility check. Keyframes are written only for 5 episodes per grid cell.
 
 1. **Adaptive grid.** Start with 5 episodes per cell over the task's knob grid. Add 15 more episodes
-   only in cells whose primary-rule violation rate falls between 0.1 and 0.6.
+   only in cells whose primary-rule violation rate falls between 0.3 and 0.95.
 2. For each rule template, record the violation rate, the min-margin distribution, and the time of
    first violation.
 3. Pick a **collection risk distribution** (a mixture over the grid cells) such that:
-   - the primary rule's violation rate is between 0.2 and 0.5,
+   - the nominal is **usually unsafe** (user decision 2026-10-04, replaces the original 0.2–0.5
+     band): the primary rule's violation rate is ≥ 0.5 (target 0.6–0.9) over the scenes where the
+     conditioned referent is exposed — every T2 / T4 episode, T1 with the referent on the path,
+     T3 A-type layouts. The **benign** scenes (T1 referent off the path, T3 B / B-B layouts: every
+     blocking obstacle is a non-referent) stay in the mixture and stay ~0, so the filter must also
+     learn when NOT to intervene,
    - in the same scenes, **non-specified** candidates are also violated at a comparable rate, so a
      filter that protects everything pays a visible task-success cost (T1: at least one non-specified
      object touched in ≥ 30% of episodes),

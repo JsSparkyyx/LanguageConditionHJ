@@ -19,7 +19,9 @@ robotwin_task: granular_pour
 embodiments: [ur5-wsg, franka-panda]     # first entry is the default
 bimanual: false                          # true: second arm holds the (dynamic) target during the pour
 bowl_model: 002_bowl
-src: {interior_depth: 0.032, fill_frac: 0.8}   # SOURCE bowl: raised floor (rim 2.5 cm above it) + random pack at fill_frac x rim capacity, capped at beads.n (user review 5); the target stays the plain bowl
+src: {interior_depth: 0.032, fill_frac: 0.8}   # SOURCE bowl: raised floor (interior 3.2 cm) + random pack at fill_frac x lattice capacity, capped at beads.n (user review 5)
+src_container: {ur5-wsg: mug, franka-panda: bowl}  # source per embodiment (user review 6)
+mug: {model: 039_mug, ids: [0, 1, 2, 5, 10, 11], interior_depth: 0.04}  # handled source: handle faces the robot, raised floor (~3 bead layers)
 bowl_ids: [1, 2, 3, 5]                   # passed P2 rest containment at (60 beads, 6 mm)
 beads: {n: 100, radius: 0.006, mass: [0.0005, 0.002]}  # P2 rest-containment was
                                         # validated at N=60; N=100 fills the bowl to
@@ -51,7 +53,11 @@ embodiment_overrides:                     # installed as task.embodiment_params 
   # pour_style wrist_roll (ur5, user-approved 2026-10-04): wrist 1 (+/-1.75 rad) blocks every
   # top-down-grasp tilt but a side-lip one, which failed to plan / flung the bowl (d37, d39);
   # instead a tangent rim grasp pitched 30 deg down + a roll about the approach axis (d45)
-  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006, pour_style: wrist_roll}
-  franka-panda: {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.0125, grasp_radial_out: 0.006}
+  # ur5 pours from the handled mug (src.container, user review 6): the
+  # tangent rim pinch let the bowl turn 40-70 deg in the grip (d47); the
+  # flat handle loop fills the pads. tip_len = EE origin -> closed fingertips
+  # (measured, T3 push_tip_len) keeps the fingertips off the mug body.
+  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006, pour_style: wrist_roll, tip_len: 0.164}
+  franka-panda: {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.0125, grasp_radial_out: 0.006, tip_len: 0.152}
 
 risk_collect: null                       # filled by calibration

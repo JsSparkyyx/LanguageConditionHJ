@@ -814,6 +814,48 @@ def bowl_bead_capacity(geom, r, phi=0.58):
     return int(round(phi * vol / (4.0 / 3.0 * np.pi * float(r) ** 3)))
 
 
+def mug_geometry(model_id, modelname="039_mug", obj_root=None):
+    """Geometry of a handled mug (039_mug) in a BODY-CENTRED file frame
+    (y up, x / z horizontal; the asset's handle points to file -z and its
+    body axis sits ``axis_offset_z`` from the file origin).
+
+    Returns the bowl_geometry-style dict of the BODY (handle vertices
+    excluded — they would corrupt the rim / wall radii) with all positions
+    shifted so the body axis is the origin, plus:
+      - axis_offset_z: file z of the body axis (shift the mesh by -this)
+      - handle_point: [x, y, z] centre of the handle's OUTER bar at mid
+        height (the grasp point), body-centred frame
+      - handle_dir: [0, 0, -1] (body axis -> handle, body-centred frame)
+      - half_extents / obb_center_local: AABB of body + handle.
+    Measured on the collision mesh (_collision_verts)."""
+    import numpy as np
+
+    v = np.asarray(_collision_verts(modelname, model_id, obj_root), dtype=np.float64)
+    r_body = float(np.abs(v[:, 0]).max())  # the handle is narrow in x
+    z_c = float(v[:, 2].max()) - r_body
+    v = v - np.array([0.0, 0.0, z_c])
+    body = v[v[:, 2] > -r_body - 0.003]
+    handle = v[v[:, 2] < -r_body - 0.003]
+    g = dict(_bowl_geometry_from_verts(body))
+    lo, hi = v.min(0), v.max(0)
+    g["half_extents"] = (0.5 * (hi - lo)).tolist()
+    g["obb_center_local"] = (0.5 * (hi + lo)).tolist()
+    g["axis_offset_z"] = z_c
+    if len(handle):
+        z_out = float(handle[:, 2].min())
+        arc = handle[handle[:, 2] < z_out + 0.010]  # outer bar of the C-loop
+        y_mid = 0.5 * (float(arc[:, 1].min()) + float(arc[:, 1].max()))
+        near = arc[np.abs(arc[:, 1] - y_mid) < 0.01]
+        if not len(near):
+            near = arc
+        g["handle_point"] = [float(near[:, 0].mean()), y_mid, 0.5 * (float(near[:, 2].min()) + float(near[:, 2].max()))]
+        g["handle_width"] = float(near[:, 0].max() - near[:, 0].min())
+    else:
+        g["handle_point"] = None
+    g["handle_dir"] = [0.0, 0.0, -1.0]
+    return g
+
+
 def bowl_lattice_capacity(geom, r, n_max=2000):
     """Beads of radius r that fit FULLY below the rim: hex-lattice cells
     (bead_grid_positions, wall-band aware) whose centre is <= rim_y - r.

@@ -148,6 +148,14 @@ def test_t2_task_file_matches_yaml():
     # low source: raised floor + capacity fill (user review 5)
     assert f"SRC_INTERIOR_DEPTH = {cfg['src']['interior_depth']}" in src
     assert f"SRC_FILL_FRAC = {cfg['src']['fill_frac']}" in src
+    # handled mug for ur5 (user review 6) + the deep target (bounce-outs)
+    assert f"SRC_CONTAINER = {cfg['src_container']!r}".replace("'", '"') in src
+    assert f'MUG_MODEL = "{cfg["mug"]["model"]}"' in src
+    assert "MUG_IDS = (" + ", ".join(str(i) for i in cfg["mug"]["ids"]) + ")" in src
+    assert f"MUG_INTERIOR_DEPTH = {cfg['mug']['interior_depth']}" in src
+    assert f'TARGET_BOWL_MODEL = "{cfg["target"]["model"]}"' in src
+    for emb, ov in cfg["embodiment_overrides"].items():
+        assert ov.get("tip_len", 0.0) > 0.12, emb  # past the TCP model (APPROACH_TO_TCP)
 
     assert f"BIMANUAL = {cfg['bimanual']}" in src  # False vs False
 

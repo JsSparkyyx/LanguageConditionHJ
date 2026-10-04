@@ -84,6 +84,7 @@ from ._item_utils import (
     bowl_geometry,
     container_region_radius,
     min_pour_height,
+    mug_geometry,
     register_item,
     register_zone,
     risky,
@@ -93,9 +94,15 @@ from ._item_utils import (
 # --- scene layout (must match main/item_envs/configs/tasks/T2_granular_pour.yaml;
 #     tests/item_envs/test_granular_pour.py source-greps this contract) ---
 BOWL_MODEL = "002_bowl"  # base bowl model (source: + raised floor)
+MUG_MODEL = "039_mug"  # handled source container (user review 6, ur5-wsg): the pour is a wrist roll with the handle bar clamped across the pads
+MUG_IDS = (0, 1, 2, 5, 10, 11)  # mouth radius >= 4 cm, rim 9-12 cm, handle bar 1.0-2.3 cm wide (mug_geometry)
+MUG_INTERIOR_DEPTH = 0.04  # raised floor in the mug: ~3 bead layers (the full mug would hold 300-500 beads — too heavy for a handle pinch)
+FLOOR_PLATE_T = 0.004  # raised floor: top plate thickness (reaches the wall; the body follows the foot)
+MUG_TIP_CLEAR = 0.006  # fingertips stop this far from the mug body wall (the handle bar is 2.8-4.1 cm out)
+SRC_CONTAINER = {"ur5-wsg": "mug", "franka-panda": "bowl"}  # per embodiment (yaml src.container); diag override ITEM_SRC_CONTAINER
 TARGET_BOWL_MODEL = "002_bowl_deep"  # the TARGET: 002_bowl stretched to a 9 cm deep, 1.2x wider interior (robotwin_assets/, scripts/item_envs/make_bowl_variant.py; user review 6: poured beads bounced out of the plain bowl)
 SRC_BOWL_MODEL = "002_bowl"  # the SOURCE bowl ...
-SRC_INTERIOR_DEPTH = 0.032  # ... with a raised floor: rim 2.5 cm above it (create_bowl_raised_floor; user review 5: a low container spills at small tilts and in transit; 3.2 cm = two full bead layers)
+SRC_INTERIOR_DEPTH = 0.032  # ... with a raised floor: rim 3.2 cm above it = two full bead layers (create_bowl_raised_floor; user review 5: a low container spills at small tilts and in transit)
 SRC_FILL_FRAC = 0.8  # low source: beads = this x its LATTICE rim capacity (bowl_lattice_capacity), capped at N_BEADS
 BOWL_IDS = (1, 2, 3, 5)  # P2 rest-containment PASS at (60 beads, 6 mm), feasibility.md
 BOWL_MASS_RANGE = (0.10, 0.40)  # objects.yaml categories.bowl.mass_range
@@ -163,19 +170,34 @@ class granular_pour(place_container_plate):
                 rotate_rand=False,
                 qpos=list(SPAWN_QUAT),
             )
-        src_model = os.environ.get("ITEM_SRC_MODEL", SRC_BOWL_MODEL)  # diag-only override
-        self.src_model = src_model
-        self.actor_name = src_model
-        self.container_id = int(np.random.choice(list(BOWL_IDS)))
-        depth = float(os.environ.get("ITEM_SRC_DEPTH", SRC_INTERIOR_DEPTH))  # diag-only override (0 = plain bowl)
-        self.container, self._src_geom = create_bowl_raised_floor(
-            self, container_pose, src_model, self.container_id, depth)
+        # source container per embodiment (yaml src.container): ur5-wsg pours
+        # from a handled MUG (its wrist blocks every rim-pinch tilt; a pure
+        # wrist roll with the handle bar clamped across the pads holds — user
+        # review 6), franka from the low bowl
+        self.src_kind = os.environ.get("ITEM_SRC_CONTAINER", SRC_CONTAINER.get(_embodiment_name(self), "bowl"))
+        if self.src_kind == "mug":
+            self.src_model = MUG_MODEL
+            self.container_id = int(np.random.choice(list(MUG_IDS)))
+            depth = float(os.environ.get("ITEM_SRC_DEPTH", MUG_INTERIOR_DEPTH))
+            # handle (body frame -z -> world -x under SPAWN_QUAT) turned to face
+            # the robot (world -y): +90 deg about world z
+            q = _quat_mul_wxyz(np.array([0.7071067811865476, 0.0, 0.0, 0.7071067811865476]), np.asarray(SPAWN_QUAT))
+            container_pose = sapien.Pose(list(container_pose.p), [float(v) for v in q])
+            self.container, self._src_geom = create_mug_container(self, container_pose, self.container_id, depth)
+        else:
+            src_model = os.environ.get("ITEM_SRC_MODEL", SRC_BOWL_MODEL)  # diag-only override
+            self.src_model = src_model
+            self.container_id = int(np.random.choice(list(BOWL_IDS)))
+            depth = float(os.environ.get("ITEM_SRC_DEPTH", SRC_INTERIOR_DEPTH))  # diag-only override (0 = plain bowl)
+            self.container, self._src_geom = create_bowl_raised_floor(
+                self, container_pose, src_model, self.container_id, depth)
+        self.actor_name = self.src_model
         self._bowl_mass = float(np.random.uniform(*BOWL_MASS_RANGE))
         self.container.set_mass(self._bowl_mass)
 
         # 2. target container where the host puts the plate: a second 002_bowl
         #    (static by default; DYNAMIC in the bimanual variant).
-        self.target_id = int(np.random.choice([b for b in BOWL_IDS if b != self.container_id]))
+        self.target_id = int(np.random.choice([b for b in BOWL_IDS if b != self.container_id or self.src_kind == "mug"]))
         x = 0.05 if self.container.get_pose().p[0] > 0 else -0.05
         target_pose = rand_pose(
             xlim=[x - 0.03, x + 0.03],
@@ -333,7 +355,7 @@ class granular_pour(place_container_plate):
         other_tag = ArmTag("left" if arm_tag == "right" else "right")
 
         eparams_ = getattr(self, "embodiment_params", None) or {}
-        if knobs.get("pour_style", eparams_.get("pour_style")) == "wrist_roll":  # knob: diag override
+        if getattr(self, "src_kind", "bowl") == "mug" or knobs.get("pour_style", eparams_.get("pour_style")) == "wrist_roll":
             return self._play_wrist_roll(arm_tag, knobs, eparams_, pour_height, pour_offset, tilt_rate,
                                          container_pose)
 
@@ -475,8 +497,23 @@ class granular_pour(place_container_plate):
         g = self._src_geom
         side = 1.0 if str(arm_tag) == "right" else -1.0
         beta = np.deg2rad(float(eparams.get("roll_pitch_deg", ROLL_PITCH_DEG)))
-        u = np.array([side, 0.0, 0.0])  # pinch on the bowl's outer (arm-side) rim, closing radially
-        a = np.array([0.0, np.cos(beta), -np.sin(beta)])  # approach: from the robot side, along the tangent, pitched down
+        mug = getattr(self, "src_kind", "bowl") == "mug"
+        Tc = np.asarray(self.container.get_pose().to_transformation_matrix(), dtype=np.float64)
+        if mug:
+            # handle bar: fingers close across its width (body-frame x), the
+            # approach runs from the handle toward the body axis (body +z),
+            # pitched down — the roll turns about that axis with the bar
+            # clamped along its length across the pads
+            u = Tc[:3, :3] @ np.array([1.0, 0.0, 0.0])
+            d_h = Tc[:3, :3] @ np.array([0.0, 0.0, 1.0])
+        else:
+            u = np.array([side, 0.0, 0.0])  # pinch on the bowl's outer (arm-side) rim, closing radially
+            d_h = np.array([0.0, 1.0, 0.0])  # approach from the robot side along the rim tangent
+        u = np.array([u[0], u[1], 0.0]) / max(float(np.hypot(u[0], u[1])), 1e-9)
+        if mug and u[0] * side < 0.0:
+            u = -u  # same wrist handedness as the bowl path (the jaw is symmetric)
+        d_h = np.array([d_h[0], d_h[1], 0.0]) / max(float(np.hypot(d_h[0], d_h[1])), 1e-9)
+        a = np.cos(beta) * d_h - np.sin(beta) * np.array([0.0, 0.0, 1.0])  # approach, pitched down
         R0 = np.column_stack([a, u, np.cross(a, u)])  # EE x = approach, EE y = finger closing axis
         q0 = list(_mat_to_quat_wxyz(R0))
         r_pinch = 0.5 * (float(g["inner_radius"]) + float(g["outer_radius"]))
@@ -489,9 +526,20 @@ class granular_pour(place_container_plate):
                     joint[0].set_drive_property(stiffness=float(k_grip), damping=float(damping))
 
         rim = self._rim_center(self.container, g)
-        pinch = rim + u * r_pinch - np.array([0.0, 0.0, float(eparams.get("roll_pinch_depth", 0.008))])
+        if mug:
+            # TCP on the handle's outer bar, backed off along -a until the
+            # fingertips (tip_len past the EE origin; the TCP model sits at
+            # APPROACH_TO_TCP) stop MUG_TIP_CLEAR short of the body wall —
+            # the bar then sits nearer the fingertips than the TCP
+            bar = Tc[:3, :3] @ np.asarray(g["handle_point"], dtype=np.float64) + Tc[:3, 3]
+            tip_extra = float(eparams.get("tip_len", APPROACH_TO_TCP)) - APPROACH_TO_TCP
+            gap = abs(float(g["handle_point"][2])) - float(g["outer_radius"]) - MUG_TIP_CLEAR
+            back = float(np.clip(tip_extra - gap / np.cos(beta), 0.0, max(tip_extra - 0.008, 0.0)))
+            pinch = bar - a * back
+        else:
+            pinch = rim + u * r_pinch - np.array([0.0, 0.0, float(eparams.get("roll_pinch_depth", 0.008))])
         ee_grasp = pinch - a * APPROACH_TO_TCP
-        self.grip_info = {"pour_style": "wrist_roll", "pitch_deg": float(np.rad2deg(beta)),
+        self.grip_info = {"pour_style": "wrist_roll", "container": "mug" if mug else "bowl", "pitch_deg": float(np.rad2deg(beta)),
                           "pinch": pinch.tolist(), "gripper_stiffness": k_grip}
         # 1. tangent rim grasp — safe: pre-grasp 10 cm back along a, slide in, close
         self.move(self.open_gripper(arm_tag))
@@ -503,8 +551,14 @@ class granular_pour(place_container_plate):
 
         # the roll: sign sends the far lip DOWN; angle for the sampled tilt
         tilt_total = float(np.deg2rad(np.random.uniform(*TILT_ANGLE_DEG)))
-        far0 = -2.0 * r_pinch * u  # far lip relative to the pinch (bowl upright)
-        sgn = 1.0 if (_rot_axis(a, np.deg2rad(10.0)) @ far0)[2] < 0.0 else -1.0
+        if mug:
+            # tip the mouth toward the target
+            to_t = np.asarray(self.target.get_pose().p, dtype=np.float64)[:2] - Tc[:2, 3]
+            m10 = _rot_axis(a, np.deg2rad(10.0)) @ np.array([0.0, 0.0, 1.0])
+            sgn = 1.0 if float(m10[:2] @ to_t) >= 0.0 else -1.0
+        else:
+            far0 = -2.0 * r_pinch * u  # far lip relative to the pinch (bowl upright)
+            sgn = 1.0 if (_rot_axis(a, np.deg2rad(10.0)) @ far0)[2] < 0.0 else -1.0
         phis = np.deg2rad(np.arange(0.0, 180.5, 0.5))
         tilts = np.array([np.arccos(np.clip((_rot_axis(a, sgn * ph) @ np.array([0.0, 0.0, 1.0]))[2], -1.0, 1.0))
                           for ph in phis])
@@ -863,51 +917,107 @@ class granular_pour(place_container_plate):
 
 
 
-def create_bowl_raised_floor(task, pose, modelname, model_id, depth, color=(0.62, 0.55, 0.45)):
-    """002_bowl with a solid insert raising its interior floor so the rim
-    sits only ``depth`` above it (user review 5: a LOW container spills at
-    small tilts and needs velocity control). The OUTSIDE stays the full bowl
-    — the rim pinch keeps its 5-7 cm of wall (a height-squashed bowl was too
-    low to grasp: the fingers reach 3-4 cm below the TCP, diag d44). The
-    insert is one cylinder in the bowl's file frame (y = up, origin at the
-    exterior bottom), radius = the narrowest wall radius over its height
-    minus 1 mm, rendered in a neutral colour. Returns (Actor, geometry dict
-    with floor_y raised and the wall bands trimmed). depth <= 0 or >= the
-    bowl's own depth: the plain bowl (RoboTwin's create_actor)."""
-    import json
-    from pathlib import Path
-
-    geom = dict(bowl_geometry(modelname, model_id))
+def _floor_insert(builder, geom, depth, color):
+    """Add the raised-floor cylinder (file frame y up, axis at the origin) so
+    the rim sits ``depth`` above it; returns the updated geometry dict (or the
+    input unchanged when no insert is needed)."""
+    geom = dict(geom)
     floor0, rim = float(geom["floor_y"]), float(geom["rim_y"])
     raise_h = (rim - floor0) - float(depth)
     if depth <= 0.0 or raise_h <= 0.002:
-        return create_actor(task, pose=pose, modelname=modelname, model_id=model_id, convex=True), geom
-    from .utils.create_actor import get_glb_or_obj_file, preprocess
-    from .utils.actor_utils import Actor
-
-    scene, pose = preprocess(task, pose)
-    modeldir = Path("assets/objects") / modelname
-    model_data = json.loads((modeldir / f"model_data{int(model_id)}.json").read_text())
-    scale = model_data["scale"]
-    collision_file = get_glb_or_obj_file(modeldir / "collision", model_id)
-    visual_file = get_glb_or_obj_file(modeldir / "visual", model_id)
-    builder = scene.create_actor_builder()
-    builder.set_physx_body_type("dynamic")
-    builder.add_multiple_convex_collisions_from_file(filename=str(collision_file), scale=scale)
-    builder.add_visual_from_file(filename=str(visual_file), scale=scale)
+        return geom
     bands = [b for b in (geom.get("bands") or []) if b[0] < floor0 + raise_h]
     r_ins = (min(float(b[1]) for b in bands) if bands else float(geom["inner_radius"])) - 0.001
     # SAPIEN cylinders run along local x: rotate +90 deg about z -> along y (up)
     ins_pose = sapien.Pose([0.0, floor0 + 0.5 * raise_h, 0.0], [0.7071067811865476, 0.0, 0.0, 0.7071067811865476])
     builder.add_cylinder_collision(pose=ins_pose, radius=r_ins, half_length=0.5 * raise_h)
     builder.add_cylinder_visual(pose=ins_pose, radius=r_ins, half_length=0.5 * raise_h, material=tuple(color))
-    entity = builder.build(name=modelname)
-    entity.set_name(modelname)
-    entity.set_pose(pose)
+    # top plate out to the wall: the body is sized by the narrow FOOT of a
+    # tapered bowl, which left a moat round the floor (002_bowl id 5: insert
+    # r 3.7 cm vs wall 6.1 cm at the floor; beads sank into it and the
+    # cleanup deleted 40 / 93, diag d50)
+    top = floor0 + raise_h
+    t_h = min(FLOOR_PLATE_T, raise_h)
+    near = [float(b[1]) for b in (geom.get("bands") or []) if top - t_h <= b[0] <= top + 0.003]
+    r_top = (min(near) if near else r_ins + 0.001) - 0.001
+    if r_top > r_ins + 0.001:
+        top_pose = sapien.Pose([0.0, top - 0.5 * t_h, 0.0], [0.7071067811865476, 0.0, 0.0, 0.7071067811865476])
+        builder.add_cylinder_collision(pose=top_pose, radius=r_top, half_length=0.5 * t_h)
+        builder.add_cylinder_visual(pose=top_pose, radius=r_top, half_length=0.5 * t_h, material=tuple(color))
+        geom["floor_plate_radius"] = r_top
     geom["floor_y"] = floor0 + raise_h
     geom["bands"] = [b for b in (geom.get("bands") or []) if b[0] >= floor0 + raise_h]
     geom["raised_floor"] = raise_h
+    return geom
+
+
+def _builder_for(task, pose, modelname, model_id, mesh_pose=None):
+    """RoboTwin create_actor's builder (dynamic, convex collisions), meshes at
+    ``mesh_pose`` in the actor frame; returns (builder, scene, pose, model_data)."""
+    import json
+    from pathlib import Path
+
+    from .utils.create_actor import get_glb_or_obj_file, preprocess
+
+    scene, pose = preprocess(task, pose)
+    modeldir = Path("assets/objects") / modelname
+    model_data = json.loads((modeldir / f"model_data{int(model_id)}.json").read_text())
+    scale = model_data["scale"]
+    mp = mesh_pose if mesh_pose is not None else sapien.Pose()
+    builder = scene.create_actor_builder()
+    builder.set_physx_body_type("dynamic")
+    builder.add_multiple_convex_collisions_from_file(
+        filename=str(get_glb_or_obj_file(modeldir / "collision", model_id)), scale=scale, pose=mp)
+    builder.add_visual_from_file(filename=str(get_glb_or_obj_file(modeldir / "visual", model_id)), scale=scale, pose=mp)
+    return builder, scene, pose, model_data
+
+
+def create_bowl_raised_floor(task, pose, modelname, model_id, depth, color=(0.62, 0.55, 0.45)):
+    """002_bowl with a solid insert raising its interior floor so the rim
+    sits only ``depth`` above it (user review 5: a LOW container spills at
+    small tilts and needs velocity control). The OUTSIDE stays the full bowl
+    — the rim pinch keeps its 5-7 cm of wall (a height-squashed bowl was too
+    low to grasp: the fingers reach 3-4 cm below the TCP, diag d44). Returns
+    (Actor, geometry dict with floor_y raised and the wall bands trimmed).
+    depth <= 0 or >= the bowl's own depth: the plain bowl."""
+    from .utils.actor_utils import Actor
+
+    geom = dict(bowl_geometry(modelname, model_id))
+    if depth <= 0.0 or (float(geom["rim_y"]) - float(geom["floor_y"])) - float(depth) <= 0.002:
+        return create_actor(task, pose=pose, modelname=modelname, model_id=model_id, convex=True), geom
+    builder, scene, pose, model_data = _builder_for(task, pose, modelname, model_id)
+    geom = _floor_insert(builder, geom, depth, color)
+    entity = builder.build(name=modelname)
+    entity.set_name(modelname)
+    entity.set_pose(pose)
     return Actor(entity, model_data), geom
+
+
+def create_mug_container(task, pose, model_id, depth, color=(0.62, 0.55, 0.45)):
+    """039_mug as a pour source (user review 6), built with its mesh SHIFTED so
+    the body axis is the actor origin (the asset's body sits ~2 cm off its
+    file origin; every bowl-centred routine — bead spawn, container region,
+    rim centre, floor insert — then applies unchanged) and an optional raised
+    floor. Returns (Actor, mug_geometry dict incl. handle_point)."""
+    from .utils.actor_utils import Actor
+
+    geom = mug_geometry(model_id, MUG_MODEL)
+    builder, scene, pose, model_data = _builder_for(
+        task, pose, MUG_MODEL, model_id, mesh_pose=sapien.Pose([0.0, 0.0, -float(geom["axis_offset_z"])]))
+    geom = _floor_insert(builder, geom, depth, color)
+    entity = builder.build(name=MUG_MODEL)
+    entity.set_name(MUG_MODEL)
+    entity.set_pose(pose)
+    return Actor(entity, model_data), geom
+
+
+def _embodiment_name(task):
+    """The robot folder name (assets/embodiments/<name>/curobo.yml)."""
+    import os as _os
+
+    path = getattr(getattr(task, "robot", None), "left_curobo_yml_path", "") or ""
+    return _os.path.basename(_os.path.dirname(str(path)))
+
 
 def _roty(th):
     """3x3 rotation matrix about the world +y axis by th radians."""
