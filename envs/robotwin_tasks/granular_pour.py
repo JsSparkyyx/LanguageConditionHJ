@@ -96,7 +96,9 @@ from ._item_utils import (
 BOWL_MODEL = "002_bowl"  # base bowl model (source: + raised floor)
 MUG_MODEL = "039_mug"  # handled source container (user review 6, ur5-wsg): the pour is a wrist roll with the handle bar clamped across the pads
 MUG_IDS = (0, 1, 2, 5, 10, 11)  # mouth radius >= 4 cm, rim 9-12 cm, handle bar 1.0-2.3 cm wide (mug_geometry)
-MUG_INTERIOR_DEPTH = 0.04  # raised floor in the mug: ~3 bead layers (the full mug would hold 300-500 beads — too heavy for a handle pinch)
+MUG_INTERIOR_DEPTH = 0.035  # raised floor in the mug: rim 3.5 cm above it (the full mug would hold 300-500 beads — too heavy for a handle pinch)
+MUG_FILL_FRAC = 1.15  # mug: beads = this x the lattice capacity (capped at MUG_N_MAX) — OVER-filled; the pre-roll cleanup deletes what the settle spills and what perches > 1 radius above the rim, so the bed starts level with the rim (user review 8: "the beads can be lifted slightly higher")
+MUG_N_MAX = 120
 FLOOR_PLATE_T = 0.004  # raised floor: top plate thickness (reaches the wall; the body follows the foot)
 GRASP_POS_TOL = 0.012  # mug slide-in: correct while the EE ends farther than this (or GRASP_ANG_TOL_DEG) from the grasp pose ...
 GRASP_ANG_TOL_DEG = 5.0  # (franka lands 0.7-0.8 cm / 3.6 deg off and grasps fine; ur5's right arm 2.4-3 cm / 11 deg misses)
@@ -240,8 +242,13 @@ class granular_pour(place_container_plate):
         if self._src_geom.get("raised_floor"):
             # low (raised-floor) source: a random pack (a hex lattice settles into a
             # crystal that holds far past the angle of repose, T4 diag d21-d32)
-            # filled to SRC_FILL_FRAC of the rim capacity
-            n_beads = min(n_beads, int(round(SRC_FILL_FRAC * bowl_lattice_capacity(self._src_geom, BEAD_R))))
+            # filled to SRC_FILL_FRAC of the rim capacity (the mug: over-filled
+            # to MUG_FILL_FRAC and trimmed level with the rim by the pre-roll)
+            cap = bowl_lattice_capacity(self._src_geom, BEAD_R)
+            if self.src_kind == "mug":
+                n_beads = min(int(os.environ.get("ITEM_T2_N", MUG_N_MAX)), int(round(MUG_FILL_FRAC * cap)))
+            else:
+                n_beads = min(n_beads, int(round(SRC_FILL_FRAC * cap)))
             local = bead_random_positions(n_beads, BEAD_R, self._src_geom, np.random)
         else:
             local = bead_grid_positions(

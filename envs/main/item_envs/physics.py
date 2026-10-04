@@ -110,7 +110,9 @@ def sample_physics(item_specs, physics_cfg: dict, rng: np.random.RandomState) ->
         specs = list(item_specs.values())
     else:
         specs = list(item_specs)
-    nominal = category_nominal_masses(load_objects_cfg())
+    objects_cfg = load_objects_cfg()
+    nominal = category_nominal_masses(objects_cfg)
+    cat_cfg = objects_cfg.get("categories", {}) or {}
     s_lo, s_hi = (float(v) for v in physics_cfg["static_friction"])
     d_lo, d_hi = physics_cfg["dynamic_friction"]
     r_lo, r_hi = (float(v) for v in physics_cfg["restitution"])
@@ -124,8 +126,14 @@ def sample_physics(item_specs, physics_cfg: dict, rng: np.random.RandomState) ->
         dynamic_f = float(min(rng.uniform(float(d_lo), hi), static_f))
         restitution = float(rng.uniform(r_lo, r_hi))
         pf = os.environ.get("ITEM_PARTICLE_FRICTION")  # diag-only: "lo,hi" remaps particle-set friction (same RNG stream)
+        f_range = ((cat_cfg.get(str(spec.category)) or {}).get("friction_range"))
         if pf and spec.kind == "particle_set":
-            f_lo, f_hi = (float(v) for v in pf.split(","))
+            f_range = [float(v) for v in pf.split(",")]
+        if f_range:
+            # objects.yaml categories.<cat>.friction_range: this category's
+            # static friction is drawn in that range instead (the same RNG
+            # draw, remapped: every other item's sample is unchanged)
+            f_lo, f_hi = (float(v) for v in f_range)
             frac = (static_f - s_lo) / max(s_hi - s_lo, 1e-9)
             new_static = f_lo + frac * (f_hi - f_lo)
             dynamic_f = float(min(dynamic_f * new_static / max(static_f, 1e-9), new_static))

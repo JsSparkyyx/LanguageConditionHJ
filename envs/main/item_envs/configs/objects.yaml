@@ -46,7 +46,7 @@ categories:
   coffee_box:   {names: [coffee box], synonyms: [coffee carton, coffee bag], mass_range: [0.05, 0.30]}
   box:          {names: [box], synonyms: [crate], mass_range: [0.05, 0.15], colored: true}
   cylinder:     {names: [cylinder, tall cylinder], synonyms: [], mass_range: [0.05, 0.20], colored: true}
-  beads:        {names: [beads], synonyms: [beans, rice, grains], mass_range: [0.0005, 0.002]}  # per particle
+  beads:        {names: [beads], synonyms: [beans, rice, grains], mass_range: [0.0005, 0.002], friction_range: [0.1, 0.3]}  # per particle; T2 — slippery (static mu 0.1-0.3, user review 8): the bed slides out of the mug at smaller tilts
   carry_beads:  {names: [beads], synonyms: [beans, rice, grains], mass_range: [0.0003, 0.0008]}  # per particle; T4 (a brim-full bowl of 1.25 g beads slipped out of the rim pinch, diag d40)
   small_beads:  {names: [beads], synonyms: [beans, rice, grains], mass_range: [0.00015, 0.0006]}  # per particle, r = 4 mm (T4 option; mass ~ r^3)
   bowl:         {names: [bowl], synonyms: [], mass_range: [0.10, 0.40]}

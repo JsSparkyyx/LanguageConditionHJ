@@ -76,9 +76,14 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         mod = __import__(type(task).__module__, fromlist=["x"])
         if task._src_geom.get("raised_floor"):
             cap = mod.bowl_lattice_capacity(task._src_geom, mod.BEAD_R)
-            n_spawn = min(mod.N_BEADS, int(round(mod.SRC_FILL_FRAC * cap)))
-            # prepare_episode deletes the few beads the settle bounced out
-            assert 0.9 * n_spawn <= len(beads.particles) <= n_spawn
+            if task.src_kind == "mug":
+                # over-filled, trimmed level with the rim by prepare_episode
+                n_spawn = min(mod.MUG_N_MAX, int(round(mod.MUG_FILL_FRAC * cap)))
+                assert 0.6 * n_spawn <= len(beads.particles) <= n_spawn
+            else:
+                n_spawn = min(mod.N_BEADS, int(round(mod.SRC_FILL_FRAC * cap)))
+                # prepare_episode deletes the few beads the settle bounced out
+                assert 0.9 * n_spawn <= len(beads.particles) <= n_spawn
         else:
             assert len(beads.particles) == mod.N_BEADS
         margins = runner._rule_margins()
