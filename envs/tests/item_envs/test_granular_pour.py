@@ -155,6 +155,7 @@ def test_t2_task_file_matches_yaml():
     assert f"MUG_INTERIOR_DEPTH = {cfg['mug']['interior_depth']}" in src
     assert f"MUG_FILL_FRAC = {cfg['mug']['fill_frac']}" in src
     assert f"MUG_N_MAX = {cfg['mug']['n_max']}" in src
+    assert f"MUG_YAW_DEG = {cfg['mug']['yaw_deg']!r}".replace("'", '"') in src
     assert f'TARGET_BOWL_MODEL = "{cfg["target"]["model"]}"' in src
     lo, hi = _load("objects.yaml")["categories"]["pour_mug"]["mass_range"]
     assert f"MUG_MASS_RANGE = ({lo}, {hi})" in src

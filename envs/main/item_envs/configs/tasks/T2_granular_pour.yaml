@@ -20,8 +20,8 @@ embodiments: [ur5-wsg, franka-panda]     # first entry is the default
 bimanual: false                          # true: second arm holds the (dynamic) target during the pour
 bowl_model: 002_bowl
 src: {interior_depth: 0.032, fill_frac: 0.8}   # SOURCE bowl: raised floor (interior 3.2 cm) + random pack at fill_frac x lattice capacity, capped at beads.n (user review 5)
-src_container: {ur5-wsg: mug, franka-panda: bowl}  # source per embodiment (user review 6)
-mug: {model: 039_mug, ids: [0, 1, 2, 5, 10, 11], interior_depth: 0.035, fill_frac: 1.15, n_max: 120}  # handled source: handle faces the robot, raised floor; over-filled, trimmed level with the rim by the pre-roll
+src_container: {ur5-wsg: mug, franka-panda: mug}  # source per embodiment (user reviews 6, 8: franka-specific grasp redesign)
+mug: {model: 039_mug, ids: [0, 1, 2, 5, 10, 11], interior_depth: 0.035, fill_frac: 1.15, n_max: 120, yaw_deg: {ur5-wsg: 0.0, franka-panda: -45.0}}  # handled source: handle faces the robot, raised floor; over-filled, trimmed level with the rim by the pre-roll
 bowl_ids: [1, 2, 3, 5]                   # passed P2 rest containment at (60 beads, 6 mm)
 beads: {n: 100, radius: 0.006, mass: [0.0005, 0.002]}  # P2 rest-containment was
                                         # validated at N=60; N=100 fills the bowl to

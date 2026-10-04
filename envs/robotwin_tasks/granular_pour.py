@@ -106,7 +106,8 @@ GRASP_CORRECT_ITERS = 3  # ... at most this many times
 PRE_GRASP_SPEED = 0.15  # m/s (rotation at 0.1 m/rad): the mug pre-grasp via path, average speed
 MUG_PRE_GRASP_BACK = 0.15  # mug: pre-grasp this far back along the approach (the slide-in is a local screw)
 MUG_TIP_CLEAR = 0.006  # fingertips stop this far from the mug body wall (the handle bar is 2.8-4.1 cm out)
-SRC_CONTAINER = {"ur5-wsg": "mug", "franka-panda": "bowl"}  # per embodiment (yaml src.container); diag override ITEM_SRC_CONTAINER
+SRC_CONTAINER = {"ur5-wsg": "mug", "franka-panda": "mug"}  # per embodiment (yaml src_container); diag override ITEM_SRC_CONTAINER
+MUG_YAW_DEG = {"ur5-wsg": 0.0, "franka-panda": -45.0}  # handle turned this far toward the robot's centre line (mirrored per side; yaml mug.yaw_deg): franka reaches, grasps and rolls the mug only at -45 (6/6; 0 / +-90 / +45 mostly fail on a continuous IK branch, d66)
 TARGET_BOWL_MODEL = "002_bowl_deep"  # the TARGET: 002_bowl stretched to a 9 cm deep, 1.2x wider interior (robotwin_assets/, scripts/item_envs/make_bowl_variant.py; user review 6: poured beads bounced out of the plain bowl)
 SRC_BOWL_MODEL = "002_bowl"  # the SOURCE bowl ...
 SRC_INTERIOR_DEPTH = 0.032  # ... with a raised floor: rim 3.2 cm above it = two full bead layers (create_bowl_raised_floor; user review 5: a low container spills at small tilts and in transit)
@@ -192,9 +193,10 @@ class granular_pour(place_container_plate):
             depth = float(os.environ.get("ITEM_SRC_DEPTH", MUG_INTERIOR_DEPTH))
             # handle (body frame -z -> world -x under SPAWN_QUAT) turned to face
             # the robot (world -y): +90 deg about world z
-            # diag-only ITEM_T2_MUG_YAW_DEG: turn the handle toward the pouring
-            # arm's side by this much (mirrored per side)
-            yaw = np.deg2rad(90.0 + float(os.environ.get("ITEM_T2_MUG_YAW_DEG", 0.0)) * (1.0 if container_pose.p[0] > 0 else -1.0))
+            # handle yaw per embodiment (MUG_YAW_DEG; diag override
+            # ITEM_T2_MUG_YAW_DEG), mirrored per side
+            yaw_deg = float(os.environ.get("ITEM_T2_MUG_YAW_DEG", MUG_YAW_DEG.get(_embodiment_name(self), 0.0)))
+            yaw = np.deg2rad(90.0 + yaw_deg * (1.0 if container_pose.p[0] > 0 else -1.0))
             q = _quat_mul_wxyz(np.array([np.cos(0.5 * yaw), 0.0, 0.0, np.sin(0.5 * yaw)]), np.asarray(SPAWN_QUAT))
             container_pose = sapien.Pose(list(container_pose.p), [float(v) for v in q])
             self.container, self._src_geom = create_mug_container(self, container_pose, self.container_id, depth)
