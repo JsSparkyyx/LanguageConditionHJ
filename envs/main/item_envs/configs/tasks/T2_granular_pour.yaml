@@ -19,14 +19,14 @@ robotwin_task: granular_pour
 embodiments: [ur5-wsg, franka-panda]     # first entry is the default
 bimanual: false                          # true: second arm holds the (dynamic) target during the pour
 bowl_model: 002_bowl
-src: {interior_depth: 0.025, fill_frac: 0.65}   # SOURCE bowl: raised floor (rim 2.5 cm above it) + random pack at fill_frac x rim capacity, capped at beads.n (user review 5); the target stays the plain bowl
+src: {interior_depth: 0.032, fill_frac: 0.8}   # SOURCE bowl: raised floor (rim 2.5 cm above it) + random pack at fill_frac x rim capacity, capped at beads.n (user review 5); the target stays the plain bowl
 bowl_ids: [1, 2, 3, 5]                   # passed P2 rest containment at (60 beads, 6 mm)
 beads: {n: 100, radius: 0.006, mass: [0.0005, 0.002]}  # P2 rest-containment was
                                         # validated at N=60; N=100 fills the bowl to
                                         # roughly one layer near the rim — intentional,
                                         # makes transport spill easier (user request).
                                         # masses in kg
-target: {model: 002_bowl, static: true}  # bimanual variant: dynamic
+target: {model: 002_bowl_deep, static: true}  # bimanual variant: dynamic
 risk:
   time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}   # transit retime
   safe_time_scale: 0.6

@@ -45,6 +45,7 @@ from ._item_utils import (
     bead_grid_positions,
     bead_random_positions,
     bowl_bead_capacity,
+    bowl_lattice_capacity,
     bowl_geometry,
     container_region_radius,
     register_item,
@@ -83,11 +84,11 @@ N_BEADS_MAX = 240  # grid candidates at BEAD_R (scaled by (BEAD_R / r)^3 for sma
 CARRY_BEAD_R = BEAD_R  # m: T4 bead radius (diag override ITEM_T4_BEAD_R); smaller than BEAD_R -> category "small_beads" (lighter per bead)
 BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitch 12.6 mm -> 11-19 mm by bowl id)
 CARRY_BOWL_MODEL = "002_bowl"
-CARRY_INTERIOR_DEPTH = 0.025  # raised floor: rim 2.5 cm above it (create_bowl_raised_floor; user review 5): spills at small tilts, needs velocity control
-TABLE_FILL_FRAC = 0.65  # table mode: beads = this x the bowl's random-pack rim capacity (0.85 put the surface where the pinch's inner finger enters: 1-11 beads knocked out at the grasp, diag d46)
+CARRY_INTERIOR_DEPTH = 0.032  # raised floor: rim 3.2 cm above it = two full bead layers (create_bowl_raised_floor; user review 5): spills at small tilts, needs velocity control
+TABLE_FILL_FRAC = 0.8  # table mode: beads = this x the bowl's LATTICE rim capacity (bowl_lattice_capacity: the volume estimate counted a thin layer 2-3x too high, d49)
 CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill TABLE_FILL_FRAC); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
 CARRY_MODE_P = (0.3, 0.7)  # held is the cleanly avoidable regime (spills during the carry, not at the grasp)
-HELD_PACK_FILL = 1.0  # held mode fills to this x the bowl's rim capacity (bowl_bead_capacity, random pack phi 0.58): LEVEL-full — 1.15 heaped the low bowl and the heap kept rolling off right after t = 0, before any motion (diag d46)
+HELD_PACK_FILL = 1.0  # held mode: beads = this x the LATTICE rim capacity — a random pack of that count is level-full (1.15 x the volume estimate heaped the low bowl, d46)
 HELD_SETTLE_STEPS = 500  # physics steps (2 s) the levelled bowl is held still before t = 0
 BEAD_PACK = "random"  # "lattice" (hex grid, settles into a crystal) | "random" (random sequential addition, settles into a random pack)
 PACK_FILL = 1.1  # random pack: bead count = this x the lattice count at BRIM_CLEAR / DOME_H
@@ -167,9 +168,9 @@ class granular_carry(granular_pour):
         pack = os.environ.get("ITEM_T4_PACK", BEAD_PACK)  # diag-only override
         if pack == "random":
             if self.carry_mode == "held":
-                n_fill = int(round(bowl_bead_capacity(g, bead_r) * HELD_PACK_FILL))
+                n_fill = int(round(bowl_lattice_capacity(g, bead_r) * HELD_PACK_FILL))
             elif self._src_geom.get("raised_floor"):  # low bowl: fill to a capacity fraction
-                n_fill = int(round(bowl_bead_capacity(g, bead_r) * TABLE_FILL_FRAC))
+                n_fill = int(round(bowl_lattice_capacity(g, bead_r) * TABLE_FILL_FRAC))
             else:
                 n_fill = int(round(len(local) * float(os.environ.get("ITEM_T4_PACK_N", PACK_FILL))))
             local = bead_random_positions(n_fill, bead_r, g, np.random)

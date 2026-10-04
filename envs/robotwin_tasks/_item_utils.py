@@ -814,6 +814,19 @@ def bowl_bead_capacity(geom, r, phi=0.58):
     return int(round(phi * vol / (4.0 / 3.0 * np.pi * float(r) ** 3)))
 
 
+def bowl_lattice_capacity(geom, r, n_max=2000):
+    """Beads of radius r that fit FULLY below the rim: hex-lattice cells
+    (bead_grid_positions, wall-band aware) whose centre is <= rim_y - r.
+    Exact for thin layers — the volume estimate (bowl_bead_capacity) counts
+    a 2.5 cm interior 2-3x too high (a random pack of that many beads half
+    spilled during the settle, diag d49)."""
+    import numpy as np
+
+    loc = bead_grid_positions(int(n_max), float(r), float(geom["inner_radius"]), float(geom["floor_y"]),
+                              bands=geom.get("bands"), rng=None)
+    return int((loc[:, 1] <= float(geom["rim_y"]) - float(r)).sum())
+
+
 def bead_random_positions(n, r, geom, rng, gap=5e-4, column=0.10, max_tries=200000):
     """[n, 3] RANDOM non-overlapping bead centres in the bowl up-frame (y up,
     origin at the exterior bottom): random sequential addition inside the

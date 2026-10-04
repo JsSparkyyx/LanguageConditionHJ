@@ -17,8 +17,8 @@ task: granular_carry
 robotwin_task: granular_carry
 embodiments: [ur5-wsg, franka-panda]
 bowl_model: 002_bowl
-bowl: {interior_depth: 0.025}   # raised floor: rim this far above the interior floor (create_bowl_raised_floor)
-table: {fill_frac: 0.65}        # table mode: beads = this x the raised-floor bowl's random-pack rim capacity
+bowl: {interior_depth: 0.032}   # raised floor: rim this far above the interior floor (create_bowl_raised_floor)
+table: {fill_frac: 0.8}        # table mode: beads = this x the raised-floor bowl's random-pack rim capacity
 bowl_ids: [1, 2, 3, 5]
 modes: {table: 0.3, held: 0.7}   # table: grasp at t >= 0; held: brim-full bowl grasped + levelled BEFORE t = 0, spilled beads removed
 held: {pack_fill: 1.0, settle_steps: 500}   # x the bowl's random-pack rim capacity (volume-based): level-full, no heap

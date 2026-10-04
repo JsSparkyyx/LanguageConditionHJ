@@ -80,6 +80,7 @@ from ._item_utils import (
     bead_grid_positions,
     bead_random_positions,
     bowl_bead_capacity,
+    bowl_lattice_capacity,
     bowl_geometry,
     container_region_radius,
     min_pour_height,
@@ -91,10 +92,11 @@ from ._item_utils import (
 
 # --- scene layout (must match main/item_envs/configs/tasks/T2_granular_pour.yaml;
 #     tests/item_envs/test_granular_pour.py source-greps this contract) ---
-BOWL_MODEL = "002_bowl"  # the TARGET bowl (deep: catches the pour)
+BOWL_MODEL = "002_bowl"  # base bowl model (source: + raised floor)
+TARGET_BOWL_MODEL = "002_bowl_deep"  # the TARGET: 002_bowl stretched to a 9 cm deep, 1.2x wider interior (robotwin_assets/, scripts/item_envs/make_bowl_variant.py; user review 6: poured beads bounced out of the plain bowl)
 SRC_BOWL_MODEL = "002_bowl"  # the SOURCE bowl ...
-SRC_INTERIOR_DEPTH = 0.025  # ... with a raised floor: rim 2.5 cm above it (create_bowl_raised_floor; user review 5: a low container spills at small tilts and in transit)
-SRC_FILL_FRAC = 0.65  # low source: beads = this x its random-pack rim capacity (capped at N_BEADS); 0.8 put the surface where the pinch's inner finger enters (T4 d46)
+SRC_INTERIOR_DEPTH = 0.032  # ... with a raised floor: rim 2.5 cm above it (create_bowl_raised_floor; user review 5: a low container spills at small tilts and in transit; 3.2 cm = two full bead layers)
+SRC_FILL_FRAC = 0.8  # low source: beads = this x its LATTICE rim capacity (bowl_lattice_capacity), capped at N_BEADS
 BOWL_IDS = (1, 2, 3, 5)  # P2 rest-containment PASS at (60 beads, 6 mm), feasibility.md
 BOWL_MASS_RANGE = (0.10, 0.40)  # objects.yaml categories.bowl.mass_range
 SPAWN_QUAT = (0.5, 0.5, 0.5, 0.5)  # RoboTwin glb-upright convention (file y -> world z)
@@ -184,12 +186,12 @@ class granular_pour(place_container_plate):
         self.target = create_actor(
             self,
             pose=target_pose,
-            modelname=BOWL_MODEL,
+            modelname=TARGET_BOWL_MODEL,
             model_id=self.target_id,
             convex=True,
             is_static=not BIMANUAL,
         )
-        self._target_geom = bowl_geometry(BOWL_MODEL, self.target_id)
+        self._target_geom = bowl_geometry(TARGET_BOWL_MODEL, self.target_id)
         tp = self.target.get_pose().p
         self._target_home = [float(tp[0]), float(tp[1]), TABLE_Z, 1.0, 0.0, 0.0, 0.0]
         if BIMANUAL:
@@ -204,7 +206,7 @@ class granular_pour(place_container_plate):
             # low (raised-floor) source: a random pack (a hex lattice settles into a
             # crystal that holds far past the angle of repose, T4 diag d21-d32)
             # filled to SRC_FILL_FRAC of the rim capacity
-            n_beads = min(n_beads, int(round(SRC_FILL_FRAC * bowl_bead_capacity(self._src_geom, BEAD_R))))
+            n_beads = min(n_beads, int(round(SRC_FILL_FRAC * bowl_lattice_capacity(self._src_geom, BEAD_R))))
             local = bead_random_positions(n_beads, BEAD_R, self._src_geom, np.random)
         else:
             local = bead_grid_positions(
