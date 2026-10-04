@@ -101,6 +101,7 @@ FLOOR_PLATE_T = 0.004  # raised floor: top plate thickness (reaches the wall; th
 GRASP_POS_TOL = 0.012  # mug slide-in: correct while the EE ends farther than this (or GRASP_ANG_TOL_DEG) from the grasp pose ...
 GRASP_ANG_TOL_DEG = 5.0  # (franka lands 0.7-0.8 cm / 3.6 deg off and grasps fine; ur5's right arm 2.4-3 cm / 11 deg misses)
 GRASP_CORRECT_ITERS = 3  # ... at most this many times
+PRE_GRASP_SPEED = 0.15  # m/s (rotation at 0.1 m/rad): the mug pre-grasp via path, average speed
 MUG_PRE_GRASP_BACK = 0.15  # mug: pre-grasp this far back along the approach (the slide-in is a local screw)
 MUG_TIP_CLEAR = 0.006  # fingertips stop this far from the mug body wall (the handle bar is 2.8-4.1 cm out)
 SRC_CONTAINER = {"ur5-wsg": "mug", "franka-panda": "bowl"}  # per embodiment (yaml src.container); diag override ITEM_SRC_CONTAINER
@@ -143,6 +144,7 @@ SWING_CLEAR = 0.03  # m: source-bowl hull above the target rim during transit an
 POUR_REF_DEG = 85.0  # mid-pour angle (100 beads start leaving at ~55-60 deg) at which the lip sits on the pour point
 PIVOT_ALPHAS = (0.0, 0.25, 0.5, 0.75, 1.0)  # pivot = lip + alpha * (EE - lip); smallest executable wins
 ROLL_AIM_TILT_DEG = 35.0  # wrist-roll pour: the exit lip is placed over the target at THIS bowl tilt (pour onset of a low bowl)
+ROLL_AIM_END_DEG = 90.0  # ... the aim averages the exit lip over tilt [ROLL_AIM_TILT_DEG, this] (the low bed empties over that range)
 ROLL_PITCH_DEG = 30.0  # wrist-roll pour: approach pitched this far below horizontal (max bowl tilt 180 - 2 x this)
 HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 Hz)
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
@@ -569,7 +571,7 @@ class granular_pour(place_container_plate):
             # handle and above the rim, clear of the mouth (10 cm back swept
             # them through it, d50 seed 136; a raised waypoint + descent left
             # franka on an IK branch with no way down: 5.5 rad flips, d51/d52)
-            self.move(self.move_to_pose(arm_tag, (ee_grasp - a * MUG_PRE_GRASP_BACK).tolist() + q0))
+            self._via_move(arm_tag, (ee_grasp - a * MUG_PRE_GRASP_BACK).tolist() + q0, speed=PRE_GRASP_SPEED)
         else:
             self.move(self.move_to_pose(arm_tag, (ee_grasp - a * 0.10).tolist() + q0))
         if mug:
@@ -648,8 +650,20 @@ class granular_pour(place_container_plate):
         rim_c = rim - pinch  # rim centre relative to the pinch
         ths = np.linspace(0.0, 2.0 * np.pi, 72, endpoint=False)
         ring = np.stack([rim_c + float(g["inner_radius"]) * np.array([np.cos(t), np.sin(t), 0.0]) for t in ths])
-        ring_aim = ring @ _rot_axis(a, sgn * phi_aim).T
-        far_end = ring_aim[int(np.argmin(ring_aim[:, 2]))]  # exit lip relative to the pinch at the aim tilt
+        # ... and averaged over the pour: the pitched roll swings the lip
+        # sideways while the low bed empties (onset -> ~ROLL_AIM_END_DEG), so
+        # aiming the onset lip alone landed the missed stream 9-15 cm to the
+        # side of the target, mirrored per arm (d54-d60 landing points). The
+        # lip's MEAN xy over that range goes over the target; its LOWEST z
+        # sets the pour height (clearance above the target rim at every tilt)
+        aim_end = max(aim_tilt, min(np.deg2rad(ROLL_AIM_END_DEG), tilt_total))
+        lips = []
+        for tl in np.linspace(aim_tilt, aim_end, 8):
+            ph = float(phis[int(np.argmin(np.abs(tilts - tl)))])
+            ring_t = ring @ _rot_axis(a, sgn * ph).T
+            lips.append(ring_t[int(np.argmin(ring_t[:, 2]))])
+        lips = np.asarray(lips)
+        far_end = np.array([lips[:, 0].mean(), lips[:, 1].mean(), lips[:, 2].min()])  # exit lip relative to the pinch
 
         # 3. transit — risky: put the pinch where the far lip ends over the
         #    target centre (+ lateral pour_offset), pour_height above its rim
@@ -721,6 +735,40 @@ class granular_pour(place_container_plate):
             "{a}": str(arm_tag),
         }
         return self.info
+
+    def _via_move(self, arm_tag, target, speed, n_max=24):
+        """Live pose -> ``target`` as ONE continuous local trajectory through
+        interpolated poses (controller via path: chained screw IK from the
+        live joints, so the arm stays on its current IK branch the whole
+        way), minimum jerk at ``speed`` m/s average (rotation counted at
+        0.1 m/rad). Falls back to a normal (cuRobo) move when no via path
+        exists. Used for the mug pre-grasp: cuRobo's goal IK reached it on a
+        branch (3.2 rad of joint travel) from which the slide-in had no
+        same-branch path (franka 4/4 grasps failed, d59)."""
+        p0 = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+        p1 = np.asarray(target, dtype=np.float64).reshape(7)
+        if float(np.dot(p0[3:], p1[3:])) < 0.0:
+            p1[3:] = -p1[3:]
+        dist = float(np.linalg.norm(p1[:3] - p0[:3]))
+        ang = 2.0 * float(np.arccos(np.clip(abs(float(np.dot(p0[3:], p1[3:]))), -1.0, 1.0)))
+        n = int(np.clip(np.ceil(max(dist / 0.03, ang / np.deg2rad(6.0))), 1, n_max))
+        poses = []
+        for k in range(1, n + 1):
+            t = k / n
+            q = (1.0 - t) * p0[3:] + t * p1[3:]
+            poses.append((p0[:3] + t * (p1[:3] - p0[:3])).tolist() + (q / float(np.linalg.norm(q))).tolist())
+        ok_before = bool(self.plan_success)
+        self.plan_local = True
+        self.plan_via = poses[:-1]
+        self.plan_profile = {"kind": "minjerk", "duration": max((dist + 0.1 * ang) / max(float(speed), 1e-3), 0.5)}
+        try:
+            self.move(self.move_to_pose(arm_tag, poses[-1]))
+        finally:
+            self.plan_local = False
+            self.plan_via, self.plan_profile = None, None
+        if ok_before and not self.plan_success:
+            self.plan_success = True  # no via path: the arm did not move — plan it normally
+            self.move(self.move_to_pose(arm_tag, list(p1)))
 
     def _remove_spilled_beads(self):
         """Delete every bead not inside the bowl's INNER wall (spilled, or

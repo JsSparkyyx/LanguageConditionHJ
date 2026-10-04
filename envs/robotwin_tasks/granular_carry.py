@@ -247,8 +247,8 @@ class granular_carry(granular_pour):
             poses.append((p0[:3] + t * (p1[:3] - p0[:3])).tolist() + q.tolist())
         step_t = max(length / n / max(float(speed), 1e-3), float(min_t))
         if stop and length > 1e-3:
-            profile = {"kind": "hard_stop", "length": length, "v": float(speed),
-                       "accel_dist": CARRY_ACCEL_DIST, "stop_dist": CARRY_STOP_DIST}
+            profile = {"kind": "hard_stop", "length": length, "v": float(speed), "accel_dist": CARRY_ACCEL_DIST,
+                       "stop_dist": float(os.environ.get("ITEM_T4_STOP_DIST", CARRY_STOP_DIST))}  # env: diag-only
         else:
             profile = {"kind": "minjerk", "duration": n * step_t}
         ok_before = bool(self.plan_success)

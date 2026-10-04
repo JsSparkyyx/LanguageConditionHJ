@@ -50,6 +50,7 @@ DEFAULT_JOINT_VEL = 2.0  # rad/s (or m/s prismatic) fallback, body_features.py p
 PHYSICS_DT = 1.0 / 250.0  # one plan row per physics step (cuRobo interpolation_dt, mplib time_step)
 LOCAL_JUMP_MAX = 1.0  # rad: a plan_local step whose joints leave the start by more is a branch flip
 BRANCH_FLIP_TRAVEL = 2.0  # rad: any-joint travel above this triggers a local (screw) retry
+VIA_IK_STEP_MAX = 0.35  # rad: a via waypoint's IK fallback must stay this close (every joint) to the previous waypoint
 BRANCH_FLIP_REPLANS = 2  # cuRobo re-plans when no local path exists (least travel wins)
 
 
@@ -197,13 +198,21 @@ class RiskTickController(TickChunkedController):
             except Exception as exc:
                 print(f"[risk_tick] plan #{self._n_plan} {arm} via {k}/{len(poses)} screw error: {exc}")
                 return {"status": "Fail_via"}
-            if not res or res.get("status") != "Success" or _max_joint_travel(res) > LOCAL_JUMP_MAX:
-                print(f"[risk_tick] plan #{self._n_plan} {arm} via {k}/{len(poses)} failed "
-                      f"({None if not res else res.get('status')})")
-                return {"status": "Fail_via"}
-            end = np.asarray(res["position"], dtype=np.float64)
-            if end.ndim == 2 and len(end):
-                q[idx] = end[-1]
+            if res and res.get("status") == "Success" and _max_joint_travel(res) <= LOCAL_JUMP_MAX:
+                end = np.asarray(res["position"], dtype=np.float64)
+                if end.ndim == 2 and len(end):
+                    q[idx] = end[-1]
+            else:
+                # the straight screw between two dense waypoints can fail where
+                # the step chain (re-planned from the LIVE joints) passed (ur5
+                # carry 2/6, d60): IK of the waypoint itself, nearest to the
+                # previous one, keeps the trajectory continuous
+                q_ik = self._ik_near(mplib, arm, pose, q, idx)
+                if q_ik is None:
+                    print(f"[risk_tick] plan #{self._n_plan} {arm} via {k}/{len(poses)} failed "
+                          f"(screw {None if not res else res.get('status')}, no IK near the previous waypoint)")
+                    return {"status": "Fail_via"}
+                q[idx] = q_ik
             qs.append(q[idx].copy())
         W = np.stack(qs)
         ee0 = np.asarray(task.get_arm_pose(arm), dtype=np.float64).reshape(7)
@@ -216,6 +225,24 @@ class RiskTickController(TickChunkedController):
         print(f"[risk_tick] plan #{self._n_plan} {arm} via path ok: {len(poses)} waypoints, "
               f"{profile.get('kind')} {len(pos) * PHYSICS_DT:.2f}s travel={float(np.max(np.abs(W - W[0]))):.2f}rad")
         return {"status": "Success", "position": pos, "velocity": vel, "_item_profiled": True}
+
+    def _ik_near(self, mplib, arm: str, pose, q_full, idx, max_step: float = VIA_IK_STEP_MAX):
+        """Move-group joints of an IK solution of ``pose`` closest to
+        ``q_full`` (mplib IK, collision-checked), or None if none lies within
+        ``max_step`` rad of it on every joint."""
+        try:
+            goal = self.robot._trans_from_gripper_to_endlink(list(pose), arm_tag=arm)
+            status, sol = mplib.planner.IK(goal, np.asarray(q_full, dtype=np.float64), return_closest=True)
+        except Exception as exc:
+            print(f"[risk_tick] via IK error: {exc}")
+            return None
+        if status != "Success" or sol is None:
+            return None
+        sol = np.asarray(sol, dtype=np.float64).reshape(-1)
+        q_new = sol[idx] if len(sol) == len(q_full) else sol[: len(idx)]
+        if float(np.max(np.abs(q_new - np.asarray(q_full)[idx]))) > max_step:
+            return None
+        return q_new
 
     def _avoid_branch_flip(self, arm: str, target_pose, result, **kw):
         """cuRobo's goal IK sometimes returns ANOTHER IK branch: the ur5 arm
