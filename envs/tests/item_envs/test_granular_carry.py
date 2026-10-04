@@ -1,8 +1,8 @@
 """Non-sim tests: T4 granular_carry rule table + task-file/yaml contract.
 
 Mock scene mirrors robotwin_tasks/granular_carry.py (beads particle_set,
-bowl_src task_object, bowl_src_interior container, target_pad, zone_red /
-zone_blue mats); rules are enumerated from the REAL T4 yaml + objects.yaml +
+bowl_src task_object, bowl_src_interior container — no mats since user
+review 3); rules are enumerated from the REAL T4 yaml + objects.yaml +
 splits.yaml. The task file's module constants are pinned to the yaml.
 """
 

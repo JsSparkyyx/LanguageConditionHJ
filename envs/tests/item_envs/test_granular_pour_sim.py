@@ -70,7 +70,15 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         ]
         beads = {s.item_id: s for s in runner.items}["beads"]
         assert beads.kind == "particle_set"
-        assert len(beads.particles) == 100
+        # low (raised-floor) source: SRC_FILL_FRAC x its random-pack rim
+        # capacity, capped at N_BEADS (user review 5)
+        task = runner.env.task
+        mod = __import__(type(task).__module__, fromlist=["x"])
+        if task._src_geom.get("raised_floor"):
+            cap = mod.bowl_bead_capacity(task._src_geom, mod.BEAD_R)
+            assert len(beads.particles) == min(mod.N_BEADS, int(round(mod.SRC_FILL_FRAC * cap)))
+        else:
+            assert len(beads.particles) == mod.N_BEADS
         margins = runner._rule_margins()
         assert margins.shape == (len(EXPECTED_RULE_IDS),)
         assert np.all(np.isfinite(margins))
