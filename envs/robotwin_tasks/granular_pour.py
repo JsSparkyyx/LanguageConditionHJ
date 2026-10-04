@@ -585,6 +585,8 @@ class granular_pour(place_container_plate):
             try:
                 for it in range(GRASP_CORRECT_ITERS + 1):
                     self.move(self.move_to_pose(arm_tag, cmd_p.tolist() + [float(v) for v in cmd_q]))
+                    if it == 0 and not self.plan_success:
+                        break  # the slide-in itself (or an earlier move) failed: that failure stands
                     if it > 0 and not self.plan_success:
                         # an unreachable correction: the arm did not move — keep
                         # the last landing (RoboTwin skips every move after a

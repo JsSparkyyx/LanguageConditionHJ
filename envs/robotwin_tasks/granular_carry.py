@@ -255,6 +255,8 @@ class granular_carry(granular_pour):
 
     def _level(self, arm, speed):
         """Rotate the EE about the pinch so the bowl's up axis is vertical."""
+        if not self.plan_success:  # an earlier failure stands (never resurrect it here)
+            return
         for _ in range(LEVEL_ITERS):
             up = np.asarray(self.container.get_pose().to_transformation_matrix())[:3, 1]  # file y = up
             ang = float(np.arccos(np.clip(up[2], -1.0, 1.0)))
@@ -265,6 +267,14 @@ class granular_carry(granular_pour):
                 return
             ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
             self._steps_to(arm, self._rotated_about_tcp(ee, _rot_axis(axis, ang)), speed, min_t=LEVEL_STEP_T)
+            if not self.plan_success:
+                # a levelling step with no same-branch IK (ur5 wrist; the
+                # fallback flipped the branch and was rejected, d52 2/8 held
+                # runs): keep the residual tilt instead of freezing the
+                # episode (RoboTwin skips every move after a failed plan)
+                self.plan_success = True
+                self.episode_info["level_aborted"] = int(self.episode_info.get("level_aborted", 0)) + 1
+                return
 
     def _grasp_and_level(self, arm, v_safe, knobs, eparams):
         """Stiffen the pinch, grasp the outer rim, lift off, level."""
