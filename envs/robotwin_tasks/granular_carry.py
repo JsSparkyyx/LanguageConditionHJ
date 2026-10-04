@@ -388,11 +388,19 @@ class granular_carry(granular_pour):
     def overlay_lines(self):
         if not getattr(self, "beads", None):
             return []
-        n_in = self._beads_inside(self.container, self._src_geom)
-        xy = np.asarray(self.container.get_pose().p, dtype=np.float64)[:2]
+        # spilled = outside the rule's footprint column (outer radius + pad) —
+        # the same criterion as particles_inside (heaped beads above the rim
+        # of a brim-full held bowl still count as in the bowl)
+        T = np.asarray(self.container.get_pose().to_transformation_matrix(), dtype=np.float64)
+        r_col = container_region_radius(self._src_geom, pad=CONTAINER_REGION_PAD)
+        n_out = 0
+        for b in self.beads:
+            p_loc = T[:3, :3].T @ (np.asarray(b.get_pose().p, dtype=np.float64) - T[:3, 3])
+            n_out += int(np.hypot(p_loc[0], p_loc[2]) > r_col)  # file y = up
+        xy = T[:2, 3]
         dist = float(np.linalg.norm(xy - self.target_xy))
-        flag = "" if n_in == self.n_beads else "!"
+        flag = "" if n_out == 0 else "!"
         return [
-            f"{flag}beads in bowl {n_in} / {self.n_beads}",
+            f"{flag}beads spilled {n_out} / {self.n_beads}  ({getattr(self, 'carry_mode', 'table')} mode)",
             f"bowl tilt {self._bowl_tilt_deg():.1f}deg  ->pad {dist * 100:.1f}cm",
         ]
