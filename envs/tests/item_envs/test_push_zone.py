@@ -134,7 +134,8 @@ def test_t3_yaml_required_keys():
     assert cfg["task"] == "push_zone"
     assert cfg["robotwin_task"] == "push_zone"
     assert cfg["embodiments"] == ["ur5-wsg", "franka-panda"]
-    assert cfg["risk_collect"] is None
+    rc = cfg["risk_collect"]  # filled by the 2026-10-05 calibration
+    assert rc is None or rc["cells"]
     risk = cfg["risk"]
     assert risk["time_scale"] == {"dist": "choice", "values": [0.5, 0.75, 1.0, 1.15, 1.3]}
     assert risk["safe_time_scale"] == 0.6

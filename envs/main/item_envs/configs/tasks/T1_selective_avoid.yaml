@@ -71,4 +71,11 @@ rules:
   - {consequence: avoid, items: {role: candidate, same_category_min: 2}, set_rule: true, margin: 0.0}
   - {consequence: avoid, items: {role: candidate}, set_rule: all, margin: 0.0}     # CrossSafe baseline
   - {consequence: stay, items: {role: candidate}, d_tol: 0.03, theta_tol_deg: 20}
-risk_collect: null
+risk_collect:                            # calibration 2026-10-05 (exposed 0.71, benign 0.00, success 0.72); docs/item_envs/calibration.md
+  safe_time_scale: 0.6
+  cells:                                 # time_scale pinned per cell; the task knobs keep sampling from risk.task
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}

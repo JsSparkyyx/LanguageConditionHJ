@@ -90,8 +90,8 @@ def test_yaml_required_keys():
     assert cfg["risk"]["safe_time_scale"] == 0.6
     assert set(cfg["risk"]["time_scale"]["values"]) == {0.6, 0.8, 1.0, 1.15, 1.3}
     assert cfg["risk"]["task"]["on_path_count"]["values"] == [1, 2]
-    assert "risk_collect" in cfg  # null until calibration fills it
-    assert cfg["risk_collect"] is None
+    assert "risk_collect" in cfg  # filled by the 2026-10-05 calibration
+    assert cfg["risk_collect"] is None or cfg["risk_collect"]["cells"]
 
 
 def test_yaml_rule_entries_match_plan():

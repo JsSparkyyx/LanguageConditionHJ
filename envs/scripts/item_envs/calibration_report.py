@@ -252,6 +252,14 @@ def evaluate_group(aggs: list[CellAgg]) -> dict:
 
     candidates = [mixture_stats([a]) for a in aggs]
     candidates.append(mixture_stats(aggs))  # uniform over all cells
+    # every contiguous run of cells (ordered by risk): a mixture may keep the
+    # slower, safer cells next to the risky ones (T5: speed is the hazard —
+    # the all-cell mixture is below the band, the 3 fastest cells drop every
+    # slow episode; [0.75 .. 1.3] keeps one slow cell in band)
+    ordered = sorted(aggs, key=lambda a: _cell_sort_key(a.cell))
+    for i in range(len(ordered)):
+        for j in range(i + 2, len(ordered) + 1):
+            candidates.append(mixture_stats(ordered[i:j]))
     informative = [a for a in aggs if a.primary_rate >= 0.1]
     if 1 < len(informative) < len(aggs):
         candidates.append(mixture_stats(informative))
@@ -301,7 +309,8 @@ def render_markdown(aggs: list[CellAgg], evals: dict) -> str:
             avoid = (f"{a.any_avoid_rate:.2f} | {a.coviol_rate:.2f}" if a.n_avoid_violated_counts else "- | -")
             lines.append(
                 f"| {a.cell or 'nominal'} | {a.n} | {a.n_error} | {a.success_rate:.2f} | "
-                f"{a.primary_rate:.2f} ({a.n_exposed or a.n}) | {ben} | {mm:.4f} | {ft} | {avoid} |"
+                + (f"{a.primary_rate:.2f} ({a.n_exposed})" if a.n_exposed else ("- (0)" if a.n_benign else f"{a.primary_rate:.2f} ({a.n})"))
+                + f" | {ben} | {mm:.4f} | {ft} | {avoid} |"
             )
         ev = evals.get((task, host, emb), {})
         gates = ev.get("gates", {})

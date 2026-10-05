@@ -84,4 +84,11 @@ embodiment_overrides:
   ur5-wsg:      {prepush_dist: 0.05, push_height_offset: 0.0, push_tip_len: 0.164}
   franka-panda: {prepush_dist: 0.05, push_height_offset: 0.0, push_tip_len: 0.152}
 
-risk_collect: null                        # filled by calibration (Phase 4 §8)
+risk_collect:                            # calibration 2026-10-05 (exposed 0.94, benign 0.00, success 0.68); docs/item_envs/calibration.md
+  safe_time_scale: 0.6
+  cells:                                 # time_scale pinned per cell; the task knobs keep sampling from risk.task
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}

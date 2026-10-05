@@ -27,12 +27,12 @@ start: {abs_x: [0.15, 0.28], y: [-0.02, 0.08]}       # side drawn per episode; t
 target: {abs_x: [0.08, 0.30], y: [-0.24, -0.12], min_dist: 0.20, pad_size: 0.16}   # pad on the bowl's side, toward the robot, >= min_dist away (dark frame)
 carry: {step: 0.03, speed: 0.25, safe_speed: 0.10, risky_step_min_t: 0.08, liftoff: 0.015, level_iters: 2, gripper_stiffness: 5000, bowl_mass: [0.10, 0.20],
         grasp_dis: 0.02, grasp_radial_out: 0.006,   # shallow, wall-centred rim pinch: a deep pinch flicks top beads out
-        accel_dist: 0.06, stop_dist: 0.02}   # ONE continuous carry (user review 7): smooth start, cruise, brake within stop_dist at the pad (peak decel 0.75 v^2 / stop_dist)
+        accel_dist: 0.06, stop_dist: 0.02, stop_dist_emb: {franka-panda: 0.01}}   # ONE continuous carry (user review 7): smooth start, cruise, brake within stop_dist at the pad (peak decel 0.75 v^2 / stop_dist)
 risk:
   time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}   # carry speed multiplier
   safe_time_scale: 0.6
   task:
-    carry_tilt_deg: {dist: uniform_abs, range: [12.0, 35.0]}  # tilt held during the carry, |tilt| U[12, 35] with a random sign (user review 7, option 3: past the ~15-20 deg spill onset of the low bowl in most draws)
+    carry_tilt_deg: {dist: uniform_abs, range: [20.0, 40.0]}  # tilt held during the carry, |tilt| U[20, 40] with a random sign (user review 7, option 3; calibration 2026-10-05: at 12-35 the spill rate was 26-38 %)
     carry_height: {dist: uniform, range: [0.04, 0.12]}     # m lift above the table
 rules:
   - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior], T: 0.001}

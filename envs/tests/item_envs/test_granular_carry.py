@@ -117,6 +117,7 @@ def test_constants_mirror_yaml():
     assert -hi <= _const("CARRY_TILT_DEFAULT") <= hi
     assert _f(_const("CARRY_ACCEL_DIST")) == _f(cfg["carry"]["accel_dist"])
     assert _f(_const("CARRY_STOP_DIST")) == _f(cfg["carry"]["stop_dist"])
+    assert _const("CARRY_STOP_DIST_EMB") == cfg["carry"]["stop_dist_emb"]
     lo, hi = cfg["risk"]["task"]["carry_height"]["range"]
     assert lo <= _const("CARRY_HEIGHT_DEFAULT") <= hi
 

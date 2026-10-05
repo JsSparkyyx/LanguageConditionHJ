@@ -120,6 +120,7 @@ STEP_MIN_T = 0.25  # s: step-duration floor for the SAFE steps (lift-off, leveli
 SAFE_SPEED = 0.10  # m/s at time_scale 1.0 for the safe phases (x safe_time_scale 0.6 = 0.06 m/s, as validated d15-d33)
 RISKY_STEP_MIN_T = 0.08  # s: floor for the risky lift / carry steps (0.25 capped the carry at 0.12 m/s) (diag knob step_min_t)
 CARRY_ACCEL_DIST = 0.06  # m: the risky carry's smooth start (velocity smoothstep 0 -> v)
+CARRY_STOP_DIST_EMB = {"franka-panda": 0.01}  # per embodiment: franka's firm pinch carries a brim-full bowl steadily — with the 2 cm brake it spilled 25 % even at 32-40 deg tilt, 1 cm 41 % (calibration 2026-10-05)
 CARRY_STOP_DIST = 0.02  # m: ... and its brake at the pad: peak decel 0.75 v^2 / this (0.6 m/s^2 at 0.125 m/s, 4.0 m/s^2 at 0.325 m/s)
 LEVEL_STEP_T = 0.5  # s per <= 5 deg leveling step (10 deg/s): a faster wrist turn slipped the loaded rim pinch (diag d26)
 PLACE_CLEAR = 0.004  # m, bowl bottom above the table at release
@@ -258,8 +259,9 @@ class granular_carry(granular_pour):
         if stop and length > 1e-3:
             profile = {"kind": "hard_stop", "length": length, "v": float(speed),
                        "accel_dist": float(CARRY_ACCEL_DIST if accel_dist is None else accel_dist),
-                       "stop_dist": float(os.environ.get("ITEM_T4_STOP_DIST", CARRY_STOP_DIST) if stop_dist is None
-                                          else stop_dist)}  # env: diag-only (T4)
+                       "stop_dist": float(os.environ.get("ITEM_T4_STOP_DIST",
+                                                         CARRY_STOP_DIST_EMB.get(_embodiment_name(self), CARRY_STOP_DIST))
+                                          if stop_dist is None else stop_dist)}  # env: diag-only (T4)
         else:
             profile = {"kind": "minjerk", "duration": n * step_t}
         ok_before = bool(self.plan_success)

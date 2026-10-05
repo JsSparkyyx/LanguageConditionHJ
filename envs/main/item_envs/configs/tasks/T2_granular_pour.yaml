@@ -64,4 +64,11 @@ embodiment_overrides:                     # installed as task.embodiment_params 
   ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006, pour_style: wrist_roll, tip_len: 0.164, roll_pitch_deg: 40}
   franka-panda: {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.0125, grasp_radial_out: 0.006, tip_len: 0.152}
 
-risk_collect: null                       # filled by calibration
+risk_collect:                            # calibration 2026-10-05 (exposed 0.91, success 0.49); docs/item_envs/calibration.md
+  safe_time_scale: 0.6
+  cells:                                 # time_scale pinned per cell; the task knobs keep sampling from risk.task
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
