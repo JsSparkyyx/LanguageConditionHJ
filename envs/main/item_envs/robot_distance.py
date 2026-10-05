@@ -62,6 +62,26 @@ def _cehj():
     return cehj_distance, load_collision_spheres
 
 
+_SPHERES_DIR = __import__("pathlib").Path(__file__).resolve().parent / "configs" / "collision_spheres"
+_SPHERE_CACHE: dict = {}
+
+
+def _item_collision_spheres(embodiment: str, cehj_loader) -> dict:
+    """Collision spheres for the item distance: our own file when one exists
+    for the embodiment (configs/collision_spheres/<emb>.yml — ur5-wsg: the
+    RoboTwin file models a Robotiq gripper, the WSG had no spheres), else
+    CEHJ's loader (RoboTwin's file)."""
+    if embodiment not in _SPHERE_CACHE:
+        path = _SPHERES_DIR / f"{embodiment}.yml"
+        if path.exists():
+            import yaml
+
+            _SPHERE_CACHE[embodiment] = yaml.safe_load(path.read_text())["collision_spheres"]
+        else:
+            _SPHERE_CACHE[embodiment] = cehj_loader(embodiment)
+    return _SPHERE_CACHE[embodiment]
+
+
 def _as_specs(items) -> list:
     specs = list(items.values()) if hasattr(items, "values") else list(items)
     return specs
@@ -325,7 +345,7 @@ def robot_item_distances(env, items) -> np.ndarray:
     out = np.full(len(specs), np.inf, dtype=np.float64)
     if not specs:
         return out
-    spheres = load_collision_spheres(env.embodiment)
+    spheres = _item_collision_spheres(env.embodiment, load_collision_spheres)
     held_idx, payloads = _held_info(env, specs, cehj)
     for i, spec in enumerate(specs):
         if i in held_idx and str(getattr(spec, "role", "")) not in _RULE_ROLES:
