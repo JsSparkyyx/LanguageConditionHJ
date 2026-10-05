@@ -54,8 +54,13 @@ class RuleSpec:
     item_ids: tuple[str, ...]  # usually one item. Several items = set rule ("avoid every cup"), margin = min
     region_ids: tuple[str, ...]  # empty for AVOID, UPRIGHT, STAY
     params: dict  # {"margin": m} | {"theta_max": rad} | {"d_tol": m, "theta_tol": rad} | {"T": m}
-    phrases: list[str] = field(default_factory=list)
-    split: str = "train"  # "train" | "heldout_item" | "heldout_region" | "heldout_phrase"
+    phrases: list[str] = field(default_factory=list)  # training phrases (never from a held-out template)
+    # evaluation-only phrases from the held-out templates (splits.yaml
+    # heldout_phrase_templates): the rule stays in its split, only these
+    # wordings are kept out of training (user decision 2026-10-05; before, one
+    # held-out phrase among three held out the WHOLE rule — 55 % of T6's)
+    heldout_phrases: list[str] = field(default_factory=list)
+    split: str = "train"  # "train" | "heldout_item" | "heldout_region" | "heldout_phrase" (only when every template is held out)
     ambiguous: bool = False  # single-item rule whose item no name tells apart in this scene (never a conditioning rule)
 
     def __post_init__(self):
@@ -143,8 +148,15 @@ def enumerate_rules(items, regions, task_cfg, *, objects_cfg=None, splits_cfg=No
                     others = set().union(*[nm for iid, nm in scene_names.items() if iid not in rule.item_ids] or [set()])
                     others_r = set().union(*[nm for rid, nm in region_scene_names.items()
                                              if rid not in rule.region_ids] or [set()])
+                    held_t = list((splits_cfg or {}).get("heldout_phrase_templates", []) or [])
                     rule.phrases = render_phrases(rule, objects_cfg, rule_rng, exclude_names=others,
-                                                  exclude_region_names=others_r)
+                                                  exclude_region_names=others_r, exclude_templates=held_t)
+                    if held_t:
+                        rule.heldout_phrases = render_phrases(
+                            rule, objects_cfg, rule_rng, n=2, exclude_names=others,
+                            exclude_region_names=others_r, only_templates=held_t)
+                    if not rule.phrases:  # every template is held out: the whole rule is
+                        rule.phrases, rule.heldout_phrases = rule.heldout_phrases, []
                     if len(rule.item_ids) == 1:
                         own = _item_names(rule, objects_cfg)
                         rule.ambiguous = not any(nm not in others for nm in own)
@@ -155,7 +167,7 @@ def enumerate_rules(items, regions, task_cfg, *, objects_cfg=None, splits_cfg=No
 
 
 def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState, n: int = 3,
-                   exclude_names=(), exclude_region_names=()) -> list[str]:
+                   exclude_names=(), exclude_region_names=(), exclude_templates=(), only_templates=None) -> list[str]:
     """Up to n natural-language variants for a rule. Never contain digits.
 
     Templates come from the module-level TEMPLATES (SET_TEMPLATES for set
@@ -171,6 +183,11 @@ def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState
     if not rule.region_ids:
         templates = [t for t in templates if "{region}" not in t]
     templates = [t for t in templates if not _has_digit(t)]
+    # held-out wordings (splits.yaml heldout_phrase_templates): training
+    # phrases skip them, the evaluation phrases use only them
+    templates = [t for t in templates if t not in set(exclude_templates or ())]
+    if only_templates is not None:
+        templates = [t for t in templates if t in set(only_templates)]
     exclude_names = set(exclude_names or ())
     item_names = _unambiguous(_item_names(rule, objects_cfg), exclude_names)
     category_names = _category_names(rule, objects_cfg)

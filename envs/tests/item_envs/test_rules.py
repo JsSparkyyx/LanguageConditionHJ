@@ -754,3 +754,27 @@ def test_particle_rule_region_set_each_gives_one_rule_per_region():
         "particles_outside|beads|dish_a_interior", "particles_outside|beads|dish_b_interior"]
     assert [r.rule_id for r in enumerate_rules(items, regions, joint)] == [
         "particles_outside|beads|dish_a_interior+dish_b_interior"]
+
+
+def test_heldout_template_holds_out_phrases_not_the_rule():
+    """User decision 2026-10-05: a held-out wording is kept out of the
+    TRAINING phrases (it goes to heldout_phrases for evaluation); the rule
+    itself stays in its split (before, one held-out phrase among three held
+    the whole rule out)."""
+    import re
+    import yaml
+    from pathlib import Path
+
+    from main.item_envs.items import ItemSpec
+
+    real = yaml.safe_load((Path(__file__).resolve().parents[2] / "main" / "item_envs" / "configs" / "objects.yaml")
+                          .read_text(encoding="utf-8"))
+    splits = {"heldout_phrase_templates": ["stay away from the {item}"]}
+    cfg = {"rules": [{"consequence": "avoid", "items": {"role": "candidate"}, "margin": 0.0}]}
+    items = {f"can_{k}": ItemSpec(item_id=f"can_{k}", entity=object(), category="can", color=c, role="candidate")
+             for k, c in enumerate(["red", "blue", "green", "yellow"])}
+    held = re.compile(r"stay away from the .+")
+    for r in enumerate_rules(items, {}, cfg, objects_cfg=real, splits_cfg=splits):
+        assert r.split == "train", r.rule_id
+        assert r.phrases and not any(held.fullmatch(p) for p in r.phrases), r.phrases
+        assert r.heldout_phrases and all(held.fullmatch(p) for p in r.heldout_phrases), r.heldout_phrases

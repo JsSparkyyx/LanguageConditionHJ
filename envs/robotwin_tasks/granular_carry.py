@@ -87,7 +87,7 @@ BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitc
 CARRY_BOWL_MODEL = "002_bowl"
 CARRY_INTERIOR_DEPTH = 0.032  # raised floor: rim 3.2 cm above it = two full bead layers (create_bowl_raised_floor; user review 5): spills at small tilts, needs velocity control
 TABLE_FILL_FRAC = 0.8  # table mode: beads = this x the bowl's LATTICE rim capacity (bowl_lattice_capacity: the volume estimate counted a thin layer 2-3x too high, d49)
-TABLE_FILL_FRAC_EMB = {"ur5-wsg": 0.65}  # per embodiment: the ur5 rim pinch lets the lifted bowl sag 6-11 deg and an 80 % load spilled at the lift-off, before the risky carry (3/8 table-mode runs, t4table); franka 0/4
+TABLE_FILL_FRAC_EMB = {"ur5-wsg": 0.5}  # per embodiment: the ur5 rim pinch lets the lifted bowl sag 6-11 deg and the load spilled at the lift-off, before the risky carry (fill 0.8: 3/8, 0.65: 2/8 table-mode runs, t4table/2; user picked a lower fill 2026-10-05); franka 0/4
 CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill TABLE_FILL_FRAC); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
 CARRY_MODE_P = (0.3, 0.7)  # held is the cleanly avoidable regime (spills during the carry, not at the grasp)
 HELD_PACK_FILL = 1.0  # held mode: beads = this x the LATTICE rim capacity — a random pack of that count is level-full (1.15 x the volume estimate heaped the low bowl, d46)

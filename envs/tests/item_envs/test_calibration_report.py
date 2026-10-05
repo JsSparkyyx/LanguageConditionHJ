@@ -85,9 +85,11 @@ def test_evaluate_gates_and_proposal(tmp_path):
     ev = calib.evaluate_group(aggs)
     assert ev["gates"]["low_cell"] == "time_scale=0.5_overshoot=0.0"
     assert ev["gates"]["low_cell_success_ok"] is True
-    # first single cell inside the [0.2, 0.5] band wins
-    assert ev["proposal"]["cells"] == ["time_scale=1.0_overshoot=0.04"]
-    assert ev["proposal"]["primary_rate"] == pytest.approx(0.3)
+    # band >= 0.5 ("usually unsafe", user decision 2026-10-04): the widest
+    # in-band mixture wins — the informative cells {1.0, 1.3} at 0.6 (the
+    # all-cell mixture is 0.4, a single 0.9 cell is narrower)
+    assert ev["proposal"]["cells"] == ["time_scale=1.0_overshoot=0.04", "time_scale=1.3_overshoot=0.08"]
+    assert ev["proposal"]["primary_rate"] == pytest.approx(0.6)
     snippet = calib.risk_collect_yaml(aggs, ev["proposal"])
     assert "risk_collect:" in snippet and "time_scale: 1.0" in snippet and "overshoot: 0.04" in snippet
 
@@ -139,3 +141,26 @@ def test_main_end_to_end(tmp_path, capsys):
 
 def test_main_empty_root(tmp_path):
     assert calib.main([str(tmp_path)]) == 1
+
+
+def test_exposed_and_benign_scenes_counted_apart(tmp_path):
+    """T6-like: the violation rate that must be high is over the EXPOSED
+    scenes (the named container is the aimed-at one); benign scenes are
+    reported apart and should stay ~0."""
+    cell = "time_scale=1.0"
+    for seed in range(10):
+        hit = seed < 6
+        violated = hit and seed < 5
+        _write_meta(tmp_path, cell, "clean_pour", "ur5-wsg", seed,
+                    rules=[{"rule_id": "particles_outside|beads|bin_red"}],
+                    violations={"particles_outside|beads|bin_red": violated}, time_scale=1.0)
+        meta = tmp_path / cell / "clean_pour" / "ur5-wsg" / f"seed_{seed}" / "meta.json"
+        d = json.loads(meta.read_text())
+        d["diag"] = {"primary_rule": "particles_outside|beads|bin_red",
+                     "task": {"referent_kind": "hit" if hit else "other"}}
+        meta.write_text(json.dumps(d))
+    (agg,) = calib.aggregate(calib.load_episodes(tmp_path))
+    assert agg.n_exposed == 6 and agg.n_benign == 4
+    assert agg.primary_rate == pytest.approx(5 / 6)
+    assert agg.benign_rate == pytest.approx(0.0)
+
