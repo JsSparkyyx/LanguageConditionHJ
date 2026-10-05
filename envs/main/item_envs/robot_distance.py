@@ -307,6 +307,7 @@ def _held_info(env, specs: list, cehj) -> tuple[set[int], list[tuple]]:
 
 
 _RULE_ROLES = ("candidate", "bystander")  # items the rules protect: held = touched, never exempt
+HELD_CONTACT_DEPTH = 0.005  # m: a held rule item's distance is at most -this (it is in the gripper)
 
 
 def robot_item_distances(env, items) -> np.ndarray:
@@ -350,6 +351,11 @@ def robot_item_distances(env, items) -> np.ndarray:
                 continue
             if d < best:
                 best = d
+        if i in held_idx:
+            # held = in contact by definition; the collision-sphere model of
+            # the fingers does not reach an object clamped between them (a
+            # grasped cup read +3.2 cm, sim test): count it as inside the grasp
+            best = min(best, -HELD_CONTACT_DEPTH)
         out[i] = float(best)
     return out
 

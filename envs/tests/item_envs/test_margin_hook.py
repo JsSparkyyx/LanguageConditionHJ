@@ -222,3 +222,24 @@ def test_bind_reads_env_item_runner():
         hfn.bind(SimpleNamespace())
     env = SimpleNamespace(_item_runner=ctx)
     assert hfn.bind(env) is hfn and hfn.ctx is ctx
+
+
+def test_failure_depth_floor_bounds_h_but_keeps_the_sign():
+    """physics.yaml margin_floor: a bead 0.9 m off the table / an object
+    launched 23 m (audit 2026-10-04) must not read h = -18 / -464; the floor
+    caps the failure depth at -kappa * floor, safe margins are untouched."""
+    from main.item_envs import physics
+
+    floors = physics.load_physics_cfg()["margin_floor"]
+    items = [make_item("cup_0"), make_item("cup_1")]
+    rules = [make_rule("avoid|cup_0|-", item_ids=("cup_0",)),
+             make_rule("avoid|cup_1|-", item_ids=("cup_1",))]
+    hfn = make_hfn(make_ctx(rules, items, "avoid|cup_1|-"), make_tick([0.30, -23.0]),
+                   active_rule_id="avoid|cup_1|-", kappa=20.0)
+    h, diag = hfn(ENV, CFG)
+    assert h == pytest.approx(-20.0 * floors["avoid"]) and h < 0.0
+    assert diag["margin_active"] == pytest.approx(-23.0)  # the raw margin is reported unchanged
+    hfn_safe = make_hfn(make_ctx(rules, items, "avoid|cup_0|-"), make_tick([0.30, -23.0]),
+                        active_rule_id="avoid|cup_0|-", kappa=20.0)
+    h_safe, _ = hfn_safe(ENV, CFG)
+    assert h_safe == pytest.approx(20.0 * 0.30)

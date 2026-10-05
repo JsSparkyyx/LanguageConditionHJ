@@ -19,3 +19,17 @@ kappa:
   stay: 20                         # 1/m
   upright: 2                       # 1/rad
   particles: 20                    # 1/m (particles_inside / particles_outside)
+
+# Failure-depth floor (raw SI, per consequence) applied where the TRAINING h is
+# formed (margin_hook.ItemMarginHFn): margin >= -floor, so h >= -kappa * floor
+# = -1 for every rule (CrossSafe's h never goes far below -1: penetration).
+# Beads rolling along the floor and objects launched by a contact glitch read
+# -18 ... -464 in h raw (audit 2026-10-04); the sign and the boundary are
+# untouched, traces keep the raw margins.
+margin_floor:
+  avoid: 0.05                      # m
+  inside: 0.05                     # m
+  outside: 0.05                    # m
+  stay: 0.05                       # m
+  upright: 0.5                     # rad
+  particles: 0.05                  # m

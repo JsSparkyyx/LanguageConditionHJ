@@ -84,6 +84,7 @@ class ItemMarginHFn:
                  ctx=None, row_sink=None, with_masks: bool = True):
         self.active_rule_id = active_rule_id
         self.kappa = kappa
+        self._floors = None  # physics.yaml margin_floor, loaded on first use
         self.ctx = ctx
         self.row_sink = row_sink
         self.with_masks = bool(with_masks)
@@ -176,6 +177,18 @@ class ItemMarginHFn:
         return per_link
 
     # ----------------------------------------------------------------- pure ----
+    def _floor_for(self, rule) -> float:
+        """Failure-depth floor (raw SI) for a rule's consequence: physics.yaml
+        margin_floor (h >= -kappa * floor); +inf (no floor) when absent."""
+        if self._floors is None:
+            from . import physics
+
+            self._floors = dict(physics.load_physics_cfg().get("margin_floor") or {})
+        name = rule.consequence.value
+        if rule.consequence in _PARTICLE_CONSEQUENCES:
+            name = "particles"
+        return float(self._floors.get(name, float("inf")))
+
     def _kappa_for(self, rule) -> float:
         if isinstance(self.kappa, dict):
             name = rule.consequence.value
@@ -214,7 +227,7 @@ class ItemMarginHFn:
         rules = list(ctx.rules)
         margins = np.asarray(data.margins, dtype=np.float64).reshape(-1)
         scaled = np.array(
-            [self._kappa_for(r) * m for r, m in zip(rules, margins)], dtype=np.float64
+            [self._kappa_for(r) * max(m, -self._floor_for(r)) for r, m in zip(rules, margins)], dtype=np.float64
         )
         active_j = self._active_index(rules)
         if not rules:

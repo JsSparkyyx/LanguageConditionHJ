@@ -113,4 +113,4 @@ def test_held_item_is_inf_and_payload_for_others(embodiment):
     # fingers read "safe" while held)
     cand = actor_spec(env, cup, "cup", "cup", role="candidate")
     d_c = robot_item_distances(env, [cand, obs_spec])
-    assert np.isfinite(d_c[0]) and d_c[0] <= 0.005, d_c
+    assert np.isfinite(d_c[0]) and d_c[0] < 0.0, d_c  # a held candidate violates "avoid"
