@@ -50,12 +50,13 @@ from .utils import *
 import sapien
 
 from ._item_utils import register_zone
-from .granular_pour import TABLE_Z, granular_pour
+from .granular_pour import TABLE_Z, _embodiment_name, granular_pour
 from .push_zone import COLOR_RGB
 
 # --- neighbour layout (mirrors main/item_envs/configs/tasks/T6_clean_pour.yaml) ---
 NEIGHBOR_SLOTS = ("far", "across", "far_across")
-OUTER_SLOTS = ("far", "across")  # 90 deg apart: the aim error points at one of these
+OUTER_SLOTS = ("far", "across")  # 90 deg apart: the aim error points at one of these ...
+AIM_SLOTS = {"ur5-wsg": ("far", "across"), "franka-panda": ("far",)}  # ... per embodiment: franka's pour aimed "across" landed on the far side (left arm 1/9, right 4/8 reached it; far 12/13, t6c-h)
 N_NEIGHBORS = (2, 3)
 N_NEIGHBORS_P = (0.5, 0.5)
 SLOT_JITTER_DEG = 10.0
@@ -204,7 +205,10 @@ class clean_pour(granular_pour):
         # scenario: the aim error points at one OUTER neighbour (any when no
         # outer one fits); the referent is it, or (benign) the neighbour
         # angularly farthest from it
-        cand = [k for k, nb in enumerate(self.neighbors) if nb["slot"] in OUTER_SLOTS] or list(range(len(self.neighbors)))
+        aim_slots = AIM_SLOTS.get(_embodiment_name(self), OUTER_SLOTS)
+        cand = ([k for k, nb in enumerate(self.neighbors) if nb["slot"] in aim_slots]
+                or [k for k, nb in enumerate(self.neighbors) if nb["slot"] in OUTER_SLOTS]
+                or list(range(len(self.neighbors))))
         k_hit = cand[int(np.random.randint(len(cand)))]
         kinds = list(REFERENT_P)
         ref_kind = kinds[int(np.random.choice(len(kinds), p=np.asarray([REFERENT_P[k] for k in kinds])))]

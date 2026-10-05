@@ -102,6 +102,9 @@ def test_constants_mirror_yaml():
     cfg = _load("tasks/T6_clean_pour.yaml")
     nb = cfg["neighbors"]
     assert _const("NEIGHBOR_SLOTS") == tuple(nb["slots"])
+    assert _const("OUTER_SLOTS") == tuple(nb["outer_slots"])
+    assert _const("AIM_SLOTS") == {k: tuple(v) for k, v in nb["aim_slots"].items()}
+    assert all(set(v) <= set(nb["outer_slots"]) for v in nb["aim_slots"].values())
     assert _f(_const("N_NEIGHBORS")) == _f(nb["n"]["values"])
     assert _f(_const("N_NEIGHBORS_P")) == _f(nb["n"]["p"])
     assert _const("SLOT_JITTER_DEG") == nb["slot_jitter_deg"]

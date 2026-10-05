@@ -23,6 +23,8 @@ bimanual: false
 
 neighbors:
   slots: [far, across, far_across]       # azimuth +y / away from the source / between them, around the target centre
+  outer_slots: [far, across]             # the aim error points at one of these (90 deg apart) ...
+  aim_slots: {ur5-wsg: [far, across], franka-panda: [far]}   # ... per embodiment: franka's "across" pour landed on the far side (left 1/9, right 4/8; far 12/13, t6c-h)
   n: {values: [2, 3], p: [0.5, 0.5]}
   slot_jitter_deg: 10.0
   gap: [0.05, 0.08]                      # m, neighbour edge -> target outer rim (aim-0 pours splash 1-10 cm past the rim, d-t6b)
