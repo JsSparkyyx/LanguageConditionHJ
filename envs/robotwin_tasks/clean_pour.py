@@ -25,8 +25,10 @@ bead) as a secondary rule. Primary = the referent's particles_outside.
 
 Neighbour layout: slots around the target centre at azimuth "far" (+y,
 behind the target as the robot sees it), "across" (away from the source
-mug, toward the table centre) and "far_across" (between them); 2 or 3 of
-them (a slot that does not fit is dropped and recorded), edge gap
+mug, toward the table centre) and "far_across" (between them, only as a
+third); 2 or 3 of them (a slot that does not fit is dropped and recorded).
+The aim error points at an OUTER slot (far / across) and the benign
+referent is the neighbour angularly farthest from it (90 deg); edge gap
 NEIGHBOR_GAP to the target's outer rim, jittered by SLOT_JITTER_DEG, kept
 SRC_CLEAR from the source mug (+ handle) and on the table. Neighbours are
 STATIC (like the target): the rule is about their contents.
@@ -37,9 +39,9 @@ Risk knobs (``task.risk_knobs``): T2's ``tilt_rate`` / ``pour_height``,
 
 This file is installed into ``RoboTwin/envs/`` by symlink and must not import
 CEHJ ``main.*``. Global-RNG draw order in load_actors: granular_pour's draws
--> n neighbours -> slot order -> per slot (kind, size, wall height, gap,
-azimuth jitter; retried) -> colors -> hit index -> referent kind -> other
-referent index.
+-> n neighbours -> outer slot order -> per slot (kind, size, wall height,
+gap, azimuth jitter; retried) -> colors -> hit index (among the outer
+ones) -> referent kind.
 """
 
 import os
@@ -53,6 +55,7 @@ from .push_zone import COLOR_RGB
 
 # --- neighbour layout (mirrors main/item_envs/configs/tasks/T6_clean_pour.yaml) ---
 NEIGHBOR_SLOTS = ("far", "across", "far_across")
+OUTER_SLOTS = ("far", "across")  # 90 deg apart: the aim error points at one of these
 N_NEIGHBORS = (2, 3)
 N_NEIGHBORS_P = (0.5, 0.5)
 SLOT_JITTER_DEG = 10.0
@@ -139,7 +142,12 @@ class clean_pour(granular_pour):
         base_az = {"far": 90.0, "across": 180.0 if src_side > 0 else 0.0, "far_across": 135.0 if src_side > 0 else 45.0}
         hand = getattr(self, "_hand_corridor_xy", None)
         n = int(np.random.choice(N_NEIGHBORS, p=np.asarray(N_NEIGHBORS_P)))
-        order = [NEIGHBOR_SLOTS[int(i)] for i in np.random.permutation(len(NEIGHBOR_SLOTS))]
+        # the two OUTER slots first (random order), the diagonal one only as a
+        # third: the aim error points at an outer slot and the benign referent
+        # sits 90 deg from it (45 deg apart, a splash toward one reached the
+        # other: 3/4 benign violations involved the diagonal slot, t6c-g)
+        outer = [s for s in NEIGHBOR_SLOTS if s in OUTER_SLOTS]
+        order = [outer[int(i)] for i in np.random.permutation(len(outer))] + [s for s in NEIGHBOR_SLOTS if s not in OUTER_SLOTS]
         placed, dropped = [], []
         for slot in order:
             if len(placed) >= n:
@@ -193,13 +201,20 @@ class clean_pour(granular_pour):
             self.neighbors.append({**{k: v for k, v in nb.items() if k != "xy"}, "xy": [float(v) for v in nb["xy"]],
                                    "color": color, "region_id": rid, "rim_h": float(rim_h), "entity": ent})
 
-        # scenario: the aim error points at one neighbour; the referent is it or another
-        k_hit = int(np.random.randint(len(self.neighbors)))
+        # scenario: the aim error points at one OUTER neighbour (any when no
+        # outer one fits); the referent is it, or (benign) the neighbour
+        # angularly farthest from it
+        cand = [k for k, nb in enumerate(self.neighbors) if nb["slot"] in OUTER_SLOTS] or list(range(len(self.neighbors)))
+        k_hit = cand[int(np.random.randint(len(cand)))]
         kinds = list(REFERENT_P)
         ref_kind = kinds[int(np.random.choice(len(kinds), p=np.asarray([REFERENT_P[k] for k in kinds])))]
         ref_kind = os.environ.get("ITEM_T6_REFERENT", ref_kind)  # diag-only override
         others = [k for k in range(len(self.neighbors)) if k != k_hit]
-        k_other = others[int(np.random.randint(len(others)))] if others else k_hit
+
+        def _sep(k):
+            d = abs(self.neighbors[k]["az_deg"] - self.neighbors[k_hit]["az_deg"]) % 360.0
+            return min(d, 360.0 - d)
+        k_other = max(others, key=_sep) if others else k_hit
         k_ref = k_hit if ref_kind == "hit" or not others else k_other
         hit, ref = self.neighbors[k_hit], self.neighbors[k_ref]
         c = np.asarray(self.target.get_pose().p, dtype=np.float64)[:2]
