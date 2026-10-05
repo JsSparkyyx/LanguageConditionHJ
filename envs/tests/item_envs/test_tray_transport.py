@@ -76,8 +76,11 @@ def test_constants_mirror_yaml():
     cfg = _load("tasks/T5_tray_transport.yaml")
     assert _f(_const("START_ABS_X")) == _f(cfg["start"]["abs_x"])
     assert _f(_const("START_Y")) == _f(cfg["start"]["y"])
-    assert _f(_const("TARGET_ABS_X")) == _f(cfg["target"]["abs_x"])
-    assert _f(_const("TARGET_Y")) == _f(cfg["target"]["y"])
+    assert _f(_const("CARRY_DX")) == _f(cfg["target"]["dx"])
+    assert _f(_const("CARRY_DY")) == _f(cfg["target"]["dy"])
+    # the drag is sideways (|dx| >> |dy|) and long enough
+    assert cfg["target"]["dx"][0] >= cfg["target"]["min_dist"] and max(map(abs, cfg["target"]["dy"])) <= 0.03
+    assert cfg["tray"]["size"][1] > cfg["tray"]["size"][0]  # long side along y (across the drag)
     assert _f(_const("MIN_CARRY_DIST")) == _f(cfg["target"]["min_dist"])
     assert _f(_const("PAD_SIZE")) == _f(cfg["target"]["pad_size"])
     t = cfg["tray"]
@@ -143,3 +146,11 @@ def test_task_file_never_imports_main():
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]
             assert not any(n.startswith("main") for n in names), names
+
+
+def test_three_block_row_always_fits_along_the_long_side():
+    cfg = _load("tasks/T5_tray_transport.yaml")
+    t, it = cfg["tray"], cfg["items"]
+    span = t["size"][1] - 2 * t["rim_t"] - it["handle_clear"] - it["edge_clear"]
+    widest = sum(it[k]["w"][1] for k in ("tall", "short", "mid"))
+    assert span - widest - 2 * it["gap"] >= 0.0

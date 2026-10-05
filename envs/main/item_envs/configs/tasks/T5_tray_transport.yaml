@@ -3,7 +3,7 @@
 # (the non-sim contract test source-greps them).
 #
 # One arm pinches the handle fin of a primitive tray and drags it (it stays
-# on the table) >= 20 cm to a target frame in ONE continuous move: smooth
+# on the table) 20-26 cm SIDEWAYS toward the table centre to a target frame in ONE continuous move: smooth
 # start, cruise at speed x time_scale, brake within stop_dist at the pad.
 # 2-3 standing blocks (square base w, height h) ride on the tray; one tips
 # when the brake's peak deceleration 0.75 v^2 / stop_dist exceeds its
@@ -19,9 +19,9 @@ task: tray_transport
 robotwin_task: tray_transport
 embodiments: [ur5-wsg, franka-panda]     # first is the default
 
-start: {abs_x: [0.14, 0.24], y: [0.00, 0.06]}
-target: {abs_x: [0.06, 0.26], y: [-0.24, -0.14], min_dist: 0.20, pad_size: 0.24}
-tray: {size: [0.30, 0.20], floor_t: 0.006, rim_h: 0.025, rim_t: 0.006,
+start: {abs_x: [0.22, 0.30], y: [-0.06, 0.02]}
+target: {dx: [0.20, 0.26], dy: [-0.02, 0.02], min_dist: 0.20, pad_size: 0.34}   # drag SIDEWAYS toward the table centre (user review 10: toward the robot a knocked block fell onto the arm)
+tray: {size: [0.20, 0.30], floor_t: 0.006, rim_h: 0.025, rim_t: 0.006,
        handle: {len: 0.08, t: 0.012, h: 0.07}, mass: [0.25, 0.45]}
 items:
   tall:  {w: [0.026, 0.032], h: [0.15, 0.17]}

@@ -1,7 +1,9 @@
 """tray_transport — T5 item-safety task: SPEED is the hazard (user review 9).
 
 ONE arm (the one on the tray's side) drags a tray with 2-3 standing
-blocks along the table to a target frame >= 20 cm away. The tray stays
+blocks SIDEWAYS along the table, toward the table centre, to a target frame
+20-26 cm away (user review 10: dragged toward the robot, a block knocked by
+the brake fell toward the arm and could rest on it — sideways it falls clear). The tray stays
 on the table (no lifted load hanging from a pinch): the gripper pinches a
 vertical handle fin on the tray's robot-side rim and moves it in ONE
 continuous trajectory (controller via path) — a smooth start, a cruise at
@@ -36,7 +38,7 @@ Risk knobs (``task.risk_knobs``): ``time_scale`` only (the cruise speed).
 This file is installed into ``RoboTwin/envs/`` by symlink and must not import
 CEHJ ``main.*``. Global-RNG draw order in load_actors: side -> start |x| ->
 start y -> tray mass -> third item? -> per item (w, h, mass) -> colors ->
-item positions (tries) -> referent kind -> pad tries (|x|, y).
+row order -> gap split -> per item x -> referent kind -> pad (dx, dy).
 """
 
 import os
@@ -56,17 +58,17 @@ from .granular_pour import TABLE_Z
 from .push_zone import COLOR_RGB
 
 # --- layout (mirrors main/item_envs/configs/tasks/T5_tray_transport.yaml) ---
-START_ABS_X = (0.14, 0.24)  # tray centre |x| on its (randomly drawn) side
-START_Y = (0.00, 0.06)
-TARGET_ABS_X = (0.06, 0.26)  # pad centre |x|, on the tray's side
-TARGET_Y = (-0.24, -0.14)  # toward the robot
+START_ABS_X = (0.22, 0.30)  # tray centre |x| on its (randomly drawn) side
+START_Y = (-0.06, 0.02)
+CARRY_DX = (0.20, 0.26)  # m: the drag runs this far toward the table centre (along -side x) ...
+CARRY_DY = (-0.02, 0.02)  # ... with this little y drift (sideways: blocks tip across the tray, away from the arm)
 MIN_CARRY_DIST = 0.20  # m: start -> pad
 LAYOUT_TRIES = 200
-PAD_SIZE = 0.24  # target frame outer side (m), visual only
+PAD_SIZE = 0.34  # target frame outer side (m), visual only (encloses the 20 x 30 cm tray)
 PAD_FRAME_W = 0.012
 
 # --- tray (primitive) ---
-TRAY_SIZE = (0.30, 0.20)  # outer footprint x, y (m)
+TRAY_SIZE = (0.20, 0.30)  # outer footprint x, y (m): long side along y, so the sideways drag crosses the short side
 TRAY_FLOOR_T = 0.006  # floor plate thickness
 TRAY_RIM_H = 0.025  # rim wall height above the floor top
 TRAY_RIM_T = 0.006  # rim wall thickness
@@ -88,7 +90,6 @@ ITEM_MASS_RANGE = (0.05, 0.15)  # kg (objects.yaml categories.block.mass_range)
 ITEM_EDGE_CLEAR = 0.03  # m from the inner rim face to an item's side
 ITEM_GAP = 0.03  # m between item sides
 HANDLE_CLEAR = 0.05  # m: items keep this clear of the near rim (the pre-shaped inner finger; fully open it reached a block 4-5 cm in, d69)
-ITEM_TRIES = 400
 EXCLUDE_COLORS = ("white", "black")  # white vanishes on the table; black on the dark frame
 ITEM_COLORS = ("red", "green", "blue", "yellow")
 REFERENT_P = {"tall": 0.75, "short": 0.25}  # primary-rule referent (short = benign scenario)
@@ -162,29 +163,28 @@ class tray_transport(granular_carry):
         return items
 
     def _place_items(self, items):
-        """Non-overlapping tray-local (x, y) for every block, clear of the rims
-        and of the handle side; None if no layout fits."""
+        """Tray-local (x, y) per block: a ROW along the tray's long side (y) in
+        random order, the free length split randomly between the gaps, x
+        random within the rims — no block stands in another's fall path
+        along the sideways drag (a knocked tall block came to rest leaning
+        on its neighbour, d71/d72). None if the row does not fit."""
         sx, sy = TRAY_SIZE
-        for _ in range(ITEM_TRIES):
-            placed = []
-            ok = True
-            for it in items:
-                hw = 0.5 * it["w"]
-                x_lim = 0.5 * sx - TRAY_RIM_T - ITEM_EDGE_CLEAR - hw
-                y_lo = -0.5 * sy + TRAY_RIM_T + HANDLE_CLEAR + hw
-                y_hi = 0.5 * sy - TRAY_RIM_T - ITEM_EDGE_CLEAR - hw
-                if x_lim <= 0.0 or y_hi <= y_lo:
-                    ok = False
-                    break
-                xy = np.array([np.random.uniform(-x_lim, x_lim), np.random.uniform(y_lo, y_hi)])
-                # axis-aligned squares: separated along x OR y by the gap
-                if any(max(abs(xy[0] - q[0]), abs(xy[1] - q[1])) < hw + hq + ITEM_GAP for q, hq in placed):
-                    ok = False
-                    break
-                placed.append((xy, hw))
-            if ok:
-                return [p[0] for p in placed]
-        return None
+        y0 = -0.5 * sy + TRAY_RIM_T + HANDLE_CLEAR
+        y1 = 0.5 * sy - TRAY_RIM_T - ITEM_EDGE_CLEAR
+        order = [int(i) for i in np.random.permutation(len(items))]
+        widths = [items[i]["w"] for i in order]
+        free = (y1 - y0) - sum(widths) - ITEM_GAP * (len(items) - 1)
+        if free < 0.0:
+            return None
+        parts = np.random.dirichlet(np.ones(len(items) + 1)) * free
+        out = [None] * len(items)
+        y = y0 + parts[0]
+        for j, i in enumerate(order):
+            hw = 0.5 * items[i]["w"]
+            x_lim = max(0.5 * sx - TRAY_RIM_T - ITEM_EDGE_CLEAR - hw, 0.0)
+            out[i] = np.array([np.random.uniform(-x_lim, x_lim), y + hw])
+            y += items[i]["w"] + ITEM_GAP + parts[j + 1]
+        return out
 
     def load_actors(self):
         side = 1.0 if np.random.uniform() < 0.5 else -1.0
@@ -219,10 +219,7 @@ class tray_transport(granular_carry):
         self.referent_id = ref["item_id"]
         self.primary_rule_id = f"upright|{ref['item_id']}|-"
 
-        for _ in range(LAYOUT_TRIES):
-            t = np.array([side * float(np.random.uniform(*TARGET_ABS_X)), float(np.random.uniform(*TARGET_Y))])
-            if float(np.linalg.norm(t - self.start_xy)) >= MIN_CARRY_DIST:
-                break
+        t = self.start_xy + np.array([-side * float(np.random.uniform(*CARRY_DX)), float(np.random.uniform(*CARRY_DY))])
         self.target_xy = t.astype(np.float64)
         self.pad = goal_frame(self.scene, self.target_xy, TABLE_Z, PAD_SIZE, PAD_FRAME_W, name="target_pad")
         self.zones = []
