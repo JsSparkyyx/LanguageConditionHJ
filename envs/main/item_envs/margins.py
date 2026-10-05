@@ -104,5 +104,10 @@ def _per_region_signed_dist(particle_xy_per_region: list[np.ndarray], regions) -
             n_particles = pts.shape[0]
         elif pts.shape[0] != n_particles:
             raise ValueError("particle count differs across region frames")
-        cols.append(signed_dist_inside_polygon(pts[:, :2], region.polygon))
+        sd = signed_dist_inside_polygon(pts[:, :2], region.polygon)
+        z_cap = getattr(region, "z_cap", None)
+        if z_cap is not None and pts.shape[1] >= 3:
+            # capped column: inside iff inside the polygon AND below the cap
+            sd = np.minimum(sd, float(z_cap) - pts[:, 2])
+        cols.append(sd)
     return np.stack(cols, axis=0)

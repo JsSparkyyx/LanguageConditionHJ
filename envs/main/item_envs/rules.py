@@ -72,7 +72,9 @@ TEMPLATES: dict[Consequence, list[str]] = {
     Consequence.UPRIGHT: ["don't knock over the {item}", "keep the {item} upright"],
     Consequence.STAY: ["don't disturb the {item}", "leave the {item} where it is"],
     Consequence.PARTICLES_INSIDE: ["don't spill the {item}"],
-    Consequence.PARTICLES_OUTSIDE: ["keep the {item} off the {region}", "don't get any {item} in the {region}"],
+    Consequence.PARTICLES_OUTSIDE: ["keep the {item} off the {region}", "don't get any {item} in the {region}",
+                                    "keep the {item} out of the {region}", "don't spill any {item} into the {region}",
+                                    "make sure no {item} end up in the {region}"],
 }
 
 # Templates for set rules (item_ids names several items). {category} is filled
@@ -116,6 +118,9 @@ def enumerate_rules(items, regions, task_cfg, *, objects_cfg=None, splits_cfg=No
     # ("don't knock over the brick" with two blocks on the tray named no
     # referent, T5 audit 2026-10-04)
     scene_names = {iid: _names_for(it, objects_cfg) for iid, it in item_map.items()} if objects_cfg else {}
+    # same for regions: with two zones, "keep the box out of the zone" names
+    # neither (the bare kind word); colored names survive
+    region_scene_names = {rid: set(_region_names(rid, objects_cfg)) for rid in region_map} if objects_cfg else {}
     rules: list[RuleSpec] = []
     for entry in task_cfg.get("rules", []) or []:
         consequence = Consequence(entry["consequence"])
@@ -136,7 +141,10 @@ def enumerate_rules(items, regions, task_cfg, *, objects_cfg=None, splits_cfg=No
                 if objects_cfg is not None:
                     rule_rng = rng if rng is not None else _rng_for(rule_id)
                     others = set().union(*[nm for iid, nm in scene_names.items() if iid not in rule.item_ids] or [set()])
-                    rule.phrases = render_phrases(rule, objects_cfg, rule_rng, exclude_names=others)
+                    others_r = set().union(*[nm for rid, nm in region_scene_names.items()
+                                             if rid not in rule.region_ids] or [set()])
+                    rule.phrases = render_phrases(rule, objects_cfg, rule_rng, exclude_names=others,
+                                                  exclude_region_names=others_r)
                     if len(rule.item_ids) == 1:
                         own = _item_names(rule, objects_cfg)
                         rule.ambiguous = not any(nm not in others for nm in own)
@@ -147,7 +155,7 @@ def enumerate_rules(items, regions, task_cfg, *, objects_cfg=None, splits_cfg=No
 
 
 def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState, n: int = 3,
-                   exclude_names=()) -> list[str]:
+                   exclude_names=(), exclude_region_names=()) -> list[str]:
     """Up to n natural-language variants for a rule. Never contain digits.
 
     Templates come from the module-level TEMPLATES (SET_TEMPLATES for set
@@ -166,11 +174,14 @@ def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState
     exclude_names = set(exclude_names or ())
     item_names = _unambiguous(_item_names(rule, objects_cfg), exclude_names)
     category_names = _category_names(rule, objects_cfg)
-    region_names = [nm for rid in rule.region_ids for nm in _region_names(rid, objects_cfg)]
+    exclude_region_names = set(exclude_region_names or ())
+    region_names = _unambiguous([nm for rid in rule.region_ids for nm in _region_names(rid, objects_cfg)],
+                                exclude_region_names)
     # several regions in ONE per-region-kind rule (region_set: pairs): every
     # phrase names them all ("the red zone and the blue zone")
     joint_regions = len(rule.region_ids) > 1 and consequence not in _REGION_SET
-    region_lists = [_colored_first(_region_names(rid, objects_cfg), objects_cfg) for rid in rule.region_ids]
+    region_lists = [_colored_first(_unambiguous(_region_names(rid, objects_cfg), exclude_region_names), objects_cfg)
+                    for rid in rule.region_ids]
     member_lists = [_unambiguous(_member_names(rule, objects_cfg, k), exclude_names)
                     for k in range(len(rule.item_ids))] if is_set else []
     phrases: list[str] = []
@@ -278,9 +289,11 @@ def _region_groups(entry: dict, region_map: dict, consequence: Consequence) -> l
         ids = [rid for rid, r in sorted(region_map.items()) if _matches(r, selector)]
     else:
         ids = [rid for rid in (selector or []) if rid in region_map]
-    if consequence in _REGION_SET:
-        return [tuple(ids)] if ids else []
     region_set = entry.get("region_set")
+    if consequence in _REGION_SET and region_set != "each":
+        return [tuple(ids)] if ids else []
+    if region_set == "each":  # particle rules: one rule per region (T6: one per neighbour container)
+        return [(rid,) for rid in ids]
     if region_set == "pairs":
         return [tuple(pair) for pair in itertools.combinations(ids, 2)]
     if region_set not in (None, False):

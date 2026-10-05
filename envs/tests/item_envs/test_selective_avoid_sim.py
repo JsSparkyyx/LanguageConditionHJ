@@ -154,8 +154,11 @@ def test_build_rules_margins(host, embodiment, seed, tmp_path):
             # the on/near quota is met by the FINAL classes (a degraded-to-
             # near object counts toward min_on_or_near_path)
             assert k + report.get("k_dropped", 0) in range(3, 6), (host, seed, report)
+            # the last fallback tier relaxes the quota to 1 (recorded in the report)
             on_near = sum(p.get("cls") in ("on_path", "near_path") for p in placements)
-            assert on_near >= min(2, k), (host, seed, placements)
+            quota = int(report.get("min_on_or_near_path", 2))
+            assert quota == 2 or (quota == 1 and report.get("fallback_tier", 0) >= 1), report
+            assert on_near >= min(quota, k), (host, seed, placements)
             assert report.get("t_fallbacks", 0) == sum(bool(p.get("t_fallback")) for p in placements)
             assert report.get("degraded", 0) == sum(
                 p.get("degraded_from") is not None for p in placements

@@ -104,6 +104,8 @@ GRASP_CONTACT_IDS = (0, 2)  # [right, left]: outer rim of the bowl (host idiom)
 GRASP_DIS = 0.02  # m: grasp target stops this short of the contact point along the approach (shallower rim pinch)
 GRASP_RADIAL_OUT = 0.006  # m: grasp target shifted radially outward (centres the fingers on the wall)
 GRIPPER_STIFFNESS = 5000.0  # gripper PD stiffness (RoboTwin default 1000) — firmer rim pinch
+TILT_RETRY_FRACS = (1.0, 0.5, 0.0)  # carry tilt fallbacks when the knob tilt has no IK
+HELD_GRASP_TRIES = 2  # held pre-roll: re-grasp once before the table-grasp fallback
 PRESHAPE_OPEN = 0.3  # gripper opening (fraction) for the rim pinch and its release: just straddles the wall (embodiment override preshape_open)
 LIFTOFF = 0.015  # m: first lift, then level
 LEVEL_ITERS = 2  # leveling passes after lift-off
@@ -332,7 +334,7 @@ class granular_carry(granular_pour):
         # finger enters the bowl 4-5 cm from the wall and closing sweeps the
         # bead bed over the rim (3/7 table-mode spills started at the grasp,
         # bowl still on the table — not avoidable by an arm-only filter, audit)
-        self.move(self.open_gripper(arm, pos=float(eparams.get("preshape_open", PRESHAPE_OPEN))))
+        self.move(self.open_gripper(arm, pos=self._preshape_open(eparams)))
         arm_tag, acts = self.grasp_actor(self.container, arm_tag=arm,
                                          contact_point_id=int(cp[int(arm == "left")]),
                                          pre_grasp_dis=0.1, grasp_dis=g_dis)
@@ -349,6 +351,11 @@ class granular_carry(granular_pour):
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         self._steps_to(arm, np.concatenate([ee[:3] + [0.0, 0.0, LIFTOFF], ee[3:]]), v_safe)
         self._level(arm, v_safe)
+
+    @staticmethod
+    def _preshape_open(eparams):
+        env = os.environ.get("ITEM_T4_PRESHAPE")  # diag-only override
+        return float(env) if env else float(eparams.get("preshape_open", PRESHAPE_OPEN))
 
     def _in_pinch_wedge(self, local, side, g, bead_r):
         """[N] bool: bead centres (bowl up-frame, file y up) in the pinch-side
@@ -368,6 +375,16 @@ class granular_carry(granular_pour):
         loc = np.stack([T[:3, :3].T @ (np.asarray(b.get_pose().p, dtype=np.float64) - T[:3, 3]) for b in self.beads]) \
             if self.beads else np.zeros((0, 3))
         drop = (loc[:, 1] > float(g["rim_y"]) - BRIM_CLEAR) | self._in_pinch_wedge(loc, side, g, r) if len(loc) else []
+        if len(loc):
+            # ... and down to the table-mode load (TABLE_FILL_FRAC x the lattice
+            # capacity), highest beads first: trimmed to the rim only, the
+            # fallback still spilled at the table lift (2/2, audit4)
+            drop = np.asarray(drop, dtype=bool)
+            n_cap = int(round(bowl_lattice_capacity(g, r) * TABLE_FILL_FRAC))
+            extra = int((~drop).sum()) - n_cap
+            if extra > 0:
+                kept = np.where(~drop)[0]
+                drop[kept[np.argsort(-loc[kept, 1])[:extra]]] = True
         keep = [b for b, d in zip(self.beads, drop) if not d]
         gone = [b for b, d in zip(self.beads, drop) if d]
         for b in gone:
@@ -404,19 +421,32 @@ class granular_carry(granular_pour):
                       flush=True)
 
         _trace("start")
-        self._grasp_and_level(self.carry_arm, v_safe, knobs, eparams)
-        _trace("grasped+levelled")
-        for _ in range(HELD_SETTLE_STEPS):
-            self.scene.step()
-        _trace("settled")
-        for _ in range(HELD_RELEVEL_ITERS):
-            # the loaded bowl can sag in the pinch while held (ur5 seed 1:
-            # 12 deg at t = 0, sim test d51): level again and re-settle
-            if self._bowl_tilt_deg() <= HELD_RELEVEL_DEG:
-                break
-            self._level(self.carry_arm, v_safe)
-            for _ in range(HELD_SETTLE_STEPS // 2):
+        for attempt in range(HELD_GRASP_TRIES):
+            if attempt:
+                # the bowl is back on the table (the pinch missed the wall, or
+                # the loaded bowl slipped out during the settle — ur5 lands
+                # 1-2 cm off; 3/14 held runs fell back, audit4/5): release,
+                # back off and grasp again — still before t = 0
+                self.move(self.open_gripper(self.carry_arm, pos=self._preshape_open(eparams)))
+                self.move(self.move_by_displacement(self.carry_arm, z=0.06))
+                for _ in range(HELD_SETTLE_STEPS // 2):
+                    self.scene.step()
+                self.episode_info["held_regrasp"] = int(attempt)
+            self._grasp_and_level(self.carry_arm, v_safe, knobs, eparams)
+            _trace("grasped+levelled")
+            for _ in range(HELD_SETTLE_STEPS):
                 self.scene.step()
+            _trace("settled")
+            for _ in range(HELD_RELEVEL_ITERS):
+                # the loaded bowl can sag in the pinch while held (ur5 seed 1:
+                # 12 deg at t = 0, sim test d51): level again and re-settle
+                if self._bowl_tilt_deg() <= HELD_RELEVEL_DEG:
+                    break
+                self._level(self.carry_arm, v_safe)
+                for _ in range(HELD_SETTLE_STEPS // 2):
+                    self.scene.step()
+            if float(self.container.get_pose().p[2]) - TABLE_Z >= 0.0015 or not self.plan_success:
+                break
         self._remove_spilled_beads()
         _trace("cleaned")
         self.episode_info.update(n_beads_removed=int(self.n_beads_removed), n_beads=int(self.n_beads))
@@ -425,7 +455,7 @@ class granular_carry(granular_pour):
             # table reads exactly TABLE_Z; a held but sagging heavy bowl sits
             # only ~2-5 mm up — 4 mm misfired on 4/8 held runs, diag d47):
             # release, back off, and let play_once grasp it from the table
-            self.move(self.open_gripper(self.carry_arm, pos=float(eparams.get("preshape_open", PRESHAPE_OPEN))))
+            self.move(self.open_gripper(self.carry_arm, pos=self._preshape_open(eparams)))
             self.move(self.move_by_displacement(self.carry_arm, z=0.06))
             self.episode_info["held_fallback"] = True
             # the brim-full held load would spill at the table grasp (2/2
@@ -456,8 +486,20 @@ class granular_carry(granular_pour):
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         up_pose = np.concatenate([ee[:3] + [0.0, 0.0, max(0.0, height - LIFTOFF)], ee[3:]])
         with risky(self):
-            self._steps_to(arm, self._rotated_about_tcp(up_pose, _rot_axis(tilt_axis, tilt))
-                           if abs(tilt) > 1e-6 else up_pose, v_risky, min_t=t_min)
+            # the knob tilt, else half of it, else none: the LEFT arm found no
+            # IK for tilts <= -26 deg on 4/5 audit runs (ur5 + franka) and the
+            # whole carry was skipped (RoboTwin skips every move after a
+            # failed plan) — the effective tilt is recorded
+            tilt_eff = tilt
+            for frac in TILT_RETRY_FRACS:
+                tilt_eff = tilt * frac
+                ok_before = bool(self.plan_success)
+                self._steps_to(arm, self._rotated_about_tcp(up_pose, _rot_axis(tilt_axis, tilt_eff))
+                               if abs(tilt_eff) > 1e-6 else up_pose, v_risky, min_t=t_min)
+                if self.plan_success or not ok_before:
+                    break
+                self.plan_success = True  # retry a smaller tilt from where the arm is
+            self.episode_info["carry_tilt_eff_deg"] = float(np.rad2deg(tilt_eff))
         # 4. carry over the pad — risky scale
         bowl_xy = np.asarray(self.container.get_pose().p, dtype=np.float64)[:2]
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
@@ -480,7 +522,7 @@ class granular_carry(granular_pour):
             self._steps_to(arm, np.concatenate([ee[:3] - [0.0, 0.0, gap], ee[3:]]), v_safe)
         # 6. release (only to the pre-shape width: opening fully swept the
         # inner finger through the beads, audit) and retreat
-        self.move(self.open_gripper(arm, pos=float(eparams.get("preshape_open", PRESHAPE_OPEN))))
+        self.move(self.open_gripper(arm, pos=self._preshape_open(eparams)))
         self.move(self.move_by_displacement(arm, z=0.06))
 
         self.info["info"] = {"{A}": f"002_bowl/base{self.container_id}", "{a}": arm, "{n}": str(self.n_beads)}

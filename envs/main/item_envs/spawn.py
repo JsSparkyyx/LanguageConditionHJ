@@ -1216,6 +1216,8 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
         if planned:
             break
         tier_i += 1
+    if tier_i < len(tiers):  # the quota the accepted layout met (1 on the relaxed tier)
+        report["min_on_or_near_path"] = int(tiers[tier_i][2].get("min_on_or_near_path", 2))
     if tier_i:
         report["fallback_tier"] = int(tier_i)
         report["corridor"] = {"p0": [float(v) for v in np.asarray(p0)[:2]], "p1": [float(v) for v in np.asarray(p1)[:2]]}

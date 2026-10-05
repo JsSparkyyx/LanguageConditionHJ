@@ -191,3 +191,19 @@ def test_particles_softmin_conservative_bound_random():
         per_particle = signed_dist_inside_polygon(pts, region.polygon)
         assert m <= per_particle.min() + 1e-15
         assert m >= per_particle.min() - T * np.log(len(pts)) - 1e-12
+
+
+def test_particles_outside_capped_column():
+    """Region.z_cap (T6): a particle over the region but above the cap is
+    outside it (margin = its height above the cap); below the cap the polygon
+    distance rules; xy-only input ignores the cap."""
+    region = make_region()
+    region.z_cap = 0.01
+    above = np.array([[0.5, 0.5, 0.05]])  # 4 cm above the cap, over the centre
+    m = m_particles_outside([above], [region], T=0.001)
+    assert m == pytest.approx(0.04, abs=1e-6)
+    inside = np.array([[0.5, 0.5, 0.0]])  # dropped in: below the cap
+    assert m_particles_outside([inside], [region], T=0.001) < -0.009
+    beside = np.array([[1.5, 0.5, 0.0]])  # on the table beside it
+    assert m_particles_outside([beside], [region], T=0.001) == pytest.approx(0.5, abs=1e-6)
+    assert m_particles_outside([above[:, :2]], [region], T=0.001) < -0.49  # xy only: uncapped

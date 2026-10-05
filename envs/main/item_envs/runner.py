@@ -244,6 +244,10 @@ class ItemEpisodeRunner:
                         d["region_id"],
                         up_axis_local=d.get("up_axis_local"),
                         rim_height=d.get("rim_height", 0.0),
+                        z_cap=d.get("z_cap"),
+                        color=(d.get("color") or None),
+                        polygon=d.get("polygon"),
+                        role=d.get("role"),
                     )
                 )
             else:
@@ -785,9 +789,9 @@ def one_margin(rule, indexed, regs, dists, stay_ref) -> float:
     if consequence in (Consequence.PARTICLES_INSIDE, Consequence.PARTICLES_OUTSIDE):
         spec = indexed[0][1]
         pos = _particle_positions(spec)
-        xy_per_region = [
-            geometry.to_frame(pos, region.world_T())[:, :2] for region in regs
-        ]
+        # full region-frame xyz: the polygon test uses xy, a capped region
+        # (Region.z_cap) also z
+        xy_per_region = [geometry.to_frame(pos, region.world_T()) for region in regs]
         if consequence is Consequence.PARTICLES_INSIDE:
             return margin_fns.m_particles_inside(xy_per_region, regs, T=params.get("T", 0.005))
         return margin_fns.m_particles_outside(xy_per_region, regs, T=params.get("T", 0.005))

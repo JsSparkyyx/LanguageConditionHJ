@@ -155,6 +155,12 @@ HOLD_DELAY = 1  # self.delay units at full tilt (~1.2 s: 300 physics steps @250 
 PLACE_DX = 0.17  # the empty bowl lands this far outward (+/- x) of the target
 GRASP_DIS = 0.0  # m: grasp target short of the contact point along the approach (embodiment_overrides)
 GRASP_RADIAL_OUT = 0.0  # m: grasp target shifted radially outward (embodiment_overrides)
+HAND_TARGET_CLEAR = 0.015  # m between the hand footprint behind the mug handle and the target's outer rim
+HAND_TARGET_TRIES = 20  # target redraws, then ...
+HAND_TARGET_SHIFTS = 6  # ... shifts toward the table centre of ...
+HAND_TARGET_SHIFT = 0.02  # m each
+HAND_FOOT_BACK = (-0.01, 0.14)  # m behind the handle bar along the approach (horizontal): fingers + hand
+HAND_FOOT_HALF_W = 0.05  # m either side along the finger axis
 SUCCESS_MIN_FRAC = 0.8  # fraction of beads inside the target interior
 CONTAINER_REGION_PAD = 0.002  # container region radius = outer radius + this
                               # (container_region_radius — footprint column)
@@ -222,6 +228,30 @@ class granular_pour(place_container_plate):
             rotate_rand=False,
             qpos=list(SPAWN_QUAT),
         )
+        # the hand's footprint behind the mug handle must clear the target:
+        # franka's -45 deg handle yaw points the handle diagonally AT the
+        # target, the fingers landed on its rim and the grasp missed by
+        # 3-6 cm (3/6 T2 audit + T6 trial franka episodes) — redraw the
+        # target, else move it toward the table centre (the hand footprint
+        # is kept for T6's neighbour placement)
+        self._hand_corridor_xy = self._handle_hand_footprint()
+        r_t = float(bowl_geometry(TARGET_BOWL_MODEL, self.target_id)["outer_radius"]) + HAND_TARGET_CLEAR
+        if self._hand_corridor_xy is not None:
+            def _clear(pose):
+                d = np.linalg.norm(self._hand_corridor_xy - np.asarray(pose.p, dtype=np.float64)[None, :2], axis=1)
+                return bool(d.min() >= r_t)
+            tries = 0
+            while not _clear(target_pose) and tries < HAND_TARGET_TRIES:
+                tries += 1
+                target_pose = rand_pose(xlim=[x - 0.03, x + 0.03], ylim=[-0.15, -0.1], rotate_rand=False,
+                                        qpos=list(SPAWN_QUAT))
+            shift = 0
+            while not _clear(target_pose) and shift < HAND_TARGET_SHIFTS:
+                shift += 1
+                p = np.asarray(target_pose.p, dtype=np.float64)
+                p[0] -= np.sign(x) * HAND_TARGET_SHIFT
+                target_pose = sapien.Pose(p.tolist(), list(target_pose.q))
+            self._hand_target_fix = {"redraws": int(tries), "shifts": int(shift), "clear": _clear(target_pose)}
         self.target = create_actor(
             self,
             pose=target_pose,
@@ -693,6 +723,7 @@ class granular_pour(place_container_plate):
         # horizontal direction
         a_h = np.array([a[0], a[1]]) / max(float(np.hypot(a[0], a[1])), 1e-9)
         lip_tgt[:2] += float(eparams.get("roll_aim_side", ROLL_AIM_SIDE)) * a_h
+        lip_tgt[:2] += self._aim_bias_xy()  # T6 clean_pour: a deliberate aim error (zero here)
         pinch_tgt = lip_tgt - far_end
         ee = np.asarray(self.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
         d = pinch_tgt - (ee[:3] + a * APPROACH_TO_TCP)
@@ -831,7 +862,30 @@ class granular_pour(place_container_plate):
         rim center + pour_height up + pour_offset sideways."""
         rim_world = self._rim_center(self.target, self._target_geom)
         lat = float(getattr(self, "_pour_lat_sign", 1.0)) * float(pour_offset)
-        return rim_world + np.array([0.0, lat, float(pour_height)])
+        b = self._aim_bias_xy()
+        return rim_world + np.array([float(b[0]), lat + float(b[1]), float(pour_height)])
+
+    def _handle_hand_footprint(self):
+        """[M, 2] world xy points the hand covers at the handle grasp (behind
+        the handle bar along the approach, across the finger axis), or None
+        for a bowl source."""
+        g = getattr(self, "_src_geom", None) or {}
+        if getattr(self, "src_kind", "bowl") != "mug" or g.get("handle_point") is None:
+            return None
+        Tc = np.asarray(self.container.get_pose().to_transformation_matrix(), dtype=np.float64)
+        bar = Tc[:3, :3] @ np.asarray(g["handle_point"], dtype=np.float64) + Tc[:3, 3]
+        d_h = Tc[:3, :3] @ np.array([0.0, 0.0, 1.0])  # approach: handle -> body axis
+        u = Tc[:3, :3] @ np.array([1.0, 0.0, 0.0])  # finger closing axis
+        d_h = d_h[:2] / max(float(np.linalg.norm(d_h[:2])), 1e-9)
+        u = u[:2] / max(float(np.linalg.norm(u[:2])), 1e-9)
+        pts = [bar[:2] - d_h * s + u * w for s in np.linspace(*HAND_FOOT_BACK, 8)
+               for w in np.linspace(-HAND_FOOT_HALF_W, HAND_FOOT_HALF_W, 5)]
+        return np.asarray(pts, dtype=np.float64)
+
+    def _aim_bias_xy(self):
+        """World xy added to the pour aim point: zero for T2; the T6
+        clean_pour subclass returns its aim-error knob toward a neighbour."""
+        return np.zeros(2)
 
     def _rim_center(self, actor, geom):
         """World position of the bowl's rim-plane center (file frame: y = up,

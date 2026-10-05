@@ -41,7 +41,12 @@ def test_setup_margins_positive_at_t0(embodiment, mode, seed, tmp_path, monkeypa
         margins = runner._rule_margins()
         assert np.all(np.isfinite(margins)) and (margins > 0.0).all(), margins
         if mode == "held":
-            assert float(task.container.get_pose().p[2]) > 0.74 + 0.003  # off the table
+            # held, not a fallback (a 3 cm jaw made all 3 ur5 seeds fall back,
+            # audit3), and off the table by the task's own held criterion,
+            # 1.5 mm (a loaded bowl sags 2-5 mm in the pinch: 2.9 mm on ur5
+            # seed 1, t6c)
+            assert not task.episode_info.get("held_fallback"), task.episode_info
+            assert float(task.container.get_pose().p[2]) > 0.74 + 0.0015
             assert task._bowl_tilt_deg() < 10.0  # levelled
     finally:
         runner.close()

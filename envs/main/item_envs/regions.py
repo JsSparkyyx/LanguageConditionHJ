@@ -30,6 +30,11 @@ class Region:
     nameable: bool = False  # True if a rule may name it (zones, containers)
     color: str | None = None
     entity: object | None = None  # the mat or container entity, for masks
+    # particle rules only: a particle above region z = z_cap is NOT in the
+    # region (a container interior capped just above its rim: a bead flying
+    # over a dish does not count as in it, one that drops in does — T6)
+    z_cap: float | None = None
+    role: str | None = None  # rule selector tag (T6 "keep_clean" neighbours); None for the classic regions
 
     def __post_init__(self):
         self.polygon = np.asarray(self.polygon, dtype=np.float64).reshape(-1, 2)
@@ -184,7 +189,9 @@ def zone_region(mat_actor, color: str | None, region_id: str | None = None, size
     )
 
 
-def container_region(actor, rim_radius: float, region_id: str, up_axis_local=None, rim_height: float = 0.0) -> Region:
+def container_region(actor, rim_radius: float, region_id: str, up_axis_local=None, rim_height: float = 0.0,
+                     z_cap: float | None = None, color: str | None = None, polygon=None,
+                     role: str | None = None) -> Region:
     """A container interior as a nameable region, following the actor every tick.
 
     The polygon is a 16-gon at the inner rim radius in the actor's up-axis
@@ -192,7 +199,9 @@ def container_region(actor, rim_radius: float, region_id: str, up_axis_local=Non
     to the actor's ``up_axis_local`` attribute, then to [0, 1, 0] — the
     RoboTwin glb convention (Y-up file frame; recon.md Q13 / v3 surprises).
     ``rim_height`` shifts the region origin along the up axis so the rim plane
-    is region z = 0.
+    is region z = 0. ``z_cap`` (region frame, m above the rim plane) caps the
+    column for particle rules (Region.z_cap). ``polygon`` (region frame xy,
+    CCW) replaces the default circle — a square bin's footprint (T6).
     """
     ent = entity_of(actor)
     up = up_axis_local
@@ -212,10 +221,12 @@ def container_region(actor, rim_radius: float, region_id: str, up_axis_local=Non
         region_id=str(region_id),
         kind="container",
         frame_fn=frame_fn,
-        polygon=circle_polygon(float(rim_radius), 16),
+        polygon=circle_polygon(float(rim_radius), 16) if polygon is None else np.asarray(polygon, dtype=np.float64),
         z=0.0,
         z_band=0.01,
         nameable=True,
-        color=None,
+        color=color,
+        role=role,
         entity=ent,
+        z_cap=None if z_cap is None else float(z_cap),
     )

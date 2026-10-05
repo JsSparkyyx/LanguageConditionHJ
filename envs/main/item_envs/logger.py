@@ -137,6 +137,8 @@ def region_dict(region: Region) -> dict:
         "z_band": float(region.z_band),
         "nameable": bool(region.nameable),
         "color": region.color,
+        "z_cap": getattr(region, "z_cap", None),
+        "role": getattr(region, "role", None),
     }
 
 
