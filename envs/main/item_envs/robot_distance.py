@@ -49,9 +49,17 @@ from ._bootstrap import ensure_main_path
 
 ensure_main_path()
 
+from . import item_shapes
 from .items import ItemSpec, entity_of
 
-__all__ = ["robot_item_distances", "robot_item_forces", "HeldTracker"]
+__all__ = ["robot_item_distances", "robot_item_forces", "HeldTracker", "DISTANCE_MODE"]
+
+# "shape" (default, 2026-10-05): items and the held payload are their PhysX
+# collision shapes, exact signed distances (item_shapes.py). "obb": the
+# previous box model — every item its OBB, the payload 8 box corners
+# (CEHJ distance_info parity; a held bowl touching a bottle read +0.8 cm and
+# read -0.6 cm ~5 cm away, user report 2026-10-05).
+DISTANCE_MODE = __import__("os").environ.get("ITEM_DISTANCE", "shape")
 
 
 def _cehj():
@@ -330,11 +338,35 @@ _RULE_ROLES = ("candidate", "bystander")  # items the rules protect: held = touc
 HELD_CONTACT_DEPTH = 0.005  # m: a held rule item's distance is at most -this (it is in the gripper)
 
 
+def _arm_spheres_world(env, spheres, cehj) -> tuple[np.ndarray, np.ndarray]:
+    """(centers [N,3], radii [N]) of both arms' collision spheres, world frame
+    (the same sphere set as ``cehj._arm_sphere_distance``)."""
+    centers, radii = [], []
+    for side in ("left", "right"):
+        entity = env.robot.left_entity if side == "left" else env.robot.right_entity
+        for c, r, _name in cehj.spheres_with_names(entity, cehj._arm_collision_spheres(env, side, spheres)):
+            centers.append(c)
+            radii.append(r)
+    return np.asarray(centers, dtype=np.float64).reshape(-1, 3), np.asarray(radii, dtype=np.float64)
+
+
+def _shape(obj, spec: ItemSpec | None = None):
+    """ItemShape of an item spec (OBB box when it has no collision shape) or a
+    task actor; None for particle sets (their distance stays the OBB one)."""
+    if spec is not None:
+        if spec.kind == "particle_set":
+            return None
+        return item_shapes.shape_of(spec, fallback_obb=(spec.obb_center_local, spec.half_extents))
+    return item_shapes.shape_of(obj)
+
+
 def robot_item_distances(env, items) -> np.ndarray:
     """[K] min signed distance from robot links + held payload to each item (m).
 
-    Positive outside the item OBB, negative on penetration (sphere-to-OBB,
-    same convention as CEHJ's h). The task's own held object (role
+    Positive = gap, negative = penetration depth (same convention as CEHJ's
+    h). DISTANCE_MODE "shape": arm collision spheres and the held payload's
+    collision shapes vs the item's collision shapes, exact (item_shapes);
+    "obb": sphere-to-OBB and 16-corner OBB-to-OBB. The task's own held object (role
     task_object / support) gets +inf; a held candidate / bystander keeps its
     real (contact, <= 0) distance. Every held item counts as robot payload
     for the OTHER items. items: iterable of ItemSpec (or mapping id ->
@@ -347,6 +379,9 @@ def robot_item_distances(env, items) -> np.ndarray:
         return out
     spheres = _item_collision_spheres(env.embodiment, load_collision_spheres)
     held_idx, payloads = _held_info(env, specs, cehj)
+    use_shapes = DISTANCE_MODE == "shape"
+    if use_shapes:
+        centers, radii = _arm_spheres_world(env, spheres, cehj)
     for i, spec in enumerate(specs):
         if i in held_idx and str(getattr(spec, "role", "")) not in _RULE_ROLES:
             continue  # the task's own held object is part of the robot body: own distance +inf
@@ -355,15 +390,27 @@ def robot_item_distances(env, items) -> np.ndarray:
         # from it (audit 2026-10-04): its avoid margin must read the contact
         # (<= 0), not +inf ("safe" while the robot holds it)
         origin, rot, half = _spec_obb(spec)
-        best = min(
-            cehj._arm_sphere_distance(env, "left", origin, rot, half, spheres)[0],
-            cehj._arm_sphere_distance(env, "right", origin, rot, half, spheres)[0],
-        )
+        # exact shapes only where a rule reads the distance (avoid protects
+        # candidates / bystanders); the task's own objects (pick object,
+        # support) keep the cheap box value — a diagnostic no rule reads
+        shape = _shape(None, spec) if use_shapes and str(getattr(spec, "role", "")) in _RULE_ROLES else None
+        if shape is not None:
+            best = item_shapes.spheres_min_distance(centers, radii, shape)[0]
+        else:
+            best = min(
+                cehj._arm_sphere_distance(env, "left", origin, rot, half, spheres)[0],
+                cehj._arm_sphere_distance(env, "right", origin, rot, half, spheres)[0],
+            )
         for kind, ref in payloads:
             if kind == "spec" and ref == i:
                 continue  # never its own payload
             try:
-                if kind == "spec":
+                p_shape = None
+                if shape is not None:
+                    p_shape = _shape(None, specs[ref]) if kind == "spec" else _shape(ref)
+                if p_shape is not None:
+                    d = item_shapes.shape_distance(p_shape, shape)
+                elif kind == "spec":
                     d = _spec_obb_distance(cehj, _spec_obb(specs[ref]), origin, rot, half)
                 else:
                     d = cehj._actor_obb_distance(ref, origin, rot, half)

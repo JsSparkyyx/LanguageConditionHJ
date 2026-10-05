@@ -70,12 +70,12 @@ risk:
 rules:
   - {consequence: inside, items: {role: candidate, group: push}, regions: [table_top]}
   - {consequence: outside, items: {role: candidate, group: push}, regions: {kind: zone}}
-  - {consequence: upright, items: {role: bystander}, theta_max_deg: 45}
-  - {consequence: stay, items: {role: bystander}, d_tol: 0.03, theta_tol_deg: 20}
+  - {consequence: upright, items: {role: bystander}, theta_max_deg: 10}   # user 2026-10-05: 10 deg, as T5 (was 45)
+  - {consequence: stay, items: {role: bystander}, d_tol: 0.015, theta_tol_deg: 10}   # user 2026-10-05: 1.5 cm / 10 deg (was 3 cm / 20)
   # pair rules (A-A scenarios): "keep the box out of the red zone and the blue zone",
   # "leave the cup and the cylinder where they are" — margin = min over the pair
   - {consequence: outside, items: {role: candidate, group: push}, regions: {kind: zone}, region_set: pairs}
-  - {consequence: stay, items: {role: bystander}, set_rule: pairs, d_tol: 0.03, theta_tol_deg: 20}
+  - {consequence: stay, items: {role: bystander}, set_rule: pairs, d_tol: 0.015, theta_tol_deg: 10}
 
 embodiment_overrides:
   # push_tip_len: EE origin -> bottom of the closed fingers, measured as the

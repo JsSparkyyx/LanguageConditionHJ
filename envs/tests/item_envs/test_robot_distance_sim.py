@@ -1,5 +1,10 @@
 """Sim tests for robot_distance (PLAN v3 §2.2): parity with CEHJ distance_info.
 
+The parity tests pin DISTANCE_MODE = "obb" (the box model CEHJ uses); the
+default "shape" mode (exact collision-shape distances, 2026-10-05) is
+checked against it: the item's collision shape lies inside its OBB, so the
+arm's distance to the shape is never smaller than to the OBB.
+
 On place_empty_cup with the single CrossSafe obstacle spawned the way
 main/train/collect.py::make_training_env does it, robot_item_distances for the
 obstacle's ItemSpec must equal distance_info(env)["d_system"] to 1e-6 m, and
@@ -18,6 +23,7 @@ from main.item_envs._bootstrap import ensure_main_path
 
 ensure_main_path()
 
+from main.item_envs import robot_distance
 from main.item_envs.robot_distance import robot_item_distances, robot_item_forces
 
 from .sim_utils import actor_spec, make_env, obstacle_spec
@@ -27,8 +33,16 @@ pytestmark = pytest.mark.sim
 EMBODIMENTS = ["ur5-wsg", "franka-panda"]
 
 
+@pytest.fixture
+def obb_mode(monkeypatch):
+    """CEHJ parity: the box model AND CEHJ's sphere file (ur5-wsg uses our own
+    WSG sphere file since 2026-10-05, finding 12 — a deliberate difference)."""
+    monkeypatch.setattr(robot_distance, "DISTANCE_MODE", "obb")
+    monkeypatch.setattr(robot_distance, "_item_collision_spheres", lambda emb, loader: loader(emb))
+
+
 @pytest.mark.parametrize("embodiment", EMBODIMENTS)
-def test_robot_item_distances_matches_d_system(embodiment):
+def test_robot_item_distances_matches_d_system(embodiment, obb_mode):
     env = make_env(embodiment)
     spec = obstacle_spec(env)
     from main.envs.distance import distance_info
@@ -51,7 +65,21 @@ def test_robot_item_forces_matches_cehj_pattern(embodiment):
 
 
 @pytest.mark.parametrize("embodiment", EMBODIMENTS)
-def test_held_item_is_inf_and_payload_for_others(embodiment):
+def test_shape_distance_not_below_obb(embodiment, monkeypatch):
+    """Arm spheres vs the obstacle: the exact shape distance >= the OBB one
+    (the shape is inside its box) and finite."""
+    env = make_env(embodiment)
+    spec = obstacle_spec(env)
+    d_shape = robot_item_distances(env, [spec])
+    monkeypatch.setattr(robot_distance, "DISTANCE_MODE", "obb")
+    d_obb = robot_item_distances(env, [spec])
+    print(f"[shape-test] {embodiment}: shape {d_shape[0]:.5f} obb {d_obb[0]:.5f}")
+    assert np.isfinite(d_shape[0])
+    assert d_shape[0] >= d_obb[0] - 2e-3  # the json OBB should contain the collision mesh (round shapes: <= 0.5 % r polytope bulge)
+
+
+@pytest.mark.parametrize("embodiment", EMBODIMENTS)
+def test_held_item_is_inf_and_payload_for_others(embodiment, obb_mode):
     """End-to-end held rule: a grasped item reads +inf and joins the payload set.
 
     Script: open the right gripper, teleport the cup so its OBB center lands

@@ -30,7 +30,7 @@ the other flanker (benign: the nominal scrapes the other side), or an
 off-slot bystander (benign).
 
 Rules: ``upright`` (theta_max UPRIGHT_MAX_DEG) and ``stay`` (d_tol
-STAY_D_TOL, theta_tol 20 deg) per standing block; primary = the referent's
+STAY_D_TOL, theta_tol STAY_THETA_TOL_DEG) per standing block; primary = the referent's
 stay (a scrape tips a pillar on ur5, shoves it on franka).
 
 Primitive geometry (no meshes): box primitives with a square base; up axis
@@ -84,6 +84,7 @@ ITEM_COLORS = ("red", "green", "blue", "yellow")
 REFERENT_P = {"hit": 0.6, "other": 0.25, "bystander": 0.15}  # bystander -> other when there is none
 UPRIGHT_MAX_DEG = 10.0  # yaml rules upright theta_max_deg
 STAY_D_TOL = 0.02  # yaml rules stay d_tol (m)
+STAY_THETA_TOL_DEG = 10.0  # yaml rules stay theta_tol_deg (user 2026-10-05: as T5's 10 deg; was 20)
 
 # --- nominal motion ---
 SAFE_SPEED = 0.10  # m/s x safe_time_scale: approach / grasp / lift / transit / retreat

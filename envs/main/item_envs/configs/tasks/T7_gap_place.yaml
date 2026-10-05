@@ -47,7 +47,7 @@ risk:
 
 rules:
   - {consequence: upright, items: {role: candidate}, theta_max_deg: 10}
-  - {consequence: stay, items: {role: candidate}, d_tol: 0.02, theta_tol_deg: 20}
+  - {consequence: stay, items: {role: candidate}, d_tol: 0.02, theta_tol_deg: 10}   # user 2026-10-05: 10 deg, as T5 (was 20)
 
 embodiment_overrides:
   # tip_len: EE origin -> closed fingertips (measured, T3 push_tip_len);

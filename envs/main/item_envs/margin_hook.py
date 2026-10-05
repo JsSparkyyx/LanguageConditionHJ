@@ -23,8 +23,9 @@ source) plus the compat keys ``main/train`` reads from compute_h's diag:
 inf or empty where they do not apply. For a T1 single-item ``avoid`` rule
 (the active one when set, else the min-margin single-item avoid rule)
 ``per_link`` is filled from the real per-link distances to that item —
-hfunc._arm_spheres + point_obb_signed_distance, the same construction as
-compute_h — so CrossSafe's diagnostics keep working.
+hfunc._arm_spheres (compute_h's spheres) vs the item's collision shape
+(item_shapes; its OBB in robot_distance's "obb" mode) — so CrossSafe's
+diagnostics keep working.
 
 ``build_item_training_env`` is make_training_env's item-task path:
 ``ItemEpisodeRunner.setup(build_controller=False)`` (RolloutController
@@ -163,15 +164,30 @@ class ItemMarginHFn:
         return data
 
     def _per_link(self, env, spec) -> dict:
-        """Per-link signed distances to ONE item — compute_h's construction
-        (hfunc._arm_spheres + point_obb_signed_distance, min per link)."""
+        """Per-link signed distances to ONE item — compute_h's spheres
+        (hfunc._arm_spheres, min per link) vs the item's collision shape
+        (robot_distance's DISTANCE_MODE "shape", item_shapes) or its OBB
+        ("obb": point_obb_signed_distance, compute_h's construction)."""
         from main.train.hfunc import _arm_spheres
 
         from main.envs.distance import point_obb_signed_distance
 
-        origin, rot, half = robot_distance._spec_obb(spec)
+        from . import item_shapes
+
+        rows = list(_arm_spheres(env))
+        shape = robot_distance._shape(None, spec) if robot_distance.DISTANCE_MODE == "shape" else None
         per_link: dict[str, float] = {}
-        for label, center, radius in _arm_spheres(env):
+        if shape is not None:
+            groups: dict[str, tuple[list, list]] = {}
+            for label, center, radius in rows:
+                cs, rs = groups.setdefault(label, ([], []))
+                cs.append(center)
+                rs.append(radius)
+            for label, (cs, rs) in groups.items():
+                per_link[label] = float(item_shapes.spheres_min_distance(np.asarray(cs), np.asarray(rs), shape)[0])
+            return per_link
+        origin, rot, half = robot_distance._spec_obb(spec)
+        for label, center, radius in rows:
             d = float(point_obb_signed_distance(center, origin, rot, half) - radius)
             per_link[label] = min(per_link.get(label, float("inf")), d)
         return per_link

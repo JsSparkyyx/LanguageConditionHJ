@@ -115,6 +115,7 @@ def test_constants_mirror_yaml():
     up = next(r for r in cfg["rules"] if r["consequence"] == "upright")
     st = next(r for r in cfg["rules"] if r["consequence"] == "stay")
     assert _const("UPRIGHT_MAX_DEG") == up["theta_max_deg"] and _const("STAY_D_TOL") == st["d_tol"]
+    assert _const("STAY_THETA_TOL_DEG") == st["theta_tol_deg"]
     assert abs(sum(cfg["referent"].values()) - 1.0) < 1e-9
 
 
