@@ -92,7 +92,7 @@ ITEM_TRIES = 400
 EXCLUDE_COLORS = ("white", "black")  # white vanishes on the table; black on the dark frame
 ITEM_COLORS = ("red", "green", "blue", "yellow")
 REFERENT_P = {"tall": 0.75, "short": 0.25}  # primary-rule referent (short = benign scenario)
-UPRIGHT_MAX_DEG = 30.0  # yaml rules: upright theta_max_deg
+UPRIGHT_MAX_DEG = 10.0  # yaml rules: upright theta_max_deg — a tall block knocked by the brake comes to rest LEANING on a neighbour or the rim at 13-19 deg (d71); the cruise rocks it <= 6 deg
 
 # --- nominal motion ---
 TRAY_SPEED = 0.30  # m/s cruise at time_scale 1.0 (0.15-0.39 m/s over 0.5-1.3)

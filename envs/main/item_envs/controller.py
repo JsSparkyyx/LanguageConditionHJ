@@ -231,7 +231,14 @@ class RiskTickController(TickChunkedController):
         ``q_full`` (mplib IK, collision-checked), or None if none lies within
         ``max_step`` rad of it on every joint."""
         try:
-            goal = self.robot._trans_from_gripper_to_endlink(list(pose), arm_tag=arm)
+            import mplib as _mplib
+
+            g = self.robot._trans_from_gripper_to_endlink(list(pose), arm_tag=arm)
+            # mplib's IK wants an mplib.Pose in the robot BASE frame (plan_screw
+            # takes the world frame and converts; a sapien.Pose here raised
+            # "no attribute 'distance'" — the fallback never ran, d71)
+            goal = mplib.planner._transform_goal_to_wrt_base(
+                _mplib.Pose(p=np.asarray(g.p, dtype=np.float64), q=np.asarray(g.q, dtype=np.float64)))
             status, sol = mplib.planner.IK(goal, np.asarray(q_full, dtype=np.float64), return_closest=True)
         except Exception as exc:
             print(f"[risk_tick] via IK error: {exc}")

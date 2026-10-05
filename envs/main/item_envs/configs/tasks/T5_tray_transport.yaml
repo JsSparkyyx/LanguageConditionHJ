@@ -43,7 +43,7 @@ risk:
   task: {}
 
 rules:
-  - {consequence: upright, items: {role: candidate}, theta_max_deg: 30}
+  - {consequence: upright, items: {role: candidate}, theta_max_deg: 10}   # a knocked block rests leaning at 13-19 deg (on a neighbour / the rim); the cruise rocks it <= 6 deg (d71)
 
 embodiment_overrides:
   # tip_len: EE origin -> closed fingertips (measured, T3 push_tip_len): the
