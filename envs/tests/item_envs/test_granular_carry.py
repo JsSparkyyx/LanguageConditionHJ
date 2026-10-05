@@ -94,6 +94,7 @@ def test_constants_mirror_yaml():
     assert _f(_const("HELD_PACK_FILL")) == _f(cfg["held"]["pack_fill"])
     assert _f(_const("CARRY_INTERIOR_DEPTH")) == _f(cfg["bowl"]["interior_depth"])
     assert _f(_const("TABLE_FILL_FRAC")) == _f(cfg["table"]["fill_frac"])
+    assert _const("TABLE_FILL_FRAC_EMB") == cfg["table"]["fill_frac_emb"]
     assert _const("HELD_SETTLE_STEPS") == cfg["held"]["settle_steps"]
     assert _f(_const("PAD_SIZE")) == _f(cfg["target"]["pad_size"])
     assert _const("N_BEADS_MAX") == cfg["beads"]["n_max"]

@@ -64,6 +64,7 @@ from .granular_pour import (
     CONTAINER_REGION_PAD,
     SPAWN_QUAT,
     TABLE_Z,
+    _embodiment_name,
     _mat_to_quat_wxyz,
     _quat_mul_wxyz,
     _rot_axis,
@@ -86,6 +87,7 @@ BRIM_CLEAR = 0.010  # m, min top-bead-centre gap below the rim plane (layer pitc
 CARRY_BOWL_MODEL = "002_bowl"
 CARRY_INTERIOR_DEPTH = 0.032  # raised floor: rim 3.2 cm above it = two full bead layers (create_bowl_raised_floor; user review 5): spills at small tilts, needs velocity control
 TABLE_FILL_FRAC = 0.8  # table mode: beads = this x the bowl's LATTICE rim capacity (bowl_lattice_capacity: the volume estimate counted a thin layer 2-3x too high, d49)
+TABLE_FILL_FRAC_EMB = {"ur5-wsg": 0.65}  # per embodiment: the ur5 rim pinch lets the lifted bowl sag 6-11 deg and an 80 % load spilled at the lift-off, before the risky carry (3/8 table-mode runs, t4table); franka 0/4
 CARRY_MODES = ("table", "held")  # table: grasp the bowl from the table at t >= 0 (fill TABLE_FILL_FRAC); held: BRIM-full (HELD_PACK_FILL), grasped + levelled + held still BEFORE t = 0 and every bead spilled by then removed (user review 4, option 2)
 CARRY_MODE_P = (0.3, 0.7)  # held is the cleanly avoidable regime (spills during the carry, not at the grasp)
 HELD_PACK_FILL = 1.0  # held mode: beads = this x the LATTICE rim capacity — a random pack of that count is level-full (1.15 x the volume estimate heaped the low bowl, d46)
@@ -177,7 +179,7 @@ class granular_carry(granular_pour):
             if self.carry_mode == "held":
                 n_fill = int(round(bowl_lattice_capacity(g, bead_r) * float(os.environ.get("ITEM_T4_HELD_FILL", HELD_PACK_FILL))))  # env: diag-only
             elif self._src_geom.get("raised_floor"):  # low bowl: fill to a capacity fraction
-                n_fill = int(round(bowl_lattice_capacity(g, bead_r) * TABLE_FILL_FRAC))
+                n_fill = int(round(bowl_lattice_capacity(g, bead_r) * self._table_fill_frac()))
             else:
                 n_fill = int(round(len(local) * float(os.environ.get("ITEM_T4_PACK_N", PACK_FILL))))
             local = bead_random_positions(n_fill, bead_r, g, np.random)
@@ -352,6 +354,9 @@ class granular_carry(granular_pour):
         self._steps_to(arm, np.concatenate([ee[:3] + [0.0, 0.0, LIFTOFF], ee[3:]]), v_safe)
         self._level(arm, v_safe)
 
+    def _table_fill_frac(self):
+        return float(TABLE_FILL_FRAC_EMB.get(_embodiment_name(self), TABLE_FILL_FRAC))
+
     @staticmethod
     def _preshape_open(eparams):
         env = os.environ.get("ITEM_T4_PRESHAPE")  # diag-only override
@@ -380,7 +385,7 @@ class granular_carry(granular_pour):
             # capacity), highest beads first: trimmed to the rim only, the
             # fallback still spilled at the table lift (2/2, audit4)
             drop = np.asarray(drop, dtype=bool)
-            n_cap = int(round(bowl_lattice_capacity(g, r) * TABLE_FILL_FRAC))
+            n_cap = int(round(bowl_lattice_capacity(g, r) * self._table_fill_frac()))
             extra = int((~drop).sum()) - n_cap
             if extra > 0:
                 kept = np.where(~drop)[0]

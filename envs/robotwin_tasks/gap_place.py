@@ -96,7 +96,7 @@ PLACE_CLEAR = 0.004  # m: payload bottom this far above the table at the release
 RETREAT_H = 0.10
 JAW_MARGIN = 0.03  # m: pre-shaped jaw = payload width + this
 GRIPPER_STIFFNESS = 5000.0
-SUCCESS_TOL = 0.02  # m: payload centre within this of the slot centre along y (and 3 cm along x), on the table
+SUCCESS_TOL = 0.005  # m: payload centre within the scene's clearance + this of the slot centre along y — between the flankers (and 3 cm along x), on the table
 
 
 class gap_place(granular_carry):
@@ -273,12 +273,13 @@ class gap_place(granular_carry):
         return float(np.degrees(np.arccos(np.clip(up[2], -1.0, 1.0))))
 
     def check_success(self):
-        """Nominal goal only: the payload stands in the slot (centre within
-        SUCCESS_TOL of the slot along y — the flanker axis — and 3 cm along x,
-        resting on the table, upright). Knocking a block over is a rule."""
+        """Nominal goal only: the payload stands IN the slot — its centre within
+        clearance + SUCCESS_TOL of the slot along y (the flanker axis; a 2 cm
+        fixed tolerance failed every offset >= 2 cm, t7g), 3 cm along x, on
+        the table, upright. Disturbing a block is a rule."""
         p = np.asarray(self.payload.get_pose().p, dtype=np.float64)
         on_table = abs(float(p[2]) - (TABLE_Z + 0.5 * self.payload_h)) < 0.01
-        return bool(abs(p[1] - self.slot_xy[1]) <= SUCCESS_TOL and abs(p[0] - self.slot_xy[0]) <= 0.03
+        return bool(abs(p[1] - self.slot_xy[1]) <= self.clearance + SUCCESS_TOL and abs(p[0] - self.slot_xy[0]) <= 0.03
                     and on_table and self._tilt_deg(self.payload, [0.0, 0.0, 1.0]) < 10.0)
 
     def overlay_lines(self):
