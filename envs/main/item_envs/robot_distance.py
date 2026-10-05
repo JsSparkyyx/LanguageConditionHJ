@@ -306,13 +306,18 @@ def _held_info(env, specs: list, cehj) -> tuple[set[int], list[tuple]]:
     return held_idx, payloads
 
 
+_RULE_ROLES = ("candidate", "bystander")  # items the rules protect: held = touched, never exempt
+
+
 def robot_item_distances(env, items) -> np.ndarray:
     """[K] min signed distance from robot links + held payload to each item (m).
 
     Positive outside the item OBB, negative on penetration (sphere-to-OBB,
-    same convention as CEHJ's h). An item held by a gripper gets +inf; every
-    other held item counts as robot payload for it. items: iterable of
-    ItemSpec (or mapping id -> ItemSpec).
+    same convention as CEHJ's h). The task's own held object (role
+    task_object / support) gets +inf; a held candidate / bystander keeps its
+    real (contact, <= 0) distance. Every held item counts as robot payload
+    for the OTHER items. items: iterable of ItemSpec (or mapping id ->
+    ItemSpec).
     """
     cehj, load_collision_spheres = _cehj()
     specs = _as_specs(items)
@@ -322,14 +327,20 @@ def robot_item_distances(env, items) -> np.ndarray:
     spheres = load_collision_spheres(env.embodiment)
     held_idx, payloads = _held_info(env, specs, cehj)
     for i, spec in enumerate(specs):
-        if i in held_idx:
-            continue  # held items are part of the robot body: own distance +inf
+        if i in held_idx and str(getattr(spec, "role", "")) not in _RULE_ROLES:
+            continue  # the task's own held object is part of the robot body: own distance +inf
+        # a held CANDIDATE / bystander was grabbed by the gripper — e.g. the
+        # open fingers closing on the pick object caught a T1 candidate 7 cm
+        # from it (audit 2026-10-04): its avoid margin must read the contact
+        # (<= 0), not +inf ("safe" while the robot holds it)
         origin, rot, half = _spec_obb(spec)
         best = min(
             cehj._arm_sphere_distance(env, "left", origin, rot, half, spheres)[0],
             cehj._arm_sphere_distance(env, "right", origin, rot, half, spheres)[0],
         )
         for kind, ref in payloads:
+            if kind == "spec" and ref == i:
+                continue  # never its own payload
             try:
                 if kind == "spec":
                     d = _spec_obb_distance(cehj, _spec_obb(specs[ref]), origin, rot, half)

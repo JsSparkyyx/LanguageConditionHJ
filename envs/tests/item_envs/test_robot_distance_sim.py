@@ -70,7 +70,7 @@ def test_held_item_is_inf_and_payload_for_others(embodiment):
 
     env = make_env(embodiment)
     cup = env.task.cup  # place_empty_cup grasp actor (TASK_SPECS["object"])
-    cup_spec = actor_spec(env, cup, "cup", "cup")
+    cup_spec = actor_spec(env, cup, "cup", "cup", role="task_object")  # the task's own pick object
     obs_spec = obstacle_spec(env)
     specs = [cup_spec, obs_spec]
 
@@ -105,6 +105,12 @@ def test_held_item_is_inf_and_payload_for_others(embodiment):
         f"[held-test] {embodiment} grasp@{steps}: d_cup={d[0]} d_obstacle={d[1]:.6f} "
         f"d_system={d_sys:.6f} |d_obstacle-d_system|={abs(d[1] - d_sys):.3e}"
     )
-    assert d[0] == np.inf  # the held item's own distance
+    assert d[0] == np.inf  # the held task object's own distance
     assert np.isfinite(d[1])
     assert d[1] == pytest.approx(d_sys, abs=1e-6)
+    # the same grasp on a CANDIDATE (a rule-protected item) reads the contact,
+    # never +inf (audit 2026-10-04: a T1 candidate caught by the closing
+    # fingers read "safe" while held)
+    cand = actor_spec(env, cup, "cup", "cup", role="candidate")
+    d_c = robot_item_distances(env, [cand, obs_spec])
+    assert np.isfinite(d_c[0]) and d_c[0] <= 0.005, d_c

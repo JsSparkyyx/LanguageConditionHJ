@@ -30,7 +30,7 @@ def make_env(embodiment: str, seed: int = 0):
     return make_training_env(cfg, seed)
 
 
-def actor_spec(env, actor, item_id: str, category: str, half=None) -> ItemSpec:
+def actor_spec(env, actor, item_id: str, category: str, half=None, role: str = "candidate") -> ItemSpec:
     """ItemSpec for any scene actor with OBB parity to distance.py's _obb_from_actor.
 
     center_local/half are recovered from the same values _obb_from_actor
@@ -49,6 +49,7 @@ def actor_spec(env, actor, item_id: str, category: str, half=None) -> ItemSpec:
         category=category,
         half_extents=np.asarray(half_out, dtype=np.float64),
         obb_center_local=center_local,
+        role=role,
     )
 
 
