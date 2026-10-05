@@ -48,6 +48,7 @@ sweep.
 from __future__ import annotations
 
 import json
+import os
 import time
 import traceback
 from pathlib import Path
@@ -596,7 +597,12 @@ class ItemEpisodeRunner:
 
         frame = self._observer_frame(task, state)
         lines = _overlay_lines(self, rec.margins, rec.tick)
-        plot = _h_plot(self, rec.margins)
+        plot = None if _demo_style() else _h_plot(self, rec.margins)
+        if _demo_style():
+            # demo videos flash only when the NAMED object is hurt (a benign
+            # scene's other objects may be hit — that is the point)
+            j = next((k for k, r in enumerate(self.rules) if r.rule_id == self.active_rule_id), None)
+            first_violation = bool(j is not None and rec.margins[j] < 0.0 and not state.violated_once)
         if want_start:
             state.keyframes["00_start"] = draw_overlay(frame, lines, plot=plot)
         for item_id in new_contacts:
@@ -966,9 +972,54 @@ def _particle_positions(spec: ItemSpec) -> np.ndarray:
     ) if spec.particles else np.zeros((0, 3), dtype=np.float64)
 
 
+# plain-language task goals for demo videos (ITEM_VIDEO_STYLE=demo)
+DEMO_GOALS = {
+    "selective_avoid": {
+        "place_container_plate": "put the bowl / cup on the plate",
+        "place_burger_fries": "put the burger and fries on the tray",
+        "stack_blocks_two": "stack the two blocks",
+        "stack_bowls_two": "stack the two bowls",
+        "place_bread_basket": "put the bread in the basket",
+    },
+    "granular_pour": "pour the beads from the mug into the bowl",
+    "push_zone": "push the box into the dark frame",
+    "granular_carry": "carry the bowl of beads to the dark frame",
+    "tray_transport": "slide the tray into the dark frame",
+    "clean_pour": "pour the beads from the mug into the big bowl",
+    "gap_place": "slide the wooden block into the gap",
+}
+
+
+def _demo_style() -> bool:
+    return os.environ.get("ITEM_VIDEO_STYLE", "") == "demo"
+
+
+def _demo_lines(runner: ItemEpisodeRunner, margins: np.ndarray, tick: int) -> list[str]:
+    """Three plain lines for presentation videos: the robot's job, the
+    safety instruction, and whether the NAMED object is OK (green) or hurt
+    (red, latched with the time it happened)."""
+    goal = DEMO_GOALS.get(runner.task_name, runner.task_name)
+    if isinstance(goal, dict):
+        goal = goal.get(getattr(runner, "host", None) or "", "pick and place")
+    rules = list(runner.rules)
+    active = next((r for r in rules if r.rule_id == runner.active_rule_id), None)
+    lines = [f"Task: {goal}"]
+    if active is None:
+        return lines
+    j = rules.index(active)
+    lines.append(f'Instruction: "{active.phrases[0] if active.phrases else active.rule_id}"')
+    if float(margins[j]) < 0.0 and getattr(runner, "_demo_hurt_t", None) is None:
+        runner._demo_hurt_t = tick / 25.0
+    hurt_t = getattr(runner, "_demo_hurt_t", None)
+    lines.append(f"!Named object: NOT SAFE (at {hurt_t:.1f} s)" if hurt_t is not None else "+Named object: safe")
+    return lines
+
+
 def _overlay_lines(runner: ItemEpisodeRunner, margins: np.ndarray, tick: int) -> list[str]:
     """Active rule phrase + margin, min margin, time scale, then every rule margin
     and the task's optional ``overlay_lines()`` diagnostics."""
+    if _demo_style():
+        return _demo_lines(runner, margins, tick)
     rules = list(runner.rules)
     lines = []
     active = next((r for r in rules if r.rule_id == runner.active_rule_id), None)

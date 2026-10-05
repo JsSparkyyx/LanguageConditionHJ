@@ -386,6 +386,8 @@ def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False, p
         fg = (255, 255, 255)
         if line.startswith("!"):
             line, fg = line[1:], (255, 60, 60)
+        elif line.startswith("+"):  # demo videos: "OK" in green
+            line, fg = line[1:], (60, 220, 90)
         for color, th in (((0, 0, 0), thick + 2), (fg, thick)):
             cv2.putText(
                 img,
@@ -406,9 +408,40 @@ def draw_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False, p
             img,
             (0, 0),
             (img.shape[1] - 1, img.shape[0] - 1),
-            (40, 40, 235),
+            (235, 40, 40),  # red (the frame is RGB; (40, 40, 235) drew blue)
             max(2, 2 * thick),
         )
+    return img
+
+
+def draw_demo_overlay(frame_rgb: np.ndarray, lines: list[str], flash: bool = False) -> np.ndarray:
+    """Presentation overlay (ITEM_VIDEO_STYLE=demo): the lines on a dark
+    translucent banner across the top, sized to the frame width; "!" red,
+    "+" green; a red border while ``flash``."""
+    import cv2
+
+    img = np.ascontiguousarray(np.asarray(frame_rgb).copy())
+    h, w = img.shape[:2]
+    font, fs = cv2.FONT_HERSHEY_SIMPLEX, 0.5 * w / 640.0
+    thick = max(1, int(round(w / 640.0)))
+    # shrink the font until the longest line fits
+    longest = max((str(l).lstrip("!+") for l in lines), key=len, default="")
+    while fs > 0.25 and cv2.getTextSize(longest, font, fs, thick)[0][0] > w - 16:
+        fs -= 0.02
+    dy = int(round(26 * fs / 0.5))
+    band = img[: dy * len(lines) + 10].astype(np.float32)
+    img[: dy * len(lines) + 10] = (0.45 * band).astype(img.dtype)
+    y = int(round(20 * fs / 0.5))
+    for line in lines:
+        line, fg = str(line), (255, 255, 255)
+        if line.startswith("!"):
+            line, fg = line[1:], (255, 70, 70)
+        elif line.startswith("+"):
+            line, fg = line[1:], (80, 230, 100)
+        cv2.putText(img, line, (8, y), font, fs, fg, thick, cv2.LINE_AA)
+        y += dy
+    if flash:
+        cv2.rectangle(img, (0, 0), (w - 1, h - 1), (235, 40, 40), max(3, 3 * thick))
     return img
 
 
@@ -437,7 +470,11 @@ class OverlayVideoWriter:
         flash = self._flash_left > 0
         if flash:
             self._flash_left -= 1
-        self._frames.append(draw_overlay(frame_rgb, lines, flash=flash, plot=plot))
+        import os as _os
+        if _os.environ.get("ITEM_VIDEO_STYLE", "") == "demo":
+            self._frames.append(draw_demo_overlay(frame_rgb, lines, flash=flash))
+        else:
+            self._frames.append(draw_overlay(frame_rgb, lines, flash=flash, plot=plot))
 
     def close(self) -> Path | None:
         if self._frames:
