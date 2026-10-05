@@ -56,11 +56,50 @@ def m_upright(tilt: float, theta_max: float) -> float:
 
 
 def m_stay(p_now: np.ndarray, p_ref: np.ndarray, tilt_now: float, d_tol: float, theta_tol: float) -> float:
-    """min(d_tol - horizontal displacement from the reference, theta_tol - tilt)."""
+    """min(d_tol - horizontal displacement, d_tol * (theta_tol - tilt) / theta_tol),
+    metres: the tilt counts as movement, the full tilt allowance = the full
+    movement allowance (2026-10-05; it was min(metres, radians): 1 deg of tilt
+    weighed like 1.7 cm of shove). The sign — the violation — is unchanged."""
     p_now = np.asarray(p_now, dtype=np.float64).reshape(-1)
     p_ref = np.asarray(p_ref, dtype=np.float64).reshape(-1)
     d = float(np.linalg.norm(p_now[:2] - p_ref[:2]))
-    return min(float(d_tol) - d, float(theta_tol) - float(tilt_now))
+    return min(float(d_tol) - d, float(d_tol) * (float(theta_tol) - float(tilt_now)) / float(theta_tol))
+
+
+H_UNIT_DISTANCE = 0.05  # m: one h unit for distance-type rules (h = 20 x metres, CrossSafe's kappa)
+H_UNIT_PARTICLES_INSIDE = 0.01  # m: a bead resting against the container wall sits 1.0-1.2 cm inside (median at rest, T2/T4/T6 calibration)
+
+
+def h_unit(rule) -> float:
+    """The margin that reads h = 1 ("comfortably safe") for this rule, in the
+    margin's own units (user 2026-10-05: the h ranges differed ~4x between
+    rules — T5's upright topped out at 2/rad x 10 deg = 0.35 while distance
+    rules reached 1.0 at 5 cm):
+
+    - avoid / inside / outside / particles_outside: 5 cm (h = 20 x metres);
+    - particles_inside ("don't spill"): 1 cm — the worst bead of a container
+      at rest sits against its wall, 1.0-1.2 cm inside (median at the start
+      of the T2 / T4 / T6 calibration episodes), so 5 cm capped it at ~0.2;
+    - upright: the rule's own tilt limit theta_max (h = 1 standing straight,
+      0 at the limit, -1 at twice the limit);
+    - stay: the rule's own movement limit d_tol (its margin is in metres,
+      the tilt converted, see m_stay).
+    """
+    name = getattr(getattr(rule, "consequence", None), "value", str(getattr(rule, "consequence", "")))
+    params = getattr(rule, "params", None) or {}
+    if name == "upright":
+        return float(params["theta_max"])
+    if name == "stay":
+        return float(params["d_tol"])
+    if name == "particles_inside":
+        return H_UNIT_PARTICLES_INSIDE
+    return H_UNIT_DISTANCE
+
+
+def rule_h(rule, margin: float) -> float:
+    """The failure function: clip(margin / h_unit(rule), -1, 1). The sign is
+    the margin's (h < 0 = harmed); +1 / -1 = comfortably safe / badly harmed."""
+    return float(np.clip(float(margin) / h_unit(rule), -1.0, 1.0))
 
 
 def m_particles_inside(particle_xy_per_region: list[np.ndarray], regions, T: float = 0.005) -> float:

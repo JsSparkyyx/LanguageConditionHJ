@@ -114,6 +114,8 @@ link token and every slot token. Readout:
 - all other rule types: value of the subject slot (tag-weighted).
 
 Q > 0 means safe. The filter engages when Q(s, a_nominal) < 0 (CrossSafe convention, κ = 20 per metre).
+Item rules share one scale (2026-10-05): h = clip(margin / h_unit, -1, 1), 1.0 = comfortably
+safe for every rule (`margins.rule_h`; distance rules keep κ = 20 per metre).
 
 ## 6. Losses
 

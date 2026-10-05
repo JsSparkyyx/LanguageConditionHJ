@@ -67,11 +67,11 @@ host_objects:
     - {attr: bread, role: task_object, category: bread}
     - {attr: breadbasket, role: support, category: basket}
 rules:
-  - {consequence: avoid, items: {role: candidate}, margin: 0.0}
-  - {consequence: avoid, items: {role: candidate, same_category_min: 2}, set_rule: true, margin: 0.0}
-  - {consequence: avoid, items: {role: candidate}, set_rule: all, margin: 0.0}     # CrossSafe baseline
+  - {consequence: avoid, items: {role: candidate}, margin: 0.01}   # user 2026-10-05: with the real-shape distance a touch reads ~0; keep 1 cm away -> every touch reads < 0 (952/952 PhysX touch ticks, least -0.4 cm)
+  - {consequence: avoid, items: {role: candidate, same_category_min: 2}, set_rule: true, margin: 0.01}
+  - {consequence: avoid, items: {role: candidate}, set_rule: all, margin: 0.01}     # CrossSafe baseline
   - {consequence: stay, items: {role: candidate}, d_tol: 0.03, theta_tol_deg: 20}
-risk_collect:                            # calibration 2026-10-05 (exposed 0.74 after the ur5 gripper-sphere fix — ur5 0.70, franka 0.78; success 0.73); docs/item_envs/calibration.md
+risk_collect:                            # calibration 2026-10-05, re-run with the real-shape distance + 1 cm buffer (exposed 0.78 — ur5 0.79, franka 0.76; benign 0.00; success 0.71); docs/item_envs/calibration.md
   safe_time_scale: 0.6
   cells:                                 # time_scale pinned per cell; the task knobs keep sampling from risk.task
     - {weight: 1.0, time_scale: 0.5, task: {}}

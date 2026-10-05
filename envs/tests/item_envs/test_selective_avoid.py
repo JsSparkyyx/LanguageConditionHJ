@@ -105,7 +105,7 @@ def test_yaml_rule_entries_match_plan():
     assert rules[2]["set_rule"] == "all"  # CrossSafe baseline
     assert rules[3]["d_tol"] == 0.03
     for r in rules[:3]:
-        assert r["margin"] == 0.0
+        assert r["margin"] == 0.01  # keep 1 cm away (user 2026-10-05)
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +311,7 @@ def test_enumerate_rules_stable_ids_and_no_digits():
 
 def test_enumerate_rules_params():
     rules = {r.rule_id: r for r in t1_rules()}
-    assert rules["avoid|cup_0|-"].params["margin"] == 0.0
+    assert rules["avoid|cup_0|-"].params["margin"] == 0.01
     assert rules["stay|cup_0|-"].params["d_tol"] == 0.03
     assert np.isclose(rules["stay|cup_0|-"].params["theta_tol"], np.deg2rad(20))
     assert rules["avoid|cup_0+cup_1|-"].consequence is Consequence.AVOID

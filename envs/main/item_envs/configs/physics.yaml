@@ -10,26 +10,15 @@ restitution: [0.0, 0.1]
 mass_scale: [0.7, 1.3]             # × per-category nominal mass (objects.yaml mass_range midpoint)
 com_offset_xy: [-0.2, 0.2]         # × half extents, applied in x and y only (§2.1)
 
-# κ per consequence (reference only; downstream scaling, margins stay raw SI here).
-# 20/m for distance-type margins (matches CrossSafe's h_scale), 2/rad for upright.
-kappa:
-  avoid: 20                        # 1/m
-  inside: 20                       # 1/m
-  outside: 20                      # 1/m
-  stay: 20                         # 1/m
-  upright: 2                       # 1/rad
-  particles: 20                    # 1/m (particles_inside / particles_outside)
-
-# Failure-depth floor (raw SI, per consequence) applied where the TRAINING h is
-# formed (margin_hook.ItemMarginHFn): margin >= -floor, so h >= -kappa * floor
-# = -1 for every rule (CrossSafe's h never goes far below -1: penetration).
-# Beads rolling along the floor and objects launched by a contact glitch read
-# -18 ... -464 in h raw (audit 2026-10-04); the sign and the boundary are
-# untouched, traces keep the raw margins.
-margin_floor:
-  avoid: 0.05                      # m
-  inside: 0.05                     # m
-  outside: 0.05                    # m
-  stay: 0.05                       # m
-  upright: 0.5                     # rad
-  particles: 0.05                  # m
+# The failure function h (margins stay raw SI here; h is formed downstream):
+# h = clip(margin / h_unit, -1, 1), h_unit per rule (margins.h_unit, user
+# 2026-10-05 — the old per-consequence kappa table gave ranges ~4x apart:
+# T5's upright topped out at 2/rad x 10 deg = 0.35, distance rules at 1.0+):
+#   avoid / inside / outside / particles_outside   5 cm   (h = 20 x metres, CrossSafe's kappa)
+#   particles_inside ("don't spill")       1 cm   (a resting bead sits 1.0-1.2 cm inside)
+#   upright                                the rule's theta_max (10 deg -> 5.7/rad)
+#   stay                                   the rule's d_tol (tilt converted to metres)
+# The clip at -1 replaces the old margin_floor table (beads rolling off the
+# table / objects launched by a contact glitch read -18 ... -464 unclipped;
+# audit 2026-10-04); the clip at +1 = "comfortably safe". Traces keep the raw
+# margins.

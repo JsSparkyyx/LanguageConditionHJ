@@ -54,7 +54,7 @@ __all__ = ["ItemShape", "shape_of", "sphere_distances", "spheres_min_distance", 
 MAX_EXACT = 64  # exact queries per (spheres | payload) x item query
 NEAR = 0.02  # m: below this hull bound the convex pieces are evaluated exactly
 KDOP_N = 98  # planes of the multi-piece bounding polytope
-DEPTH_ENOUGH = 0.05  # m: overlap this deep reads h = -1 (physics.yaml margin_floor 0.05): stop searching
+DEPTH_ENOUGH = 0.05  # m: overlap this deep reads h = -1 (margins.H_UNIT_DISTANCE: the clip): stop searching
 _ROUND_SIDES = 32  # polygon sides for cylinders / capsules / spheres (circumscribed)
 _POINT_R = 1e-7  # m: the "point" of a point-to-polytope GJK query is a sphere this small
 

@@ -1,8 +1,8 @@
 """Non-sim tests for ItemMarginHFn (Phase 5) with fabricated fixtures.
 
 The sim seam (_compute_tick / _per_link) is stubbed on the instance; the
-pure logic under test is real: active-rule selection, kappa mapping,
-h = kappa * margin_active, diag assembly (all margins + item state +
+pure logic under test is real: active-rule selection, the per-rule h
+(scale * rule_h(rule, margin)), diag assembly (all margins + item state +
 compute_h compat keys), per_link target selection for T1 single-item avoid
 rules, and the sidecar row offered to the lockstep sink.
 """
@@ -23,10 +23,10 @@ def make_item(item_id, category="cup"):
     return ItemSpec(item_id=item_id, entity=object(), category=category, role="candidate")
 
 
-def make_rule(rule_id, consequence=Consequence.AVOID, item_ids=("cup_0",), region_ids=()):
+def make_rule(rule_id, consequence=Consequence.AVOID, item_ids=("cup_0",), region_ids=(), params=None):
     return RuleSpec(
         rule_id=rule_id, consequence=consequence, item_ids=tuple(item_ids),
-        region_ids=tuple(region_ids), params={"margin": 0.0},
+        region_ids=tuple(region_ids), params=dict(params or {"margin": 0.0}),
         phrases=["p"], split="train",
     )
 
@@ -51,8 +51,8 @@ def make_tick(margins, k=2, g=1, n_cam=3, n_tok=4):
     return data
 
 
-def make_hfn(ctx, tick, active_rule_id=None, kappa=1.0, row_sink=None):
-    hfn = ItemMarginHFn(active_rule_id, kappa, ctx=ctx, row_sink=row_sink)
+def make_hfn(ctx, tick, active_rule_id=None, scale=1.0, row_sink=None):
+    hfn = ItemMarginHFn(active_rule_id, scale, ctx=ctx, row_sink=row_sink)
     hfn._compute_tick = lambda env: tick
     hfn._per_link_calls = []
     hfn._per_link = lambda env, spec: (
@@ -66,45 +66,46 @@ ENV = SimpleNamespace(task=SimpleNamespace())
 CFG = SimpleNamespace()
 
 
-def test_h_active_rule_scalar_kappa():
+def test_h_active_rule_scale():
     items = [make_item("cup_0"), make_item("cup_1")]
     rules = [make_rule("avoid|cup_0|-", item_ids=("cup_0",)),
              make_rule("avoid|cup_1|-", item_ids=("cup_1",))]
     hfn = make_hfn(make_ctx(rules, items, "avoid|cup_1|-"),
                    make_tick([0.5, -0.02]), active_rule_id="avoid|cup_1|-",
-                   kappa=20.0)
+                   scale=0.05)
     h, diag = hfn(ENV, CFG)
-    assert h == pytest.approx(20.0 * -0.02)
+    assert h == pytest.approx(0.05 * (-0.02 / 0.05))  # scale x rule_h (20 x metres)
     assert diag["margin_active"] == pytest.approx(-0.02)
     assert diag["active_rule_id"] == "avoid|cup_1|-"
 
 
-def test_h_min_over_scaled_rules_without_active():
+def test_h_min_over_rule_h_without_active():
     items = [make_item("cup_0"), make_item("cup_1")]
     rules = [make_rule("avoid|cup_0|-", item_ids=("cup_0",)),
              make_rule("avoid|cup_1|-", item_ids=("cup_1",))]
-    kappa = {"avoid": 1.0, "upright": 0.1, "particles": 1.0}
-    hfn = make_hfn(make_ctx(rules, items), make_tick([0.5, 0.03]), kappa=kappa)
+    hfn = make_hfn(make_ctx(rules, items), make_tick([0.5, 0.03]))
     h, diag = hfn(ENV, CFG)
-    assert h == pytest.approx(0.03)  # min over kappa_j * margin_j
+    assert h == pytest.approx(0.6)  # min(clip(0.5 / 0.05), 0.03 / 0.05)
     assert diag["active_rule_id"] is None
     assert diag["margin_active"] == pytest.approx(0.03)  # min raw margin
 
 
-def test_kappa_dict_uses_consequence_and_particles_bucket():
+def test_h_per_rule_unit():
+    """1.0 = comfortably safe for every rule: upright's own tilt limit, the
+    don't-spill rule's 1 cm (user 2026-10-05; the old kappa 2/rad capped a
+    10 deg upright rule at 0.35)."""
     items = [make_item("box_0"), make_item("beads")]
     rules = [
-        make_rule("upright|box_0|-", Consequence.UPRIGHT, ("box_0",)),
+        make_rule("upright|box_0|-", Consequence.UPRIGHT, ("box_0",), params={"theta_max": np.deg2rad(10.0)}),
         make_rule("particles_inside|beads|bowl_src_interior",
                   Consequence.PARTICLES_INSIDE, ("beads",), ("bowl_src_interior",)),
     ]
-    kappa = {"upright": 2.0, "particles": 20.0}
-    hfn = make_hfn(make_ctx(rules, items), make_tick([0.05, 0.01]), kappa=kappa)
-    assert hfn._kappa_for(rules[0]) == 2.0
-    assert hfn._kappa_for(rules[1]) == 20.0  # particles_inside -> "particles"
-    h, _ = hfn(ENV, CFG)
-    assert h == pytest.approx(min(2.0 * 0.05, 20.0 * 0.01))
-    assert hfn._kappa_for(make_rule("stay|box_0|-", Consequence.STAY, ("box_0",))) == 1.0
+    hfn = make_hfn(make_ctx(rules, items), make_tick([np.deg2rad(10.0), 0.005]))
+    h, diag = hfn(ENV, CFG)
+    assert h == pytest.approx(min(1.0, 0.005 / 0.01))  # upright straight = 1.0, beads 5 mm inside = 0.5
+    hfn2 = make_hfn(make_ctx(rules, items, "upright|box_0|-"), make_tick([np.deg2rad(5.0), 0.04]),
+                    active_rule_id="upright|box_0|-")
+    assert hfn2(ENV, CFG)[0] == pytest.approx(0.5)
 
 
 def test_diag_carries_all_margins_and_compat_keys():
@@ -224,22 +225,19 @@ def test_bind_reads_env_item_runner():
     assert hfn.bind(env) is hfn and hfn.ctx is ctx
 
 
-def test_failure_depth_floor_bounds_h_but_keeps_the_sign():
-    """physics.yaml margin_floor: a bead 0.9 m off the table / an object
-    launched 23 m (audit 2026-10-04) must not read h = -18 / -464; the floor
-    caps the failure depth at -kappa * floor, safe margins are untouched."""
-    from main.item_envs import physics
-
-    floors = physics.load_physics_cfg()["margin_floor"]
+def test_failure_depth_clip_bounds_h_but_keeps_the_sign():
+    """h is clipped to [-1, 1]: a bead 0.9 m off the table / an object
+    launched 23 m (audit 2026-10-04) must not read h = -18 / -464; the raw
+    margin is reported unchanged; a very safe margin reads +1."""
     items = [make_item("cup_0"), make_item("cup_1")]
     rules = [make_rule("avoid|cup_0|-", item_ids=("cup_0",)),
              make_rule("avoid|cup_1|-", item_ids=("cup_1",))]
     hfn = make_hfn(make_ctx(rules, items, "avoid|cup_1|-"), make_tick([0.30, -23.0]),
-                   active_rule_id="avoid|cup_1|-", kappa=20.0)
+                   active_rule_id="avoid|cup_1|-")
     h, diag = hfn(ENV, CFG)
-    assert h == pytest.approx(-20.0 * floors["avoid"]) and h < 0.0
+    assert h == pytest.approx(-1.0) and h < 0.0
     assert diag["margin_active"] == pytest.approx(-23.0)  # the raw margin is reported unchanged
     hfn_safe = make_hfn(make_ctx(rules, items, "avoid|cup_0|-"), make_tick([0.30, -23.0]),
-                        active_rule_id="avoid|cup_0|-", kappa=20.0)
+                        active_rule_id="avoid|cup_0|-")
     h_safe, _ = hfn_safe(ENV, CFG)
-    assert h_safe == pytest.approx(20.0 * 0.30)
+    assert h_safe == pytest.approx(1.0)

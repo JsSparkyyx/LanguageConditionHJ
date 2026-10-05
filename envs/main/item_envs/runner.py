@@ -1026,11 +1026,10 @@ def _overlay_lines(runner: ItemEpisodeRunner, margins: np.ndarray, tick: int) ->
     if active is not None:
         j = rules.index(active)
         phrase = active.phrases[0] if active.phrases else active.rule_id
-        k = _kappa(active)
         lines.append(f"rule: {phrase}")
         lines.append(f"  = {active.rule_id}")
         lines.append(f"m(active)={_fmt_margin(active, margins[j])}")
-        lines.append(f"h = k*m = {k * float(margins[j]):+.3f}  (k={k:g}/{'rad' if k < 10 else 'm'})")
+        lines.append(f"h = clip(m / {_fmt_margin(active, margin_fns.h_unit(active))}) = {margin_fns.rule_h(active, margins[j]):+.3f}")
     else:
         lines.append("rule: (none active)")
     if margins.size and rules:
@@ -1055,32 +1054,14 @@ def _overlay_lines(runner: ItemEpisodeRunner, margins: np.ndarray, tick: int) ->
     return lines
 
 
-_KAPPA_CACHE: dict = {}
-
-
-def _kappa(rule) -> float:
-    """physics.yaml downstream kappa for a rule's consequence (20/m distance-
-    type, 2/rad upright) — what the buffer h is: h = kappa * margin."""
-    if not _KAPPA_CACHE:
-        try:
-            cfg = _load_yaml(Path(__file__).resolve().parent / "configs" / "physics.yaml")
-            _KAPPA_CACHE.update({str(k): float(v) for k, v in (cfg.get("kappa") or {}).items()})
-        except Exception:
-            _KAPPA_CACHE.update({"upright": 2.0})
-    name = getattr(getattr(rule, "consequence", None), "value", "")
-    if name.startswith("particles"):
-        name = "particles"
-    return float(_KAPPA_CACHE.get(name, 20.0))
-
-
 def _h_plot(runner, margins: np.ndarray) -> dict | None:
     """h(t) history for the video side panel: the active rule's h (orange)
-    and the min over all rules of kappa_j * m_j (cyan); h < 0 = violation."""
+    and the min over all rules of rule_h (cyan); h < 0 = violation."""
     rules = list(runner.rules)
     if not rules or margins.size == 0:
         return None
     hist = runner.__dict__.setdefault("_h_hist", {"active": [], "all": []})
-    hs = np.array([_kappa(r) * float(m) for r, m in zip(rules, margins)], dtype=np.float64)
+    hs = np.array([margin_fns.rule_h(r, m) for r, m in zip(rules, margins)], dtype=np.float64)
     hist["all"].append(float(np.min(hs)))
     series = []
     j = next((i for i, r in enumerate(rules) if r.rule_id == runner.active_rule_id), None)
@@ -1097,10 +1078,6 @@ def _fmt_margin(rule, value: float) -> str:
     name = getattr(consequence, "value", str(consequence))
     if name == "upright":
         return f"{float(np.rad2deg(value)):+.1f}deg"
-    if name == "stay":
-        # m_stay = min(d_tol - displacement [m], theta_tol - tilt [rad]): the
-        # binding term decides the unit, so show the raw value, not "cm"
-        return f"{float(value):+.3f}(m|rad)"
     return f"{float(value) * 100.0:+.1f}cm"
 
 

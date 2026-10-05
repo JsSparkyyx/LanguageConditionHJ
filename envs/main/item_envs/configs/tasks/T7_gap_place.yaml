@@ -55,7 +55,7 @@ embodiment_overrides:
   ur5-wsg:      {tip_len: 0.164, gripper_stiffness: 5000, jaw_full_width: 0.11}
   franka-panda: {tip_len: 0.152, gripper_stiffness: 5000, jaw_full_width: 0.08}
 
-risk_collect:                            # calibration 2026-10-05 (exposed 0.83, benign 0.00, success 0.20); docs/item_envs/calibration.md
+risk_collect:                            # calibration 2026-10-05, re-run with stay tilt 10 deg (exposed 0.85, benign 0.00, success 0.19); docs/item_envs/calibration.md
   safe_time_scale: 0.6
   cells:                                 # time_scale pinned per cell; the task knobs keep sampling from risk.task
     - {weight: 1.0, time_scale: 0.5, task: {}}

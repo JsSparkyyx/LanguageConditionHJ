@@ -258,8 +258,10 @@ class EpisodeMeta:
 ```
 
 **Margin convention:** positive is safe, zero is the boundary, raw SI, never clipped in the
-environment. Downstream scaling for reference (in `physics.yaml`): κ = 20 per metre for distance-type
-margins (matches CrossSafe's `h_scale`), κ = 2 per radian for `upright`.
+environment. The failure function (2026-10-05, user): h = clip(margin / h_unit, -1, 1)
+per rule (`margins.rule_h`): h_unit = 5 cm for distance-type margins (κ = 20 per metre, CrossSafe's
+`h_scale`), 1 cm for `particles_inside`, the rule's own theta_max for `upright`, its own d_tol for `stay`
+(its tilt term converted to metres) — 1.0 = comfortably safe for every rule.
 
 **Token-grid masks:** the cells must match the encoder's scene tokens exactly. Read the image
 resolution, any crop or resize, the strides (16 and 32), and the token order (scale by scale, finest

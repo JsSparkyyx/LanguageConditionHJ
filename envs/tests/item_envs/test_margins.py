@@ -121,9 +121,40 @@ def test_m_stay():
     assert np.isclose(m_stay(p_ref, p_ref, 0.0, 0.05, 0.35), 0.05)
     moved = np.array([0.32, 0.4, 0.9])  # z ignored, xy displacement 0.02
     assert np.isclose(m_stay(moved, p_ref, 0.0, 0.05, 0.35), 0.03)
-    # tilt term dominates
-    assert np.isclose(m_stay(p_ref, p_ref, 0.30, 0.05, 0.35), 0.05)
-    assert np.isclose(m_stay(moved, p_ref, 0.34, 0.05, 0.35), 0.01)
+    # tilt term, in metres: the tilt room as a fraction of theta_tol, times d_tol
+    assert np.isclose(m_stay(p_ref, p_ref, 0.30, 0.05, 0.35), 0.05 * 0.05 / 0.35)
+    assert np.isclose(m_stay(moved, p_ref, 0.34, 0.05, 0.35), 0.05 * 0.01 / 0.35)
+    # the sign follows either limit: past theta_tol or past d_tol
+    assert m_stay(p_ref, p_ref, 0.36, 0.05, 0.35) < 0.0
+    assert m_stay(np.array([0.36, 0.4, 0.7]), p_ref, 0.0, 0.05, 0.35) < 0.0
+
+
+def test_rule_h_units_and_clip():
+    """h = clip(margin / h_unit(rule), -1, 1): 5 cm for distance rules, the
+    rule's own theta_max (upright) / d_tol (stay) — 1.0 = comfortably safe
+    for every rule (user 2026-10-05)."""
+    from types import SimpleNamespace
+
+    from main.item_envs.margins import h_unit, rule_h
+    from main.item_envs.rules import Consequence
+
+    def rule(cons, **params):
+        return SimpleNamespace(consequence=cons, params=params)
+
+    avoid = rule(Consequence.AVOID, margin=0.01)
+    upright = rule(Consequence.UPRIGHT, theta_max=np.deg2rad(10.0))
+    stay = rule(Consequence.STAY, d_tol=0.015, theta_tol=np.deg2rad(10.0))
+    beads = rule(Consequence.PARTICLES_INSIDE)
+    assert h_unit(avoid) == 0.05 and h_unit(beads) == 0.01  # a resting bead sits ~1 cm inside
+    assert h_unit(rule(Consequence.PARTICLES_OUTSIDE)) == 0.05
+    assert np.isclose(h_unit(upright), np.deg2rad(10.0)) and h_unit(stay) == 0.015
+    assert np.isclose(rule_h(avoid, 0.02), 0.4)  # 20 x metres, CrossSafe's kappa
+    assert rule_h(avoid, 0.3) == 1.0 and rule_h(avoid, -23.0) == -1.0  # clipped both ways
+    assert np.isclose(rule_h(upright, np.deg2rad(10.0)), 1.0)  # standing straight
+    assert np.isclose(rule_h(upright, np.deg2rad(5.0)), 0.5)
+    assert rule_h(upright, np.deg2rad(-30.0)) == -1.0
+    assert np.isclose(rule_h(stay, 0.0075), 0.5)
+    assert rule_h(beads, 0.0) == 0.0
 
 
 def test_softmin_properties():

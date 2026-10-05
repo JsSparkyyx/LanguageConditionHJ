@@ -31,7 +31,7 @@ _CONFIGS = Path(__file__).resolve().parent / "configs"
 
 @lru_cache(maxsize=4)
 def load_physics_cfg(path: str | None = None) -> dict:
-    """Parsed configs/physics.yaml (randomization ranges + reference kappas)."""
+    """Parsed configs/physics.yaml (randomization ranges; the h scale lives in margins.h_unit)."""
     p = Path(path) if path else _CONFIGS / "physics.yaml"
     with open(p, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)

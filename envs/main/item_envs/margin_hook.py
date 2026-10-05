@@ -1,14 +1,15 @@
 """Phase 5: item-margin h_fn for RolloutController + collection wiring.
 
-``ItemMarginHFn(active_rule_id, kappa)`` is the h_fn item tasks inject into
-RolloutController: ``h = kappa * margin_active`` (raw SI margins from the
-runner's ``rule_margins`` machinery; positive = safe). rollout.py then
+``ItemMarginHFn(active_rule_id, scale)`` is the h_fn item tasks inject into
+RolloutController: ``h = scale * rule_h(rule, margin_active)`` with
+``margins.rule_h = clip(margin / h_unit(rule), -1, 1)`` (raw SI margins from
+the runner's ``rule_margins`` machinery; positive = safe; h_unit = 5 cm for
+distance-type rules — CEHJ's h×20 units —, the rule's own theta_max for
+upright, its own d_tol for stay; user 2026-10-05). rollout.py then
 multiplies the return by ``cfg.h_scale``, so the collection wiring passes
-``kappa = κ_consequence / h_scale`` (physics.yaml's downstream κ table:
-20/m distance-type, 2/rad upright) and the buffer h lands at exactly
-κ·margin — for distance rules the same h×20 units CEHJ trains on. With no
-active rule, h is the min over ALL rules of κ_j·margin_j (collection
-protects every rule; the language referent is chosen at training time).
+``scale = 1 / h_scale`` and the buffer h lands at exactly rule_h. With no
+active rule, h is the min over ALL rules of rule_h (collection protects
+every rule; the language referent is chosen at training time).
 
 ``diag`` carries all rule margins + per-tick item state (the sidecar row
 source) plus the compat keys ``main/train`` reads from compute_h's diag:
@@ -53,9 +54,9 @@ ensure_main_path()  # main.envs.* / main.train.* live in the sibling CEHJ copy
 
 from . import masks, robot_distance  # noqa: E402
 from .items import entity_of  # noqa: E402
+from .margins import rule_h  # noqa: E402
 from .rules import Consequence  # noqa: E402
 
-_PARTICLE_CONSEQUENCES = (Consequence.PARTICLES_INSIDE, Consequence.PARTICLES_OUTSIDE)
 
 
 class _TickData:
@@ -68,24 +69,22 @@ class _TickData:
 
 
 class ItemMarginHFn:
-    """(env, cfg) -> (kappa * margin_active, diag) for an item-task episode.
+    """(env, cfg) -> (scale * rule_h(active rule), diag) for an item-task episode.
 
-    active_rule_id: the rule h tracks (None = min over all rules of
-    κ_j·margin_j). kappa: scalar, or mapping consequence name -> scale
-    ("particles" covers both particles_* consequences); the collection
-    wiring passes physics.yaml's κ table divided by cfg.h_scale (rollout.py
-    applies h_scale to the return). ctx: the episode's ItemEpisodeRunner (or
-    anything with .items/.regions/.rules/._stay_ref/.active_rule_id), bound
+    active_rule_id: the rule h tracks (None = min over all rules of rule_h).
+    scale: a scalar multiplier on rule_h; the collection wiring passes
+    1 / cfg.h_scale (rollout.py applies h_scale to the return). ctx: the
+    episode's ItemEpisodeRunner (or anything with
+    .items/.regions/.rules/._stay_ref/.active_rule_id), bound
     explicitly or via bind(env) (reads env._item_runner). row_sink: optional
     object with offer(row_dict) — the lockstep sidecar writer; one row per
     call, unpadded (the sidecar pads to its k_max/r_max/g_max).
     """
 
-    def __init__(self, active_rule_id: str | None = None, kappa=1.0,
+    def __init__(self, active_rule_id: str | None = None, scale: float = 1.0,
                  ctx=None, row_sink=None, with_masks: bool = True):
         self.active_rule_id = active_rule_id
-        self.kappa = kappa
-        self._floors = None  # physics.yaml margin_floor, loaded on first use
+        self.scale = float(scale)
         self.ctx = ctx
         self.row_sink = row_sink
         self.with_masks = bool(with_masks)
@@ -193,26 +192,6 @@ class ItemMarginHFn:
         return per_link
 
     # ----------------------------------------------------------------- pure ----
-    def _floor_for(self, rule) -> float:
-        """Failure-depth floor (raw SI) for a rule's consequence: physics.yaml
-        margin_floor (h >= -kappa * floor); +inf (no floor) when absent."""
-        if self._floors is None:
-            from . import physics
-
-            self._floors = dict(physics.load_physics_cfg().get("margin_floor") or {})
-        name = rule.consequence.value
-        if rule.consequence in _PARTICLE_CONSEQUENCES:
-            name = "particles"
-        return float(self._floors.get(name, float("inf")))
-
-    def _kappa_for(self, rule) -> float:
-        if isinstance(self.kappa, dict):
-            name = rule.consequence.value
-            if rule.consequence in _PARTICLE_CONSEQUENCES:
-                name = "particles"
-            return float(self.kappa.get(name, 1.0))
-        return float(self.kappa)
-
     def _active_index(self, rules) -> int | None:
         rule_id = self.active_rule_id or getattr(self.ctx, "active_rule_id", None)
         if rule_id is None:
@@ -242,9 +221,7 @@ class ItemMarginHFn:
         data = self._compute_tick(env)
         rules = list(ctx.rules)
         margins = np.asarray(data.margins, dtype=np.float64).reshape(-1)
-        scaled = np.array(
-            [self._kappa_for(r) * max(m, -self._floor_for(r)) for r, m in zip(rules, margins)], dtype=np.float64
-        )
+        scaled = np.array([self.scale * rule_h(r, m) for r, m in zip(rules, margins)], dtype=np.float64)
         active_j = self._active_index(rules)
         if not rules:
             h = float("inf")
@@ -382,16 +359,6 @@ def build_item_training_env(cfg, seed: int, control_freq: float = 25.0):
     return env
 
 
-def _kappa_over_h_scale(h_scale: float) -> dict:
-    """physics.yaml's downstream κ table divided by h_scale — rollout.py
-    multiplies the h_fn's return by cfg.h_scale, so the buffer h lands at
-    exactly κ·margin (h×20 units for distance rules)."""
-    from . import physics
-
-    table = dict(physics.load_physics_cfg().get("kappa") or {})
-    return {name: float(v) / float(h_scale) for name, v in table.items()}
-
-
 def wire_item_episode(ro, sidecar) -> None:
     """collect.py's ONE per-episode call for item tasks, after the
     RolloutController is constructed (controller_cls=RiskTickController) and
@@ -413,7 +380,7 @@ def wire_item_episode(ro, sidecar) -> None:
     h_scale = float(getattr(ro.cfg, "h_scale", 1.0))
     ro.h_fn = ItemMarginHFn(
         runner.active_rule_id,
-        _kappa_over_h_scale(h_scale),
+        1.0 / h_scale,  # rollout.py multiplies by h_scale: the buffer h is rule_h
         ctx=runner,
         row_sink=lockstep,
     )

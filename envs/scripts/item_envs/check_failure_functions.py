@@ -2,7 +2,7 @@
 
 Per rule, from the trace's raw poses / particle positions (never from the margin code):
   upright   theta_max - tilt(up axis)                         -> value + sign agreement
-  stay      min(d_tol - |xy - xy(t0)|, theta_tol - tilt)      -> value + sign agreement
+  stay      min(d_tol - |xy - xy(t0)|, d_tol (theta_tol - tilt) / theta_tol)  -> value + sign agreement
   inside /  outside: item OBB corners (8) in the region frame vs the region polygon -> sign agreement
   particles column test per bead (capped columns honoured)    -> sign agreement
   avoid     vs the PhysX contact force (the only independent signal):
@@ -48,7 +48,8 @@ for root in sys.argv[1:]:
                 vals = []
                 for i in r["item_ids"]:
                     j = item_ids.index(i); d = np.linalg.norm(P[:, j, :2] - P[0, j, :2], axis=1)
-                    vals.append(np.minimum(prm["d_tol"] - d, prm["theta_tol"] - tilt_of(P[:, j, 3:7], items[i]["up_axis_local"])))
+                    tilt = tilt_of(P[:, j, 3:7], items[i]["up_axis_local"])
+                    vals.append(np.minimum(prm["d_tol"] - d, prm["d_tol"] * (prm["theta_tol"] - tilt) / prm["theta_tol"]))  # metres (2026-10-05)
                 val = np.min(vals, axis=0)
             elif cons in ("inside", "outside"):
                 per_region = []
