@@ -27,19 +27,46 @@
 | T1 selective_avoid | 71 % | 0 % | 72 % | all 5 |
 | T2 granular_pour | 91 % | - | 49 % | all 5 |
 | T3 push_zone | 94 % | 0 % | 68 % | all 5 |
-| T4 granular_carry | 45 % (ur5 65 %, franka 25 %) | - | 83 % | **open** (below the 50 % goal) |
+| T4 granular_carry | 45 % (ur5 65 %, franka 25 %) | - | 83 % | all 5 (below the 50 % goal on franka: accepted by the user) |
 | T5 tray_transport | 57 % | 0 % | 100 % | 0.75-1.3 (0.5 never tips a block) |
 | T6 clean_pour | 77 % | 0 % | 4 % | all 5 |
 | T7 gap_place | 83 % | 0 % | 20 % | all 5 |
 
 The chosen speeds are written into each task yaml as `risk_collect`.
 
+## Can each task be finished when a good filter fixes the mistake?
+
+User rule (2026-10-05): failing the job because we made the robot unsafe on
+purpose is fine, but the job must be finishable when a good filter keeps it
+safe. Check: the robot with its deliberate mistake removed (slowest speed,
+every risk knob at its safest: no aim error / offset / tilt), 20 episodes
+per robot (`runs/diag/oracle/`).
+
+| task | finishes | named object still hurt |
+|---|---|---|
+| T5 tray | 100 % | 0 % |
+| T7 gap | 100 % | 0 % |
+| T6 clean pour | 75-85 % | 10 % |
+| T4 carry | 95-100 % | 10-25 % (2-6 beads) |
+| T1 / T3 | 65-85 % | the path still runs through the objects (a filter would detour; T3's layout always leaves a detour lane) |
+| **T2 pour** | 60-75 % | **70-100 %** |
+
+T2 is the exception: even the gentlest pour (5 cm, 1 rad/s, no offset)
+leaves beads outside both containers in most episodes (ur5: 4+ beads in
+16/20), and a slower tilt is worse (0.5 rad/s: ur5 median 26 beads out,
+franka 2/20 clean; `runs/diag/t2gentle/`). With "spill no bead" a filter
+cannot make T2 both safe and finished with this pour — open, user decision.
+
+The franka T4 grip was also tested looser (stiffness 1500 / 2500 vs 5000):
+it spills LESS (0-17 % vs 33-42 %) — the soft pinch cushions the stop.
+
 ## Open points
 
 - T4 on franka: its firm grip carries a full bowl steadily — even tilted
   20-40 deg with a 1 cm brake it spills in only 25 % of the episodes
   (ur5: 65 %). Tilt range was raised from 12-35 to 20-40 deg (both robots)
-  and franka's brake from 2 cm to 1 cm for this run.
+  and franka's brake from 2 cm to 1 cm for this run. Accepted (user,
+  2026-10-05).
 - Success at the slowest speed is below the plan's 70 % for T2 (35 %), T3
   (65 %), T6 (0 %) and T7 (18 %). T6 / T7 fail on purpose (the nominal
   always aims off); T2 needs >= 80 % of the beads in the target.
