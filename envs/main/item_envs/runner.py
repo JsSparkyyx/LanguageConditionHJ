@@ -474,12 +474,16 @@ class ItemEpisodeRunner:
         ``avoid`` rule of the first on-path (else near-path) candidate from
         the spawn report; otherwise the first rule (T2: the spill rule).
         """
-        ids = [r.rule_id for r in self.rules]
+        # never an AMBIGUOUS rule: its referent cannot be named uniquely in
+        # this scene (e.g. two untextured-distinct bottles, audit 2026-10-04)
+        ids = [r.rule_id for r in self.rules if not getattr(r, "ambiguous", False)]
+        all_ids = [r.rule_id for r in self.rules]
         hint = getattr(task, "primary_rule_id", None)
         if hint in ids:
             return hint
         if hint is not None:
-            print(f"[runner] WARNING: task primary_rule_id {hint!r} is not in the rule table — falling back")
+            why = "ambiguous" if hint in all_ids else "not in the rule table"
+            print(f"[runner] WARNING: task primary_rule_id {hint!r} is {why} — falling back")
         if self._spawn_report:
             placements = self._spawn_report.get("placements") or []
             for cls in ("on_path", "near_path"):
@@ -487,7 +491,7 @@ class ItemEpisodeRunner:
                     rid = f"avoid|{pl.get('item_id')}|-"
                     if pl.get("cls") == cls and rid in ids:
                         return rid
-        return ids[0] if ids else None
+        return ids[0] if ids else (all_ids[0] if all_ids else None)
 
     # -------------------------------------------------------------- capture ----
     def _capture_tick(self, env, trace, video, state: "_TickState", n_physics: int) -> None:

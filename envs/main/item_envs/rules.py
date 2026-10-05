@@ -56,6 +56,7 @@ class RuleSpec:
     params: dict  # {"margin": m} | {"theta_max": rad} | {"d_tol": m, "theta_tol": rad} | {"T": m}
     phrases: list[str] = field(default_factory=list)
     split: str = "train"  # "train" | "heldout_item" | "heldout_region" | "heldout_phrase"
+    ambiguous: bool = False  # single-item rule whose item no name tells apart in this scene (never a conditioning rule)
 
     def __post_init__(self):
         self.consequence = Consequence(self.consequence)
@@ -136,6 +137,9 @@ def enumerate_rules(items, regions, task_cfg, *, objects_cfg=None, splits_cfg=No
                     rule_rng = rng if rng is not None else _rng_for(rule_id)
                     others = set().union(*[nm for iid, nm in scene_names.items() if iid not in rule.item_ids] or [set()])
                     rule.phrases = render_phrases(rule, objects_cfg, rule_rng, exclude_names=others)
+                    if len(rule.item_ids) == 1:
+                        own = _item_names(rule, objects_cfg)
+                        rule.ambiguous = not any(nm not in others for nm in own)
                 if splits_cfg is not None:
                     rule.split = assign_split(rule, splits_cfg)
                 rules.append(rule)

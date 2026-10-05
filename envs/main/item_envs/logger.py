@@ -152,6 +152,7 @@ def rule_spec_dict(rule: RuleSpec) -> dict:
         "params": _jsonable(rule.params),
         "phrases": list(rule.phrases),
         "split": rule.split,
+        "ambiguous": bool(getattr(rule, "ambiguous", False)),
     }
 
 

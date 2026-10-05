@@ -680,3 +680,25 @@ def test_phrases_never_use_a_name_another_scene_item_answers_to():
         for phrase in rules[rid].phrases:
             assert f"{color} " in phrase, phrase  # always color-qualified
     assert any(" can" in p or " tin" in p for p in rules["upright|can_0|-"].phrases)
+
+
+def test_rule_without_a_unique_name_is_flagged_ambiguous():
+    """Two uncolored bottles: no name tells them apart — their single-item
+    rules are flagged (the runner never makes them the primary rule); a
+    uniquely named item's rule is not."""
+    import yaml
+    from pathlib import Path
+
+    from main.item_envs.items import ItemSpec
+
+    real = yaml.safe_load((Path(__file__).resolve().parents[2] / "main" / "item_envs" / "configs" / "objects.yaml")
+                          .read_text(encoding="utf-8"))
+    cfg = {"rules": [{"consequence": "avoid", "items": {"role": "candidate"}, "margin": 0.0}]}
+    items = {
+        "obj_0": ItemSpec(item_id="obj_0", entity=object(), category="bottle", color="", role="candidate"),
+        "obj_1": ItemSpec(item_id="obj_1", entity=object(), category="bottle", color="", role="candidate"),
+        "obj_2": ItemSpec(item_id="obj_2", entity=object(), category="can", color="", role="candidate"),
+    }
+    rules = {r.rule_id: r for r in enumerate_rules(items, {}, cfg, objects_cfg=real)}
+    assert rules["avoid|obj_0|-"].ambiguous and rules["avoid|obj_1|-"].ambiguous
+    assert not rules["avoid|obj_2|-"].ambiguous
