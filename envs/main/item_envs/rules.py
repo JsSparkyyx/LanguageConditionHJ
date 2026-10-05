@@ -110,6 +110,11 @@ def enumerate_rules(items, regions, task_cfg, *, objects_cfg=None, splits_cfg=No
     """
     item_map = _as_id_map(items, "item_id")
     region_map = _as_id_map(regions, "region_id")
+    # every name each item could be called in this scene (colored + bare):
+    # a rule's phrases must not use a name another item also answers to
+    # ("don't knock over the brick" with two blocks on the tray named no
+    # referent, T5 audit 2026-10-04)
+    scene_names = {iid: _names_for(it, objects_cfg) for iid, it in item_map.items()} if objects_cfg else {}
     rules: list[RuleSpec] = []
     for entry in task_cfg.get("rules", []) or []:
         consequence = Consequence(entry["consequence"])
@@ -129,14 +134,16 @@ def enumerate_rules(items, regions, task_cfg, *, objects_cfg=None, splits_cfg=No
                 )
                 if objects_cfg is not None:
                     rule_rng = rng if rng is not None else _rng_for(rule_id)
-                    rule.phrases = render_phrases(rule, objects_cfg, rule_rng)
+                    others = set().union(*[nm for iid, nm in scene_names.items() if iid not in rule.item_ids] or [set()])
+                    rule.phrases = render_phrases(rule, objects_cfg, rule_rng, exclude_names=others)
                 if splits_cfg is not None:
                     rule.split = assign_split(rule, splits_cfg)
                 rules.append(rule)
     return rules
 
 
-def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState, n: int = 3) -> list[str]:
+def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState, n: int = 3,
+                   exclude_names=()) -> list[str]:
     """Up to n natural-language variants for a rule. Never contain digits.
 
     Templates come from the module-level TEMPLATES (SET_TEMPLATES for set
@@ -152,14 +159,16 @@ def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState
     if not rule.region_ids:
         templates = [t for t in templates if "{region}" not in t]
     templates = [t for t in templates if not _has_digit(t)]
-    item_names = _item_names(rule, objects_cfg)
+    exclude_names = set(exclude_names or ())
+    item_names = _unambiguous(_item_names(rule, objects_cfg), exclude_names)
     category_names = _category_names(rule, objects_cfg)
     region_names = [nm for rid in rule.region_ids for nm in _region_names(rid, objects_cfg)]
     # several regions in ONE per-region-kind rule (region_set: pairs): every
     # phrase names them all ("the red zone and the blue zone")
     joint_regions = len(rule.region_ids) > 1 and consequence not in _REGION_SET
     region_lists = [_colored_first(_region_names(rid, objects_cfg), objects_cfg) for rid in rule.region_ids]
-    member_lists = [_member_names(rule, objects_cfg, k) for k in range(len(rule.item_ids))] if is_set else []
+    member_lists = [_unambiguous(_member_names(rule, objects_cfg, k), exclude_names)
+                    for k in range(len(rule.item_ids))] if is_set else []
     phrases: list[str] = []
     attempts = 0
     while len(phrases) < n and attempts < 20 * max(n, 1) and templates:
@@ -325,6 +334,25 @@ def _category_entry(rule: RuleSpec, objects_cfg: dict) -> tuple[str, dict]:
     category = str(rule.params.get("category") or _strip_item_index(rule.item_ids[0]))
     entry = (objects_cfg.get("categories", {}) or {}).get(category, {}) or {}
     return category, entry
+
+
+def _names_for(item, objects_cfg: dict) -> set[str]:
+    """Every spoken name an item answers to: its category's names and
+    synonyms, bare and color-prefixed."""
+    entry = (objects_cfg.get("categories", {}) or {}).get(str(getattr(item, "category", "")), {}) or {}
+    names = {str(nm) for nm in list(entry.get("names", [])) + list(entry.get("synonyms", []))}
+    color = getattr(item, "color", None)
+    if color:
+        names |= {f"{color} {nm}" for nm in names}
+    return names
+
+
+def _unambiguous(names: list[str], exclude: set) -> list[str]:
+    """names minus those another item in the scene also answers to (distinct
+    colors keep the color-prefixed names); when none survive — same
+    category, no color — the input stands (an unavoidable ambiguity)."""
+    keep = [nm for nm in names if nm not in exclude]
+    return keep or names
 
 
 def _item_names(rule: RuleSpec, objects_cfg: dict) -> list[str]:

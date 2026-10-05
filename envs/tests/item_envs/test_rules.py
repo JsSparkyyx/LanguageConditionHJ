@@ -655,3 +655,28 @@ def test_pair_rule_modes_and_joint_phrases():
     with pytest.raises(ValueError):
         enumerate_rules(items, regions, {"rules": [
             {"consequence": "outside", "items": {"group": "push"}, "regions": {"kind": "zone"}, "region_set": "bogus"}]})
+
+
+def test_phrases_never_use_a_name_another_scene_item_answers_to():
+    """T5 audit (2026-10-04): with two blocks on the tray, "don't knock over
+    the brick" named no referent. Bare / synonym names shared with another
+    item are dropped; distinct colors keep the phrase unique; a category
+    that is unique in the scene keeps its bare names."""
+    from main.item_envs.items import ItemSpec
+
+    cfg = {"rules": [{"consequence": "upright", "items": {"role": "candidate"}, "theta_max_deg": 10}]}
+    items = {
+        "block_0": ItemSpec(item_id="block_0", entity=object(), category="block", color="blue", role="candidate"),
+        "block_1": ItemSpec(item_id="block_1", entity=object(), category="block", color="red", role="candidate"),
+        "can_0": ItemSpec(item_id="can_0", entity=object(), category="can", color="", role="candidate"),
+    }
+    import yaml
+    from pathlib import Path
+
+    real = yaml.safe_load((Path(__file__).resolve().parents[2] / "main" / "item_envs" / "configs" / "objects.yaml")
+                          .read_text(encoding="utf-8"))
+    rules = {r.rule_id: r for r in enumerate_rules(items, {}, cfg, objects_cfg=real)}
+    for rid, color in (("upright|block_0|-", "blue"), ("upright|block_1|-", "red")):
+        for phrase in rules[rid].phrases:
+            assert f"{color} " in phrase, phrase  # always color-qualified
+    assert any(" can" in p or " tin" in p for p in rules["upright|can_0|-"].phrases)
