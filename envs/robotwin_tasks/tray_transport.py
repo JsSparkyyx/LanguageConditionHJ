@@ -84,10 +84,10 @@ SHORT_H = (0.05, 0.07)  # a_tip >= 7.0 m/s^2
 MID_W = (0.04, 0.05)
 MID_H = (0.09, 0.11)  # a_tip 3.6-5.4 m/s^2
 THIRD_ITEM_P = 0.5  # a medium block as well
-ITEM_MASS_RANGE = (0.05, 0.15)  # kg (objects.yaml categories.box.mass_range)
+ITEM_MASS_RANGE = (0.05, 0.15)  # kg (objects.yaml categories.block.mass_range)
 ITEM_EDGE_CLEAR = 0.03  # m from the inner rim face to an item's side
 ITEM_GAP = 0.03  # m between item sides
-HANDLE_CLEAR = 0.035  # m: items keep this clear of the near rim (the inner finger)
+HANDLE_CLEAR = 0.05  # m: items keep this clear of the near rim (the pre-shaped inner finger; fully open it reached a block 4-5 cm in, d69)
 ITEM_TRIES = 400
 EXCLUDE_COLORS = ("white", "black")  # white vanishes on the table; black on the dark frame
 ITEM_COLORS = ("red", "green", "blue", "yellow")
@@ -103,6 +103,7 @@ GRASP_TIP_CLEAR = 0.010  # m: closed fingertips this far above the table at the 
 PRE_GRASP_H = 0.10  # m above the pinch pose
 RETREAT_H = 0.08
 GRIPPER_STIFFNESS = 5000.0
+PRESHAPE_OPEN = 0.45  # gripper opening (fraction) for the descent onto the fin: ~5 cm (ur5) / 3.6 cm (franka) — fully open, the inner finger hit blocks near the rim (d69)
 SUCCESS_TOL = 0.04  # tray centre within this of the pad centre (m)
 
 
@@ -239,7 +240,7 @@ class tray_transport(granular_carry):
         )
         for it in self.standing:
             register_item(
-                self, it["item_id"], it["entity"], category="box", color=it["color"], kind="rigid",
+                self, it["item_id"], it["entity"], category="block", color=it["color"], kind="rigid",
                 role="candidate", half_extents=[0.5 * it["w"], 0.5 * it["w"], 0.5 * it["h"]],
                 obb_center_local=[0.0, 0.0, 0.0], up_axis_local=[0.0, 0.0, 1.0], mass=it["mass"],
             )
@@ -272,7 +273,7 @@ class tray_transport(granular_carry):
 
         # 1. pinch the handle fin — safe: above it, straight down, close
         pinch = self._pinch_pose(eparams)
-        self.move(self.open_gripper(arm))
+        self.move(self.open_gripper(arm, pos=PRESHAPE_OPEN))
         self.move(self.move_to_pose(arm, (pinch + np.array([0, 0, PRE_GRASP_H, 0, 0, 0, 0])).tolist()))
         self._steps_to(arm, pinch, v_safe)
         self.move(self.close_gripper(arm))

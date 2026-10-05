@@ -46,7 +46,7 @@ def _f(v):
 def _rules(n_items=3):
     items = {"tray": ItemSpec(item_id="tray", entity=object(), category="tray", color="", role="task_object")}
     for k, c in enumerate(["red", "green", "blue"][:n_items]):
-        items[f"block_{k}"] = ItemSpec(item_id=f"block_{k}", entity=object(), category="box", color=c,
+        items[f"block_{k}"] = ItemSpec(item_id=f"block_{k}", entity=object(), category="block", color=c,
                                      role="candidate")
     return enumerate_rules(items, {}, _load("tasks/T5_tray_transport.yaml"), objects_cfg=_load("objects.yaml"),
                            splits_cfg=resolve_splits(_load("splits.yaml"), "tray_transport"))
@@ -91,18 +91,22 @@ def test_constants_mirror_yaml():
     assert _f(_const("TRAY_MASS_RANGE")) == _f(t["mass"])
     assert _f(_load("objects.yaml")["categories"]["tray"]["mass_range"]) == _f(t["mass"])
     it = cfg["items"]
+    m = cfg["motion"]
     for kind, (wk, hk) in {"tall": ("TALL_W", "TALL_H"), "short": ("SHORT_W", "SHORT_H"),
                            "mid": ("MID_W", "MID_H")}.items():
         assert _f(_const(wk)) == _f(it[kind]["w"]) and _f(_const(hk)) == _f(it[kind]["h"])
     assert _f(_const("THIRD_ITEM_P")) == _f(it["third_item_p"])
     assert _f(_const("ITEM_MASS_RANGE")) == _f(it["mass"])
-    assert _f(_load("objects.yaml")["categories"]["box"]["mass_range"]) == _f(it["mass"])
+    blk = _load("objects.yaml")["categories"]["block"]
+    assert _f(blk["mass_range"]) == _f(it["mass"])
+    # the blocks must grip the tray hard enough to TIP (mu > w / h of the tallest-thinnest)
+    assert blk["friction_range"][0] > max(it[k]["w"][1] / it[k]["h"][0] for k in ("tall", "mid"))
+    assert _f(_const("PRESHAPE_OPEN")) == _f(m["preshape_open"])
     assert _f(_const("ITEM_EDGE_CLEAR")) == _f(it["edge_clear"])
     assert _f(_const("ITEM_GAP")) == _f(it["gap"])
     assert _f(_const("HANDLE_CLEAR")) == _f(it["handle_clear"])
     assert tuple(_const("ITEM_COLORS")) == tuple(it["colors"])
     assert _f(_const("REFERENT_P")) == _f(cfg["referent"])
-    m = cfg["motion"]
     assert _f(_const("TRAY_SPEED")) == _f(m["speed"])
     assert _f(_const("TRAY_ACCEL_DIST")) == _f(m["accel_dist"])
     assert _f(_const("TRAY_STOP_DIST")) == _f(m["stop_dist"])

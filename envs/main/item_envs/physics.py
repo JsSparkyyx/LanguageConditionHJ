@@ -138,6 +138,11 @@ def sample_physics(item_specs, physics_cfg: dict, rng: np.random.RandomState) ->
             new_static = f_lo + frac * (f_hi - f_lo)
             dynamic_f = float(min(dynamic_f * new_static / max(static_f, 1e-9), new_static))
             static_f = float(new_static)
+        d_ratio = (cat_cfg.get(str(spec.category)) or {}).get("dynamic_ratio")
+        if d_ratio is not None:
+            # objects.yaml categories.<cat>.dynamic_ratio: dynamic = ratio x
+            # static (no stick-slip: T5's tray must slide without jolts)
+            dynamic_f = float(d_ratio) * static_f
         base = nominal.get(str(spec.category))
         if base is None and float(spec.mass) > 0:
             base = float(spec.mass)

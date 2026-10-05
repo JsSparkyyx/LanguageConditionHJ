@@ -31,10 +31,10 @@ items:
   mass: [0.05, 0.15]
   edge_clear: 0.03
   gap: 0.03
-  handle_clear: 0.035
+  handle_clear: 0.05
   colors: [red, green, blue, yellow]
 referent: {tall: 0.75, short: 0.25}
-motion: {speed: 0.30, accel_dist: 0.06, stop_dist: 0.02, safe_speed: 0.10, tip_clear: 0.010, gripper_stiffness: 5000}
+motion: {speed: 0.30, accel_dist: 0.06, stop_dist: 0.02, safe_speed: 0.10, tip_clear: 0.010, gripper_stiffness: 5000, preshape_open: 0.45}
 success_tol: 0.04
 
 risk:

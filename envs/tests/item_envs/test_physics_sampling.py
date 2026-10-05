@@ -25,3 +25,19 @@ def test_bead_friction_range_applies_to_beads_only():
         assert lo - 1e-9 <= out["beads"]["static_friction"] <= hi + 1e-9
         assert out["beads"]["dynamic_friction"] <= out["beads"]["static_friction"] + 1e-12
         assert 0.3 - 1e-9 <= out["bowl"]["static_friction"] <= 0.9 + 1e-9  # physics.yaml range unchanged
+
+
+def test_tray_dynamic_ratio_and_block_friction():
+    cats = load_objects_cfg()["categories"]
+    specs = {
+        "tray": ItemSpec(item_id="tray", entity=object(), category="tray", color="", role="task_object",
+                         half_extents=[0.15, 0.1, 0.035]),
+        "block": ItemSpec(item_id="block", entity=object(), category="block", color="red", role="candidate",
+                          half_extents=[0.02, 0.02, 0.07]),
+    }
+    for seed in range(30):
+        out = sample_physics(specs, load_physics_cfg(), np.random.RandomState(seed))
+        tr = out["tray"]
+        assert abs(tr["dynamic_friction"] - cats["tray"]["dynamic_ratio"] * tr["static_friction"]) < 1e-9
+        lo, hi = cats["block"]["friction_range"]
+        assert lo - 1e-9 <= out["block"]["static_friction"] <= hi + 1e-9
