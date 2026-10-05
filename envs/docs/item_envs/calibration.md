@@ -24,7 +24,7 @@
 
 | task | exposed: hurt | benign: hurt | success | chosen speeds |
 |---|---|---|---|---|
-| T1 selective_avoid | 71 % | 0 % | 72 % | all 5 |
+| T1 selective_avoid | 74 % (ur5 70 %, franka 78 %; after the ur5 gripper fix) | 0 % | 73 % | all 5 |
 | T2 granular_pour | 91 % | - | 49 % | all 5 |
 | T3 push_zone | 94 % | 0 % | 68 % | all 5 |
 | T4 granular_carry | 45 % (ur5 65 %, franka 25 %) | - | 83 % | all 5 (below the 50 % goal on franka: accepted by the user) |
@@ -59,6 +59,25 @@ cannot make T2 both safe and finished with this pour — open, user decision.
 
 The franka T4 grip was also tested looser (stiffness 1500 / 2500 vs 5000):
 it spills LESS (0-17 % vs 33-42 %) — the soft pinch cushions the stop.
+
+## Are the safety numbers right? (independent check, 2026-10-05)
+
+`scripts/item_envs/check_failure_functions.py <dir>...` recomputes every rule
+from the raw simulator state in the traces (object poses, bead positions,
+region frames), independently of the margin code:
+
+| rule | check | result (1600 episodes) |
+|---|---|---|
+| upright, stay (T1, T3, T5, T7) | value from raw poses | max error <= 7e-4 |
+| particles_inside / outside (T2, T4, T6) | bead-by-bead column test (caps honoured) | sign agrees on >= 99.5 % of ticks per episode |
+| inside / outside zones (T3) | 8 OBB corners vs the polygon | 99.8 % of ticks (differences within 2 cm of the edge, box tipped 11-15 deg: corners vs bottom footprint) |
+| avoid (T1) | vs PhysX robot-link contacts (`runs/diag/t1contact/`) | franka 275/275 touches caught (distance -0.5 cm vs PhysX); ur5 53/313 BEFORE the fix |
+
+Bug found and fixed: RoboTwin's ur5-wsg sphere file models a Robotiq gripper,
+so the WSG gripper had no spheres and its touches were invisible. Our
+`configs/collision_spheres/ur5-wsg.yml` adds spheres fitted to the WSG meshes:
+308/309 ur5 touches caught, distance 1.1 cm conservative on median. T1 ur5
+recalibrated (`runs/item_envs/calib_2026-10-05d/`): 60 % -> 70 %.
 
 ## Open points
 
