@@ -5,7 +5,7 @@ blocks SIDEWAYS along the table, toward the table centre, to a target frame
 20-26 cm away (user review 10: dragged toward the robot, a block knocked by
 the brake fell toward the arm and could rest on it — sideways it falls clear). The tray stays
 on the table (no lifted load hanging from a pinch): the gripper pinches a
-vertical handle fin on the tray's robot-side rim and moves it in ONE
+vertical handle tab protruding from the tray's robot-side rim and moves it in ONE
 continuous trajectory (controller via path) — a smooth start, a cruise at
 TRAY_SPEED x time_scale, and a brake within TRAY_STOP_DIST at the pad.
 
@@ -27,8 +27,8 @@ otherwise (benign: the nominal keeps the referent upright even when the
 tall one falls — a filter must NOT slow down for it).
 
 Primitive geometry (no meshes): the tray is one rigid body of boxes — floor
-TRAY_SIZE x TRAY_FLOOR_T, rim walls TRAY_RIM_H tall, a handle fin
-HANDLE_LEN x HANDLE_T x HANDLE_H on the near (-y) rim centre (a 2.5 cm rim
+TRAY_SIZE x TRAY_FLOOR_T, rim walls TRAY_RIM_H tall, a handle tab
+HANDLE_LEN (outward) x HANDLE_T x HANDLE_H on the near (-y) rim centre (a 2.5 cm rim
 is too low to pinch top-down: the closed fingers reach 4.4 / 3.2 cm below
 the TCP). Blocks: box primitives, square base, axis-aligned with the tray;
 up axis local z.
@@ -72,9 +72,10 @@ TRAY_SIZE = (0.20, 0.30)  # outer footprint x, y (m): long side along y, so the 
 TRAY_FLOOR_T = 0.006  # floor plate thickness
 TRAY_RIM_H = 0.025  # rim wall height above the floor top
 TRAY_RIM_T = 0.006  # rim wall thickness
-HANDLE_LEN = 0.08  # handle fin along x (m), centred on the near (-y) rim
-HANDLE_T = 0.012  # fin thickness (the pinch closes across it)
-HANDLE_H = 0.07  # fin top above the table
+HANDLE_LEN = 0.07  # handle TAB: protrudes this far outward (-y) from the near rim, centred on it ...
+HANDLE_T = 0.012  # ... thickness along x (the pinch closes across it: the hand's wide finger axis runs ALONG the rim, outside the tray) ...
+HANDLE_H = 0.07  # ... top above the table (a fin ON the rim put the hand over the blocks: it knocked the tall one before the drag, d73)
+PINCH_OUT = 0.045  # m: pinch point on the tab, this far out from the rim's outer face
 TRAY_MASS_RANGE = (0.25, 0.45)  # kg (objects.yaml categories.tray.mass_range)
 TRAY_COLOR = (0.55, 0.38, 0.22)  # wood
 
@@ -130,8 +131,8 @@ class tray_transport(granular_carry):
             ((0.0, -0.5 * sy + 0.5 * TRAY_RIM_T, z_rim), (0.5 * sx, 0.5 * TRAY_RIM_T, 0.5 * TRAY_RIM_H)),
             ((0.5 * sx - 0.5 * TRAY_RIM_T, 0.0, z_rim), (0.5 * TRAY_RIM_T, 0.5 * sy, 0.5 * TRAY_RIM_H)),
             ((-0.5 * sx + 0.5 * TRAY_RIM_T, 0.0, z_rim), (0.5 * TRAY_RIM_T, 0.5 * sy, 0.5 * TRAY_RIM_H)),
-            # handle fin on the near rim (centred on the wall line)
-            ((0.0, -0.5 * sy + 0.5 * TRAY_RIM_T, 0.5 * HANDLE_H), (0.5 * HANDLE_LEN, 0.5 * HANDLE_T, 0.5 * HANDLE_H)),
+            # handle tab protruding outward from the near rim centre
+            ((0.0, -0.5 * sy - 0.5 * HANDLE_LEN, 0.5 * HANDLE_H), (0.5 * HANDLE_T, 0.5 * HANDLE_LEN, 0.5 * HANDLE_H)),
         ]
         for c, h in boxes:
             shape = sapien.physx.PhysxCollisionShapeBox(half_size=list(h), material=mat)
@@ -248,13 +249,14 @@ class tray_transport(granular_carry):
 
     # ------------------------------------------------------------------ play ----
     def _pinch_pose(self, eparams):
-        """EE pose pinching the handle fin top-down, fingers closing across its
-        thickness (world y), closed fingertips GRASP_TIP_CLEAR above the table."""
+        """EE pose pinching the handle tab top-down, fingers closing across its
+        thickness (the tray's x), closed fingertips GRASP_TIP_CLEAR above the
+        table, the hand outside the tray footprint."""
         T = np.asarray(self.tray.get_pose().to_transformation_matrix(), dtype=np.float64)
-        fin = T[:3, :3] @ np.array([0.0, -0.5 * TRAY_SIZE[1] + 0.5 * TRAY_RIM_T, 0.0]) + T[:3, 3]
+        fin = T[:3, :3] @ np.array([0.0, -0.5 * TRAY_SIZE[1] - PINCH_OUT, 0.0]) + T[:3, 3]
         tip_len = float(eparams.get("tip_len", APPROACH_TO_TCP + 0.04))
         z_tcp = TABLE_Z + GRASP_TIP_CLEAR + (tip_len - APPROACH_TO_TCP)
-        q = _push_quat(T[:2, 0])  # finger axis across the tray's x axis -> along its y (fin thickness)
+        q = _push_quat(T[:2, 1])  # finger axis across the tray's y axis -> along its x (tab thickness)
         return np.array([fin[0], fin[1], z_tcp + APPROACH_TO_TCP] + list(q), dtype=np.float64)
 
     def play_once(self):

@@ -22,7 +22,7 @@ embodiments: [ur5-wsg, franka-panda]     # first is the default
 start: {abs_x: [0.22, 0.30], y: [-0.06, 0.02]}
 target: {dx: [0.20, 0.26], dy: [-0.02, 0.02], min_dist: 0.20, pad_size: 0.34}   # drag SIDEWAYS toward the table centre (user review 10: toward the robot a knocked block fell onto the arm)
 tray: {size: [0.20, 0.30], floor_t: 0.006, rim_h: 0.025, rim_t: 0.006,
-       handle: {len: 0.08, t: 0.012, h: 0.07}, mass: [0.25, 0.45]}
+       handle: {len: 0.07, t: 0.012, h: 0.07, pinch_out: 0.045}, mass: [0.25, 0.45]}   # handle TAB protruding outward from the near rim: the hand stays outside the tray (a fin on the rim put it over the blocks, d73)
 items:
   tall:  {w: [0.026, 0.032], h: [0.15, 0.17]}
   short: {w: [0.05, 0.06], h: [0.05, 0.07]}

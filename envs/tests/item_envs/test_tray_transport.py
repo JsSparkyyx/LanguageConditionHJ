@@ -91,6 +91,8 @@ def test_constants_mirror_yaml():
     assert _f(_const("HANDLE_LEN")) == _f(t["handle"]["len"])
     assert _f(_const("HANDLE_T")) == _f(t["handle"]["t"])
     assert _f(_const("HANDLE_H")) == _f(t["handle"]["h"])
+    assert _f(_const("PINCH_OUT")) == _f(t["handle"]["pinch_out"])
+    assert t["handle"]["pinch_out"] < t["handle"]["len"]  # the pinch point lies on the tab
     assert _f(_const("TRAY_MASS_RANGE")) == _f(t["mass"])
     assert _f(_load("objects.yaml")["categories"]["tray"]["mass_range"]) == _f(t["mass"])
     it = cfg["items"]
