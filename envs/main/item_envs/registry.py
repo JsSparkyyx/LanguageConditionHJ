@@ -99,6 +99,22 @@ ITEM_TASKS: dict[str, TaskEntry] = {
         robotwin_task="tray_transport",
         config=_CONFIG_TASKS / "T5_tray_transport.yaml",
     ),
+    # T6 (overnight 2026-10-04): object-oriented + text-conditioned — pour
+    # into the target, keep the beads out of the NAMED neighbour container
+    "clean_pour": TaskEntry(
+        key="clean_pour",
+        kind="robotwin",
+        robotwin_task="clean_pour",
+        config=_CONFIG_TASKS / "T6_clean_pour.yaml",
+    ),
+    # T7 (overnight 2026-10-04): object-oriented + text-conditioned, rigid —
+    # lower a block into a gap without knocking over the NAMED flanker
+    "gap_place": TaskEntry(
+        key="gap_place",
+        kind="robotwin",
+        robotwin_task="gap_place",
+        config=_CONFIG_TASKS / "T7_gap_place.yaml",
+    ),
 }
 
 

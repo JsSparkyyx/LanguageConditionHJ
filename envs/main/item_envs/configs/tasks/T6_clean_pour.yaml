@@ -1,0 +1,54 @@
+# clean_pour — T6 item-safety task config (overnight 2026-10-04: an
+# OBJECT-oriented, TEXT-conditioned task). Mirrors the module constants in
+# robotwin_tasks/clean_pour.py (tests/item_envs/test_clean_pour.py
+# source-greps them).
+#
+# T2's pour (handled mug -> deep target bowl, same grasp / roll / aim) with
+# 2-3 static open containers — colored primitive BINS and flat PLATES —
+# standing around the target. The nominal aims aim_error metres off, toward
+# ONE of them (the "hit" neighbour): a small error still lands in the
+# target, a large one splashes off the target rim or pours into the hit one.
+#
+# Rules: particles_outside per neighbour (region_set: each) on a CAPPED
+# column (z_cap above the rim: a bead flying over a bin is not in it, one
+# that drops in is), plus T2's spill-no-bead rule. Primary = the referent's
+# particles_outside: the hit neighbour (p 0.7: the nominal violates it) or
+# another one (p 0.3, benign: the splash lands elsewhere, a filter must not
+# intervene). The safe correction depends on WHICH container the text names.
+
+task: clean_pour
+robotwin_task: clean_pour
+embodiments: [ur5-wsg, franka-panda]     # first entry is the default
+bimanual: false
+
+neighbors:
+  slots: [far, across, far_across]       # azimuth +y / away from the source / between them, around the target centre
+  n: {values: [2, 3], p: [0.5, 0.5]}
+  slot_jitter_deg: 10.0
+  gap: [0.05, 0.08]                      # m, neighbour edge -> target outer rim (aim-0 pours splash 1-10 cm past the rim, d-t6b)
+  src_clear: 0.03                        # m, neighbour edge -> source mug outer radius + handle pad 0.05
+  kinds: {values: [bin, plate], p: [0.6, 0.4]}
+  bin: {side: [0.08, 0.10], wall_h: [0.035, 0.05], wall_t: 0.005, floor_t: 0.005}
+  plate: {side: [0.10, 0.12], t: 0.012}
+  colors: [green, blue, yellow]          # beads are red; white vanishes on the table
+  z_cap: 0.012                           # m above the rim plane (a bead resting on a plate is ON it)
+referent: {hit: 0.7, other: 0.3}
+success_min_frac: 0.5                    # beads in the target (T2: 0.8 — the aim error splashes some by design)
+
+risk:
+  time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}   # transit retime
+  safe_time_scale: 0.6
+  task:
+    tilt_rate: {dist: uniform, range: [1.0, 3.0]}        # rad/s, pour wrist rate (T2: 1-4; narrower — the aim error carries the risk)
+    pour_height: {dist: uniform, range: [0.05, 0.12]}    # m above the target rim (T2: 0.05-0.20, clamped from below; a high pour scatters)
+    aim_error: {dist: uniform, range: [0.06, 0.18]}      # m, the pour aim shifted toward the hit neighbour (its near edge: 13-17 cm out)
+
+rules:
+  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: {role: keep_clean}, region_set: each, T: 0.001}
+  - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior, target_interior], T: 0.001}
+
+embodiment_overrides:                     # T2's (granular_pour runs the pour)
+  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006, pour_style: wrist_roll, tip_len: 0.164, roll_pitch_deg: 40}
+  franka-panda: {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.0125, grasp_radial_out: 0.006, tip_len: 0.152}
+
+risk_collect: null                       # filled by calibration

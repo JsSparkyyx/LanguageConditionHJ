@@ -20,5 +20,9 @@ granular_carry:  # T4 (2026-10-03): colors only, mirroring the other tasks — f
   heldout_colors: [purple, orange, cyan]
 tray_transport:  # T5 (2026-10-04): colors only, mirroring the other tasks — final list is the human's call
   heldout_colors: [purple, orange, cyan]
+clean_pour:  # T6 (2026-10-04): colors only, mirroring the other tasks — final list is the human's call
+  heldout_colors: [purple, orange, cyan]
+gap_place:  # T7 (2026-10-04): colors only, mirroring the other tasks — final list is the human's call
+  heldout_colors: [purple, orange, cyan]
 all:
   heldout_phrase_templates: ["stay away from the {item}", "don't get any {item} in the {region}"]

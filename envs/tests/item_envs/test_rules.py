@@ -533,6 +533,8 @@ def test_splits_yaml_is_v3_excerpt():
         },
         "granular_carry": {"heldout_colors": ["purple", "orange", "cyan"]},  # T4 (2026-10-03)
         "tray_transport": {"heldout_colors": ["purple", "orange", "cyan"]},  # T5 (2026-10-04)
+        "clean_pour": {"heldout_colors": ["purple", "orange", "cyan"]},  # T6 (2026-10-04)
+        "gap_place": {"heldout_colors": ["purple", "orange", "cyan"]},  # T7 (2026-10-04)
         "all": {
             "heldout_phrase_templates": ["stay away from the {item}", "don't get any {item} in the {region}"],
         },
@@ -702,3 +704,53 @@ def test_rule_without_a_unique_name_is_flagged_ambiguous():
     rules = {r.rule_id: r for r in enumerate_rules(items, {}, cfg, objects_cfg=real)}
     assert rules["avoid|obj_0|-"].ambiguous and rules["avoid|obj_1|-"].ambiguous
     assert not rules["avoid|obj_2|-"].ambiguous
+
+
+def test_region_phrases_never_use_a_name_another_scene_region_answers_to():
+    """Audit (2026-10-04): with two zones, "keep the box out of the zone"
+    named neither — the bare kind words are dropped, the colored ones stay;
+    a region kind unique in the scene keeps its bare names."""
+    import yaml
+    from pathlib import Path
+
+    from main.item_envs.items import ItemSpec
+    from main.item_envs.regions import Region
+
+    real = yaml.safe_load((Path(__file__).resolve().parents[2] / "main" / "item_envs" / "configs" / "objects.yaml")
+                          .read_text(encoding="utf-8"))
+    sq = [[-0.04, -0.04], [0.04, -0.04], [0.04, 0.04], [-0.04, 0.04]]
+    regions = {rid: Region(region_id=rid, kind=kind, frame_fn=lambda: np.eye(4), polygon=sq, z=0.0, z_band=0.01,
+                           nameable=True, color=color)
+               for rid, kind, color in (("zone_red", "zone", "red"), ("zone_blue", "zone", "blue"),
+                                        ("table_top", "surface", None))}
+    items = {"push_0": ItemSpec(item_id="push_0", entity=object(), category="box", color="green", role="candidate")}
+    cfg = {"rules": [{"consequence": "outside", "items": {"role": "candidate"}, "regions": ["zone_red", "zone_blue"]},
+                     {"consequence": "inside", "items": {"role": "candidate"}, "regions": ["table_top"]}]}
+    rules = {r.rule_id: r for r in enumerate_rules(items, regions, cfg, objects_cfg=real)}
+    for rid, color in (("outside|push_0|zone_red", "red"), ("outside|push_0|zone_blue", "blue")):
+        assert rules[rid].phrases
+        for phrase in rules[rid].phrases:
+            assert f"{color} zone" in phrase or f"{color} mat" in phrase or f"{color} marked area" in phrase, phrase
+    assert any("table" in p for p in rules["inside|push_0|table_top"].phrases)
+
+
+def test_particle_rule_region_set_each_gives_one_rule_per_region():
+    """region_set: each (T6) — a particle rule per region instead of one
+    joint rule over all of them."""
+    from main.item_envs.items import ItemSpec
+    from main.item_envs.regions import Region
+
+    sq = [[-0.04, -0.04], [0.04, -0.04], [0.04, 0.04], [-0.04, 0.04]]
+    regions = {rid: Region(region_id=rid, kind="container", frame_fn=lambda: np.eye(4), polygon=sq, z=0.0,
+                           z_band=0.01, nameable=True)
+               for rid in ("dish_a_interior", "dish_b_interior")}
+    items = {"beads": ItemSpec(item_id="beads", entity=object(), category="beads", color="", role="candidate",
+                               kind="particle_set")}
+    each = {"rules": [{"consequence": "particles_outside", "items": {"kind": "particle_set"},
+                       "regions": ["dish_a_interior", "dish_b_interior"], "region_set": "each", "T": 0.001}]}
+    joint = {"rules": [{"consequence": "particles_outside", "items": {"kind": "particle_set"},
+                        "regions": ["dish_a_interior", "dish_b_interior"], "T": 0.001}]}
+    assert [r.rule_id for r in enumerate_rules(items, regions, each)] == [
+        "particles_outside|beads|dish_a_interior", "particles_outside|beads|dish_b_interior"]
+    assert [r.rule_id for r in enumerate_rules(items, regions, joint)] == [
+        "particles_outside|beads|dish_a_interior+dish_b_interior"]

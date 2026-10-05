@@ -88,3 +88,5 @@ regions:
   laptop:            {names: [laptop], synonyms: [laptop computer]}
   bowl_src_interior: {names: [source bowl, bowl], synonyms: []}
   target_interior:   {names: [target, target container], synonyms: [container]}
+  bin:               {names: [bin, box], synonyms: [tub], colored: true}       # T6 neighbour: open-top primitive bin (region id bin_<color>)
+  plate:             {names: [plate, dish], synonyms: [saucer], colored: true}  # T6 neighbour: flat primitive plate (region id plate_<color>)

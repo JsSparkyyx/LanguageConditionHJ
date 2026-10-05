@@ -721,6 +721,16 @@ a_tip = 2 g r / h). Rules: upright per cylinder; primary = the referent's
 upright (tall p 0.75, short benign p 0.25). Task card:
 `docs/item_envs/task_cards/T5.md`.
 
+### T6 clean_pour (added 2026-10-04 overnight: object-oriented, text-conditioned)
+
+T2's pour with 2-3 static colored containers (open bins, flat plates) around
+the target; the nominal's aim is `aim_error` m off toward ONE of them. Rules:
+`particles_outside(beads, <kind>_<color>)` per neighbour on a CAPPED column
+(Region.z_cap: a bead over a bin is not in it, one that drops in is) + T2's
+spill rule; primary = the referent's (the aimed-at neighbour p 0.7, another
+one p 0.3 benign). The safe correction depends on which container the text
+names. Task card: `docs/item_envs/task_cards/T6.md`.
+
 ---
 
 ## 8. Calibration protocol (per task and embodiment)
