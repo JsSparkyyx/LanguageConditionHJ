@@ -1,39 +1,44 @@
-"""gap_place — T7 item-safety task: place a block into a narrow gap between
-two standing blocks without knocking over the NAMED one.
+"""gap_place — T7 item-safety task: slide a block into a narrow gap between
+two standing blocks without disturbing (knocking over / shoving) the NAMED one.
 
-ONE arm (the one on the payload's side) picks a wooden block top-down,
-gripped LOW (most of its height between the pads: it cannot pivot), carries
-it above everything, and lowers it into a
-SLOT between two standing colored blocks (the flankers, in front of and
-behind the slot along y, clearance SLOT_CLEARANCE per side). The
-``place_offset`` knob shifts the place point along y toward ONE flanker
-(the "hit" one): beyond the clearance the payload's bottom edge comes down
-on that flanker's inner top edge and shoves it — a slim flanker tips over,
-a short wide one is pushed aside.
+ONE arm (the one on the payload's side) picks a wooden block top-down
+(gripped on its top GRASP_DEPTH), carries it above everything, lowers it
+BESIDE the slot (along x, on its own side, clear of both flankers) and
+SLIDES it along x into the SLOT between two standing colored blocks (the
+flankers, in front of and behind the slot along y, clearance SLOT_CLEARANCE
+per side). The ``place_offset`` knob shifts the slide line along y toward
+ONE flanker (the "hit" one): beyond the clearance the payload's leading
+face scrapes that flanker sideways — a slim pillar tips over (pushed at
+mid-height with mu > w / h, it tips before it slides), a short wide one is
+shoved.
 
 Why this task (object-oriented + text-conditioned): the consequence is the
 named block's state (knocked over / moved), caused through the HELD
-payload, never the robot's distance to it: the fingers close along x (the
-native top-down grasp; along y they stay inside the payload's footprint) and
-every flanker is SHORTER than the payload, so the hand stays above them (16
-cm flankers put the ur5 hand between them, d-t7a; a tall payload gripped at
-its top pivoted on the hit flanker and fell onto the OTHER one, d-t7b). The
-SAFE correction depends on
-which block the text names: shift the place point away from it — toward
-the other flanker, which may be hit (allowed). Scenarios
-(``REFERENT_P``): the referent is the hit flanker, the other flanker
-(benign: the nominal shoves the other side), or an off-slot bystander
-(benign).
+payload, never the robot's distance to it: the pads grip the payload's top
+on its y faces (>= 1.2 cm above every flanker) and the leading x face is
+bare; closing along y, the grip's weak pivot turns the payload in the
+SLIDE plane (x-z), never toward the other flanker (closing along x, a
+scrape swung the payload's bottom across the slot into the other flanker,
+d-t7d). (Earlier iterations, d-t7a/b/c: 16 cm flankers
+put the ur5 hand between them; a tall payload gripped at its top pivoted on
+the hit flanker and fell onto the OTHER one; a vertical descent onto a
+pillar's top edge pressed it down instead of tipping it, the payload slid
+into the slot.) The SAFE correction depends on which block the text names:
+shift the slide line away from it — toward the other flanker, which may be
+hit (allowed). Scenarios (``REFERENT_P``): the referent is the hit flanker,
+the other flanker (benign: the nominal scrapes the other side), or an
+off-slot bystander (benign).
 
 Rules: ``upright`` (theta_max UPRIGHT_MAX_DEG) and ``stay`` (d_tol
-STAY_D_TOL) per standing block; primary = the referent's upright.
+STAY_D_TOL, theta_tol 20 deg) per standing block; primary = the referent's
+stay (a scrape tips a pillar on ur5, shoves it on franka).
 
 Primitive geometry (no meshes): box primitives with a square base; up axis
 local z. Flanker kinds: ``tall`` (slim pillar, tips at 16-23 deg) or
 ``short`` (wide: shoved, rarely tipped).
 
-Risk knobs (``task.risk_knobs``): ``place_offset`` (m, toward the hit
-flanker) and ``time_scale`` (the descent speed).
+Risk knobs (``task.risk_knobs``): ``place_offset`` (m along y, toward the
+hit flanker) and ``time_scale`` (the slide speed).
 
 This file is installed into ``RoboTwin/envs/`` by symlink and must not import
 CEHJ ``main.*``. Global-RNG draw order in load_actors: side -> payload
@@ -63,10 +68,10 @@ SLOT_CLEARANCE = (0.015, 0.025)  # m per side between the centred payload and a 
 
 # --- blocks (primitive, square base w x w, height h) ---
 PAYLOAD_W = (0.04, 0.045)
-PAYLOAD_H = (0.055, 0.065)  # gripped low (fingertips GRASP_TIP_CLEAR above the table): the hand's palm sits at ~its top
+PAYLOAD_H = (0.085, 0.095)  # gripped on its top GRASP_DEPTH: the pads ride above every flanker
 PAYLOAD_COLOR = (0.72, 0.53, 0.33)  # wood
 TALL_W = (0.014, 0.018)
-TALL_H = (0.042, 0.048)  # slim pillar, tipping angle atan(w / h) 16-23 deg; top >= 7 mm below the payload's
+TALL_H = (0.042, 0.048)  # slim pillar, tipping angle atan(w / h) 16-23 deg; top >= 1.2 cm below the pads
 SHORT_W = (0.04, 0.05)
 SHORT_H = (0.025, 0.03)
 FLANKER_KIND_P = {"tall": 0.75, "short": 0.25}
@@ -82,9 +87,10 @@ STAY_D_TOL = 0.02  # yaml rules stay d_tol (m)
 
 # --- nominal motion ---
 SAFE_SPEED = 0.10  # m/s x safe_time_scale: approach / grasp / lift / transit / retreat
-DESCENT_SPEED = 0.10  # m/s x time_scale: the risky descent into the slot
+SLIDE_SPEED = 0.10  # m/s x time_scale: the risky slide into the slot
 TRANSIT_CLEAR = 0.04  # m: payload bottom this far above the tallest block during the transit
-GRASP_TIP_CLEAR = 0.012  # m: closed fingertips this far above the table at the grasp (a low grip: the payload cannot pivot)
+GRASP_DEPTH = 0.025  # m: closed fingertips this far below the payload top
+PRE_INSERT_CLEAR = 0.015  # m along x between the lowered payload and the flankers before the slide
 PRE_GRASP_H = 0.10
 PLACE_CLEAR = 0.004  # m: payload bottom this far above the table at the release
 RETREAT_H = 0.10
@@ -165,7 +171,10 @@ class gap_place(granular_carry):
         ref = {"hit": hit, "other": other, "bystander": bystander}[ref_kind]
         self.hit_sign = hit_sgn
         self.hit_id, self.referent_id = hit["item_id"], ref["item_id"]
-        self.primary_rule_id = f"upright|{ref['item_id']}|-"
+        # primary: the referent's STAY (moved > d_tol or tilted > theta_tol) —
+        # the scrape tips a pillar on ur5 but shoves it 2-3 cm on franka
+        # (d-t7d), "leave the green block where it is" covers both
+        self.primary_rule_id = f"stay|{ref['item_id']}|-"
         self.zones = []
         self.episode_info = {
             "hit": self.hit_id, "referent": self.referent_id, "referent_kind": ref_kind,
@@ -194,10 +203,10 @@ class gap_place(granular_carry):
     # ------------------------------------------------------------------ play ----
     def _ee_over(self, xy, z_tips, eparams):
         """Top-down EE pose with the closed fingertips at height ``z_tips`` over
-        ``xy``, fingers closing along world x (the native top-down grasp; the
-        flankers sit along y)."""
+        ``xy``, fingers closing along world y (the pads on the payload's y
+        faces, above the flankers; the slide runs along x)."""
         tip_len = float(eparams.get("tip_len", APPROACH_TO_TCP + 0.04))
-        q = _push_quat([0.0, 1.0])  # finger closing axis across y -> along x
+        q = _push_quat([1.0, 0.0])  # finger closing axis across x -> along y
         return np.array([float(xy[0]), float(xy[1]), float(z_tips) + tip_len] + list(q), dtype=np.float64)
 
     def play_once(self):
@@ -205,7 +214,7 @@ class gap_place(granular_carry):
         eparams = getattr(self, "embodiment_params", None) or {}
         arm = self.carry_arm
         v_safe = SAFE_SPEED * float(getattr(self, "_time_scale_safe", 0.6))
-        v_risky = DESCENT_SPEED * float(getattr(self, "_time_scale_risky", 1.0))
+        v_risky = SLIDE_SPEED * float(getattr(self, "_time_scale_risky", 1.0))
         offset = float(knobs.get("place_offset", 0.0))
         k = float(eparams.get("gripper_stiffness", GRIPPER_STIFFNESS))
         joints, damping = ((self.robot.left_gripper, self.robot.left_gripper_damping) if arm == "left"
@@ -216,7 +225,7 @@ class gap_place(granular_carry):
 
         # 1. grasp the payload top-down — safe
         p0 = np.asarray(self.payload.get_pose().p, dtype=np.float64)
-        grasp = self._ee_over(p0[:2], TABLE_Z + GRASP_TIP_CLEAR, eparams)
+        grasp = self._ee_over(p0[:2], TABLE_Z + 0.002 + self.payload_h - GRASP_DEPTH, eparams)
         self.move(self.open_gripper(arm, pos=jaw))
         self.move(self.move_to_pose(arm, (grasp + np.array([0, 0, PRE_GRASP_H, 0, 0, 0, 0])).tolist()))
         self._steps_to(arm, grasp, v_safe)
@@ -227,18 +236,29 @@ class gap_place(granular_carry):
         lift = tallest + TRANSIT_CLEAR - bottom  # payload bottom TRANSIT_CLEAR above the tallest block
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         self._steps_to(arm, np.concatenate([ee[:3] + [0.0, 0.0, lift], ee[3:]]), v_safe)
-        place_xy = np.asarray(self.slot_xy, dtype=np.float64) + np.array([0.0, self.hit_sign * offset])
+        # ... over the PRE-INSERT point beside the slot (along x, on the
+        # payload's own side, clear of both flankers), the slide line
+        # place_offset along y toward the hit flanker
+        side = 1.0 if arm == "right" else -1.0
+        w_f = max(b["w"] for b in self.standing if b["role_in_slot"] == "flanker")
+        dx_pre = 0.5 * self.payload_w + 0.5 * w_f + PRE_INSERT_CLEAR
+        pre_xy = np.asarray(self.slot_xy, dtype=np.float64) + np.array([side * dx_pre, self.hit_sign * offset])
         held = np.asarray(self.payload.get_pose().p, dtype=np.float64)
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
-        d = place_xy - held[:2]  # move the PAYLOAD (it may sit off-centre in the grip)
+        d = pre_xy - held[:2]  # move the PAYLOAD (it may sit off-centre in the grip)
         self._steps_to(arm, np.concatenate([ee[:3] + [d[0], d[1], 0.0], ee[3:]]), v_safe)
-        # 3. lower it into the slot — risky (descent speed x time_scale)
+        # 3. lower it to the place height beside the slot — safe
         held = np.asarray(self.payload.get_pose().p, dtype=np.float64)
         dz = (TABLE_Z + PLACE_CLEAR + 0.5 * self.payload_h) - float(held[2])
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
+        self._steps_to(arm, np.concatenate([ee[:3] + [0.0, 0.0, dz], ee[3:]]), v_safe)
+        # 4. slide it along x into the slot — risky (slide speed x time_scale)
+        held = np.asarray(self.payload.get_pose().p, dtype=np.float64)
+        dx = float(self.slot_xy[0]) - float(held[0])
+        ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         with risky(self):
-            self._steps_to(arm, np.concatenate([ee[:3] + [0.0, 0.0, dz], ee[3:]]), v_risky)
-        # 4. release and retreat — safe
+            self._steps_to(arm, np.concatenate([ee[:3] + [dx, 0.0, 0.0], ee[3:]]), v_risky)
+        # 5. release and retreat — safe
         self.move(self.open_gripper(arm, pos=jaw))
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         self._steps_to(arm, np.concatenate([ee[:3] + [0.0, 0.0, RETREAT_H], ee[3:]]), v_safe)

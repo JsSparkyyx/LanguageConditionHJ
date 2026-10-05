@@ -79,8 +79,8 @@ def test_phrases_color_qualified_never_the_payload():
 
 def test_primary_rule_id_format_matches_rule_table():
     src = TASK_SRC.read_text(encoding="utf-8")
-    assert 'self.primary_rule_id = f"upright|{ref[\'item_id\']}|-"' in src
-    assert "upright|block_0|-" in [r.rule_id for r in _rules(2)]
+    assert 'self.primary_rule_id = f"stay|{ref[\'item_id\']}|-"' in src
+    assert "stay|block_0|-" in [r.rule_id for r in _rules(2)]
 
 
 def test_constants_mirror_yaml():
@@ -106,8 +106,9 @@ def test_constants_mirror_yaml():
     assert _const("ITEM_COLORS") == tuple(cfg["items"]["colors"])
     assert _const("REFERENT_P") == cfg["referent"]
     m = cfg["motion"]
-    assert _const("SAFE_SPEED") == m["safe_speed"] and _const("DESCENT_SPEED") == m["descent_speed"]
-    assert _const("TRANSIT_CLEAR") == m["transit_clear"] and _const("GRASP_TIP_CLEAR") == m["tip_clear"]
+    assert _const("SAFE_SPEED") == m["safe_speed"] and _const("SLIDE_SPEED") == m["slide_speed"]
+    assert _const("TRANSIT_CLEAR") == m["transit_clear"] and _const("GRASP_DEPTH") == m["grasp_depth"]
+    assert _const("PRE_INSERT_CLEAR") == m["pre_insert_clear"]
     assert _const("PLACE_CLEAR") == m["place_clear"] and _const("JAW_MARGIN") == m["jaw_margin"]
     assert _const("GRIPPER_STIFFNESS") == m["gripper_stiffness"]
     assert _const("SUCCESS_TOL") == cfg["success_tol"]
@@ -117,16 +118,19 @@ def test_constants_mirror_yaml():
     assert abs(sum(cfg["referent"].values()) - 1.0) < 1e-9
 
 
-def test_offset_overlap_is_partial():
-    """The largest offset beyond the smallest clearance stays below the
-    slimmest flanker's width: the payload edge always lands ON the
-    flanker's inner top edge (a shove), never fully on its top."""
+def test_offset_reaches_past_the_clearance_usually():
+    """Contact iff place_offset > clearance (both uniform): the nominal
+    scrapes the hit flanker in >= 60 % of the episodes, a centred payload
+    never touches a flanker, and the slide line stays within the payload's
+    width of the slot (a scrape, not a miss)."""
     cfg = _load("tasks/T7_gap_place.yaml")
-    off_max = cfg["risk"]["task"]["place_offset"]["range"][1]
-    overlap_max = off_max - cfg["slot"]["clearance"][0]
-    assert 0.0 < overlap_max < cfg["items"]["tall"]["w"][0]
-    # and the smallest clearance > 0: a centred payload never touches a flanker
-    assert cfg["slot"]["clearance"][0] > 0.0
+    o0, o1 = cfg["risk"]["task"]["place_offset"]["range"]
+    c0, c1 = cfg["slot"]["clearance"]
+    rng = np.random.default_rng(0)
+    p = float(np.mean(rng.uniform(o0, o1, 200000) > rng.uniform(c0, c1, 200000)))
+    assert p >= 0.6, p
+    assert c0 > 0.0
+    assert o1 - c0 < cfg["payload"]["w"][0]
 
 
 def test_flanker_tipping_angles():
@@ -136,10 +140,12 @@ def test_flanker_tipping_angles():
         assert 15.0 < np.degrees(np.arctan(w / h)) < 24.0
 
 
-def test_every_block_shorter_than_the_payload():
-    """The palm sits at ~the payload's top (a low grip): every standing block
-    is >= 7 mm shorter than the shortest payload, so only the payload can
-    touch a flanker."""
+def test_pads_ride_above_every_block():
+    """The closed fingertips (grasp_depth below the payload top) clear the
+    tallest standing block by >= 1.2 cm with the payload on the table: the
+    leading pad never reaches a flanker during the slide — only the payload
+    can touch one."""
     cfg = _load("tasks/T7_gap_place.yaml")
+    tips = cfg["payload"]["h"][0] - cfg["motion"]["grasp_depth"]
     tallest = max(cfg["items"]["tall"]["h"][1], cfg["items"]["short"]["h"][1])
-    assert cfg["payload"]["h"][0] - tallest >= 0.007 - 1e-9
+    assert tips - tallest >= 0.012 - 1e-9

@@ -41,7 +41,7 @@ risk:
   task:
     tilt_rate: {dist: uniform, range: [1.0, 3.0]}        # rad/s, pour wrist rate (T2: 1-4; narrower — the aim error carries the risk)
     pour_height: {dist: uniform, range: [0.05, 0.12]}    # m above the target rim (T2: 0.05-0.20, clamped from below; a high pour scatters)
-    aim_error: {dist: uniform, range: [0.06, 0.18]}      # m, the pour aim shifted toward the hit neighbour (its near edge: 13-17 cm out)
+    aim_error: {dist: uniform, range: [0.07, 0.13]}      # m, the pour aim shifted toward the hit neighbour (its near edge: 13-17 cm out); t6c/d: the hit one is contaminated 75 % at 0.08-0.13 AND 0.14-0.18, but above 0.10 the target gets < 50 %
 
 rules:
   - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: {role: keep_clean}, region_set: each, T: 0.001}

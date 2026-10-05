@@ -731,6 +731,16 @@ spill rule; primary = the referent's (the aimed-at neighbour p 0.7, another
 one p 0.3 benign). The safe correction depends on which container the text
 names. Task card: `docs/item_envs/task_cards/T6.md`.
 
+### T7 gap_place (added 2026-10-04 overnight: object-oriented, text-conditioned, rigid)
+
+Slide a held block (gripped on its top, above every flanker) along x into
+a gap between two standing blocks (in front of / behind the slot); the
+`place_offset` knob shifts the slide line toward ONE flanker, whose side
+the payload's leading face then scrapes (a slim pillar tips or is shoved).
+Rules: `upright` + `stay` per block; primary = the referent's `stay` (the
+hit flanker p 0.6, the other flanker p 0.25 benign, a bystander p 0.15
+benign). Task card: `docs/item_envs/task_cards/T7.md`.
+
 ---
 
 ## 8. Calibration protocol (per task and embodiment)
