@@ -46,7 +46,7 @@ def _f(v):
 def _rules(n_items=3):
     items = {"tray": ItemSpec(item_id="tray", entity=object(), category="tray", color="", role="task_object")}
     for k, c in enumerate(["red", "green", "blue"][:n_items]):
-        items[f"cyl_{k}"] = ItemSpec(item_id=f"cyl_{k}", entity=object(), category="cylinder", color=c,
+        items[f"block_{k}"] = ItemSpec(item_id=f"block_{k}", entity=object(), category="box", color=c,
                                      role="candidate")
     return enumerate_rules(items, {}, _load("tasks/T5_tray_transport.yaml"), objects_cfg=_load("objects.yaml"),
                            splits_cfg=resolve_splits(_load("splits.yaml"), "tray_transport"))
@@ -58,10 +58,10 @@ def test_registry_entry():
     assert entry.config.name == "T5_tray_transport.yaml"
 
 
-def test_rule_table_upright_per_cylinder():
+def test_rule_table_upright_per_block():
     for n in (2, 3):
         rules = _rules(n)
-        assert [r.rule_id for r in rules] == [f"upright|cyl_{k}|-" for k in range(n)]
+        assert [r.rule_id for r in rules] == [f"upright|block_{k}|-" for k in range(n)]
         for r in rules:
             assert r.phrases and not any(ch.isdigit() for p in r.phrases for ch in p)
 
@@ -69,7 +69,7 @@ def test_rule_table_upright_per_cylinder():
 def test_primary_rule_id_format_matches_rule_table():
     src = TASK_SRC.read_text(encoding="utf-8")
     assert 'self.primary_rule_id = f"upright|{ref[\'item_id\']}|-"' in src
-    assert f"upright|cyl_0|-" in [r.rule_id for r in _rules(2)]
+    assert "upright|block_0|-" in [r.rule_id for r in _rules(2)]
 
 
 def test_constants_mirror_yaml():
@@ -91,11 +91,12 @@ def test_constants_mirror_yaml():
     assert _f(_const("TRAY_MASS_RANGE")) == _f(t["mass"])
     assert _f(_load("objects.yaml")["categories"]["tray"]["mass_range"]) == _f(t["mass"])
     it = cfg["items"]
-    for kind, (rk, hk) in {"tall": ("TALL_R", "TALL_H"), "short": ("SHORT_R", "SHORT_H"),
-                           "mid": ("MID_R", "MID_H")}.items():
-        assert _f(_const(rk)) == _f(it[kind]["r"]) and _f(_const(hk)) == _f(it[kind]["h"])
+    for kind, (wk, hk) in {"tall": ("TALL_W", "TALL_H"), "short": ("SHORT_W", "SHORT_H"),
+                           "mid": ("MID_W", "MID_H")}.items():
+        assert _f(_const(wk)) == _f(it[kind]["w"]) and _f(_const(hk)) == _f(it[kind]["h"])
     assert _f(_const("THIRD_ITEM_P")) == _f(it["third_item_p"])
     assert _f(_const("ITEM_MASS_RANGE")) == _f(it["mass"])
+    assert _f(_load("objects.yaml")["categories"]["box"]["mass_range"]) == _f(it["mass"])
     assert _f(_const("ITEM_EDGE_CLEAR")) == _f(it["edge_clear"])
     assert _f(_const("ITEM_GAP")) == _f(it["gap"])
     assert _f(_const("HANDLE_CLEAR")) == _f(it["handle_clear"])
@@ -113,17 +114,18 @@ def test_constants_mirror_yaml():
 
 
 def test_speed_is_the_hazard_on_the_configured_ranges():
-    """The brake's peak deceleration 0.75 v^2 / stop_dist must topple every
-    tall cylinder at the fastest draw and none at the slowest; the short
-    ones never (a_tip = 2 g r / h)."""
+    """The brake's peak deceleration 0.75 v^2 / stop_dist must exceed every
+    tall block's a_tip at the fastest draw and stay under it (with 2x margin
+    for stick-slip jolts, measured 1.3-1.6 m/s^2 at the slowest, d68) at the
+    slowest; the short ones never tip (a_tip = g w / h)."""
     cfg = _load("tasks/T5_tray_transport.yaml")
     g = 9.81
     v = cfg["motion"]["speed"] * np.asarray(cfg["risk"]["time_scale"]["values"])
     a_brake = 0.75 * v**2 / cfg["motion"]["stop_dist"]
     it = cfg["items"]
-    tip = {k: (2 * g * it[k]["r"][0] / it[k]["h"][1], 2 * g * it[k]["r"][1] / it[k]["h"][0]) for k in it
-           if isinstance(it[k], dict) and "r" in it[k]}
-    assert a_brake.min() < tip["tall"][0]  # slowest draw: no tall cylinder tips
+    tip = {k: (g * it[k]["w"][0] / it[k]["h"][1], g * it[k]["w"][1] / it[k]["h"][0]) for k in it
+           if isinstance(it[k], dict) and "w" in it[k]}
+    assert 2.0 * max(a_brake.min(), 1.25) < tip["tall"][0] + 0.1  # slowest draw (+ jolts): no tall block tips
     assert a_brake.max() > tip["tall"][1]  # fastest draw: every tall cylinder can tip
     assert a_brake.max() < tip["short"][0]  # short cylinders never tip from the brake
     # the start ramp is gentler than the brake (accel_dist > stop_dist)

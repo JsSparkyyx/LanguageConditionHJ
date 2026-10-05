@@ -1,23 +1,25 @@
 """tray_transport — T5 item-safety task: SPEED is the hazard (user review 9).
 
 ONE arm (the one on the tray's side) drags a tray with 2-3 standing
-cylinders along the table to a target frame >= 20 cm away. The tray stays
+blocks along the table to a target frame >= 20 cm away. The tray stays
 on the table (no lifted load hanging from a pinch): the gripper pinches a
 vertical handle fin on the tray's robot-side rim and moves it in ONE
 continuous trajectory (controller via path) — a smooth start, a cruise at
 TRAY_SPEED x time_scale, and a brake within TRAY_STOP_DIST at the pad.
 
-Why speed: a standing cylinder of radius r with its centre of mass at h/2
-tips once the tray decelerates past a_tip = 2 g r / h (the inertial force
-at the CoM out-torques gravity about the base edge). The brake's peak
+Why speed: a standing block of base width w with its centre of mass at h/2
+tips once the tray decelerates past a_tip = g w / h (the inertial force at
+the CoM out-torques gravity about the base edge). The brake's peak
 deceleration is 0.75 v^2 / TRAY_STOP_DIST, so it scales with the SQUARE of
-the cruise speed v: 0.125 m/s -> 0.6 m/s^2 (nothing tips), 0.325 m/s ->
-4.0 m/s^2 (the tall cylinders, a_tip 1.8-3.5 m/s^2, tip; the short ones,
-a_tip >= 6 m/s^2, do not). The level tray never tilts: tilt plays no role.
+the cruise speed v: 0.15 m/s -> 0.84 m/s^2 (nothing tips), 0.39 m/s ->
+5.7 m/s^2 (the tall blocks, a_tip 2.5-3.5 m/s^2, tip; the short ones,
+a_tip >= 7 m/s^2, do not). The level tray never tilts: tilt plays no role.
+(Slim CYLINDERS were tried first: PhysX lets a cylinder standing on its
+flat end rock — a static tray let the tall one creep 3 -> 13 deg, d68.)
 
-Rules: ``upright`` per standing cylinder (theta_max UPRIGHT_MAX_DEG). The
+Rules: ``upright`` per standing block (theta_max UPRIGHT_MAX_DEG). The
 primary (conditioned) rule is the upright of ONE referent: the tall
-cylinder in REFERENT_P["tall"] of the episodes (the nominal at speed
+block in REFERENT_P["tall"] of the episodes (the nominal at speed
 violates it — a filter must slow down before the pad), a short one
 otherwise (benign: the nominal keeps the referent upright even when the
 tall one falls — a filter must NOT slow down for it).
@@ -26,14 +28,14 @@ Primitive geometry (no meshes): the tray is one rigid body of boxes — floor
 TRAY_SIZE x TRAY_FLOOR_T, rim walls TRAY_RIM_H tall, a handle fin
 HANDLE_LEN x HANDLE_T x HANDLE_H on the near (-y) rim centre (a 2.5 cm rim
 is too low to pinch top-down: the closed fingers reach 4.4 / 3.2 cm below
-the TCP). Cylinders: SAPIEN cylinders (local x axis) stood up with
-CYL_STAND_QUAT; up axis local x.
+the TCP). Blocks: box primitives, square base, axis-aligned with the tray;
+up axis local z.
 
 Risk knobs (``task.risk_knobs``): ``time_scale`` only (the cruise speed).
 
 This file is installed into ``RoboTwin/envs/`` by symlink and must not import
 CEHJ ``main.*``. Global-RNG draw order in load_actors: side -> start |x| ->
-start y -> tray mass -> third item? -> per item (r, h, mass) -> colors ->
+start y -> tray mass -> third item? -> per item (w, h, mass) -> colors ->
 item positions (tries) -> referent kind -> pad tries (|x|, y).
 """
 
@@ -51,7 +53,7 @@ from ._item_utils import (
 )
 from .granular_carry import granular_carry
 from .granular_pour import TABLE_Z
-from .push_zone import COLOR_RGB, CYL_STAND_QUAT
+from .push_zone import COLOR_RGB
 
 # --- layout (mirrors main/item_envs/configs/tasks/T5_tray_transport.yaml) ---
 START_ABS_X = (0.14, 0.24)  # tray centre |x| on its (randomly drawn) side
@@ -74,15 +76,15 @@ HANDLE_H = 0.07  # fin top above the table
 TRAY_MASS_RANGE = (0.25, 0.45)  # kg (objects.yaml categories.tray.mass_range)
 TRAY_COLOR = (0.55, 0.38, 0.22)  # wood
 
-# --- standing items (primitive cylinders) ---
-TALL_R = (0.018, 0.024)  # m
-TALL_H = (0.15, 0.20)  # a_tip = 2 g r / h = 1.8-3.1 m/s^2
-SHORT_R = (0.026, 0.034)
-SHORT_H = (0.05, 0.075)  # a_tip >= 6.8 m/s^2
-MID_R = (0.022, 0.028)
-MID_H = (0.10, 0.13)  # a_tip 3.3-5.5 m/s^2
-THIRD_ITEM_P = 0.5  # a medium cylinder as well
-ITEM_MASS_RANGE = (0.05, 0.20)  # kg (objects.yaml categories.cylinder.mass_range)
+# --- standing items (primitive blocks, square base w x w, height h) ---
+TALL_W = (0.04, 0.05)  # m
+TALL_H = (0.14, 0.16)  # a_tip = g w / h = 2.5-3.5 m/s^2
+SHORT_W = (0.05, 0.06)
+SHORT_H = (0.05, 0.07)  # a_tip >= 7.0 m/s^2
+MID_W = (0.04, 0.05)
+MID_H = (0.09, 0.11)  # a_tip 3.6-5.4 m/s^2
+THIRD_ITEM_P = 0.5  # a medium block as well
+ITEM_MASS_RANGE = (0.05, 0.15)  # kg (objects.yaml categories.box.mass_range)
 ITEM_EDGE_CLEAR = 0.03  # m from the inner rim face to an item's side
 ITEM_GAP = 0.03  # m between item sides
 HANDLE_CLEAR = 0.035  # m: items keep this clear of the near rim (the inner finger)
@@ -93,7 +95,7 @@ REFERENT_P = {"tall": 0.75, "short": 0.25}  # primary-rule referent (short = ben
 UPRIGHT_MAX_DEG = 30.0  # yaml rules: upright theta_max_deg
 
 # --- nominal motion ---
-TRAY_SPEED = 0.25  # m/s cruise at time_scale 1.0 (0.125-0.325 m/s over 0.5-1.3)
+TRAY_SPEED = 0.30  # m/s cruise at time_scale 1.0 (0.15-0.39 m/s over 0.5-1.3)
 TRAY_ACCEL_DIST = 0.06  # m: smooth start (velocity smoothstep 0 -> v): peak accel 0.75 v^2 / this
 TRAY_STOP_DIST = 0.02  # m: brake at the pad: peak decel 0.75 v^2 / this
 SAFE_SPEED = 0.10  # m/s x safe_time_scale: approach / descend / retreat
@@ -146,11 +148,11 @@ class tray_transport(granular_carry):
 
     def _draw_items(self):
         kinds = ["tall", "short"] + (["mid"] if np.random.uniform() < THIRD_ITEM_P else [])
-        ranges = {"tall": (TALL_R, TALL_H), "short": (SHORT_R, SHORT_H), "mid": (MID_R, MID_H)}
+        ranges = {"tall": (TALL_W, TALL_H), "short": (SHORT_W, SHORT_H), "mid": (MID_W, MID_H)}
         items = []
         for kind in kinds:
-            (r_lo, r_hi), (h_lo, h_hi) = ranges[kind]
-            items.append({"kind": kind, "r": float(np.random.uniform(r_lo, r_hi)),
+            (w_lo, w_hi), (h_lo, h_hi) = ranges[kind]
+            items.append({"kind": kind, "w": float(np.random.uniform(w_lo, w_hi)),
                           "h": float(np.random.uniform(h_lo, h_hi)),
                           "mass": float(np.random.uniform(*ITEM_MASS_RANGE))})
         colors = [ITEM_COLORS[int(i)] for i in np.random.permutation(len(ITEM_COLORS))]
@@ -159,25 +161,26 @@ class tray_transport(granular_carry):
         return items
 
     def _place_items(self, items):
-        """Non-overlapping tray-local (x, y) for every item, clear of the rims
+        """Non-overlapping tray-local (x, y) for every block, clear of the rims
         and of the handle side; None if no layout fits."""
         sx, sy = TRAY_SIZE
         for _ in range(ITEM_TRIES):
             placed = []
             ok = True
             for it in items:
-                r = it["r"]
-                x_lim = 0.5 * sx - TRAY_RIM_T - ITEM_EDGE_CLEAR - r
-                y_lo = -0.5 * sy + TRAY_RIM_T + HANDLE_CLEAR + r
-                y_hi = 0.5 * sy - TRAY_RIM_T - ITEM_EDGE_CLEAR - r
+                hw = 0.5 * it["w"]
+                x_lim = 0.5 * sx - TRAY_RIM_T - ITEM_EDGE_CLEAR - hw
+                y_lo = -0.5 * sy + TRAY_RIM_T + HANDLE_CLEAR + hw
+                y_hi = 0.5 * sy - TRAY_RIM_T - ITEM_EDGE_CLEAR - hw
                 if x_lim <= 0.0 or y_hi <= y_lo:
                     ok = False
                     break
                 xy = np.array([np.random.uniform(-x_lim, x_lim), np.random.uniform(y_lo, y_hi)])
-                if any(np.linalg.norm(xy - q) < r + rq + ITEM_GAP for q, rq in placed):
+                # axis-aligned squares: separated along x OR y by the gap
+                if any(max(abs(xy[0] - q[0]), abs(xy[1] - q[1])) < hw + hq + ITEM_GAP for q, hq in placed):
                     ok = False
                     break
-                placed.append((xy, r))
+                placed.append((xy, hw))
             if ok:
                 return [p[0] for p in placed]
         return None
@@ -201,11 +204,11 @@ class tray_transport(granular_carry):
             local = self._place_items(items)
         self.standing = []
         for k, (it, lxy) in enumerate(zip(items, local)):
-            item_id = f"cyl_{k}"
+            item_id = f"block_{k}"
             pos = [x + float(lxy[0]), y + float(lxy[1]), TABLE_Z + TRAY_FLOOR_T + 0.5 * it["h"] + 0.002]
-            ent = create_cylinder(self.scene, sapien.Pose(pos, list(CYL_STAND_QUAT)), radius=it["r"],
-                                  half_length=0.5 * it["h"], color=COLOR_RGB[it["color"]], name=item_id)
-            it.update(item_id=item_id, entity=ent, a_tip=float(2.0 * 9.81 * it["r"] / it["h"]))
+            ent = create_box(self.scene, sapien.Pose(pos), half_size=[0.5 * it["w"], 0.5 * it["w"], 0.5 * it["h"]],
+                             color=COLOR_RGB[it["color"]], name=item_id)
+            it.update(item_id=item_id, entity=ent, a_tip=float(9.81 * it["w"] / it["h"]))
             self.standing.append(it)
 
         kinds = list(REFERENT_P)
@@ -236,9 +239,9 @@ class tray_transport(granular_carry):
         )
         for it in self.standing:
             register_item(
-                self, it["item_id"], it["entity"], category="cylinder", color=it["color"], kind="rigid",
-                role="candidate", half_extents=[0.5 * it["h"], it["r"], it["r"]],
-                obb_center_local=[0.0, 0.0, 0.0], up_axis_local=[1.0, 0.0, 0.0], mass=it["mass"],
+                self, it["item_id"], it["entity"], category="box", color=it["color"], kind="rigid",
+                role="candidate", half_extents=[0.5 * it["w"], 0.5 * it["w"], 0.5 * it["h"]],
+                obb_center_local=[0.0, 0.0, 0.0], up_axis_local=[0.0, 0.0, 1.0], mass=it["mass"],
             )
 
     def prepare_episode(self):
@@ -305,7 +308,7 @@ class tray_transport(granular_carry):
             return []
         parts = []
         for it in self.standing:
-            tilt = self._tilt_deg(it["entity"], [1.0, 0.0, 0.0])
+            tilt = self._tilt_deg(it["entity"], [0.0, 0.0, 1.0])
             star = "*" if it["item_id"] == getattr(self, "referent_id", None) else ""
             flag = "!" if tilt > UPRIGHT_MAX_DEG else ""
             parts.append(f"{flag}{star}{it['color']} {it['kind']} {tilt:.0f}deg (tip {it['a_tip']:.1f})")

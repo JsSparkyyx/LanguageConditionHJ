@@ -237,7 +237,21 @@ class RiskTickController(TickChunkedController):
             print(f"[risk_tick] via IK error: {exc}")
             return None
         if status != "Success" or sol is None:
-            return None
+            # mplib's IK collision-checks every sample against its planning
+            # world (the closed fingers on a held handle can register there);
+            # a dense waypoint between two feasible ones only needs the
+            # kinematics: one CLIK solve seeded at the previous waypoint,
+            # joint limits enforced (T5 ur5 drag, d68)
+            try:
+                pl = mplib.planner
+                link = pl.link_name_2_idx[pl.move_group]
+                q_ik, ok, _ = pl.pinocchio_model.compute_IK_CLIK(link, goal, np.asarray(q_full, dtype=np.float64), [])
+                if not (ok and pl.wrap_joint_limit(q_ik)):
+                    return None
+                sol = q_ik
+            except Exception as exc:
+                print(f"[risk_tick] via CLIK error: {exc}")
+                return None
         sol = np.asarray(sol, dtype=np.float64).reshape(-1)
         q_new = sol[idx] if len(sol) == len(q_full) else sol[: len(idx)]
         if float(np.max(np.abs(q_new - np.asarray(q_full)[idx]))) > max_step:

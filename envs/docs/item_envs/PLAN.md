@@ -713,6 +713,16 @@ holds. Use it for debugging and for probe P3-robot.
 
 ---
 
+### T5 tray_transport (added 2026-10-04, user review 9: a task mainly for speed)
+
+Drag a tray of 2-3 standing cylinders to a target frame; the brake at the pad
+tips the tall ones only at speed (peak deceleration 0.75 v^2 / stop_dist vs
+a_tip = 2 g r / h). Rules: upright per cylinder; primary = the referent's
+upright (tall p 0.75, short benign p 0.25). Task card:
+`docs/item_envs/task_cards/T5.md`.
+
+---
+
 ## 8. Calibration protocol (per task and embodiment)
 
 **No-render mode.** Calibration needs margins, not images. Run with rendering and cameras off except

@@ -1,7 +1,7 @@
 """Sim tests for T5 tray_transport — GPU node only (marked ``sim``).
 
 - setup() builds on both embodiments: the rule table is upright per
-  standing cylinder, every cylinder stands on the tray at t = 0 and every
+  standing block, every block stands on the tray at t = 0 and every
   margin is positive; the primary rule is the referent's upright.
 - a low-risk episode (time_scale 0.5) reaches the pad with nothing toppled.
 """
@@ -30,7 +30,7 @@ def test_setup_items_stand_margins_positive(embodiment, seed, tmp_path):
         assert task.primary_rule_id in ids
         for it in task.standing:
             p = np.asarray(it["entity"].get_pose().p, dtype=np.float64)
-            assert task._tilt_deg(it["entity"], [1.0, 0.0, 0.0]) < 3.0
+            assert task._tilt_deg(it["entity"], [0.0, 0.0, 1.0]) < 3.0
             assert abs(p[2] - (0.74 + 0.006 + 0.5 * it["h"])) < 0.01  # on the tray floor
         margins = runner._rule_margins()
         assert np.all(np.isfinite(margins)) and (margins > 0.0).all(), margins
