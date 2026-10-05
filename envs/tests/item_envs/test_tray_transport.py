@@ -118,10 +118,12 @@ def test_constants_mirror_yaml():
 
 
 def test_speed_is_the_hazard_on_the_configured_ranges():
-    """The brake's peak deceleration 0.75 v^2 / stop_dist must exceed every
-    tall block's a_tip at the fastest draw and stay under it (with 2x margin
-    for stick-slip jolts, measured 1.3-1.6 m/s^2 at the slowest, d68) at the
-    slowest; the short ones never tip (a_tip = g w / h)."""
+    """Static bounds (necessary, not sufficient — the brake is a ~0.1 s
+    pulse, so tipping also needs time to rotate past atan(w / h); the sim
+    sweep calibrates that): the brake's peak deceleration 0.75 v^2 /
+    stop_dist exceeds every tall block's a_tip = g w / h at the fastest
+    draw; the slowest draw (plus the measured smooth-drag jolt of <= 1.0
+    m/s^2, d70) stays 1.4x under it; the short blocks never tip."""
     cfg = _load("tasks/T5_tray_transport.yaml")
     g = 9.81
     v = cfg["motion"]["speed"] * np.asarray(cfg["risk"]["time_scale"]["values"])
@@ -129,11 +131,10 @@ def test_speed_is_the_hazard_on_the_configured_ranges():
     it = cfg["items"]
     tip = {k: (g * it[k]["w"][0] / it[k]["h"][1], g * it[k]["w"][1] / it[k]["h"][0]) for k in it
            if isinstance(it[k], dict) and "w" in it[k]}
-    assert 2.0 * max(a_brake.min(), 1.25) < tip["tall"][0] + 0.1  # slowest draw (+ jolts): no tall block tips
-    assert a_brake.max() > tip["tall"][1]  # fastest draw: every tall cylinder can tip
-    assert a_brake.max() < tip["short"][0]  # short cylinders never tip from the brake
-    # the start ramp is gentler than the brake (accel_dist > stop_dist)
-    assert cfg["motion"]["accel_dist"] > cfg["motion"]["stop_dist"]
+    assert 1.4 * max(a_brake.min(), 1.0) < tip["tall"][0]  # slowest draw: no tall block tips
+    assert a_brake.max() > tip["tall"][1]  # fastest draw exceeds every tall block's threshold
+    assert a_brake.max() < tip["short"][0]  # short blocks never tip from the brake
+    assert cfg["motion"]["accel_dist"] > cfg["motion"]["stop_dist"]  # gentler start than stop
 
 
 def test_task_file_never_imports_main():

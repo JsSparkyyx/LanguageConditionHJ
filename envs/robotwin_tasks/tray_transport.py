@@ -77,8 +77,8 @@ TRAY_MASS_RANGE = (0.25, 0.45)  # kg (objects.yaml categories.tray.mass_range)
 TRAY_COLOR = (0.55, 0.38, 0.22)  # wood
 
 # --- standing items (primitive blocks, square base w x w, height h) ---
-TALL_W = (0.04, 0.05)  # m
-TALL_H = (0.14, 0.16)  # a_tip = g w / h = 2.5-3.5 m/s^2
+TALL_W = (0.026, 0.032)  # m
+TALL_H = (0.15, 0.17)  # a_tip = g w / h = 1.5-2.1 m/s^2; tipping angle atan(w / h) 9-12 deg (w/h 0.3 rocked 2-4 deg under a 5.9 m/s^2, 0.1 s brake and stood, d70)
 SHORT_W = (0.05, 0.06)
 SHORT_H = (0.05, 0.07)  # a_tip >= 7.0 m/s^2
 MID_W = (0.04, 0.05)
@@ -283,7 +283,8 @@ class tray_transport(granular_carry):
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         with risky(self):
             self._steps_to(arm, np.concatenate([ee[:3] + [d[0], d[1], 0.0], ee[3:]]), v_risky, stop=True,
-                           accel_dist=TRAY_ACCEL_DIST, stop_dist=TRAY_STOP_DIST)
+                           accel_dist=TRAY_ACCEL_DIST,
+                           stop_dist=float(os.environ.get("ITEM_T5_STOP_DIST", TRAY_STOP_DIST)))  # env: diag-only
         # 3. release and retreat — safe
         self.move(self.open_gripper(arm))
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)

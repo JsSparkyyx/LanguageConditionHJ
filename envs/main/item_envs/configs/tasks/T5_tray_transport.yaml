@@ -7,7 +7,7 @@
 # start, cruise at speed x time_scale, brake within stop_dist at the pad.
 # 2-3 standing blocks (square base w, height h) ride on the tray; one tips
 # when the brake's peak deceleration 0.75 v^2 / stop_dist exceeds its
-# a_tip = g w / h (tall: 2.5-3.5 m/s^2, mid: 3.6-5.4, short: >= 7.0; the brake
+# a_tip = g w / h (tall: 1.5-2.1 m/s^2, mid: 3.6-5.4, short: >= 7.0; the brake
 # spans 0.84-5.7 m/s^2 over time_scale). Speed alone sets the risk.
 # (Cylinders rocked on their flat ends in PhysX, d68.)
 #
@@ -24,7 +24,7 @@ target: {abs_x: [0.06, 0.26], y: [-0.24, -0.14], min_dist: 0.20, pad_size: 0.24}
 tray: {size: [0.30, 0.20], floor_t: 0.006, rim_h: 0.025, rim_t: 0.006,
        handle: {len: 0.08, t: 0.012, h: 0.07}, mass: [0.25, 0.45]}
 items:
-  tall:  {w: [0.04, 0.05], h: [0.14, 0.16]}
+  tall:  {w: [0.026, 0.032], h: [0.15, 0.17]}
   short: {w: [0.05, 0.06], h: [0.05, 0.07]}
   mid:   {w: [0.04, 0.05], h: [0.09, 0.11]}
   third_item_p: 0.5
