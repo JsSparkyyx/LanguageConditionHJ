@@ -104,6 +104,7 @@ GRASP_CONTACT_IDS = (0, 2)  # [right, left]: outer rim of the bowl (host idiom)
 GRASP_DIS = 0.02  # m: grasp target stops this short of the contact point along the approach (shallower rim pinch)
 GRASP_RADIAL_OUT = 0.006  # m: grasp target shifted radially outward (centres the fingers on the wall)
 GRIPPER_STIFFNESS = 5000.0  # gripper PD stiffness (RoboTwin default 1000) — firmer rim pinch
+PRESHAPE_OPEN = 0.3  # gripper opening (fraction) for the rim pinch and its release: just straddles the wall (embodiment override preshape_open)
 LIFTOFF = 0.015  # m: first lift, then level
 LEVEL_ITERS = 2  # leveling passes after lift-off
 LEVEL_TOL_DEG = 1.0  # skip a leveling pass below this tilt
@@ -178,6 +179,10 @@ class granular_carry(granular_pour):
             else:
                 n_fill = int(round(len(local) * float(os.environ.get("ITEM_T4_PACK_N", PACK_FILL))))
             local = bead_random_positions(n_fill, bead_r, g, np.random)
+            if self.carry_mode != "held":
+                # table mode: keep the pinch side clear (the inner finger)
+                local = local[~self._in_pinch_wedge(local, side, g, bead_r)]
+                n_fill = len(local)
             extra = max(0, n_fill - len(masses_all))
             masses_all = np.concatenate([masses_all, np.random.uniform(BEAD_MASS_RANGE[0], BEAD_MASS_RANGE[1], size=extra)])
             masses = masses_all[:n_fill]
@@ -323,6 +328,11 @@ class granular_carry(granular_pour):
         # embodiment override, else the module default)
         g_dis = float(knobs.get("grasp_dis", eparams.get("grasp_dis", GRASP_DIS)))
         g_out = float(knobs.get("grasp_radial_out", eparams.get("grasp_radial_out", GRASP_RADIAL_OUT)))
+        # pre-shape the jaw to just straddle the wall: fully open, the INNER
+        # finger enters the bowl 4-5 cm from the wall and closing sweeps the
+        # bead bed over the rim (3/7 table-mode spills started at the grasp,
+        # bowl still on the table — not avoidable by an arm-only filter, audit)
+        self.move(self.open_gripper(arm, pos=float(eparams.get("preshape_open", PRESHAPE_OPEN))))
         arm_tag, acts = self.grasp_actor(self.container, arm_tag=arm,
                                          contact_point_id=int(cp[int(arm == "left")]),
                                          pre_grasp_dis=0.1, grasp_dis=g_dis)
@@ -339,6 +349,35 @@ class granular_carry(granular_pour):
         ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
         self._steps_to(arm, np.concatenate([ee[:3] + [0.0, 0.0, LIFTOFF], ee[3:]]), v_safe)
         self._level(arm, v_safe)
+
+    def _in_pinch_wedge(self, local, side, g, bead_r):
+        """[N] bool: bead centres (bowl up-frame, file y up) in the pinch-side
+        wedge the rim pinch's inner finger sweeps (file z sign = world x sign
+        under SPAWN_QUAT; cp 0 / 2 pinch the OUTER rim, +x for the right arm)."""
+        loc = np.asarray(local, dtype=np.float64).reshape(-1, 3)
+        return (side * loc[:, 2] > float(g["inner_radius"]) - PINCH_CLEAR_R - bead_r) & (
+            loc[:, 1] > float(g["rim_y"]) - PINCH_CLEAR_DEPTH)
+
+    def _trim_for_table_grasp(self):
+        """Delete the top-layer beads (centre above rim - BRIM_CLEAR) and the
+        pinch-side wedge — a held-fallback bowl becomes a table-mode load."""
+        T = np.asarray(self.container.get_pose().to_transformation_matrix(), dtype=np.float64)
+        g = self._src_geom
+        side = 1.0 if self.carry_arm == "right" else -1.0
+        r = float(getattr(self, "_bead_r", BEAD_R))
+        loc = np.stack([T[:3, :3].T @ (np.asarray(b.get_pose().p, dtype=np.float64) - T[:3, 3]) for b in self.beads]) \
+            if self.beads else np.zeros((0, 3))
+        drop = (loc[:, 1] > float(g["rim_y"]) - BRIM_CLEAR) | self._in_pinch_wedge(loc, side, g, r) if len(loc) else []
+        keep = [b for b, d in zip(self.beads, drop) if not d]
+        gone = [b for b, d in zip(self.beads, drop) if d]
+        for b in gone:
+            self.scene.remove_entity(b)
+        self.beads[:] = keep
+        for _ in range(2):
+            self.scene.step()
+        self._bead_names = {b.get_name() for b in self.beads}
+        self.n_beads = len(self.beads)
+        self.n_beads_trimmed = len(gone)
 
     def prepare_episode(self):
         """Runner hook, BEFORE t = 0 (nothing recorded). held mode: grasp,
@@ -386,9 +425,14 @@ class granular_carry(granular_pour):
             # table reads exactly TABLE_Z; a held but sagging heavy bowl sits
             # only ~2-5 mm up — 4 mm misfired on 4/8 held runs, diag d47):
             # release, back off, and let play_once grasp it from the table
-            self.move(self.open_gripper(self.carry_arm))
+            self.move(self.open_gripper(self.carry_arm, pos=float(eparams.get("preshape_open", PRESHAPE_OPEN))))
             self.move(self.move_by_displacement(self.carry_arm, z=0.06))
             self.episode_info["held_fallback"] = True
+            # the brim-full held load would spill at the table grasp (2/2
+            # fallbacks spilled before the risky phase, audit): trim it to a
+            # table-mode load — top layer and the pinch side removed
+            self._trim_for_table_grasp()
+            self.episode_info.update(n_beads=int(self.n_beads), n_beads_trimmed=int(self.n_beads_trimmed))
             return
         self._prerolled = True
 
@@ -434,8 +478,9 @@ class granular_carry(granular_pour):
                 break
             ee = np.asarray(self.get_arm_pose(arm), dtype=np.float64).reshape(7)
             self._steps_to(arm, np.concatenate([ee[:3] - [0.0, 0.0, gap], ee[3:]]), v_safe)
-        # 6. release and retreat
-        self.move(self.open_gripper(arm))
+        # 6. release (only to the pre-shape width: opening fully swept the
+        # inner finger through the beads, audit) and retreat
+        self.move(self.open_gripper(arm, pos=float(eparams.get("preshape_open", PRESHAPE_OPEN))))
         self.move(self.move_by_displacement(arm, z=0.06))
 
         self.info["info"] = {"{A}": f"002_bowl/base{self.container_id}", "{a}": arm, "{n}": str(self.n_beads)}

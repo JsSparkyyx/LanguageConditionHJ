@@ -37,6 +37,8 @@ risk:
 rules:
   - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior], T: 0.001}
 embodiment_overrides:
-  ur5-wsg:      {grasp_contact_ids: [0, 2], grasp_dis: 0.02}     # diag d15-d26: 0.0225 slipped 1-in-4 during leveling; 0.025 slips
-  franka-panda: {grasp_contact_ids: [0, 2], grasp_dis: 0.0125}   # diag d20 (0.015: 6/6), d26 (0.015 slipped 1-in-4)
+  # preshape_open: jaw opening for the rim pinch and its release, ~3 cm (ur5 11 cm / franka 8 cm full):
+  # fully open, the inner finger swept the bead bed over the rim at the grasp and the release (audit 2026-10-04)
+  ur5-wsg:      {grasp_contact_ids: [0, 2], grasp_dis: 0.02, preshape_open: 0.27}     # diag d15-d26: 0.0225 slipped 1-in-4 during leveling; 0.025 slips
+  franka-panda: {grasp_contact_ids: [0, 2], grasp_dis: 0.0125, preshape_open: 0.38}   # diag d20 (0.015: 6/6), d26 (0.015 slipped 1-in-4)
 risk_collect: null
