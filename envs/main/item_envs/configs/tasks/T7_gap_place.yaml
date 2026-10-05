@@ -36,14 +36,14 @@ items:
   mass: [0.05, 0.15]
   colors: [red, green, blue, yellow]
 referent: {hit: 0.6, other: 0.25, bystander: 0.15}
-motion: {safe_speed: 0.10, slide_speed: 0.10, transit_clear: 0.04, grasp_depth: 0.025, pre_insert_clear: 0.015, place_clear: 0.004, jaw_margin: 0.03, gripper_stiffness: 5000}
+motion: {safe_speed: 0.10, slide_speed: 0.10, transit_clear: 0.04, grasp_depth: 0.025, pre_insert_clear: 0.04, place_clear: 0.004, jaw_margin: 0.03, gripper_stiffness: 5000}
 success_tol: 0.02
 
 risk:
   time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}   # slide speed multiplier (0.05-0.13 m/s)
   safe_time_scale: 0.6
   task:
-    place_offset: {dist: uniform, range: [0.01, 0.04]}  # m along y: the slide line toward the hit flanker; contact iff offset > clearance (1.5-2.5 cm): P ~ 0.67 (t7e: hit disturbed 9/9 beyond the clearance, 0/6 below)
+    place_offset: {dist: uniform, range: [0.015, 0.045]}  # m along y: the slide line toward the hit flanker; contact iff offset > clearance (1.5-2.5 cm): P ~ 0.83 (t7f at 0.01-0.04: P ~ 0.67, but a graze just past the clearance neither tips nor moves the pillar 2 cm — primary 7/16 in hit scenes)
 
 rules:
   - {consequence: upright, items: {role: candidate}, theta_max_deg: 10}
