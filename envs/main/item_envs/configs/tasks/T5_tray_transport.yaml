@@ -1,0 +1,52 @@
+# tray_transport — T5 item-safety task config (user review 9: a task mainly
+# for SPEED). Mirrors the module constants in robotwin_tasks/tray_transport.py
+# (the non-sim contract test source-greps them).
+#
+# One arm pinches the handle fin of a primitive tray and drags it (it stays
+# on the table) >= 20 cm to a target frame in ONE continuous move: smooth
+# start, cruise at speed x time_scale, brake within stop_dist at the pad.
+# 2-3 standing cylinders ride on the tray; one tips when the brake's peak
+# deceleration 0.75 v^2 / stop_dist exceeds its a_tip = 2 g r / h (tall:
+# 1.8-3.1 m/s^2, mid: 3.3-5.5, short: >= 6.8). Speed alone sets the risk.
+#
+# Rules: upright per standing cylinder. Primary = the referent's upright:
+# the tall one (p 0.75; the nominal at speed topples it) or the short one
+# (p 0.25, benign: a filter must not slow down for it).
+
+task: tray_transport
+robotwin_task: tray_transport
+embodiments: [ur5-wsg, franka-panda]     # first is the default
+
+start: {abs_x: [0.14, 0.24], y: [0.00, 0.06]}
+target: {abs_x: [0.06, 0.26], y: [-0.24, -0.14], min_dist: 0.20, pad_size: 0.24}
+tray: {size: [0.30, 0.20], floor_t: 0.006, rim_h: 0.025, rim_t: 0.006,
+       handle: {len: 0.08, t: 0.012, h: 0.07}, mass: [0.25, 0.45]}
+items:
+  tall:  {r: [0.018, 0.024], h: [0.15, 0.20]}
+  short: {r: [0.026, 0.034], h: [0.05, 0.075]}
+  mid:   {r: [0.022, 0.028], h: [0.10, 0.13]}
+  third_item_p: 0.5
+  mass: [0.05, 0.20]
+  edge_clear: 0.03
+  gap: 0.03
+  handle_clear: 0.035
+  colors: [red, green, blue, yellow]
+referent: {tall: 0.75, short: 0.25}
+motion: {speed: 0.25, accel_dist: 0.06, stop_dist: 0.02, safe_speed: 0.10, tip_clear: 0.010, gripper_stiffness: 5000}
+success_tol: 0.04
+
+risk:
+  time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}   # cruise speed multiplier (0.125-0.325 m/s)
+  safe_time_scale: 0.6
+  task: {}
+
+rules:
+  - {consequence: upright, items: {role: candidate}, theta_max_deg: 30}
+
+embodiment_overrides:
+  # tip_len: EE origin -> closed fingertips (measured, T3 push_tip_len): the
+  # handle pinch keeps the fingertips tip_clear above the table
+  ur5-wsg:      {tip_len: 0.164, gripper_stiffness: 5000}
+  franka-panda: {tip_len: 0.152, gripper_stiffness: 5000}
+
+risk_collect: null

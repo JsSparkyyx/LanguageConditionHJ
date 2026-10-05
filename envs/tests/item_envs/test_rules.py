@@ -532,6 +532,7 @@ def test_splits_yaml_is_v3_excerpt():
             "heldout_item_categories": ["tea_box"],
         },
         "granular_carry": {"heldout_colors": ["purple", "orange", "cyan"]},  # T4 (2026-10-03)
+        "tray_transport": {"heldout_colors": ["purple", "orange", "cyan"]},  # T5 (2026-10-04)
         "all": {
             "heldout_phrase_templates": ["stay away from the {item}", "don't get any {item} in the {region}"],
         },

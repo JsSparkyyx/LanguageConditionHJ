@@ -220,7 +220,7 @@ class granular_carry(granular_pour):
         )
 
     # ------------------------------------------------------------------ play ----
-    def _steps_to(self, arm, target_pose, speed, min_t=STEP_MIN_T, stop=False):
+    def _steps_to(self, arm, target_pose, speed, min_t=STEP_MIN_T, stop=False, accel_dist=None, stop_dist=None):
         """Live pose -> ``target_pose`` along a straight line (position AND
         orientation interpolated; nlerp: orientation steps are small) at
         ``speed`` m/s, as ONE continuous trajectory through the step poses
@@ -247,8 +247,10 @@ class granular_carry(granular_pour):
             poses.append((p0[:3] + t * (p1[:3] - p0[:3])).tolist() + q.tolist())
         step_t = max(length / n / max(float(speed), 1e-3), float(min_t))
         if stop and length > 1e-3:
-            profile = {"kind": "hard_stop", "length": length, "v": float(speed), "accel_dist": CARRY_ACCEL_DIST,
-                       "stop_dist": float(os.environ.get("ITEM_T4_STOP_DIST", CARRY_STOP_DIST))}  # env: diag-only
+            profile = {"kind": "hard_stop", "length": length, "v": float(speed),
+                       "accel_dist": float(CARRY_ACCEL_DIST if accel_dist is None else accel_dist),
+                       "stop_dist": float(os.environ.get("ITEM_T4_STOP_DIST", CARRY_STOP_DIST) if stop_dist is None
+                                          else stop_dist)}  # env: diag-only (T4)
         else:
             profile = {"kind": "minjerk", "duration": n * step_t}
         ok_before = bool(self.plan_success)

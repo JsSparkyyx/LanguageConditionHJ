@@ -91,6 +91,14 @@ ITEM_TASKS: dict[str, TaskEntry] = {
         robotwin_task="granular_carry",
         config=_CONFIG_TASKS / "T4_granular_carry.yaml",
     ),
+    # T5 (user review 9, 2026-10-04): speed is the hazard — drag a tray of
+    # standing cylinders; the brake at the pad tips the tall ones at speed
+    "tray_transport": TaskEntry(
+        key="tray_transport",
+        kind="robotwin",
+        robotwin_task="tray_transport",
+        config=_CONFIG_TASKS / "T5_tray_transport.yaml",
+    ),
 }
 
 
