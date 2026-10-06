@@ -189,11 +189,11 @@ def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState
     if only_templates is not None:
         templates = [t for t in templates if t in set(only_templates)]
     exclude_names = set(exclude_names or ())
-    item_names = _unambiguous(_item_names(rule, objects_cfg), exclude_names)
-    category_names = _category_names(rule, objects_cfg)
+    item_names = _train_words(_unambiguous(_item_names(rule, objects_cfg), exclude_names))
+    category_names = _train_words(_category_names(rule, objects_cfg))
     exclude_region_names = set(exclude_region_names or ())
-    region_names = _unambiguous([nm for rid in rule.region_ids for nm in _region_names(rid, objects_cfg)],
-                                exclude_region_names)
+    region_names = _train_words(_unambiguous([nm for rid in rule.region_ids for nm in _region_names(rid, objects_cfg)],
+                                             exclude_region_names))
     # several regions in ONE per-region-kind rule (region_set: pairs): every
     # phrase names them all ("the red zone and the blue zone")
     joint_regions = len(rule.region_ids) > 1 and consequence not in _REGION_SET
@@ -225,6 +225,24 @@ def render_phrases(rule: RuleSpec, objects_cfg: dict, rng: np.random.RandomState
         if not _has_digit(template) and template not in phrases:
             phrases.append(template)
     return phrases
+
+
+_HELDOUT_WORDS: set | None = None
+
+
+def _train_words(names: list[str]) -> list[str]:
+    """names without the relabeling bank's held-out referent words
+    (language/paraphrases.yaml heldout_words: "the tin can", "the flask" are
+    evaluation-only); all of them when nothing else is left."""
+    global _HELDOUT_WORDS
+    if _HELDOUT_WORDS is None:
+        import yaml
+        from pathlib import Path
+
+        bank = yaml.safe_load((Path(__file__).resolve().parent / "language" / "paraphrases.yaml").read_text())
+        _HELDOUT_WORDS = {str(w) for w in bank.get("heldout_words", []) or []}
+    keep = [nm for nm in names if not any(nm == w or nm.endswith(" " + w) for w in _HELDOUT_WORDS)]
+    return keep or names
 
 
 def assign_split(rule: RuleSpec, splits_cfg: dict) -> str:

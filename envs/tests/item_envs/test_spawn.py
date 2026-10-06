@@ -30,6 +30,9 @@ CFG = {
     "off_path_min_dist": 0.10,
     "min_separation": 0.03,
     "static_objects": False,
+    # the geometry tests draw from one- / two-category fake pools: repeats
+    # allowed here (test_layout_plan_distinct_categories covers the T1 default)
+    "distinct_categories": False,
 }
 TASK_CFG = {"objects": dict(CFG), "corridor_t": [0.22, 0.48]}
 P0 = np.array([-0.30, 0.00])
@@ -995,7 +998,7 @@ def test_real_assets_bottom_rest_z():
             assert 0.0 <= offset <= 0.004, (
                 f"{draw.asset} id {model_id}: AABB bottom at {offset:+.4f} m rel. table")
             checked += 1
-    assert checked >= 70  # the full 79-id pool (guard against a silently empty pool)
+    assert checked >= 55  # the full 57-id pool of 10 types (2026-10-05; guard against a silently empty pool)
 
 
 # ---------------------------------------------------------------------------
@@ -1392,3 +1395,46 @@ def test_spawn_candidates_f5b_end_to_end(monkeypatch, tmp_path):
             p["xyz"] for p in rep_off["placements"]
         ]
     assert n_near > 0
+
+
+def test_layout_plan_distinct_categories():
+    """T1 default (user 2026-10-05): no category twice in a layout — every
+    candidate keeps a unique name; with fewer categories than k the layout
+    stops at partial-K (or fails) instead of repeating one."""
+    pool = [{"asset": f"a{i}", "category": f"cat{i}", "ids": [0]} for i in range(4)]
+    cfg = {**CFG, "distinct_categories": True, "k": [3, 5]}
+    p0, p1 = np.array([-0.45, 0.00]), np.array([0.45, 0.00])
+    n_ok = 0
+    for seed in range(12):
+        out = spawn._layout_plan(p0, p1, [], cfg, TASK_CFG, np.random.RandomState(seed), pool, ["red"],
+                                 [0.22, 0.48], geometry_fn=fake_geometry, xylim=XYLIM)
+        if out is None:
+            continue
+        n_ok += 1
+        cats = [pl.draw.category for pl in out[0]]
+        assert len(cats) == len(set(cats)) and len(cats) <= 4
+    assert n_ok >= 6
+    # the same draw with repeats allowed does repeat a category somewhere
+    rep = 0
+    for seed in range(12):
+        out = spawn._layout_plan(p0, p1, [], {**cfg, "distinct_categories": False}, TASK_CFG,
+                                 np.random.RandomState(seed), pool, ["red"], [0.22, 0.48],
+                                 geometry_fn=fake_geometry, xylim=XYLIM)
+        if out is not None:
+            cats = [pl.draw.category for pl in out[0]]
+            rep += len(cats) != len(set(cats))
+    assert rep >= 1
+
+
+def test_t1_pool_is_ten_distinct_types():
+    """objects.yaml t1_pool (user 2026-10-05): 10 entries, 10 categories, and
+    no category answers to another's name (mug's "cup", sauce can's "can")."""
+    cfg = spawn.physics.load_objects_cfg()
+    pool = spawn.t1_pool_entries(cfg)
+    cats = [str(e["category"]) for e in pool]
+    assert len(pool) == 10 and len(set(cats)) == 10
+    words = {c: set((cfg["categories"][c].get("names") or []) + (cfg["categories"][c].get("synonyms") or []))
+             for c in cats}
+    for c in cats:
+        primary = cfg["categories"][c]["names"][0]
+        assert not any(primary in words[o] for o in cats if o != c), c

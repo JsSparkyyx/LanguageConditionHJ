@@ -723,14 +723,24 @@ def _layout_plan(
     quota = int(cfg.get("min_on_or_near_path", 2))
     placements: list[Placement] = []
     placed: list[tuple[np.ndarray, float]] = []
+    # no repeated category in a scene (user 2026-10-05): two plain cups have
+    # no name that tells them apart, so neither could be named in a sentence
+    distinct = bool(cfg.get("distinct_categories", True))
+    used: set[str] = set()
 
     def on_near_count() -> int:
         return sum(p.cls in ("on_path", "near_path") for p in placements)
 
     for i, cls in enumerate(classes):
-        draw = _draw_object(pool, rng, train_colors, max_r_xy=caps[cls], geometry_fn=geometry_fn)
+        avail = [e for e in pool if str(e["category"]) not in used] if distinct else pool
+        if not avail:  # every category already in the scene
+            if len(placements) >= max(2, quota) and on_near_count() >= quota:
+                return placements, k - len(placements)
+            return None
+        draw = _draw_object(avail, rng, train_colors, max_r_xy=caps[cls], geometry_fn=geometry_fn)
         if draw is None:
             return None
+        used.add(str(draw.category))
         geo = geometry_fn(draw)
         final_cls = None
         xy = t_used = lateral = None
@@ -1133,6 +1143,11 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
         vis_cov, cov_label = _vis_covered_for(embodiment)
     objects_cfg = physics.load_objects_cfg()
     pool = t1_pool_entries(objects_cfg)
+    if cfg.get("distinct_categories", True):
+        # nor a category of the host's own objects (registered first): a
+        # candidate cup next to place_container_plate's cup is unnameable
+        host_cats = {str(m.get("category")) for m in getattr(env.task, "item_meta", None) or []}
+        pool = [e for e in pool if str(e["category"]) not in host_cats]
     train_colors = list((objects_cfg.get("colors") or {}).get("train") or [])
     nominal_ranges = {
         key: (entry or {}).get("mass_range")
@@ -1153,7 +1168,12 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
         keepaways = [(xy, float(r) + extra) for xy, r in keepaways]
         print(f"[spawn] bbox gap +{extra:.3f} m (task {env.task_name})")
 
+    # objects.min_robot_clearance (m): reject layouts with a candidate this
+    # close to the robot (collision spheres, real shapes) after the settle
+    min_clear = cfg.get("min_robot_clearance")
+    min_clear = None if min_clear is None else float(min_clear)
     report: dict = {
+        "robot_clearance_rejections": 0,
         "spawn_rejections": 0,
         "layout_retries": 0,
         "settle_rejections": 0,
@@ -1262,6 +1282,19 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
         for d, s in zip(details, specs):
             d["item_id"] = s.item_id
         report["settle"] = details
+        if ok and min_clear is not None:
+            # a candidate starting closer than the avoid buffer (+ slack) to
+            # the robot reads "harmed" before the robot moves (2026-10-05: a
+            # layout 0.4 cm from the ur5 gripper spheres, avoid margin 1 cm)
+            from . import robot_distance
+
+            d_robot = np.asarray(robot_distance.robot_item_distances(env, specs), dtype=np.float64)
+            report["start_clearance_m"] = float(d_robot.min()) if d_robot.size else None
+            if d_robot.size and float(d_robot.min()) < min_clear:
+                ok = False
+                report["robot_clearance_rejections"] += 1
+                print(f"[spawn] clearance reject (attempt {attempt + 1}/{MAX_LAYOUTS}): "
+                      f"{1e2 * float(d_robot.min()):.1f} cm to the robot < {1e2 * min_clear:.1f} cm")
         if ok:
             break
         report["settle_rejections"] += 1

@@ -8,8 +8,8 @@ HoloBrain BERT + text_feat_map (fp16 [L, 256], L <= --max-len, padded, with
 a mask). A sentence missing from the cache is an error at train time, so
 the split stays controlled.
 
-The text encoder is the checkpoint-exact TextPipeline in the repo's
-(uncommitted) verification/verify_language_patches.py, imported at run time.
+The text encoder is main/item_envs/language/text_encoder.HoloBrainText
+(the checkpoint's own BERT + text_feat_map).
 
     python scripts/item_envs/build_text_cache.py --episodes <sidecar>/episodes \\
         --out <sidecar>/text_cache.pt [--device cuda]
@@ -27,7 +27,6 @@ import sys
 from pathlib import Path
 
 ENVS = Path(__file__).resolve().parents[2]
-REPO = ENVS.parent
 sys.path.insert(0, str(ENVS))
 
 from main.item_envs import language  # noqa: E402
@@ -75,10 +74,9 @@ def main(argv=None) -> int:
 
     import torch
 
-    sys.path.insert(0, str(REPO))
-    from verification.verify_language_patches import CKPT_DIR, TextPipeline
+    from main.item_envs.language.text_encoder import HoloBrainText
 
-    pipe = TextPipeline(CKPT_DIR, device=args.device)
+    pipe = HoloBrainText(device=args.device)
     keys = sorted(sents)
     L = int(args.max_len)
     emb = torch.zeros(len(keys), L, 256, dtype=torch.float16)
@@ -97,7 +95,7 @@ def main(argv=None) -> int:
     if too_long:
         print(f"[text-cache] WARNING: {too_long} sentences longer than {L} tokens were truncated")
     out = {"index": {s: i for i, s in enumerate(keys)}, "split": [sents[s] for s in keys],
-           "emb": emb, "mask": mask, "max_len": L, "ckpt": str(CKPT_DIR)}
+           "emb": emb, "mask": mask, "max_len": L, "ckpt": str(pipe.ckpt)}
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     tmp = str(args.out) + ".tmp"
     torch.save(out, tmp)

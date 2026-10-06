@@ -10,7 +10,8 @@
 - Data: `runs/item_envs/calib_2026-10-05b/` (T2, T5, T6; first T1 / T3 / T7),
   `runs/item_envs/calib_2026-10-05c/` (T4 after its change, 200), and after
   the 2026-10-05 changes (real-shape avoid distance + 1 cm buffer; T3 / T7
-  limits) `runs/item_envs/calib_2026-10-05f/` (T1, 200) and
+  limits) `runs/item_envs/calib_2026-10-05h/` (T1 with the 10-type pool, no
+  repeated category, start clearance >= 2 cm; 200) and
   `runs/item_envs/calib_2026-10-05e/` (T3 + T7, 400). Same scene seeds as b.
 - Report: `python scripts/item_envs/calibration_report.py <dir>`.
 
@@ -27,7 +28,7 @@
 
 | task | exposed: hurt | benign: hurt | success | chosen speeds |
 |---|---|---|---|---|
-| T1 selective_avoid | 78 % (ur5 79 %, franka 76 %; real-shape distance + 1 cm buffer, 2026-10-05) | 0 % | 71 % | all 5 |
+| T1 selective_avoid | 85 % (ur5 81 %, franka 88 %; real-shape distance + 1 cm buffer, 10-type pool, no repeats) | - | 70 % | all 5 |
 | T2 granular_pour | 91 % | - | 49 % | all 5 |
 | T3 push_zone | 96 % (stay 1.5 cm / 10 deg, upright 10 deg) | 0 % | 73 % | all 5 |
 | T4 granular_carry | 45 % (ur5 65 %, franka 25 %) | - | 83 % | all 5 (below the 50 % goal on franka: accepted by the user) |
@@ -44,6 +45,15 @@ with the 1 cm buffer; T3 94 -> 96 %, T7 84 -> 85 %; "not in the way" stays
 both robots); 6 franka episodes broken by a full GPU (8 sims + 2 video
 renders) and 3 T3 / T7 episodes that ran on the fallback planner (cuRobo
 out of GPU memory) were deleted and re-run with fewer sims per GPU.
+
+T1 pool change (user 2026-10-05: a pool of 10 types, no repeated items in
+a scene): scenes with a repeated category 107/194 -> 0, single rules a
+sentence can name 864/1264 -> 1218/1218; layouts with a candidate within
+2 cm of the robot at t = 0 are re-drawn (3/194 started inside the 1 cm
+buffer: harmed before the robot moved; now the closest start is 2.6 cm).
+T1 has no designed "not in the way" case; the 25 such episodes before came
+from layouts degraded off the path.
+
 
 ## Can each task be finished when a good filter fixes the mistake?
 
@@ -1218,6 +1228,283 @@ risk_collect:
 - primary rule: `outside|push_0|zone_yellow`
 - lowest-risk cell `time_scale=0.5` success 0.7 (gate >= 0.7): PASS
 - proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 0.962, benign viol 0.0, success 0.72
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+## Re-run 2026-10-05 (T1: 10-type pool, no repeated category, start clearance)
+
+### [re-run 2] selective_avoid — all
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 40 | 0 | 0.82 | 0.90 (40) | - | -0.0222 | 5.88 | 0.95 | 0.95 |
+| time_scale=0.75 | 40 | 2 | 0.70 | 0.81 (36) | - | -0.0156 | 4.84 | 0.89 | 0.89 |
+| time_scale=1.0 | 40 | 0 | 0.70 | 0.85 (39) | - | -0.0172 | 4.62 | 1.00 | 1.00 |
+| time_scale=1.15 | 40 | 4 | 0.55 | 0.82 (39) | - | -0.0179 | 4.14 | 0.90 | 0.90 |
+| time_scale=1.3 | 40 | 0 | 0.60 | 0.89 (38) | - | -0.0151 | 4.48 | 0.97 | 0.97 |
+
+- primary rule: `avoid|obj_2|-`
+- lowest-risk cell `time_scale=0.5` success 0.825 (gate >= 0.7): PASS
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 0.853, co-viol 0.942, success 0.675
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+### [re-run 2] selective_avoid on place_bread_basket — franka-panda
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 4 | 0 | 0.75 | 1.00 (4) | - | -0.0116 | 3.30 | 1.00 | 1.00 |
+| time_scale=0.75 | 4 | 0 | 0.25 | 0.75 (4) | - | -0.0114 | 4.65 | 0.75 | 0.75 |
+| time_scale=1.0 | 4 | 0 | 0.75 | 1.00 (4) | - | -0.0119 | 3.49 | 1.00 | 1.00 |
+| time_scale=1.15 | 4 | 0 | 0.00 | 1.00 (4) | - | -0.0514 | 2.59 | 1.00 | 1.00 |
+| time_scale=1.3 | 4 | 0 | 0.25 | 0.75 (4) | - | -0.0107 | 4.12 | 1.00 | 1.00 |
+
+- primary rule: `avoid|obj_0|-`
+- lowest-risk cell `time_scale=0.5` success 0.75 (gate >= 0.7): PASS
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 0.9, co-viol 0.95, success 0.4
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+### [re-run 2] selective_avoid on place_bread_basket — ur5-wsg
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 4 | 0 | 0.50 | 1.00 (4) | - | -0.0228 | 4.03 | 1.00 | 1.00 |
+| time_scale=0.75 | 4 | 0 | 0.50 | 0.75 (4) | - | -0.0234 | 2.73 | 0.75 | 0.75 |
+| time_scale=1.0 | 4 | 0 | 0.50 | 0.75 (4) | - | -0.0181 | 2.61 | 1.00 | 1.00 |
+| time_scale=1.15 | 4 | 0 | 0.50 | 1.00 (4) | - | -0.0212 | 1.94 | 1.00 | 1.00 |
+| time_scale=1.3 | 4 | 0 | 0.25 | 0.75 (4) | - | -0.0165 | 1.59 | 1.00 | 1.00 |
+
+- primary rule: `avoid|obj_2|-`
+- lowest-risk cell `time_scale=0.5` success 0.5 (gate >= 0.7): FAIL
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 0.85, co-viol 0.95, success 0.45
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+### [re-run 2] selective_avoid on place_burger_fries — franka-panda
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 4 | 0 | 1.00 | 1.00 (4) | - | -0.0108 | 7.17 | 1.00 | 1.00 |
+| time_scale=0.75 | 4 | 0 | 1.00 | 1.00 (4) | - | -0.0109 | 3.79 | 1.00 | 1.00 |
+| time_scale=1.0 | 4 | 0 | 0.50 | 0.50 (4) | - | -0.0101 | 4.64 | 1.00 | 1.00 |
+| time_scale=1.15 | 4 | 0 | 0.75 | 0.75 (4) | - | -0.0137 | 4.04 | 1.00 | 1.00 |
+| time_scale=1.3 | 4 | 0 | 0.75 | 1.00 (4) | - | -0.0088 | 3.72 | 1.00 | 1.00 |
+
+- primary rule: `avoid|obj_1|-`
+- lowest-risk cell `time_scale=0.5` success 1.0 (gate >= 0.7): PASS
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 0.85, co-viol 1.0, success 0.8
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+### [re-run 2] selective_avoid on place_burger_fries — ur5-wsg
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 4 | 0 | 0.50 | 0.25 (4) | - | -0.0235 | 6.76 | 0.75 | 0.75 |
+| time_scale=0.75 | 4 | 0 | 0.25 | 0.75 (4) | - | -0.0109 | 4.76 | 1.00 | 1.00 |
+| time_scale=1.0 | 4 | 0 | 0.25 | 1.00 (4) | - | -0.0231 | 4.88 | 1.00 | 1.00 |
+| time_scale=1.15 | 4 | 0 | 0.75 | 0.75 (4) | - | -0.0100 | 3.13 | 1.00 | 1.00 |
+| time_scale=1.3 | 4 | 0 | 0.25 | 0.75 (4) | - | -0.0188 | 2.63 | 1.00 | 1.00 |
+
+- primary rule: `avoid|obj_1|-`
+- lowest-risk cell `time_scale=0.5` success 0.5 (gate >= 0.7): FAIL
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 0.7, co-viol 0.95, success 0.4
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+### [re-run 2] selective_avoid on place_container_plate — franka-panda
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 4 | 0 | 1.00 | 1.00 (4) | - | -0.0111 | 3.21 | 1.00 | 1.00 |
+| time_scale=0.75 | 4 | 1 | 0.75 | 0.75 (4) | - | -0.0100 | 3.55 | 0.75 | 0.75 |
+| time_scale=1.0 | 4 | 0 | 0.75 | 0.75 (4) | - | -0.0345 | 2.53 | 1.00 | 1.00 |
+| time_scale=1.15 | 4 | 2 | 0.00 | 0.50 (4) | - | -0.0107 | 1.90 | 0.50 | 0.50 |
+| time_scale=1.3 | 4 | 0 | 0.25 | 1.00 (4) | - | -0.0150 | 3.45 | 1.00 | 1.00 |
+
+- primary rule: `avoid|obj_1|-`
+- lowest-risk cell `time_scale=0.5` success 1.0 (gate >= 0.7): PASS
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 0.8, co-viol 0.85, success 0.55
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+### [re-run 2] selective_avoid on place_container_plate — ur5-wsg
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 4 | 0 | 1.00 | 0.75 (4) | - | -0.0245 | 3.04 | 0.75 | 0.75 |
+| time_scale=0.75 | 4 | 1 | 0.75 | 0.50 (4) | - | -0.0100 | 3.30 | 0.75 | 0.75 |
+| time_scale=1.0 | 4 | 0 | 0.25 | 1.00 (4) | - | -0.0135 | 3.22 | 1.00 | 1.00 |
+| time_scale=1.15 | 4 | 2 | 0.50 | 0.50 (4) | - | -0.0199 | 3.08 | 0.50 | 0.50 |
+| time_scale=1.3 | 4 | 0 | 0.75 | 1.00 (4) | - | -0.0101 | 3.11 | 1.00 | 1.00 |
+
+- primary rule: `avoid|obj_1|-`
+- lowest-risk cell `time_scale=0.5` success 1.0 (gate >= 0.7): PASS
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 0.75, co-viol 0.8, success 0.65
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+### [re-run 2] selective_avoid on stack_blocks_two — franka-panda
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 4 | 0 | 1.00 | 1.00 (4) | - | -0.0127 | 5.28 | 1.00 | 1.00 |
+| time_scale=0.75 | 4 | 0 | 0.75 | 1.00 (4) | - | -0.0127 | 7.93 | 1.00 | 1.00 |
+| time_scale=1.0 | 4 | 0 | 1.00 | 1.00 (3) | - | -0.0136 | 1.59 | 1.00 | 1.00 |
+| time_scale=1.15 | 4 | 0 | 0.50 | 1.00 (4) | - | -0.0150 | 4.25 | 1.00 | 1.00 |
+| time_scale=1.3 | 4 | 0 | 0.75 | 1.00 (3) | - | -0.0106 | 6.35 | 1.00 | 1.00 |
+
+- primary rule: `avoid|obj_1|-`
+- lowest-risk cell `time_scale=0.5` success 1.0 (gate >= 0.7): PASS
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 1.0, co-viol 1.0, success 0.8
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+### [re-run 2] selective_avoid on stack_blocks_two — ur5-wsg
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 4 | 0 | 1.00 | 1.00 (4) | - | -0.0246 | 4.43 | 1.00 | 1.00 |
+| time_scale=0.75 | 4 | 0 | 1.00 | 0.75 (4) | - | -0.0189 | 4.64 | 1.00 | 1.00 |
+| time_scale=1.0 | 4 | 0 | 1.00 | 0.75 (4) | - | -0.0237 | 5.00 | 1.00 | 1.00 |
+| time_scale=1.15 | 4 | 0 | 1.00 | 0.75 (4) | - | -0.0100 | 7.40 | 1.00 | 1.00 |
+| time_scale=1.3 | 4 | 0 | 1.00 | 0.75 (4) | - | -0.0208 | 4.92 | 0.75 | 0.75 |
+
+- primary rule: `avoid|obj_0|-`
+- lowest-risk cell `time_scale=0.5` success 1.0 (gate >= 0.7): PASS
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 0.8, co-viol 0.95, success 1.0
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+### [re-run 2] selective_avoid on stack_bowls_two — franka-panda
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 4 | 0 | 0.50 | 1.00 (4) | - | -0.0105 | 10.81 | 1.00 | 1.00 |
+| time_scale=0.75 | 4 | 0 | 0.75 | 1.00 (2) | - | -0.0102 | 6.60 | 1.00 | 1.00 |
+| time_scale=1.0 | 4 | 0 | 1.00 | 1.00 (4) | - | -0.0102 | 8.92 | 1.00 | 1.00 |
+| time_scale=1.15 | 4 | 0 | 0.75 | 1.00 (3) | - | -0.0108 | 6.91 | 1.00 | 1.00 |
+| time_scale=1.3 | 4 | 0 | 0.75 | 1.00 (3) | - | -0.0099 | 8.35 | 1.00 | 1.00 |
+
+- primary rule: `avoid|obj_0|-`
+- lowest-risk cell `time_scale=0.5` success 0.5 (gate >= 0.7): FAIL
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 1.0, co-viol 1.0, success 0.75
+
+```yaml
+risk_collect:
+  safe_time_scale: 0.6
+  cells:
+    - {weight: 1.0, time_scale: 0.5, task: {}}
+    - {weight: 1.0, time_scale: 0.75, task: {}}
+    - {weight: 1.0, time_scale: 1.0, task: {}}
+    - {weight: 1.0, time_scale: 1.15, task: {}}
+    - {weight: 1.0, time_scale: 1.3, task: {}}
+```
+
+### [re-run 2] selective_avoid on stack_bowls_two — ur5-wsg
+
+| cell | n | err | success | exposed: viol (n) | benign: viol (n) | p10 min-margin | mean 1st-viol t | any-avoid | co-viol |
+|---|---|---|---|---|---|---|---|---|---|
+| time_scale=0.5 | 4 | 0 | 1.00 | 1.00 (4) | - | -0.0106 | 10.73 | 1.00 | 1.00 |
+| time_scale=0.75 | 4 | 0 | 1.00 | 1.00 (2) | - | -0.0102 | 6.36 | 1.00 | 1.00 |
+| time_scale=1.0 | 4 | 0 | 1.00 | 0.75 (4) | - | -0.0103 | 8.60 | 1.00 | 1.00 |
+| time_scale=1.15 | 4 | 0 | 0.75 | 1.00 (4) | - | -0.0179 | 5.70 | 1.00 | 1.00 |
+| time_scale=1.3 | 4 | 0 | 1.00 | 1.00 (4) | - | -0.0102 | 6.81 | 1.00 | 1.00 |
+
+- primary rule: `avoid|obj_0|-`
+- lowest-risk cell `time_scale=0.5` success 1.0 (gate >= 0.7): PASS
+- proposed risk_collect mixture over ['time_scale=0.5', 'time_scale=0.75', 'time_scale=1.0', 'time_scale=1.15', 'time_scale=1.3']: exposed viol 0.95, co-viol 1.0, success 0.95
 
 ```yaml
 risk_collect:

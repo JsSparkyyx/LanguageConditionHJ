@@ -151,3 +151,18 @@ def test_record_from_meta_columns_and_params():
     assert st["params"]["h_unit"] == 0.015 and z["params"]["h_unit"] == 0.05
     assert z["sampleable"] and st["sampleable"]
     assert "keep the yellow box out of the red zone" in L.sentences(z, rec)
+
+
+def test_rule_phrases_skip_heldout_words():
+    """rules.render_phrases (the on-screen instruction / active_instruction)
+    never uses the bank's held-out referent words when another name exists."""
+    from main.item_envs import physics
+    from main.item_envs.rules import Consequence, RuleSpec, render_phrases
+
+    cfg = physics.load_objects_cfg()
+    held = set(L.load_bank()["heldout_words"])
+    for cat, iid in (("bottle", "obj_0"), ("can", "obj_1"), ("cup", "obj_2")):
+        rule = RuleSpec(rule_id=f"avoid|{iid}|-", consequence=Consequence.AVOID, item_ids=(iid,),
+                        region_ids=(), params={"margin": 0.01, "category": cat})
+        out = render_phrases(rule, cfg, np.random.RandomState(0), n=12)
+        assert out and not any(w in p for p in out for w in held), out

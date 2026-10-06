@@ -27,11 +27,14 @@ color_rgb:
   orange: [0.95, 0.50, 0.10]
   cyan:   [0.10, 0.80, 0.85]
 
-# T1 selective_avoid candidate pool (PLAN v3 §7): the eleven textured assets
-# plus colored primitives. spawn.py samples uniformly from this list.
-t1_pool: ["068_boxdrink", "086_woodenblock", "001_bottle", "114_bottle",
-          "021_cup", "039_mug", "071_can", "080_pillbottle", "105_sauce-can",
-          "112_tea-box", "113_coffee-box", "prim_box", "prim_tall_cylinder"]
+# T1 selective_avoid candidate pool (PLAN v3 §7): 10 object types, one asset
+# each (user 2026-10-05: "don't make the item corpus too large, a pool of
+# 10"). Dropped: 039_mug (its synonym "cup" clashed with 021_cup), 105_sauce-
+# can (synonym "can" clashed with 071_can), 114_bottle (a second bottle
+# asset). spawn.py draws without repeating a category in a scene (and never
+# a host object's category): every candidate has a unique name.
+t1_pool: ["068_boxdrink", "086_woodenblock", "001_bottle", "021_cup", "071_can",
+          "080_pillbottle", "112_tea-box", "113_coffee-box", "prim_box", "prim_tall_cylinder"]
 
 categories:
   bottle:       {names: [bottle], synonyms: [flask, water bottle], mass_range: [0.05, 0.30]}

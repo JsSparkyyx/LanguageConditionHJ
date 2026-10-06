@@ -108,19 +108,22 @@ Consequence names: `avoid`, `upright`, `stay` as in the rules; `outside` ->
 - `language.sentences(rule, scene, split)`, `sample_sentence(...)`.
   Splits: `train`, `heldout_template`, `heldout_word`.
 
-Nameability: in 30 T1 calibration episodes only 128 of 287 rules are
-sampleable — set rules, and scenes with several uncolored objects of one
-category (three plain cups: none has a unique name). Every T2 / T4 / T5 /
-T6 / T7 rule is sampleable; T3 95 of 164 (the pair rules are not).
+Nameability: before 2026-10-05 only 128 of 287 rules of 30 T1 episodes
+were sampleable — set rules, and scenes with several uncolored objects of
+one category (three plain cups: none has a unique name). T1 now draws its
+candidates from 10 types without repeating a category or a host object's
+(user), so every candidate is nameable. Every T2 / T4 / T5 / T6 / T7 rule
+is sampleable; T3 95 of 164 (the pair rules are not).
 
 ## Text cache
 
 `scripts/item_envs/build_text_cache.py --episodes <item_buffer>/episodes
 --out <file>` (or `--metas <glob>` for saved probe runs): every sentence
 of every usable rule in the three splits, embedded once with the frozen
-HoloBrain BERT + `text_feat_map` (the checkpoint-exact `TextPipeline` of
-the uncommitted `verification/verify_language_patches.py`, imported at run
-time). Output: `{"index": {sentence: i}, "emb": fp16 [N, 24, 256], "mask":
+HoloBrain BERT + `text_feat_map` (`language/text_encoder.HoloBrainText`:
+robo_orchard_lab's bip3d BertModel forward with the checkpoint's own
+weights and its model.config.json settings; identical to the earlier
+test-only pipeline, max |diff| 0.0). Output: `{"index": {sentence: i}, "emb": fp16 [N, 24, 256], "mask":
 bool [N, 24], "split": [...]}`. All 2181 calibration episodes give 9852
 sentences (6080 train, 1708 held-out template, 2064 held-out word), 7-12
 tokens each. Note: mean-pooled, "the green block" and "the yellow block"
