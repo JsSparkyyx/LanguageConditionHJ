@@ -82,9 +82,11 @@ class ItemMarginHFn:
     """
 
     def __init__(self, active_rule_id: str | None = None, scale: float = 1.0,
-                 ctx=None, row_sink=None, with_masks: bool = True):
+                 ctx=None, row_sink=None, with_masks: bool = True, episode_id: int = 0):
         self.active_rule_id = active_rule_id
         self.scale = float(scale)
+        self.episode_id = int(episode_id)
+        self._tick = 0  # t_in_ep of the next row (one call per captured tick)
         self.ctx = ctx
         self.row_sink = row_sink
         self.with_masks = bool(with_masks)
@@ -221,7 +223,8 @@ class ItemMarginHFn:
         data = self._compute_tick(env)
         rules = list(ctx.rules)
         margins = np.asarray(data.margins, dtype=np.float64).reshape(-1)
-        scaled = np.array([self.scale * rule_h(r, m) for r, m in zip(rules, margins)], dtype=np.float64)
+        h_rules = np.array([rule_h(r, m) for r, m in zip(rules, margins)], dtype=np.float64)
+        scaled = self.scale * h_rules
         active_j = self._active_index(rules)
         if not rules:
             h = float("inf")
@@ -285,7 +288,16 @@ class ItemMarginHFn:
             "n_below_table": 0,
         }
         if self.row_sink is not None:
-            self.row_sink.offer(self._row(ctx, data, margins))
+            row = self._row(ctx, data, margins)
+            row.update(
+                h_rules=h_rules.astype(np.float32),
+                fails_soon=np.zeros(len(rules), dtype=np.bool_),  # LockstepItemWriter fills it as the episode runs
+                active_rule=np.int16(active_j if active_j is not None else -1),
+                t_in_ep=np.int16(self._tick),
+                episode_id=np.int32(self.episode_id),
+            )
+            self.row_sink.offer(row)
+        self._tick += 1
         return h, diag
 
     @staticmethod
@@ -380,9 +392,10 @@ def wire_item_episode(ro, sidecar) -> None:
     h_scale = float(getattr(ro.cfg, "h_scale", 1.0))
     ro.h_fn = ItemMarginHFn(
         runner.active_rule_id,
-        1.0 / h_scale,  # rollout.py multiplies by h_scale: the buffer h is rule_h
+        1.0 / h_scale,  # rollout.py multiplies by h_scale: the buffer h is rule_h (= h_rules[active_rule])
         ctx=runner,
         row_sink=lockstep,
+        episode_id=int(getattr(ro, "episode_id", 0)),
     )
     ro.buf = lockstep
     labels = tuple(runner.task_cfg.get("risky_skill_labels", ()) or ())

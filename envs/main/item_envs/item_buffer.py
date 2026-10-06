@@ -57,6 +57,14 @@ _FIELD_SHAPES = {
     "robot_item_dist": ("k_max",),
     "margins": ("r_max",),
     "rule_valid": ("r_max",),
+    # relabeling (docs/item_envs/relabeling.md): h of EVERY rule this tick
+    # (margins.rule_h, the env definition: clip(margin / h_unit, -1, 1)), and
+    # whether it goes < 0 within the next FAILS_SOON_H ticks of the episode
+    "h_rules": ("r_max",),
+    "fails_soon": ("r_max",),
+    "active_rule": (),  # the episode's active rule column, -1 = none (h = min over all)
+    "t_in_ep": (),      # tick index in the episode (rows t - k / t - t_in_ep are its past)
+    "episode_id": (),   # StepBuffer's episode_id (lockstep copy)
     "region_T": ("g_max", 4, 4),
     "token_masks": ("k_max+g_max", "n_cam", "n_tok"),
     "visibility": ("k_max", "n_cam"),
@@ -70,6 +78,11 @@ _FIELD_DTYPES = {
     "robot_item_dist": np.float32,
     "margins": np.float32,
     "rule_valid": np.bool_,
+    "h_rules": np.float32,
+    "fails_soon": np.bool_,
+    "active_rule": np.int16,
+    "t_in_ep": np.int16,
+    "episode_id": np.int32,
     "region_T": np.float32,
     "token_masks": np.uint8,
     "visibility": np.float16,
@@ -77,6 +90,8 @@ _FIELD_DTYPES = {
 # padding fill for rows shorter than the maxima (distances read +inf —
 # "nothing there is closer than anything" — everything else reads 0/False)
 _PAD_FILL = {"robot_item_dist": np.inf}
+
+FAILS_SOON_H = 25  # ticks (1 s): fails_soon[t, j] = min(h_rules[t : t + H, j]) < 0 within the episode
 
 
 class ItemSidecarBuffer:
@@ -282,6 +297,15 @@ class ItemSidecarBuffer:
 
         with open(self.root / "episodes.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(_jsonable(record)) + "\n")
+        # the relabeling record (docs/item_envs/relabeling.md): one file per
+        # episode, rules[idx] = column idx of h_rules / fails_soon
+        from .language import episode_record
+
+        ep_dir = self.root / "episodes"
+        ep_dir.mkdir(exist_ok=True)
+        tmp = ep_dir / f"{int(episode_id)}.json.tmp"
+        tmp.write_text(json.dumps(_jsonable(episode_record(runner, episode_id)), indent=1))
+        tmp.replace(ep_dir / f"{int(episode_id)}.json")
 
 
 class LockstepItemWriter:
@@ -304,6 +328,7 @@ class LockstepItemWriter:
         self.step_buf = step_buf
         self.sidecar = sidecar
         self._rows: list[dict] = []
+        self._ep_slots: list[int] = []  # ring slots of this episode's rows, in tick order
 
     def offer(self, row: dict) -> None:
         self._rows.append(row)
@@ -317,8 +342,25 @@ class LockstepItemWriter:
         row = self._rows[0]
         self.sidecar.validate_row(row)  # raise before either ring moves
         self.step_buf.append(entry)
+        slot = self.sidecar.head
         self.sidecar.append(row)
         self._rows.pop(0)
+        self._mark_fails_soon(slot)
+
+    def _mark_fails_soon(self, slot: int) -> None:
+        """fails_soon, filled as the episode runs (collect.py has no end-of-
+        episode hook): a rule negative at this tick marks this row and the
+        previous FAILS_SOON_H - 1 rows of the episode — so row t ends up with
+        min(h_rules[t : t + H]) < 0 once tick t + H - 1 has arrived (fewer
+        ticks near the episode end)."""
+        self._ep_slots.append(slot)
+        arr_h = self.sidecar.arrays["h_rules"]
+        arr_f = self.sidecar.arrays["fails_soon"]
+        neg = arr_h[slot] < 0.0
+        if not neg.any():
+            return
+        for k in self._ep_slots[-FAILS_SOON_H:]:
+            arr_f[k] |= neg
 
     def end_episode(self) -> tuple[int, int]:
         """Teardown check, call when the episode's rollout returns: every

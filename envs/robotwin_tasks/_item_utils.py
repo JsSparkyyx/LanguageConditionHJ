@@ -139,8 +139,11 @@ def risky(task, risk=None):
 
 def register_item(task, item_id, entity, category, color, kind, role, group=None,
                   particles=None, half_extents=None, mass=None,
-                  obb_center_local=None, up_axis_local=None):
+                  obb_center_local=None, up_axis_local=None, size=None):
     """Append a v3 §4.1 item-metadata dict to ``task.item_meta``.
+
+    ``size`` (optional): a size word the sentence generator may use ("the
+    tall block"), e.g. T5 / T7's "tall" / "short" blocks.
 
     ``mass`` (optional) is applied to the live PhysX body immediately —
     the same write ``physics.apply_physics`` performs — so mass never
@@ -161,6 +164,7 @@ def register_item(task, item_id, entity, category, color, kind, role, group=None
         "obb_center_local": None if obb_center_local is None else [float(v) for v in obb_center_local],
         "up_axis_local": None if up_axis_local is None else [float(v) for v in up_axis_local],
         "mass": None if mass is None else float(mass),
+        "size": None if size is None else str(size),
     }
     task.item_meta.append(meta)
     if mass is not None:

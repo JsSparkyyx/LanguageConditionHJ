@@ -817,8 +817,9 @@ def _merge_risk_override(params: RiskParams, override: dict) -> None:
 
 
 def _item_from_meta(d: dict) -> ItemSpec:
-    """ItemSpec from a robotwin_tasks/_item_utils.register_item dict."""
-    return ItemSpec(
+    """ItemSpec from a robotwin_tasks/_item_utils.register_item dict (an
+    optional size word rides along as the extra attribute ``size``)."""
+    spec = ItemSpec(
         item_id=d["item_id"],
         entity=d["entity"],
         category=d["category"],
@@ -832,6 +833,9 @@ def _item_from_meta(d: dict) -> ItemSpec:
         role=d.get("role", "candidate"),
         group=d.get("group"),
     )
+    if d.get("size"):
+        spec.size = str(d["size"])
+    return spec
 
 
 def _host_item_meta(task, host: str, task_cfg: dict) -> list[dict]:

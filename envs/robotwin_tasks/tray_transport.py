@@ -241,6 +241,7 @@ class tray_transport(granular_carry):
                 self, it["item_id"], it["entity"], category="block", color=it["color"], kind="rigid",
                 role="candidate", half_extents=[0.5 * it["w"], 0.5 * it["w"], 0.5 * it["h"]],
                 obb_center_local=[0.0, 0.0, 0.0], up_axis_local=[0.0, 0.0, 1.0], mass=it["mass"],
+                size={"tall": "tall", "short": "short"}.get(it["kind"]),  # "mid" has no size word
             )
 
     def prepare_episode(self):

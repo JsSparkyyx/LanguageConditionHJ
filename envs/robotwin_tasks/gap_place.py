@@ -195,6 +195,7 @@ class gap_place(granular_carry):
                 self, b["item_id"], b["entity"], category="block", color=b["color"], kind="rigid",
                 role="candidate", half_extents=[0.5 * b["w"], 0.5 * b["w"], 0.5 * b["h"]],
                 obb_center_local=[0.0, 0.0, 0.0], up_axis_local=[0.0, 0.0, 1.0], mass=b["mass"],
+                size=b.get("kind"),  # "tall" (slim pillar) / "short" (wide)
             )
 
     def prepare_episode(self):

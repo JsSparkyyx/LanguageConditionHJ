@@ -34,10 +34,15 @@ def make_pair(tmp_path, capacity=8):
     return buf, sidecar
 
 
-def make_row(i: int, k: int = 2, r: int = 2, g: int = 1) -> dict:
+def make_row(i: int, k: int = 2, r: int = 2, g: int = 1, h_rules=None, t_in_ep=None, episode=0) -> dict:
     """Synthetic sidecar row for transition i; margins[0] / item_pose[0,0]
     encode i so cross-ring pairing is checkable."""
     return {
+        "h_rules": np.asarray(h_rules if h_rules is not None else np.ones(r), dtype=np.float32),
+        "fails_soon": np.zeros(r, dtype=np.bool_),
+        "active_rule": np.int16(0),
+        "t_in_ep": np.int16(i if t_in_ep is None else t_in_ep),
+        "episode_id": np.int32(episode),
         "item_pose": np.full((k, 7), i, dtype=np.float32),
         "item_vel": np.zeros((k, 6), dtype=np.float32),
         "item_obb": np.ones((k, 9), dtype=np.float32),
@@ -203,6 +208,13 @@ def test_write_episode_jsonl(tmp_path):
     assert [d["item_id"] for d in rec["items"]] == ["obj_0"]
     assert [d["rule_id"] for d in rec["rules"]] == ["avoid|obj_0|-"]
     assert "entity" not in rec["items"][0]  # no handles in the tables
+    # the relabeling record, one file per episode (docs/item_envs/relabeling.md)
+    ep = json.loads((tmp_path / "item_buffer" / "episodes" / "7.json").read_text())
+    assert ep["episode_id"] == 7 and ep["active_rule"] == -1
+    assert ep["objects"][0]["category"] == "cup" and ep["objects"][0]["role"] == "candidate"
+    assert ep["rules"][0]["idx"] == 0 and ep["rules"][0]["consequence"] == "avoid"
+    assert ep["rules"][0]["subject"] == {"object": 0} and ep["rules"][0]["reference"] is None
+    assert ep["rules"][0]["sampleable"] is True  # one cup: "the cup" names it
 
 
 def test_episode_lifecycle_counts_match(tmp_path):
@@ -254,3 +266,29 @@ def test_append_validates_row_before_step_write(tmp_path):
         lock.append(make_entry(0))
     assert len(buf) == len(sidecar) == 0
     assert len(lock._rows) == 1  # the row was not silently dropped
+
+
+def test_fails_soon_window(tmp_path):
+    """fails_soon[t, j] = min(h_rules[t : t + 25, j]) < 0 within the episode,
+    filled as the episode runs: rule 1 goes negative at tick 30 only -> rows
+    6..30 are marked, rule 0 (never negative) nowhere; a new episode starts
+    clean."""
+    from main.item_envs.item_buffer import FAILS_SOON_H
+
+    buf, sidecar = make_pair(tmp_path, capacity=64)
+    lock = LockstepItemWriter(buf, sidecar)
+    for i in range(40):
+        lock.offer(make_row(i, h_rules=[0.5, -0.2 if i == 30 else 0.3]))
+        lock.append(make_entry(i))
+    fs = np.asarray(sidecar.arrays["fails_soon"][:40])
+    assert not fs[:, 0].any()
+    expect = np.zeros(40, dtype=bool)
+    expect[30 - (FAILS_SOON_H - 1):31] = True
+    np.testing.assert_array_equal(fs[:, 1], expect)
+    lock2 = LockstepItemWriter(buf, sidecar)  # the next episode's writer
+    for i in range(3):
+        lock2.offer(make_row(40 + i, h_rules=[-0.1, 0.3], t_in_ep=i, episode=1))
+        lock2.append(make_entry(40 + i, episode=1))
+    fs = np.asarray(sidecar.arrays["fails_soon"])
+    assert fs[40:43, 0].all() and not fs[16:40, 0].any()  # never marks the previous episode
+    assert int(sidecar.arrays["t_in_ep"][41]) == 1 and int(sidecar.arrays["episode_id"][41]) == 1

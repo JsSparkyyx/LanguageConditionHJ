@@ -85,8 +85,9 @@ def test_register_item_schema():
     assert task.item_meta == [meta]
     assert set(meta) == {
         "item_id", "entity", "category", "color", "kind", "role", "group",
-        "particles", "half_extents", "obb_center_local", "up_axis_local", "mass",
+        "particles", "half_extents", "obb_center_local", "up_axis_local", "mass", "size",
     }
+    assert meta["size"] is None  # optional size word ("tall" / "short", T5 / T7)
     assert meta["item_id"] == "box_0"
     assert meta["entity"] is entity
     assert meta["half_extents"] == [0.025, 0.025, 0.035]
