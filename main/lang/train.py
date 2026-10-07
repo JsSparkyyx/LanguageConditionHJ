@@ -528,7 +528,9 @@ def run_sanity(args) -> int:
     out["shuffled"] = {"history": hist, "target_rank_acc": hist[-1]["target_rank_acc"],
                        "target_rank_acc_tail_mean": float(np.mean([h["target_rank_acc"] for h in tail])),
                        "label_rank_acc_tail_mean": float(np.nanmean([h["label_rank_acc"] for h in tail])),
-                       "pass": bool(hist[-1]["target_rank_acc"] <= 0.6)}
+                       # "stays <= 0.6": judged on the mean of the last 4 scorings (a single scoring of
+                       # ~30 pairs has a standard error of ~0.05)
+                       "pass": bool(np.mean([h["target_rank_acc"] for h in tail]) <= 0.6)}
     del tr
     torch.cuda.empty_cache()
     # switches off: the sentence cannot change Q (text_sens exactly 0)
@@ -548,7 +550,8 @@ def run_sanity(args) -> int:
     (res_dir / "sanity.json").write_text(json.dumps(out, indent=1))
     print(f"[sanity] overfit {out['overfit']['pass']} (acc {out['overfit']['target_rank_acc']:.3f}, loss x"
           f"{out['overfit']['loss_ratio']:.1f}) | shuffled {out['shuffled']['pass']} "
-          f"(acc {out['shuffled']['target_rank_acc']:.3f}) | switches off {out['switches_off']['pass']} "
+          f"(acc {out['shuffled']['target_rank_acc']:.3f}, tail mean {out['shuffled']['target_rank_acc_tail_mean']:.3f}, "
+          f"label {out['shuffled']['label_rank_acc_tail_mean']:.3f}) | switches off {out['switches_off']['pass']} "
           f"(text_sens {sens:.2e})", flush=True)
     return 0 if out["pass"] else 1
 

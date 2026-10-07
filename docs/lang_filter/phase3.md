@@ -45,7 +45,17 @@ depends on the sentence through the target critic, and the live and target criti
 sanity output now also reports the label-based score P[Q(harmful) < Q(benign)], which is exactly chance
 in expectation under shuffling.
 
-<!-- SANITY_WARMUP -->
+Gate run on the warmup data (`runs/lang/sanity_warmup_partial`, 1000 steps each, fixed batch of 32 pairs
+from mixed rows of T1, T3, T5, T6, T7; run while collection was at ~110 of 420 warmup episodes, which
+changes nothing for a fixed-batch test):
+
+| check | result | required |
+|---|---|---|
+| overfit | target-rank accuracy **1.000**; loss_q down **98,000x** | >= 0.95, 10x |
+| shuffled sentences | target-rank **0.547** (mean of the last 4 scorings; the last single scoring 0.603), label-based **0.506** | <= 0.6 |
+| switches off | `text_sens` **0.0** | 0 |
+
+**The gate passes.** No label leaks into the inputs: the label-based score is at chance.
 
 ## Offline run (`full`, 20k steps, probes every 2k)
 

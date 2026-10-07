@@ -5,7 +5,18 @@ left for the human. Detailed reports: `recon.md` (Phase 0), `collect_report_warm
 `collect_report_val.md` (Phase 1), `phase2.md` (model), `phase3.md` (sampler, trainer, sanity, offline
 run), `phase4.md` (rounds), `phase5.md` (closed loop).
 
-<!-- STATUS -->
+## 0. Status at the end of the night
+
+| phase | state | evidence |
+|---|---|---|
+| 0 recon | **done**, no STOP condition | `recon.md`: lockstep parity exact (28 episodes), text cache equal in fp16 precision, filtered controller ok, in-the-way designations within bounds, masks ok, CrossSafe and env Phase-5 regressions pass; 2 env single-episode sim tests fail (env-side) |
+| 1 collection | <!-- P1 --> | `collect_report_warmup.md`, `collect_report_val.md` |
+| 2 model | **done** | `phase2.md`: 19 model tests, 20.7 M parameters, 22 GB at B = 64 |
+| 3 trainer, probes, offline probe | code **done**, sanity passes on recon data; <!-- P3 --> | `phase3.md` |
+| 4 rollout + rounds | code **done**; filter episodes with a random-init language model run in lockstep with panel videos; <!-- P4 --> | `phase4.md` |
+| 5 closed loop | code **done**; the grid machinery ran on the smoke checkpoint; <!-- P5 --> | `phase5.md` |
+| 6 matrix + report | `scripts/lang/matrix.sh` prints the runs; nothing beyond `full` was launched | this file |
+
 
 ## 1. What was built
 
