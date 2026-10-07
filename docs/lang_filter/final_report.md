@@ -150,6 +150,42 @@ Each item names the evidence and a recommendation; nothing below was decided for
 
   `runs/lang_pipeline*/chain.log` show progress; `bash scripts/lang/matrix.sh` lists what to launch next.
 
+## 5b. Afternoon update (2026-10-07, 16:00)
+
+Everything in the "still running" list above finished; no job was left in the queue.
+
+**Official run, step 20000** (`runs/lang/lang_full_paired_off_1007/eval_offline/checkpoint_final/tables.md`),
+next to the preview run (36% of the warmup) at step 16000:
+
+| measure | official, step 20000 | preview, step 16000 |
+|---|---|---|
+| rank accuracy, training templates | 0.650 | 0.678 |
+| held-out templates / nouns / items | 0.617 / 0.647 / 0.408 | 0.663 / 0.660 / 0.316 |
+| shuffled-sentence control | 0.501 | 0.497 |
+| **referent** decisions (same consequence, other item) | **0.507** | 0.593 |
+| **consequence** decisions (same item, other consequence) | **0.696** | 0.629 |
+| imminent-harm AUROC (base: other-episode sentences) | 0.856 (0.742) | – |
+| V <= h + 0.05 | 0.925 | – |
+
+Per task (training templates): T5 0.92, T3 0.77, T6 0.72, T1 0.61, T7 0.54. In plain words: with more
+data the model got better at telling *what kind* of harm a sentence names, and no better than a coin at
+telling *which item* it names, although the vanilla model already lets scene and body tokens read the
+words. This is one run each, but it is the condition DESIGN_CONTEXT 5.2 sets for the advanced version
+(object slots plus an entity pointer): referent grounding is the bottleneck.
+
+**Bead rules: h now counts beads** (user request, `margins.particle_h`). Once n >= 1 beads break a bead
+rule, h = -(0.5 + 0.5 (min(n, 20) - 1) / 19): one bead -0.5, 2 beads -0.53, 10 beads -0.74, 20 or more
+-1. Before, one bead 1 cm out already read -1, the same as a whole spill. The safe side is unchanged
+(depth of the worst bead / unit, now a hard min over beads instead of a 5 mm soft-min, which could read
+< 0 with no bead out). Per-tick counts are stored (`n_violating` in the sidecar, `violation_counts` in
+`trace.npz`), so this kind of change can be relabeled offline next time.
+
+Consequence for the data: the warmup and validation shards hold the old bead h and no counts, so their
+T2 / T4 / T6 rows cannot be relabeled. `LangSampler` and the offline probe now skip the bead-task rows of
+any shard without `item_buffer/n_violating.npy` (`LangConfig.drop_stale_bead_rows`, default on); the
+other four tasks' rows are unchanged and stay in use. The bead tasks need recollecting (bead-only shards
+`shard_g<g>_bead`, about 180 warmup + 30 validation episodes), then a retrain.
+
 ## 4. How to run (all inside `scripts/lang/in_container.sh`, cwd = repo root)
 
 ```

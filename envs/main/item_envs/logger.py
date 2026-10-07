@@ -54,6 +54,7 @@ class StepRecord:
     token_masks: np.ndarray  # [K + G_nameable, n_cam, n_tok] uint8, cell coverage 0..255
     action_source: int  # 0 planner, 1 actor, 2 perturbation (always 0 in Phases 2-4)
     time_scale: float  # active retime factor this tick
+    violation_counts: np.ndarray | None = None  # [R] beads breaking each bead rule (-1: not a bead rule)
 
 
 @dataclass
@@ -265,6 +266,11 @@ class EpisodeTrace:
                 "item_vel": np.stack([np.asarray(r.item_vel) for r in self._records]),
                 "region_T": np.stack([np.asarray(r.region_T) for r in self._records]),
                 "margins": margins,
+                # beads breaking each bead rule per tick (-1: not a bead rule): h = margins.rule_h(rule, m, n)
+                "violation_counts": np.stack(
+                    [np.asarray(r.violation_counts if r.violation_counts is not None
+                                else np.full(len(r.margins), -1), dtype=np.int64) for r in self._records]
+                ),
                 "robot_item_dist": np.stack(
                     [np.asarray(r.robot_item_dist, dtype=np.float64) for r in self._records]
                 ),

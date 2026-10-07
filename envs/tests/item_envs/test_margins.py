@@ -238,3 +238,37 @@ def test_particles_outside_capped_column():
     beside = np.array([[1.5, 0.5, 0.0]])  # on the table beside it
     assert m_particles_outside([beside], [region], T=0.001) == pytest.approx(0.5, abs=1e-6)
     assert m_particles_outside([above[:, :2]], [region], T=0.001) < -0.49  # xy only: uncapped
+
+
+def test_particle_h_counts_beads():
+    """Bead rules (2026-10-07): -0.5 for one violating bead, linearly to -1 at 20 or more;
+    the safe side is clip(margin / unit, 0, 1)."""
+    from main.item_envs.margins import PARTICLE_N_FULL, particle_h, rule_h
+    from main.item_envs.rules import Consequence, RuleSpec
+
+    inside = RuleSpec("particles_inside|beads|bowl", Consequence.PARTICLES_INSIDE, ("beads",), ("bowl",), {})
+    outside = RuleSpec("particles_outside|beads|bin", Consequence.PARTICLES_OUTSIDE, ("beads",), ("bin",), {})
+    assert particle_h(1, -0.03, 0.01) == -0.5
+    assert np.isclose(particle_h(2, -0.001, 0.01), -0.5 - 0.5 / 19)
+    assert particle_h(PARTICLE_N_FULL, -0.001, 0.01) == -1.0 and particle_h(57, -0.001, 0.01) == -1.0
+    hs = [particle_h(n, -0.01, 0.01) for n in range(1, 25)]
+    assert all(a > b for a, b in zip(hs[:19], hs[1:20])) and len(set(hs[19:])) == 1   # strictly worse to 20
+    assert np.isclose(rule_h(inside, 0.005, 0), 0.5)          # 5 mm inside, unit 1 cm
+    assert rule_h(inside, 0.03, 0) == 1.0
+    assert rule_h(inside, -0.002, 0) == 0.0                    # (a soft-min margin can dip below 0 with no bead out)
+    assert np.isclose(rule_h(outside, 0.025, 0), 0.5)          # 2.5 cm from the column, unit 5 cm
+    assert rule_h(outside, -0.004, 1) == -0.5
+    assert rule_h(inside, -0.004, 3) == rule_h(outside, -0.2, 3)   # depth no longer matters once violated
+    assert np.isclose(rule_h(inside, -0.004), -0.4)            # without a count: the old clip(margin / unit)
+    avoid = RuleSpec("avoid|cup|-", Consequence.AVOID, ("cup",), (), {"margin": 0.01})
+    assert np.isclose(rule_h(avoid, -0.02, 5), -0.4)           # counts only apply to bead rules
+
+
+def test_particle_margin_hard_min_by_default():
+    from main.item_envs.margins import m_particles_inside, m_particles_outside
+
+    region = make_region(np.array([[-0.05, -0.05], [0.05, -0.05], [0.05, 0.05], [-0.05, 0.05]]), kind="container")
+    pts = np.array([[0.0, 0.0, 0.0]] * 60 + [[0.04, 0.0, 0.0]])            # 60 at the centre, one 1 cm from the wall
+    assert np.isclose(m_particles_inside([pts], [region]), 0.01)           # the worst bead, no soft-min pull
+    assert m_particles_inside([pts], [region], T=0.005) < 0.01              # an explicit T keeps the soft-min
+    assert m_particles_outside([pts + [0.2, 0.0, 0.0]], [region]) > 0

@@ -138,6 +138,9 @@ class LangConfig(FrozenConfig):
     pair_frac: float = 0.5
     task_balance: bool = True
     recall_horizon_ticks: int = 7
+    # bead-task rows (T2 / T4 / T6) of shards written before the bead-count h (2026-10-07, no
+    # item_buffer/n_violating.npy) carry the old bead h: skip them (other tasks' rows are unchanged)
+    drop_stale_bead_rows: bool = True
 
     # --- rounds / collection ---
     filter_release_margin: float = 0.0

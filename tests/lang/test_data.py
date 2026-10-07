@@ -1,6 +1,7 @@
 """LangSampler tests (VANILLA_PLAN 4.4)."""
 
 import dataclasses
+import json
 
 import numpy as np
 import pytest
@@ -183,3 +184,22 @@ def test_frozen_rows_cap(tmp_path):
     assert len(capped) == 2 * 39
     other = make_root(tmp_path / "g", episodes=1, capacity=100)
     assert len(LangSampler([root, other], cfg(), seed=0, max_rows={str(root): 80})) == 2 * 39
+
+
+def test_stale_bead_rows_dropped(tmp_path):
+    """Shards written before the bead-count h (2026-10-07: no item_buffer/n_violating.npy) give no
+    T2 / T4 / T6 rows; their other tasks, and every newer shard, are kept."""
+    a = make_root(tmp_path / "a", episodes=2, capacity=200, task="gap_place", eid0=1000)
+    b_ = make_root(tmp_path / "b", episodes=2, capacity=200, task="gap_place", eid0=2000)
+    for p in (b_ / "item_buffer" / "episodes").glob("*.json"):   # make b a clean_pour shard
+        d = json.loads(p.read_text())
+        d["task"] = "clean_pour"
+        p.write_text(json.dumps(d))
+    assert LangSource(b_, k_prev=2).rows.size == 2 * 39           # new bead shard: kept
+    for r in (a, b_):
+        (r / "item_buffer" / "n_violating.npy").unlink()          # what an older shard looks like
+    assert LangSource(a, k_prev=2).rows.size == 2 * 39            # old non-bead shard: kept
+    assert LangSource(b_, k_prev=2).rows.size == 0                # old bead shard: dropped
+    assert LangSource(b_, k_prev=2, drop_stale_bead=False).rows.size == 2 * 39
+    smp = LangSampler([a, b_], cfg(relabel="random"), seed=0)
+    assert set(smp.sample(16)["task"]) == {"gap_place"}

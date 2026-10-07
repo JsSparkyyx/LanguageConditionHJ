@@ -208,11 +208,11 @@ allowed edit under `envs/`.
 | task | rules in an episode | consequences | h |
 |---|---|---|---|
 | T1 `selective_avoid` (5 CrossSafe hosts, 3 to 5 extra objects of different types) | per extra object: `avoid`, `stay`. Set rules (recorded, never sampled) | `avoid`, `stay` | avoid: (real-shape gap − 1 cm) / 5 cm |
-| T2 `granular_pour` | one | `contain_particles` | depth of the worst bead inside the columns / 1 cm |
+| T2 `granular_pour` | one | `contain_particles` | safe: depth of the worst bead inside the columns / 1 cm. Violated: −0.5 for one bead out, linearly to −1 at 20 beads (2026-10-07) |
 | T3 `push_zone` | table, per mat (+ pair rules), per standing object `upright` + `stay` (+ pair) | `zone_include`, `zone_exclude`, `upright` (10°), `stay` (1.5 cm, 10°) | zones / 5 cm. upright (10° − tilt) / 10°. stay (1.5 cm − moved, tilt as movement) / 1.5 cm |
 | T4 `granular_carry` | one | `contain_particles` | as T2 |
 | T5 `tray_transport` | per block (2 to 3) | `upright` (10°) | (10° − tilt) / 10° |
-| T6 `clean_pour` | per bin or plate, plus the spill rule | `exclude_particles`, `contain_particles` | distance of the closest bead from entering the column / 5 cm |
+| T6 `clean_pour` | per bin or plate, plus the spill rule | `exclude_particles`, `contain_particles` | safe: distance of the closest bead from entering the column / 5 cm. Violated: by bead count, as T2 |
 | T7 `gap_place` | per standing block: `upright` + `stay` | `upright` (10°), `stay` (2 cm, 10°) | as T3 |
 
 Only sampleable rules are ever named. T1, T3 and T7 have **two consequences on the same item** (avoid

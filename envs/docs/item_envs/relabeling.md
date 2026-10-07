@@ -19,7 +19,8 @@ StepBuffer stays byte-identical for the non-item tasks.
 
 | field | type | meaning |
 |---|---|---|
-| `h_rules` | float32 [r_max] | h of each rule this tick, the env definition `margins.rule_h` = clip(margin / h_unit, -1, 1) |
+| `n_violating` | int16 [r_max] | beads breaking each bead rule this tick, -1 for other rules (2026-10-07, optional) |
+| `h_rules` | float32 [r_max] | h of each rule this tick, the env definition `margins.rule_h` = clip(margin / h_unit, -1, 1); bead rules below 0 count beads (`margins.particle_h`, see below) |
 | `fails_soon` | bool [r_max] | min(h_rules[t : t + 25, j]) < 0 within the episode (`FAILS_SOON_H` = 25 ticks = 1 s) |
 | `rule_valid` | bool [r_max] | True for columns < the episode's rule count (padding is never sampled) |
 | `active_rule` | int16 | the episode's active rule column, -1 = none (h = min over all rules) |
@@ -71,12 +72,20 @@ harm, -1 = badly harmed, clipped.
 | task | rules in an episode | consequence | h |
 |---|---|---|---|
 | T1 selective_avoid | per extra object: avoid, stay; set rules (category, all) | `avoid`, `stay` | avoid: (real-shape gap - 1 cm) / 5 cm |
-| T2 granular_pour | one | `contain_particles` | depth of the worst bead inside the columns / 1 cm |
+| T2 granular_pour | one | `contain_particles` | safe: depth of the worst bead inside the columns / 1 cm, clipped to [0, 1]; violated: by bead count (below) |
 | T3 push_zone | table, per mat (+ pairs), per standing object upright + stay (+ pair) | `zone_include`, `zone_exclude`, `upright` (10 deg), `stay` (1.5 cm, 10 deg) | zones / 5 cm; upright (10 deg - tilt) / 10 deg; stay (1.5 cm - moved, tilt as movement) / 1.5 cm |
 | T4 granular_carry | one | `contain_particles` | as T2 |
 | T5 tray_transport | per block (2-3) | `upright` (10 deg) | (10 deg - tilt) / 10 deg |
-| T6 clean_pour | per bin / plate, plus the spill rule | `exclude_particles`, `contain_particles` | distance of the closest bead from entering the column / 5 cm |
+| T6 clean_pour | per bin / plate, plus the spill rule | `exclude_particles`, `contain_particles` | safe: distance of the closest bead from entering the column / 5 cm, clipped to [0, 1]; violated: by bead count (below) |
 | T7 gap_place | per standing block: upright + stay | `upright` (10 deg), `stay` (2 cm, 10 deg) | as T3 |
+
+Bead rules (`contain_particles`, `exclude_particles`; user 2026-10-07): the margin is the hard
+minimum over beads (it was a soft-min with T = 5 mm, which could read < 0 with no bead out), and
+once n >= 1 beads break the rule, h = -(0.5 + 0.5 (min(n, 20) - 1) / 19): -0.5 for one bead, -1 at
+20 or more, whatever their depth (`margins.particle_h`). The per-tick n is stored as
+`n_violating` (int16 [r_max], -1 for other rules; optional, so older buffers still open) and in
+`trace.npz` as `violation_counts`. Buffers written before 2026-10-07 hold the old bead h and no
+counts, so their T2 / T4 / T6 rows cannot be relabeled.
 
 Differences from the spec's table (all intended): the spec predates the
 2026-10-05 changes (real-shape distance + 1 cm buffer, new T3 / T7 limits,

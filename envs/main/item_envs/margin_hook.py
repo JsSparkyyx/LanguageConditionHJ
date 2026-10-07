@@ -64,7 +64,7 @@ class _TickData:
 
     __slots__ = (
         "margins", "dists", "held", "item_pose", "item_vel",
-        "region_T", "visibility", "token_masks",
+        "region_T", "visibility", "token_masks", "counts",
     )
 
 
@@ -107,7 +107,7 @@ class ItemMarginHFn:
     # -------------------------------------------------------------- sim seam ----
     def _compute_tick(self, env) -> _TickData:
         """Raw margins + item state for the current scene state (sim-only)."""
-        from .runner import _pose7, _velocity6, rule_margins
+        from .runner import _pose7, _velocity6, rule_margins, rule_violation_counts
 
         ctx = self.ctx
         data = _TickData()
@@ -115,6 +115,8 @@ class ItemMarginHFn:
         data.margins = rule_margins(
             env, ctx.items, ctx.regions, ctx.rules, ctx._stay_ref, data.dists
         )
+        # beads breaking each bead rule (-1 for the other rules): the bead-count h (margins.particle_h)
+        data.counts = rule_violation_counts(ctx.items, ctx.regions, ctx.rules)
         try:
             if self._held_tracker is None:
                 self._held_tracker = robot_distance.HeldTracker(ctx.items)
@@ -223,7 +225,9 @@ class ItemMarginHFn:
         data = self._compute_tick(env)
         rules = list(ctx.rules)
         margins = np.asarray(data.margins, dtype=np.float64).reshape(-1)
-        h_rules = np.array([rule_h(r, m) for r, m in zip(rules, margins)], dtype=np.float64)
+        counts = np.asarray(getattr(data, "counts", None) if getattr(data, "counts", None) is not None
+                            else np.full(len(rules), -1), dtype=np.int64).reshape(-1)
+        h_rules = np.array([rule_h(r, m, c) for r, m, c in zip(rules, margins, counts)], dtype=np.float64)
         scaled = self.scale * h_rules
         active_j = self._active_index(rules)
         if not rules:
@@ -259,6 +263,7 @@ class ItemMarginHFn:
         diag = {
             # item state + all margins (the sidecar row source)
             "margins": margins,
+            "violation_counts": counts,
             "margin_active": margin_active,
             "active_rule_id": rules[active_j].rule_id if active_j is not None else None,
             "rule_ids": [r.rule_id for r in rules],
@@ -291,6 +296,7 @@ class ItemMarginHFn:
             row = self._row(ctx, data, margins)
             row.update(
                 h_rules=h_rules.astype(np.float32),
+                n_violating=counts.astype(np.int16),
                 fails_soon=np.zeros(len(rules), dtype=np.bool_),  # LockstepItemWriter fills it as the episode runs
                 active_rule=np.int16(active_j if active_j is not None else -1),
                 t_in_ep=np.int16(self._tick),

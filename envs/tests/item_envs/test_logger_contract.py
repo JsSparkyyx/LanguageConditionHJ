@@ -31,6 +31,7 @@ STEP_FIELDS = (
     "t", "tick", "qpos", "ee_pose", "gripper", "held", "item_pose", "item_vel",
     "particle_pos", "region_T", "margins", "robot_item_dist", "robot_item_force",
     "visibility", "token_masks", "action_source", "time_scale",
+    "violation_counts",  # extension (2026-10-07): violating beads per rule, trailing
 )
 META_FIELDS = (
     "task", "host_task", "embodiment", "seed", "risk", "physics", "items",

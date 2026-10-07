@@ -96,31 +96,72 @@ def h_unit(rule) -> float:
     return H_UNIT_DISTANCE
 
 
-def rule_h(rule, margin: float) -> float:
+PARTICLE_H_FIRST = 0.5  # h = -0.5 when one bead violates a bead rule (user 2026-10-07)
+PARTICLE_N_FULL = 20    # ... falling linearly to h = -1 at 20 or more violating beads
+
+PARTICLE_CONSEQUENCES = ("particles_inside", "particles_outside")
+
+
+def is_particle_rule(rule) -> bool:
+    name = getattr(getattr(rule, "consequence", None), "value", str(getattr(rule, "consequence", "")))
+    return name in PARTICLE_CONSEQUENCES
+
+
+def particle_h(n_violating: int, margin: float, unit: float) -> float:
+    """Bead rules (user 2026-10-07: one stray bead and fifty stray beads both read -1 before).
+
+    Safe side (no bead violating): clip(margin / unit, 0, 1), margin = the worst bead's distance.
+    Violated side: by the number n of violating beads, -0.5 at n = 1, linearly to -1 at
+    n >= PARTICLE_N_FULL: h = -(0.5 + 0.5 (min(n, 20) - 1) / 19).
+    """
+    n = int(n_violating)
+    if n <= 0:
+        return float(np.clip(float(margin) / float(unit), 0.0, 1.0))
+    frac = (min(n, PARTICLE_N_FULL) - 1) / float(PARTICLE_N_FULL - 1)
+    return -(PARTICLE_H_FIRST + (1.0 - PARTICLE_H_FIRST) * frac)
+
+
+def rule_h(rule, margin: float, n_violating: int | None = None) -> float:
     """The failure function: clip(margin / h_unit(rule), -1, 1). The sign is
-    the margin's (h < 0 = harmed); +1 / -1 = comfortably safe / badly harmed."""
+    the margin's (h < 0 = harmed); +1 / -1 = comfortably safe / badly harmed.
+
+    Bead rules (particles_inside / particles_outside) given ``n_violating`` (the
+    number of beads breaking the rule this tick, ``rule_violation_counts``) use
+    ``particle_h``: the violated side counts beads instead of the worst bead's depth."""
+    if n_violating is not None and int(n_violating) >= 0 and is_particle_rule(rule):
+        return particle_h(n_violating, margin, h_unit(rule))
     return float(np.clip(float(margin) / h_unit(rule), -1.0, 1.0))
 
 
-def m_particles_inside(particle_xy_per_region: list[np.ndarray], regions, T: float = 0.005) -> float:
+def per_particle_inside(particle_xy_per_region: list[np.ndarray], regions) -> np.ndarray:
+    """[N] per bead: max over regions of the column signed distance (> 0 = inside one of them)."""
+    return _per_region_signed_dist(particle_xy_per_region, regions).max(axis=0)
+
+
+def per_particle_outside(particle_xy_per_region: list[np.ndarray], regions) -> np.ndarray:
+    """[N] per bead: min over regions of -signed distance (> 0 = outside every column)."""
+    return (-_per_region_signed_dist(particle_xy_per_region, regions)).min(axis=0)
+
+
+def m_particles_inside(particle_xy_per_region: list[np.ndarray], regions, T: float | None = None) -> float:
     """Every particle stays in the column above one of the regions.
 
-    Per particle: max over regions of the polygon signed distance; then a
-    soft-min over particles with temperature T (metres).
+    Per particle: max over regions of the polygon signed distance; then the
+    min over particles (T = None, the default since 2026-10-07: margin < 0 iff a
+    bead is outside, matching the bead count of ``particle_h``) or a soft-min with
+    temperature T (metres), which can read < 0 with every bead inside.
     """
-    per_region = _per_region_signed_dist(particle_xy_per_region, regions)  # [R, N]
-    per_particle = per_region.max(axis=0)
-    return softmin(per_particle, T)
+    per_particle = per_particle_inside(particle_xy_per_region, regions)
+    return softmin(per_particle, T) if T else float(per_particle.min())
 
 
-def m_particles_outside(particle_xy_per_region: list[np.ndarray], regions, T: float = 0.005) -> float:
+def m_particles_outside(particle_xy_per_region: list[np.ndarray], regions, T: float | None = None) -> float:
     """No particle enters the column above any of the regions.
 
-    Per particle: min over regions of -signed_dist_inside; then the same soft-min.
+    Per particle: min over regions of -signed_dist_inside; then the min (or soft-min) as above.
     """
-    per_region = _per_region_signed_dist(particle_xy_per_region, regions)  # [R, N]
-    per_particle = (-per_region).min(axis=0)
-    return softmin(per_particle, T)
+    per_particle = per_particle_outside(particle_xy_per_region, regions)
+    return softmin(per_particle, T) if T else float(per_particle.min())
 
 
 def set_rule_margin(per_item_margins) -> float:

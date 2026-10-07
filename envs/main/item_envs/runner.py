@@ -506,6 +506,8 @@ class ItemEpisodeRunner:
         dists = robot_distance.robot_item_distances(env, self.items)
         forces = robot_distance.robot_item_forces(env, self.items)
         margins = self._rule_margins(dists)
+        counts = rule_violation_counts(self.items, self.regions, self.rules)
+        self._last_counts = counts
         held = self._held_indices(env)
 
         if self.render == "full" or state.mask_cache is None:
@@ -568,6 +570,7 @@ class ItemEpisodeRunner:
                 else np.zeros((0, 4, 4), dtype=np.float64)
             ),
             margins=margins,
+            violation_counts=counts,
             robot_item_dist=dists,
             robot_item_force=forces,
             visibility=np.asarray(visibility, dtype=np.float64).copy(),
@@ -798,10 +801,42 @@ def one_margin(rule, indexed, regs, dists, stay_ref) -> float:
         # full region-frame xyz: the polygon test uses xy, a capped region
         # (Region.z_cap) also z
         xy_per_region = [geometry.to_frame(pos, region.world_T()) for region in regs]
+        # min over beads (T unset, 2026-10-07): margin < 0 iff a bead breaks the rule; a rule may still
+        # set a soft-min temperature T in its params
         if consequence is Consequence.PARTICLES_INSIDE:
-            return margin_fns.m_particles_inside(xy_per_region, regs, T=params.get("T", 0.005))
-        return margin_fns.m_particles_outside(xy_per_region, regs, T=params.get("T", 0.005))
+            return margin_fns.m_particles_inside(xy_per_region, regs, T=params.get("T"))
+        return margin_fns.m_particles_outside(xy_per_region, regs, T=params.get("T"))
     raise ValueError(f"unknown consequence: {consequence!r}")
+
+
+def rule_violation_counts(items, regions, rules) -> np.ndarray:
+    """[R] int: per bead rule, the number of beads breaking it this tick (outside every
+    allowed column / inside a forbidden one); -1 for every other rule. margins.rule_h uses it
+    for the bead-count failure function (particle_h)."""
+    item_map = {s.item_id: s for s in items}
+    region_map = {r.region_id: r for r in regions}
+    out = np.full(len(rules), -1, dtype=np.int64)
+    for j, rule in enumerate(rules):
+        if rule.consequence not in (Consequence.PARTICLES_INSIDE, Consequence.PARTICLES_OUTSIDE):
+            continue
+        spec = item_map[rule.item_ids[0]]
+        regs = [region_map[rid] for rid in rule.region_ids]
+        pos = _particle_positions(spec)
+        if pos.shape[0] == 0:
+            out[j] = 0
+            continue
+        xy_per_region = [geometry.to_frame(pos, region.world_T()) for region in regs]
+        per = (margin_fns.per_particle_inside(xy_per_region, regs)
+               if rule.consequence is Consequence.PARTICLES_INSIDE
+               else margin_fns.per_particle_outside(xy_per_region, regs))
+        out[j] = int((per < 0.0).sum())
+    return out
+
+
+def rule_hs(rules, margins, counts=None) -> np.ndarray:
+    """[R] h of every rule (margins.rule_h, bead rules with their violation counts)."""
+    counts = [None] * len(rules) if counts is None else list(counts)
+    return np.array([margin_fns.rule_h(r, m, c) for r, m, c in zip(rules, margins, counts)], dtype=np.float64)
 
 
 def _merge_risk_override(params: RiskParams, override: dict) -> None:
@@ -1033,7 +1068,12 @@ def _overlay_lines(runner: ItemEpisodeRunner, margins: np.ndarray, tick: int) ->
         lines.append(f"rule: {phrase}")
         lines.append(f"  = {active.rule_id}")
         lines.append(f"m(active)={_fmt_margin(active, margins[j])}")
-        lines.append(f"h = clip(m / {_fmt_margin(active, margin_fns.h_unit(active))}) = {margin_fns.rule_h(active, margins[j]):+.3f}")
+        counts = getattr(runner, "_last_counts", None)
+        c = None if counts is None else counts[j]
+        if c is not None and c >= 0:
+            lines.append(f"h(beads out = {int(c)}) = {margin_fns.rule_h(active, margins[j], c):+.3f}")
+        else:
+            lines.append(f"h = clip(m / {_fmt_margin(active, margin_fns.h_unit(active))}) = {margin_fns.rule_h(active, margins[j]):+.3f}")
     else:
         lines.append("rule: (none active)")
     if margins.size and rules:
@@ -1065,7 +1105,7 @@ def _h_plot(runner, margins: np.ndarray) -> dict | None:
     if not rules or margins.size == 0:
         return None
     hist = runner.__dict__.setdefault("_h_hist", {"active": [], "all": []})
-    hs = np.array([margin_fns.rule_h(r, m) for r, m in zip(rules, margins)], dtype=np.float64)
+    hs = rule_hs(rules, margins, getattr(runner, "_last_counts", None))
     hist["all"].append(float(np.min(hs)))
     series = []
     j = next((i for i, r in enumerate(rules) if r.rule_id == runner.active_rule_id), None)

@@ -44,6 +44,8 @@ from .scene_roles import ref_rows  # noqa: E402
 
 ROBOT_FIELDS = ("state_tokens", "body_tokens", "link_pos", "body_mask", "joint_index", "Jlin", "Jang", "dtheta_max")
 STEP_FIELDS = ROBOT_FIELDS + ("scene_tokens", "scene_pos", "dtheta", "episode_id")
+# tasks whose rules are bead rules; their h changed on 2026-10-07 (bead count once violated)
+BEAD_TASKS = ("granular_pour", "granular_carry", "clean_pour")
 
 
 def stable_hash(x) -> int:
@@ -72,8 +74,10 @@ class LangSource:
     """One data root: index of usable non-terminal rows + StepBuffer arrays."""
 
     def __init__(self, root, k_prev: int = 2, recall_horizon: int = 7, name: str | None = None,
-                 max_n: int | None = None):
+                 max_n: int | None = None, drop_stale_bead: bool = True):
         self.root = Path(root).resolve()
+        # written before the bead-count h: its bead-task rows hold the old bead h, never train on them
+        self.stale_bead = bool(drop_stale_bead) and not (self.root / "item_buffer" / "n_violating.npy").exists()
         self.name = name or self.root.name
         self.k = int(k_prev)
         self.recall_horizon = int(recall_horizon)
@@ -138,6 +142,10 @@ class LangSource:
         self.task = np.array([CANON_TASKS.index(x) for x in tasks], dtype=np.int64) if tasks else np.zeros(0, np.int64)
         self.host = np.array(hosts, dtype=object)
         self.emb = np.array(embs, dtype=object)
+        if self.stale_bead:
+            fresh = ~np.isin(self.task, [CANON_TASKS.index(x) for x in BEAD_TASKS])
+            for f in ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb"):
+                setattr(self, f, getattr(self, f)[fresh])
         self.recall = recall_labels(np.asarray(A["h_rules"]), np.asarray(A["episode_id"]),
                                     np.asarray(A["t_in_ep"]).astype(np.int64), rs.buf.n, self.recall_horizon)
         # drop cached frame 0 of episodes no longer in the ring
@@ -233,7 +241,8 @@ class LangSampler:
             if self.max_rows and str(Path(r).resolve()) not in self.max_rows:
                 continue   # frozen dataset: shards started after the freeze are not part of it
             src = LangSource(r, self.k, int(cfg.recall_horizon_ticks),
-                             max_n=self.max_rows.get(str(Path(r).resolve())))
+                             max_n=self.max_rows.get(str(Path(r).resolve())),
+                             drop_stale_bead=getattr(cfg, "drop_stale_bead_rows", True))
             if src.rows.size and "scene_tokens" in src.step:
                 self.sources.append(src)
             else:
@@ -249,7 +258,8 @@ class LangSampler:
         self.refresh()
 
     def add_source(self, root) -> None:
-        src = LangSource(root, self.k, int(self.cfg.recall_horizon_ticks))
+        src = LangSource(root, self.k, int(self.cfg.recall_horizon_ticks),
+                         drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True))
         if src.rows.size and "scene_tokens" in src.step:
             self.sources.append(src)
             self.refresh(sources=False)

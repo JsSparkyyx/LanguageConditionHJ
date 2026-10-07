@@ -103,7 +103,8 @@ class Evaluator:
                         weights_only=False)
         self.cfg = LangConfig.from_dict(ck["lang_config"])
         self.dev = device
-        self.sources = [LangSource(r, self.cfg.k_prev, self.cfg.recall_horizon_ticks) for r in val_roots]
+        self.sources = [LangSource(r, self.cfg.k_prev, self.cfg.recall_horizon_ticks,
+                                   drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True)) for r in val_roots]
         n_tok = self.sources[0].step["scene_tokens"].shape[1]
         self.pe = LangPolicyEncoder(self.cfg, n_tok=n_tok).to(device).eval()
         load_policy(self.pe, ck)

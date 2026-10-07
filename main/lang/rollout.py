@@ -165,7 +165,9 @@ class LangRolloutController(RolloutController):
 
         rules = list(runner.rules)
         m = np.asarray(diag["margins"], dtype=np.float64).reshape(-1)
-        h_all = [float(rule_h(r, v)) for r, v in zip(rules, m)]
+        counts = diag.get("violation_counts")
+        counts = [None] * len(rules) if counts is None else list(np.asarray(counts).reshape(-1))
+        h_all = [float(rule_h(r, v, c)) for r, v, c in zip(rules, m, counts)]
         tr = self.trace
         tr["h_all"].append(h_all)
         nid = self.named_rule_id

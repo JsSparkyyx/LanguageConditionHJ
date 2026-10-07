@@ -41,7 +41,9 @@ def _rule_hs(ro) -> tuple[list, list]:
     rules = list(runner.rules)
     if m.size != len(rules):
         return [r.rule_id for r in rules], [float("nan")] * len(rules)
-    return [r.rule_id for r in rules], [float(rule_h(r, v)) for r, v in zip(rules, m)]
+    counts = diag.get("violation_counts")
+    counts = [None] * len(rules) if counts is None else list(np.asarray(counts).reshape(-1))
+    return [r.rule_id for r in rules], [float(rule_h(r, v, c)) for r, v, c in zip(rules, m, counts)]
 
 
 class LangPanelVideoWriter(PanelVideoWriter):

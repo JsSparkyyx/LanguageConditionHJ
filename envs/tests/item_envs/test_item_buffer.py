@@ -292,3 +292,32 @@ def test_fails_soon_window(tmp_path):
     fs = np.asarray(sidecar.arrays["fails_soon"])
     assert fs[40:43, 0].all() and not fs[16:40, 0].any()  # never marks the previous episode
     assert int(sidecar.arrays["t_in_ep"][41]) == 1 and int(sidecar.arrays["episode_id"][41]) == 1
+
+
+def test_n_violating_optional_field(tmp_path):
+    """n_violating (2026-10-07): stored when a row has it; -1 (unknown) when it does not."""
+    buf, sidecar = make_pair(tmp_path)
+    lock = LockstepItemWriter(buf, sidecar)
+    row = make_row(0)
+    row["n_violating"] = np.array([3, -1], dtype=np.int16)
+    lock.offer(row)
+    lock.append(make_entry(0))
+    lock.offer(make_row(1))          # an old-style row without the field
+    lock.append(make_entry(1))
+    assert list(sidecar.arrays["n_violating"][0, :2]) == [3, -1]
+    assert list(sidecar.arrays["n_violating"][1, :2]) == [-1, -1]
+
+
+def test_n_violating_missing_in_old_buffer(tmp_path):
+    """A buffer written before n_violating existed opens with the field in memory (all -1) and no
+    new file in its directory (training jobs open shared data dirs concurrently)."""
+    buf, sidecar = make_pair(tmp_path)
+    lock = LockstepItemWriter(buf, sidecar)
+    lock.offer(make_row(0))
+    lock.append(make_entry(0))
+    sidecar.flush()
+    (sidecar.root / "n_violating.npy").unlink()            # what a pre-2026-10-07 buffer looks like
+    old = ItemSidecarBuffer(sidecar.root)
+    assert not (sidecar.root / "n_violating.npy").exists()
+    assert (old.arrays["n_violating"] == -1).all()
+    old.flush()                                            # in-memory field: nothing to flush

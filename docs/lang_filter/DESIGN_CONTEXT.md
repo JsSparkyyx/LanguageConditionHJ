@@ -72,6 +72,11 @@ Seven tasks, built, calibrated and validated (`envs/docs/item_envs/tasks_overvie
   - the movement limit (1.5 cm in T3, 2 cm in T7, tilt counted as movement) for `stay`.
 
   No per-rule gains are needed.
+- **Bead rules count beads once violated** (user, 2026-10-07): with n beads breaking the rule,
+  `h = −(0.5 + 0.5·(min(n, 20) − 1)/19)`, so one bead reads −0.5 and 20 or more read −1, whatever
+  their depth. The safe side stays `clip(margin / h_unit, 0, 1)` with a hard min over beads. Reason:
+  under the plain clip, one stray bead 1 cm out and a whole spill both read −1. Example: 3 beads on
+  the table give h = −(0.5 + 0.5·2/19) = −0.553.
 - The sidecar buffer (lockstep with `StepBuffer`) stores, per tick, every rule's `h_rules`, its
   `fails_soon` bit (h < 0 within the next 25 ticks), raw margins, `t_in_ep`, and token masks.
   - Nominal collection records all rules at once (StepBuffer h = min over rules). Filter episodes name

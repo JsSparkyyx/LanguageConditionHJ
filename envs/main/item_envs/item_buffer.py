@@ -61,6 +61,9 @@ _FIELD_SHAPES = {
     # (margins.rule_h, the env definition: clip(margin / h_unit, -1, 1)), and
     # whether it goes < 0 within the next FAILS_SOON_H ticks of the episode
     "h_rules": ("r_max",),
+    # beads breaking each bead rule this tick (-1: not a bead rule; 2026-10-07): h_rules of a bead
+    # rule = margins.particle_h(n, margin), so stored rows can be relabeled without simulating
+    "n_violating": ("r_max",),
     "fails_soon": ("r_max",),
     "active_rule": (),  # the episode's active rule column, -1 = none (h = min over all)
     "t_in_ep": (),      # tick index in the episode (rows t - k / t - t_in_ep are its past)
@@ -79,6 +82,7 @@ _FIELD_DTYPES = {
     "margins": np.float32,
     "rule_valid": np.bool_,
     "h_rules": np.float32,
+    "n_violating": np.int16,
     "fails_soon": np.bool_,
     "active_rule": np.int16,
     "t_in_ep": np.int16,
@@ -89,7 +93,9 @@ _FIELD_DTYPES = {
 }
 # padding fill for rows shorter than the maxima (distances read +inf —
 # "nothing there is closer than anything" — everything else reads 0/False)
-_PAD_FILL = {"robot_item_dist": np.inf}
+_PAD_FILL = {"robot_item_dist": np.inf, "n_violating": -1}
+# fields a row may omit (written with their pad fill): added after data was collected
+_OPTIONAL_FIELDS = {"n_violating"}
 
 FAILS_SOON_H = 25  # ticks (1 s): fails_soon[t, j] = min(h_rules[t : t + H, j]) < 0 within the episode
 
@@ -102,6 +108,7 @@ class ItemSidecarBuffer:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         header_path = self.root / "header.json"
+        existed = header_path.exists()
         if capacity is not None:
             if n_tok is None:
                 raise ValueError("n_tok is required when creating a sidecar buffer")
@@ -152,10 +159,16 @@ class ItemSidecarBuffer:
                         f"expected {shape} (capacity/dims mismatch)"
                     )
                 self.arrays[name] = arr
+            elif name in _OPTIONAL_FIELDS and existed:
+                # a buffer written before the field existed: its rows read "unknown", kept in
+                # memory (training jobs open shared data dirs concurrently, never add files there)
+                self.arrays[name] = np.full(shape, _PAD_FILL.get(name, 0), dtype=_FIELD_DTYPES[name])
             else:
                 self.arrays[name] = np.lib.format.open_memmap(
                     p, mode="w+", dtype=_FIELD_DTYPES[name], shape=shape
                 )
+                if name in _OPTIONAL_FIELDS:
+                    self.arrays[name][:] = _PAD_FILL.get(name, 0)
         self.n = int(self.header.get("n", 0))
         self.head = int(self.header.get("head", self.n))  # next write position
 
@@ -207,6 +220,9 @@ class ItemSidecarBuffer:
         padded to the maxima (robot_item_dist with +inf, the rest 0/False).
         """
         for name, arr in self.arrays.items():
+            if name not in row and name in _OPTIONAL_FIELDS:
+                arr[self.head] = _PAD_FILL.get(name, 0)
+                continue
             value = np.asarray(row[name])
             arr[self.head] = self._padded(name, value)
         self.head = (self.head + 1) % self.capacity
@@ -221,6 +237,8 @@ class ItemSidecarBuffer:
         pair out of lockstep."""
         for name in self.arrays:
             if name not in row:
+                if name in _OPTIONAL_FIELDS:
+                    continue
                 raise KeyError(f"sidecar row is missing field {name!r}")
             self._padded(name, np.asarray(row[name]))
 
@@ -242,7 +260,8 @@ class ItemSidecarBuffer:
 
     def flush(self) -> None:
         for arr in self.arrays.values():
-            arr.flush()
+            if isinstance(arr, np.memmap):   # in-memory optional fields of older buffers have no file
+                arr.flush()
         # atomic header write (StepBuffer parity): a concurrent reader must
         # never see a partially-written n
         tmp = self.root / "header.json.tmp"
