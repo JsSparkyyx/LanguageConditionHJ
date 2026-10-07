@@ -4,7 +4,7 @@
 
 Every line of <file> is a shell command (quoting kept). Each worker (one per GPU, any number of jobs and
 nodes over time) runs up to --slots commands at once, each claimed with an atomic ``mkdir`` of
-``<state>/<id>.lock`` (heartbeat-touched every 30 s; a lock older than 5 min belongs to a dead job and
+``<state>/<id>.lock`` (heartbeat-touched every 30 s; a lock older than 90 s belongs to a dead job and
 is taken over). A command that exits 0 is done (``<id>.done``); 75 (paused, resumable) releases the
 lock for a later job; any other exit counts a failure (``<id>.fail``), and a command with 3 failures is
 skipped. No new command starts within --margin seconds of $STAGE_DEADLINE. Exit 0 when every command
@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-STALE_S = 300
+STALE_S = 90   # heartbeat every 30 s; a killed job's claims free up before the next job starts
 MAX_FAILS = 3
 
 
