@@ -12,7 +12,7 @@ run), `phase4.md` (rounds), `phase5.md` (closed loop).
 | 0 recon | **done**, no STOP condition | `recon.md`: lockstep parity exact (28 episodes), text cache equal in fp16 precision, filtered controller ok, in-the-way designations within bounds, masks ok, CrossSafe and env Phase-5 regressions pass; 2 env single-episode sim tests fail (env-side) |
 | 1 collection | **done** 06:03: warmup 420 episodes (30 per task and embodiment, 6 per T1 host; 419 ok, 1 env exception; 82 GB), validation 70 (13.5 GB); all labels within the 2-80% band; delay audit flags every task (gamma decision) | `collect_report_warmup.md`, `collect_report_val.md` |
 | 2 model | **done** | `phase2.md`: 19 model tests, 20.7 M parameters, 22 GB at B = 64 |
-| 3 trainer, probes, offline probe | **sanity gate passes** on warmup data (overfit 1.000, shuffled 0.547 / label 0.506, switches off 0.0). Official 20k-step run on the full warmup (`runs/lang/lang_full_paired_off_1007`) is running on A100 (~2.5k steps per hour, done ~13:30); a preview run on a frozen 36% of the warmup is further along, and its offline probe at step 8000 is in `phase3.md` | `phase3.md` |
+| 3 trainer, probes, offline probe | **sanity gate passes** on warmup data (overfit 1.000, shuffled 0.547 / label 0.506, switches off 0.0). Official 20k-step run on the full warmup (`runs/lang/lang_full_paired_off_1007`) is running on the A100x4 chain (~2.5k steps per hour; moved there at 08:40 when the A100x8 queue stalled; done ~15:30); a preview run on a frozen 36% of the warmup is further along, and its offline probe at step 8000 is in `phase3.md` | `phase3.md` |
 | 4 rollout + rounds | **checks pass**: 14/14 filter episodes in lockstep with videos, deployment frame 0 == collection s0 (diff 0.0), one capture before physics in both modes, forced timeout / exception statuses; rounds smoke resumed correctly after a job kill (crash path); the exit-75 path is being exercised by `runs/lang_phase4/rounds_exit75` | `phase4.md` |
 | 5 closed loop | small grid (2 scenes per combo, axes train + heldout_template) running on the preview checkpoint at step 8000, 8 children over A40 nodes, resuming across jobs; partial tables in `phase5.md` | `phase5.md` |
 | 6 matrix + report | `scripts/lang/matrix.sh` prints the runs; nothing beyond `full` was launched | this file |
@@ -142,9 +142,9 @@ Each item names the evidence and a recommendation; nothing below was decided for
   0.30 on held-out templates). Benign runs intervene on 1.2% of ticks, but 20% of them intervene at
   least once. Interventions cost the task.
 - **Still running (resumable chains)**:
-  - the official 20k-step run on the full warmup (A100x8, ~step 5k, ~2.5k steps per hour), followed by
+  - the official 20k-step run on the full warmup (A100x4 chain, step 4642 at 08:40, ~2.5k steps per hour, done ~15:30), followed by
     its offline probe;
-  - the preview run (A100x4, ~step 13.5k), offline probe at the end;
+  - the preview run, stopped near step 17.5k to free the A100 for the official run; its offline probe on the step-16000 checkpoint follows the official run;
   - the closed-loop grid children, the rounds smoke (rounds 0-3 done once, finishing) and the exit-75
     rounds check (A40).
 
