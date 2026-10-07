@@ -38,6 +38,14 @@ def read_cmds(path: Path) -> list[str]:
     return out
 
 
+def weight_of(cmd: str, slots: int) -> tuple[int, str]:
+    """'@w<k> <cmd>' occupies k slots (e.g. a trainer + simulator needing a whole GPU)."""
+    if cmd.startswith("@w"):
+        k, rest = cmd[2:].split(" ", 1)
+        return min(int(k), slots), rest
+    return 1, cmd
+
+
 def fails(state: Path, cid: str) -> int:
     p = state / f"{cid}.fail"
     return int(p.read_text() or 0) if p.exists() else 0
@@ -73,6 +81,8 @@ def main(argv=None) -> int:
     deadline = float(os.environ.get("STAGE_DEADLINE", "inf"))
     host = os.uname().nodename
     running: dict[str, subprocess.Popen] = {}
+    weights: dict[str, int] = {}
+    reserved = None   # (cid, cmd, weight): a heavy command claimed, waiting for enough free slots
     held: set[str] = set()
     stop = threading.Event()
 
@@ -94,6 +104,7 @@ def main(argv=None) -> int:
             if rc is None:
                 continue
             del running[cid]
+            weights.pop(cid, None)
             if rc == 0:
                 (state / f"{cid}.done").write_text(f"{host} {time.ctime()}\n")
             elif rc == 75:
@@ -110,22 +121,45 @@ def main(argv=None) -> int:
         todo = [(cmd_id(c), c) for c in cmds
                 if not (state / f"{cmd_id(c)}.done").exists() and fails(state, cmd_id(c)) < MAX_FAILS]
         claimable = [(cid, c) for cid, c in todo if cid not in paused]
-        open_slots = int(args.slots) - len(running)
+        open_slots = int(args.slots) - sum(weights.values())
         late = time.time() > deadline - float(args.margin)
-        if open_slots > 0 and not late:
+
+        def launch(cid, c, w):
+            nonlocal open_slots
+            _, body = weight_of(c, int(args.slots))
+            log = open(logs / f"{cid}.log", "a")
+            log.write(f"\n=== {host} {time.ctime()} $ {body}\n")
+            log.flush()
+            running[cid] = subprocess.Popen(["bash", "-c", body], stdout=log, stderr=subprocess.STDOUT)
+            weights[cid] = w
+            open_slots -= w
+            print(f"[workqueue] {host} start {cid} (w{w}): {body[:160]}", flush=True)
+
+        if reserved is not None:
+            if late:   # too late to start it: release the claim for a later job
+                held.discard(reserved[0])
+                try:
+                    (state / f"{reserved[0]}.lock").rmdir()
+                except OSError:
+                    pass
+                reserved = None
+            elif open_slots >= reserved[2]:
+                launch(*reserved)
+                reserved = None
+        elif open_slots > 0 and not late:
             for cid, c in claimable:
                 if open_slots <= 0:
                     break
                 if cid in running or not try_claim(state, cid):
                     continue
                 held.add(cid)
-                log = open(logs / f"{cid}.log", "a")
-                log.write(f"\n=== {host} {time.ctime()} $ {c}\n")
-                log.flush()
-                running[cid] = subprocess.Popen(["bash", "-c", c], stdout=log, stderr=subprocess.STDOUT)
-                open_slots -= 1
-                print(f"[workqueue] {host} start {cid}: {c[:160]}", flush=True)
-        if not running and (not claimable or late):
+                w, _ = weight_of(c, int(args.slots))
+                if w <= open_slots:
+                    launch(cid, c, w)
+                else:
+                    reserved = (cid, c, w)   # claimed: take no lighter work until it fits
+                    break
+        if not running and reserved is None and (not claimable or late):
             # everything done, or too close to the deadline to start more: leave the rest to a later job
             stop.set()
             return 0 if not todo else 75
