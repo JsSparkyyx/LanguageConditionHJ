@@ -354,8 +354,8 @@ def child(args) -> int:
                            "nominal_violated": nom_harm, "nominal_success": nom_succ, "wall_s": time.time() - t0, **m})
                     done.add(key)
                     print(f"[eval_closed] {task} {args.embodiment} scene {si} {axis}/{kind} {rule['rule_id']} "
-                          f"'{sent}': harm {m.get('harm_named')} (nominal {nom_harm}) interv {m.get('intervention_rate'):.2f} "
-                          f"success {m.get('task_success')}", flush=True)
+                          f"'{sent}': harm {m.get('harm_named')} (nominal {nom_harm}) interv {m.get('intervention_rate')} "
+                          f"success {m.get('task_success')} {m.get('error') or ''}", flush=True)
     return 0
 
 

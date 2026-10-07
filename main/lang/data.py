@@ -115,6 +115,10 @@ class LangSource:
         self.eid = np.asarray(A["episode_id"])[self.rows].astype(np.int64)
         self.t = np.asarray(A["t_in_ep"])[self.rows].astype(np.int64)
         tasks, hosts, embs = [], [], []
+        if not self.rows.size:
+            self.task, self.host, self.emb = np.zeros(0, np.int64), np.zeros(0, object), np.zeros(0, object)
+            self.recall = np.zeros((rs.buf.capacity, rs.buf.r_max), dtype=bool)
+            return 0
         for e in self.eid:
             rec = rs.records[int(e)]
             tasks.append(rec["task"]), hosts.append(rec.get("host_task")), embs.append(rec["embodiment"])
@@ -210,7 +214,13 @@ class LangSampler:
                  n_threads: int = 8, split: str = "train"):
         self.cfg = cfg
         self.k = int(cfg.k_prev)
-        self.sources = [LangSource(r, self.k, int(cfg.recall_horizon_ticks)) for r in roots]
+        self.sources = []
+        for r in roots:   # shards still being collected may have no rows (or no arrays) yet
+            src = LangSource(r, self.k, int(cfg.recall_horizon_ticks))
+            if src.rows.size and "scene_tokens" in src.step:
+                self.sources.append(src)
+            else:
+                print(f"[data] skipping {r}: no usable rows yet")
         self.tasks = None if tasks in (None, "all") else tuple(tasks)
         self.embodiments = None if embodiments in (None, "all") else tuple(embodiments)
         self.rng = np.random.default_rng(seed)
@@ -222,8 +232,18 @@ class LangSampler:
         self.refresh()
 
     def add_source(self, root) -> None:
-        self.sources.append(LangSource(root, self.k, int(self.cfg.recall_horizon_ticks)))
-        self.refresh(sources=False)
+        src = LangSource(root, self.k, int(self.cfg.recall_horizon_ticks))
+        if src.rows.size and "scene_tokens" in src.step:
+            self.sources.append(src)
+            self.refresh(sources=False)
+        else:
+            print(f"[data] add_source {root}: no usable rows yet (added at the next refresh)")
+            self._pending = getattr(self, "_pending", []) + [root]
+
+    def refresh_pending(self) -> None:
+        for root in list(getattr(self, "_pending", [])):
+            self._pending.remove(root)
+            self.add_source(root)
 
     def refresh(self, sources: bool = True) -> int:
         if sources:

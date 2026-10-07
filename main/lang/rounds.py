@@ -159,6 +159,7 @@ def run_rounds(cfg, args, roots, vals, caches, tasks, embs) -> int:
                 ring_added = True
             else:
                 tr.sampler.refresh()
+            tr.sampler.refresh_pending()
             logs = {"round/collect_s": time.time() - t0, "round/episodes": summ["episodes"], "round/index": r,
                     **metrics.round_summary(r)}
             tr.log(logs)

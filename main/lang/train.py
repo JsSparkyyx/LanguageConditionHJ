@@ -485,7 +485,13 @@ def run_sanity(args) -> int:
             a_n, _, _, _ = tr.actor(enc_n.body, jn, _t(b["dtheta_max_next"], dev=tr.dev))
             t1, t2, _, _ = tr.critics_targ(enc_n, a_n, Jn, An, jn)
             y = (1 - cfg.gamma) * h + cfg.gamma * torch.minimum(h, 0.5 * (t1 + t2))
-        return target_rank_acc(torch.minimum(q1, q2).cpu().numpy(), y.cpu().numpy(), batch["pair"])
+        qm = torch.minimum(q1, q2).cpu().numpy()
+        # label-based: P[Q(harmful) < Q(benign)] over the pairs; unlike the target-rank score it does
+        # not depend on the sentence through the target critic, so it is exactly chance when shuffled
+        from .metrics import pair_stats
+
+        lab = pair_stats(qm, y.cpu().numpy(), np.asarray(batch["fails_soon"], bool), np.asarray(batch["pair"]))
+        return target_rank_acc(qm, y.cpu().numpy(), batch["pair"]), lab["lang/pair_rank_acc"]
 
     def overfit(tag, cfg, shuffle: bool, steps: int):
         tr = LangTrainer(cfg, res_dir / tag, roots, (), caches, use_wandb=False, prefetch=False, seed=0)
@@ -499,10 +505,13 @@ def run_sanity(args) -> int:
             if s % 50 == 0 or s == steps - 1:
                 # shuffled control: scored on FRESH other-episode sentences (4 draws), never on the
                 # draw the model was just updated on (that would measure one step of fitting)
-                acc = (float(np.mean([rank_acc(tr, cfg, shuffled_sentences(tr, eval_rng)) for _ in range(4)]))
-                       if shuffle else rank_acc(tr, cfg, list(batch["sentence"])))
-                hist.append({"step": s, "loss_q": o["loss/q"], "target_rank_acc": acc})
-                print(f"[sanity {tag}] step {s} loss_q {o['loss/q']:.5f} target_rank_acc {acc:.3f}", flush=True)
+                accs = ([rank_acc(tr, cfg, shuffled_sentences(tr, eval_rng)) for _ in range(4)]
+                        if shuffle else [rank_acc(tr, cfg, list(batch["sentence"]))])
+                acc = float(np.mean([a for a, _ in accs]))
+                lab = float(np.nanmean([b for _, b in accs]))
+                hist.append({"step": s, "loss_q": o["loss/q"], "target_rank_acc": acc, "label_rank_acc": lab})
+                print(f"[sanity {tag}] step {s} loss_q {o['loss/q']:.5f} target_rank_acc {acc:.3f} "
+                      f"label_rank_acc {lab:.3f}", flush=True)
         return tr, hist
 
     steps = int(args.sanity_steps)
@@ -515,7 +524,10 @@ def run_sanity(args) -> int:
     del tr
     torch.cuda.empty_cache()
     tr, hist = overfit("shuffled", dataclasses.replace(cfg0, shuffle_text=True), True, steps)
+    tail = hist[-4:]   # the last 4 scorings (150 steps), each over 4 fresh sentence draws
     out["shuffled"] = {"history": hist, "target_rank_acc": hist[-1]["target_rank_acc"],
+                       "target_rank_acc_tail_mean": float(np.mean([h["target_rank_acc"] for h in tail])),
+                       "label_rank_acc_tail_mean": float(np.nanmean([h["label_rank_acc"] for h in tail])),
                        "pass": bool(hist[-1]["target_rank_acc"] <= 0.6)}
     del tr
     torch.cuda.empty_cache()
