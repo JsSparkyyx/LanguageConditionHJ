@@ -56,4 +56,31 @@ run), `phase4.md` (rounds), `phase5.md` (closed loop).
 
 ## 3. Decisions reserved for the human
 
-<!-- DECISIONS -->
+Each item names the evidence and a recommendation; nothing below was decided for you.
+
+1. **gamma (0.9 now).** Delay audit (170 nominal traces): the median time from the start of the risky
+   motion to the first violation is 0.6 s (T7) to 3.4 s (T3), against the ~0.4 s (10-tick) horizon of
+   gamma = 0.9. The T3 numbers are inflated: its risky segment is the whole push. T5 tipping (0.80 s)
+   and T7 scraping (0.60-0.64 s) are the clean cases. Recommendation: try 0.95 (horizon ~20 ticks) as
+   one extra offline run against 0.9; with 0.9 the critic can only warn ~7 ticks ahead.
+2. **Warmup size (30 episodes per task and embodiment = 420).** Collection runs at ~1 episode per
+   minute per A40 in 1-hour interactive slots, about 3 slots of 3-4 GPUs. The label balance in
+   `collect_report_warmup.md` decides whether T4 / T7 (few harmful rows) need more.
+3. **T1 near-path candidates.** Designated *unclear* by the plan (never named), but violated in 59-79% of
+   nominal runs (78-100% on the two stacking hosts, which rarely have an on-path candidate). Promoting
+   `near_path` to harm-designated would give T1's stacking hosts harm runs; keeping it leaves them
+   benign-only.
+4. **Text feature scale.** HoloBrain word features have RMS 9 (outliers to 150) and pass the identity
+   `in_proj` unnormalized into keys / values (`phase2.md`). Training is stable so far; a fixed scale or an
+   RMSNorm on `w'` would be a one-line change, to try only if probes show the text attention saturating.
+5. **Batch size / precision.** Unchanged (B = 64, fp32). TF32 would cut the step 15% on H200, 29% on
+   A100: small enough to leave as is.
+6. **Evaluation scene counts.** The full grid (20 scenes, 2 axes) is ~90 h of simulation per checkpoint
+   (~4.5 h on a 4-GPU node). Recommendation: 10 scenes per combo on `train` + `heldout_template` for the
+   first comparison.
+7. **Matrix runs to launch.** `bash scripts/lang/matrix.sh` prints all of them; nothing beyond `full` was
+   launched. Each offline run is ~2.6 h on an H200 at 20k steps (~15 units).
+8. **Env-side issues (envs/ is read-only for this work).** `place_container_plate` fails its grasp
+   (`target_pose cannot be None`, RoboTwin `_base_task.py:1212`) in ~30% of episodes (recorded as
+   `status: exception`, kept).
+
