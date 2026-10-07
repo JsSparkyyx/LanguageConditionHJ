@@ -256,6 +256,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         info = getattr(env.task, "episode_info", None) or {}
         layout = getattr(env.task, "layout_info", None) or {}
         region_rows = mask_region_rows(runner)
+        smeta = scene_meta(env, runner)   # before run(): run() closes the env (actor poses gone)
         named, sentence, cf_sentence = None, None, None
         if use_filter:
             rng_ep = np.random.default_rng(seed)
@@ -314,7 +315,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             "rule_ids": [r["rule_id"] for r in record["rules"]],
             "violated": dict(zip([r["rule_id"] for r in record["rules"]], violated)),
             "h_min": dict(zip([r["rule_id"] for r in record["rules"]], hmin)),
-            "mask_region_rows": region_rows, "scene_meta": scene_meta(env, runner),
+            "mask_region_rows": region_rows, "scene_meta": smeta,
             "intervention_rate": trace.get("intervention_rate"),
             "timing": trace.get("timing"), "wall_s": round(time.time() - t_ep, 2),
             "retries": errors, "slot": slot_offset + slot_i, "attempt_next": attempt, "masks": bool(with_masks),

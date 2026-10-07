@@ -110,7 +110,7 @@ class LangTrainer:
         from .data import LangSampler, PrefetchSampler
         from .text import TextStore
 
-        self.sampler = LangSampler(data_roots, cfg, tasks=tasks, embodiments=embodiments, seed=seed)
+        self.sampler = LangSampler(data_roots, cfg, tasks=tasks, embodiments=embodiments, seed=seed, n_threads=16)
         n_tok = self.sampler.sources[0].step["scene_tokens"].shape[1] if self.sampler.sources else 1200
         self.policy_enc = LangPolicyEncoder(cfg, n_tok=n_tok).to(device)
         self.actor = TokenActor().to(device)
@@ -468,28 +468,39 @@ def run_sanity(args) -> int:
     print(f"[sanity] fixed batch: {int((batch['pair'] >= 0).sum())} paired samples, tasks "
           f"{sorted(set(batch['task']))}", flush=True)
 
+    def shuffled_sentences(tr, r):
+        return [tr.sampler._shuffled_sentence(next(i for i, x in enumerate(tr.sampler.sources) if x.name == src),
+                                              int(e), r) for src, e in zip(batch["source"], batch["episode_id"])]
+
+    def rank_acc(tr, cfg, sentences):
+        """target-rank accuracy of the live critics on the fixed batch with these sentences."""
+        b = dict(batch)
+        b["sentence"] = sentences
+        with torch.no_grad():
+            words, wmask = tr.text.lookup(b["sentence"])
+            enc, Jlin, Jang, ji = tr.encode(b, words, wmask)
+            q1, q2, _, _ = tr.critics(enc, _t(b["dtheta"], dev=tr.dev), Jlin, Jang, ji)
+            h = _t(b["h"], dev=tr.dev)
+            enc_n, Jn, An, jn = tr.encode(b, words, wmask, "_next", target=True)
+            a_n, _, _, _ = tr.actor(enc_n.body, jn, _t(b["dtheta_max_next"], dev=tr.dev))
+            t1, t2, _, _ = tr.critics_targ(enc_n, a_n, Jn, An, jn)
+            y = (1 - cfg.gamma) * h + cfg.gamma * torch.minimum(h, 0.5 * (t1 + t2))
+        return target_rank_acc(torch.minimum(q1, q2).cpu().numpy(), y.cpu().numpy(), batch["pair"])
+
     def overfit(tag, cfg, shuffle: bool, steps: int):
         tr = LangTrainer(cfg, res_dir / tag, roots, (), caches, use_wandb=False, prefetch=False, seed=0)
+        eval_rng = np.random.default_rng(12345)
         hist = []
         for s in range(steps):
             b = dict(batch)
             if shuffle:
-                b["sentence"] = [tr.sampler._shuffled_sentence(
-                    next(i for i, x in enumerate(tr.sampler.sources) if x.name == src), int(e), rng)
-                    for src, e in zip(batch["source"], batch["episode_id"])]
+                b["sentence"] = shuffled_sentences(tr, rng)
             o = tr.grad_step(b, log=False)
             if s % 50 == 0 or s == steps - 1:
-                with torch.no_grad():
-                    words, wmask = tr.text.lookup(b["sentence"])
-                    enc, Jlin, Jang, ji = tr.encode(b, words, wmask)
-                    q1, q2, _, _ = tr.critics(enc, _t(b["dtheta"], dev=tr.dev), Jlin, Jang, ji)
-                    h = _t(b["h"], dev=tr.dev)
-                    enc_n, Jn, An, jn = tr.encode(b, words, wmask, "_next", target=True)
-                    a_n, _, _, _ = tr.actor(enc_n.body, jn, _t(b["dtheta_max_next"], dev=tr.dev))
-                    t1, t2, _, _ = tr.critics_targ(enc_n, a_n, Jn, An, jn)
-                    y = (1 - cfg.gamma) * h + cfg.gamma * torch.minimum(h, 0.5 * (t1 + t2))
-                qm = torch.minimum(q1, q2).cpu().numpy()
-                acc = target_rank_acc(qm, y.cpu().numpy(), batch["pair"])
+                # shuffled control: scored on FRESH other-episode sentences (4 draws), never on the
+                # draw the model was just updated on (that would measure one step of fitting)
+                acc = (float(np.mean([rank_acc(tr, cfg, shuffled_sentences(tr, eval_rng)) for _ in range(4)]))
+                       if shuffle else rank_acc(tr, cfg, list(batch["sentence"])))
                 hist.append({"step": s, "loss_q": o["loss/q"], "target_rank_acc": acc})
                 print(f"[sanity {tag}] step {s} loss_q {o['loss/q']:.5f} target_rank_acc {acc:.3f}", flush=True)
         return tr, hist

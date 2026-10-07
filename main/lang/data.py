@@ -164,6 +164,37 @@ class LangSource:
             out[f + "_next"] = np.array(S[f][nxt])
         return out
 
+    def shapes(self) -> dict:
+        S = self.step
+        sh = {"scene_tokens": ((3,) + S["scene_tokens"].shape[1:], np.float16),
+              "scene_pos": ((3,) + S["scene_pos"].shape[1:], np.float32),
+              "dtheta": (S["dtheta"].shape[1:], np.float32)}
+        sh["scene_tokens_next"], sh["scene_pos_next"] = sh["scene_tokens"], sh["scene_pos"]
+        for f in ROBOT_FIELDS:
+            sh[f] = sh[f + "_next"] = (S[f].shape[1:], S[f].dtype)
+        return sh
+
+    def read_into(self, i: int, out: dict, bs: list[int]) -> None:
+        """read(i), written straight into batch positions bs of preallocated arrays: one copy per
+        frame from the memmap (rows t, t-k, t+1, t+1-k), frame 0 from the RAM cache."""
+        S, C, k = self.step, self.capacity, self.k
+        slot, nxt, t = int(self.rows[i]), int(self.next[i]), int(self.t[i])
+        prev, nprev = (slot - min(k, t)) % C, (nxt - min(k, t + 1)) % C
+        f_tok, f_pos = self.first_frame(int(self.eid[i]), int(self.first[i]))
+        b0 = bs[0]
+        T, P, Tn, Pn = out["scene_tokens"], out["scene_pos"], out["scene_tokens_next"], out["scene_pos_next"]
+        T[b0, 0], T[b0, 1], T[b0, 2] = S["scene_tokens"][slot], S["scene_tokens"][prev], f_tok
+        P[b0, 0], P[b0, 1], P[b0, 2] = S["scene_pos"][slot], S["scene_pos"][prev], f_pos
+        Tn[b0, 0], Tn[b0, 1], Tn[b0, 2] = S["scene_tokens"][nxt], S["scene_tokens"][nprev], f_tok
+        Pn[b0, 0], Pn[b0, 1], Pn[b0, 2] = S["scene_pos"][nxt], S["scene_pos"][nprev], f_pos
+        out["dtheta"][b0] = S["dtheta"][slot]
+        for f in ROBOT_FIELDS:
+            out[f][b0] = S[f][slot]
+            out[f + "_next"][b0] = S[f][nxt]
+        for b in bs[1:]:   # the other member of a pair: same transition, copied once
+            for key, arr in out.items():
+                arr[b] = arr[b0]
+
     def rows_of(self, i: int) -> dict:
         slot, t = int(self.rows[i]), int(self.t[i])
         C, k = self.capacity, self.k
@@ -291,18 +322,18 @@ class LangSampler:
     def sample(self, B: int, rng=None, picks=None, pair_frac: float | None = None) -> dict:
         rng = rng or self.rng
         picks = picks if picks is not None else self.plan(B, rng, pair_frac)
-        uniq = sorted({gi for gi, _, _ in picks})
-        pos = {gi: u for u, gi in enumerate(uniq)}
-        reads = list(self.pool.map(lambda gi: self.sources[self.sid[gi]].read(int(self.loc[gi])), uniq))
-        keys = reads[0].keys()
-        stacked = {k: np.stack([r[k] for r in reads]) for k in keys}
-        sel = np.array([pos[gi] for gi, _, _ in picks], dtype=np.int64)
-        out = {k: v[sel] for k, v in stacked.items()}
+        where = {}
+        for b, (gi, _, _) in enumerate(picks):
+            where.setdefault(gi, []).append(b)
+        src0 = self.sources[self.sid[picks[0][0]]]
+        out = {k: np.empty((len(picks),) + shp, dtype=dt) for k, (shp, dt) in src0.shapes().items()}
+        list(self.pool.map(lambda kv: self.sources[self.sid[kv[0]]].read_into(int(self.loc[kv[0]]), out, kv[1]),
+                           where.items()))
         meta = {k: [] for k in ("sentence", "rule_id", "consequence", "task", "host", "embodiment", "source",
                                 "episode_id", "rule_col", "row", "next_row", "prev_row", "first_row", "next_prev_row",
                                 "t_in_ep")}
         h, hn, fs, fsr, pair = [], [], [], [], []
-        ref = np.zeros((len(picks), 3, reads[0]["scene_tokens"].shape[1]), dtype=np.float16) if self.probe else None
+        ref = np.zeros((len(picks), 3, out["scene_tokens"].shape[2]), dtype=np.float16) if self.probe else None
         for b, (gi, col, p) in enumerate(picks):
             j, i = int(self.sid[gi]), int(self.loc[gi])
             s = self.sources[j]
