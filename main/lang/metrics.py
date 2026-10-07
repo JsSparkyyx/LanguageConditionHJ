@@ -320,6 +320,20 @@ class LangRoundMetrics:
         self.dir = Path(run_dir) / "eval"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.rows: list[dict] = []
+        p = self.dir / "rounds.jsonl"
+        if p.exists():   # a resumed run: heatmaps and trends cover every round, not only this process's
+            for ln in p.read_text().splitlines():
+                try:
+                    self.rows.append(json.loads(ln))
+                except json.JSONDecodeError:
+                    continue   # a line cut by a kill
+
+    def keep(self, pred) -> None:
+        """Drop rows of episodes a resume collects again (rewrites rounds.jsonl atomically)."""
+        self.rows = [r for r in self.rows if pred(r)]
+        p, tmp = self.dir / "rounds.jsonl", self.dir / "rounds.jsonl.tmp"
+        tmp.write_text("".join(json.dumps(r, default=float) + "\n" for r in self.rows))
+        tmp.replace(p)
 
     @staticmethod
     def episode_row(round_idx: int, line: dict, trace: dict) -> dict:
@@ -405,7 +419,33 @@ class LangRoundMetrics:
             fig.savefig(p, dpi=110)
             plt.close(fig)
             paths.append(p)
+        paths.append(self.trend(plt))
         return paths
+
+    def trend(self, plt) -> Path:
+        """eval/trend.png: per round, harm_named on harm-designated runs (should fall), any_intervention
+        on benign-designated runs (should stay low), task_success and v_le_h_frac on all filter runs."""
+        rounds = sorted({int(r["round"]) for r in self.rows})
+        series = (("harm_named", "harm", "harmed (harm runs)"), ("any_intervention", "benign", "intervened (benign runs)"),
+                  ("task_success", None, "task success"), ("v_le_h_frac", None, "Q <= h + 0.05"))
+        fig, ax = plt.subplots(figsize=(7, 3.5))
+        for key, des, label in series:
+            ys = []
+            for rd in rounds:
+                v = [float(r[key]) for r in self.rows if int(r["round"]) == rd and (des is None or r["designation"] == des)
+                     and r[key] == r[key]]
+                ys.append(np.mean(v) if v else np.nan)
+            ax.plot(rounds, ys, marker=".", label=label)
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_xlabel("round")
+        ax.set_title(f"filter episodes per round ({len(self.rows)} so far)", fontsize=9)
+        ax.legend(fontsize=7, loc="best")
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        p = self.dir / "trend.png"
+        fig.savefig(p, dpi=110)
+        plt.close(fig)
+        return p
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float, float]:

@@ -7,15 +7,25 @@ with probability ``filter_episode_frac``, the named rule chosen by
 designation, Section 7.1), then trains ``grad_steps_per_round`` steps on the
 warmup shards plus the ring.
 
-Resume (Section 7.4): ``state.pt`` is written at the START of every round
-(weights, targets, optimizers, step, round index, schedule cursors, RNG
-states, the ring's n / head). ``--resume`` loads it, rolls both rings back to
-that n (``discard_to``, valid because the ring never wraps), drops that
-round's lines from ``lang_episodes.jsonl`` and collects the round again with
-the same ids. Init limit: between rounds, when the inits of this process plus
-5 x episodes_per_round would pass ``max_inits_per_process``, the trainer
-writes the checkpoint and the next round's start state and exits 75
-(scripts/lang/run_rounds.sh relaunches with --resume).
+Resume (Section 7.4, extended 2026-10-07 to stop and resume INSIDE a round,
+so a run fits jobs shorter than a round): ``state.pt`` (weights, targets,
+optimizers, step, round index, schedule cursors, RNG states, the ring's n /
+head) also records where in the round the run is:
+
+- ``phase = "collect"``: the round's slots, how many are done and the next
+  attempt counter. Written at the round start and after EVERY collected
+  episode, so a hard kill loses at most the episode in progress;
+- ``phase = "train"``: the round's step target. Written when collection ends,
+  every ``STATE_EVERY`` steps and when the run stops.
+
+``--resume`` loads it, rolls both rings back to its n (``discard_to``, valid
+because the ring never wraps), drops the lines of episodes past that point from
+``lang_episodes.jsonl`` and ``eval/rounds.jsonl``, and continues in the
+recorded phase (the remaining slots keep their seeds). The run stops cleanly
+(state saved, exit 75) at the time budget (``--time-budget`` or
+``$STAGE_DEADLINE``), on SIGTERM / SIGUSR1, and at the init limit (when this
+process's inits plus 5 x episodes_per_round would pass
+``max_inits_per_process``). scripts/lang/run_rounds.sh relaunches on 75.
 """
 
 from __future__ import annotations
@@ -31,9 +41,9 @@ from . import ensure_item_path
 
 ensure_item_path()
 
-from .collect import read_lines, run_episodes  # noqa: E402
+from .collect import InitLimit, read_lines, run_episodes, stage_deadline  # noqa: E402
 from .config import CANON_EMBODIMENTS, CANON_TASKS, round_offset  # noqa: E402
-from .train import EXIT_RESUME, LangTrainer  # noqa: E402
+from .train import EXIT_RESUME, LOG_EVERY, STATE_EVERY, LangTrainer  # noqa: E402
 
 
 class RoundSchedule:
@@ -78,10 +88,8 @@ def make_ring(run: Path, cfg, rounds: int, episodes_per_round: int):
     return buf, side
 
 
-def run_rounds(cfg, args, roots, vals, caches, tasks, embs) -> int:
-    from main.network.encoder import HoloBrainEncoder
-    from main.train.collect import CKPT_DIR
-
+def run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, collect_fn=None) -> int:
+    """trainer / collect_fn: injected by the CPU tests (default: a LangTrainer and run_episodes)."""
     from .metrics import LangRoundMetrics
 
     run = Path(args.run).resolve()
@@ -90,31 +98,45 @@ def run_rounds(cfg, args, roots, vals, caches, tasks, embs) -> int:
     cfg = type(cfg).from_dict({**cfg.to_dict(), "collect_rounds": args.collect_rounds,
                                "episodes_per_round": args.episodes_per_round,
                                "grad_steps_per_round": args.grad_steps_per_round})
-    ring_buf, ring_side = make_ring(run, cfg, args.collect_rounds, args.episodes_per_round)
-    tr = LangTrainer(cfg, run, roots, vals, caches, tasks=tasks, embodiments=embs, use_wandb=not args.no_wandb,
-                     seed=args.seed)
-    ring_added = False
-    if len(ring_buf) > 0:
-        tr.sampler.add_source(run / "ring")
-        ring_added = True
+    n_rounds, n_eps, n_steps = int(args.collect_rounds), int(args.episodes_per_round), int(args.grad_steps_per_round)
+    ring_buf, ring_side = make_ring(run, cfg, n_rounds, n_eps)
+    tr = trainer if trainer is not None else LangTrainer(
+        cfg, run, roots, vals, caches, tasks=tasks, embodiments=embs, use_wandb=not args.no_wandb, seed=args.seed)
+    collect_fn = collect_fn or run_episodes
     sched = RoundSchedule(tasks or cfg.task_choices, embs or cfg.embodiment_choices, cfg.t1_hosts)
     rng_policy = np.random.default_rng(args.seed + 17)
-    start_round = 0
+    metrics = LangRoundMetrics(run)
+    lj = run / "ring" / "lang_episodes.jsonl"
+    # where in a round the run is (module docstring); None = the start of round `start_round`
+    start_round, pos = 0, None
     if args.resume and (run / "state.pt").exists():
         st = tr.load_state()
         start_round = int(st["round"])
         sched.load(st["schedule"])
         rng_policy.bit_generator.state = st["rng_policy"]
+        if st.get("phase") in ("collect", "train"):
+            pos = {"phase": st["phase"], "slots": [tuple(x) for x in st.get("slots") or []],
+                   "done": int(st.get("slots_done", 0)), "attempt": int(st.get("attempt_next", 0)),
+                   "steps_target": st.get("steps_target")}
         n = int(st["ring_n"])
         if (len(ring_buf), len(ring_side)) != (n, n):
-            print(f"[rounds] resume: ring {len(ring_buf)} -> {n} rows (round {start_round} is collected again)")
+            print(f"[rounds] resume: ring {len(ring_buf)} -> {n} rows (the episode in progress is collected again)")
             ring_buf.discard_to(n)
             ring_side.discard_to(n)
             ring_buf.flush(), ring_side.flush()
-        lj = run / "ring" / "lang_episodes.jsonl"
-        keep = [d for d in read_lines(lj) if int(d.get("round", -1)) < start_round]
+
+        def kept(d):   # episodes the restored state already contains
+            rd = int(d.get("round", -1))
+            if rd != start_round:
+                return rd < start_round
+            return pos is not None and (pos["phase"] == "train" or int(d.get("slot", 1 << 30)) < pos["done"])
+
+        keep = [d for d in read_lines(lj) if kept(d)]
         lj.write_text("".join(json.dumps(d) + "\n" for d in keep))
-        print(f"[rounds] resumed: round {start_round}, step {tr.step}, ring {n} rows", flush=True)
+        ids = {int(d["episode_id"]) for d in keep if "episode_id" in d}   # skipped slots have no episode
+        metrics.keep(lambda row: int(row["round"]) < start_round or int(row["episode_id"]) in ids)
+        print(f"[rounds] resumed: round {start_round} ({pos['phase'] if pos else 'start'}), step {tr.step}, "
+              f"ring {n} rows", flush=True)
         tr.round = start_round
         post = resume_fingerprint(tr, sched, rng_policy, ring_buf)
         (run / "resume_check_post.json").write_text(json.dumps(post))
@@ -123,35 +145,75 @@ def run_rounds(cfg, args, roots, vals, caches, tasks, embs) -> int:
             pre = json.loads(pre_p.read_text())
             diff = {k: (pre.get(k), post.get(k)) for k in post if pre.get(k) != post.get(k)}
             print(f"[rounds] resume check: {'exact' if not diff else diff}", flush=True)
+            pre_p.unlink()
+    ring_added = False
+    if len(ring_buf) > 0:   # after the roll-back: the sampler never indexes discarded rows
+        tr.sampler.add_source(run / "ring")
+        ring_added = True
+    deadline = stage_deadline(getattr(args, "time_budget", None))
+    tr.install_signal()
     encoder = None
     kins = {}
     inits = {"n": 0}
-    metrics = LangRoundMetrics(run)
-    for r in range(start_round, int(args.collect_rounds) + 1):
-        tr.round = r
-        if r > start_round and inits["n"] + 5 * int(args.episodes_per_round) > int(cfg.max_inits_per_process):
-            tr.pause_prefetch()
-            tr.save_ckpt()
-            save_round_state(tr, sched, rng_policy, ring_buf)
-            (run / "resume_check_pre.json").write_text(json.dumps(resume_fingerprint(tr, sched, rng_policy, ring_buf)))
-            print(f"[rounds] init limit ({inits['n']} inits): exit 75 before round {r}", flush=True)
-            return EXIT_RESUME
+
+    def save(r_pos):
+        save_round_state(tr, sched, rng_policy, ring_buf, r_pos)
+
+    def stop(r_pos, why):
         tr.pause_prefetch()
-        save_round_state(tr, sched, rng_policy, ring_buf)
-        if r > 0:
-            tr.pause_prefetch()          # drain before collecting
-            if encoder is None:
+        save(r_pos)
+        tr.save_ckpt()
+        (run / "resume_check_pre.json").write_text(json.dumps(resume_fingerprint(tr, sched, rng_policy, ring_buf)))
+        print(f"[rounds] {why}: state saved in round {tr.round} ({r_pos['phase']}), step {tr.step}; exit 75",
+              flush=True)
+        return EXIT_RESUME
+
+    def out_of_time(need_s: float = 0.0) -> bool:
+        return bool(tr._stop) or (deadline is not None and time.time() + need_s > deadline)
+
+    for r in range(start_round, n_rounds + 1):
+        tr.round = r
+        if r == start_round and pos is not None:
+            r_pos = pos                    # resumed inside this round
+        else:
+            r_pos = ({"phase": "collect", "slots": [sched.next() for _ in range(n_eps)], "done": 0, "attempt": 0,
+                      "steps_target": None} if r > 0 else
+                     {"phase": "train", "slots": [], "done": 0, "attempt": 0, "steps_target": None})
+            if r > start_round and inits["n"] + 5 * n_eps > int(cfg.max_inits_per_process):
+                return stop(r_pos, f"init limit ({inits['n']} inits)")
+            tr.pause_prefetch()
+            save(r_pos)
+        if r_pos["phase"] == "collect":
+            tr.pause_prefetch()            # drain before collecting
+            if encoder is None and collect_fn is run_episodes:
+                from main.network.encoder import HoloBrainEncoder
+                from main.train.collect import CKPT_DIR
+
                 encoder = HoloBrainEncoder(str(CKPT_DIR), device="cuda")
-            slots = [sched.next() for _ in range(int(args.episodes_per_round))]
             for m in (tr.policy_enc, tr.actor, tr.critics):
                 m.eval()
-            t0 = time.time()
-            summ = run_episodes(cfg, run / "ring", slots, round_offset(r), ring_buf, ring_side, encoder=encoder,
-                                kins=kins, models=(tr.policy_enc, tr.actor, tr.critics),
-                                filter_frac=float(cfg.filter_episode_frac), rng_policy=rng_policy, inits=inits,
-                                video_every=1 if (args.video_every and r % args.video_every == 0) else 0,
-                                text_store=tr.text, log_prefix=f"[round {r}] ", extra_line={"round": r},
-                                round_metrics=(metrics, r))
+            t0, walls = time.time(), []
+            slots = r_pos["slots"]
+            while r_pos["done"] < len(slots):
+                est = float(np.mean(walls)) if walls else 420.0
+                if out_of_time(1.2 * est):
+                    return stop(r_pos, "signal" if tr._stop else f"time budget (next episode ~{est:.0f}s)")
+                k = r_pos["done"]
+                t_ep = time.time()
+                try:
+                    summ = collect_fn(cfg, run / "ring", [slots[k]], round_offset(r), ring_buf, ring_side,
+                                      encoder=encoder, kins=kins, models=(tr.policy_enc, tr.actor, tr.critics),
+                                      filter_frac=float(cfg.filter_episode_frac), rng_policy=rng_policy,
+                                      attempt0=r_pos["attempt"], inits=inits,
+                                      video_every=1 if (args.video_every and r % args.video_every == 0) else 0,
+                                      text_store=tr.text, log_prefix=f"[round {r}] ", slot_offset=k,
+                                      extra_line={"round": r}, round_metrics=(metrics, r))
+                except InitLimit:
+                    return stop(r_pos, f"init limit inside round ({inits['n']} inits)")
+                walls.append(time.time() - t_ep)
+                r_pos["attempt"] = int(summ["attempt"])
+                r_pos["done"] = k + 1
+                save(r_pos)                # a kill now loses at most the next episode
             for m in (tr.policy_enc, tr.actor, tr.critics):
                 m.train()
             if not ring_added:
@@ -160,18 +222,27 @@ def run_rounds(cfg, args, roots, vals, caches, tasks, embs) -> int:
             else:
                 tr.sampler.refresh()
             tr.sampler.refresh_pending()
-            logs = {"round/collect_s": time.time() - t0, "round/episodes": summ["episodes"], "round/index": r,
-                    **metrics.round_summary(r)}
-            tr.log(logs)
-            metrics.heatmaps(r)
+            tr.log({"round/collect_s": time.time() - t0, "round/episodes": len(slots), "round/index": r,
+                    **metrics.round_summary(r)})
+            log_round_media(tr, r, lj, metrics.heatmaps(r))
+            r_pos = {**r_pos, "phase": "train", "steps_target": None}
+        if r_pos["steps_target"] is None:
+            r_pos["steps_target"] = tr.step + n_steps
+            save(r_pos)
         t0 = time.time()
-        steps_target = tr.step + int(args.grad_steps_per_round)
-        while tr.step < steps_target:
-            do_log = (tr.step + 1) % 20 == 0
+        for m in (tr.policy_enc, tr.actor, tr.critics):
+            m.train()
+        while tr.step < int(r_pos["steps_target"]):
+            if out_of_time():
+                return stop(r_pos, "signal" if tr._stop else "time budget")
+            do_log = (tr.step + 1) % LOG_EVERY == 0
             out = tr.grad_step(log=do_log)
             if do_log:
                 tr.log(out)
                 tr.console(out)
+            if tr.step % STATE_EVERY == 0 and tr.step < int(r_pos["steps_target"]):
+                tr.pause_prefetch()
+                save(r_pos)
         tr.log({"round/train_s": time.time() - t0})
         tr.save_ckpt()
         if r % 10 == 0 and r > 0:
@@ -180,12 +251,34 @@ def run_rounds(cfg, args, roots, vals, caches, tasks, embs) -> int:
             pr = tr.run_probe()
             if pr:
                 tr.log(pr)
-    tr.round = int(args.collect_rounds) + 1
-    save_round_state(tr, sched, rng_policy, ring_buf)
+    tr.round = n_rounds + 1
+    tr.pause_prefetch()
+    save({"phase": None, "slots": [], "done": 0, "attempt": 0, "steps_target": None})
     tr.save_ckpt("checkpoint_final.pt")
     if tr.prefetch is not None:
         tr.prefetch.stop()
     return 0
+
+
+def log_round_media(tr: LangTrainer, r: int, lj: Path, images) -> None:
+    """wandb (when on): this round's filter-episode videos as one carousel, the heatmaps and the trend plot.
+    The files stay on disk either way (ring/videos/, eval/)."""
+    if tr.wandb is None:
+        return
+    try:
+        import wandb
+
+        from .train import _safe_wandb_log
+
+        vids = [d["video"] for d in read_lines(lj) if d.get("round") == r and d.get("video") and Path(d["video"]).exists()]
+        logs = {f"heatmap/{p.parent.name}" if p.name != "trend.png" else "trend/overview": wandb.Image(str(p))
+                for p in images if p and Path(p).exists()}
+        if vids:
+            logs["round_videos"] = [wandb.Video(v, format="mp4", caption=Path(v).stem) for v in vids]
+        if logs:
+            _safe_wandb_log(tr.wandb, logs, tr.step)
+    except Exception as exc:   # media logging must never stop a run
+        print(f"[rounds] wandb media log failed ({exc}); continuing", flush=True)
 
 
 def resume_fingerprint(tr: LangTrainer, sched: RoundSchedule, rng_policy, ring_buf) -> dict:
@@ -203,6 +296,10 @@ def resume_fingerprint(tr: LangTrainer, sched: RoundSchedule, rng_policy, ring_b
             "torch_rng": hsh(torch.get_rng_state().tolist()), "ring_n": int(len(ring_buf))}
 
 
-def save_round_state(tr: LangTrainer, sched: RoundSchedule, rng_policy, ring_buf) -> None:
+def save_round_state(tr: LangTrainer, sched: RoundSchedule, rng_policy, ring_buf, r_pos: dict | None = None) -> None:
+    r_pos = r_pos or {}
     tr.save_state({"schedule": sched.state(), "rng_policy": rng_policy.bit_generator.state,
-                   "ring_n": int(len(ring_buf)), "ring_head": int(ring_buf.head)})
+                   "ring_n": int(len(ring_buf)), "ring_head": int(ring_buf.head),
+                   "phase": r_pos.get("phase"), "slots": [list(x) for x in r_pos.get("slots") or []],
+                   "slots_done": int(r_pos.get("done", 0)), "attempt_next": int(r_pos.get("attempt", 0)),
+                   "steps_target": r_pos.get("steps_target")})

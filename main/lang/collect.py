@@ -244,7 +244,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             with open(jsonl, "a") as f:
                 f.write(json.dumps({"skipped": True, "task": task, "embodiment": emb, "host": host,
                                     "errors": errors, "slot": slot_offset + slot_i,
-                                    "attempt_next": attempt}) + "\n")
+                                    "attempt_next": attempt, **(extra_line or {})}) + "\n")
             continue
 
         t_ep = time.time()
