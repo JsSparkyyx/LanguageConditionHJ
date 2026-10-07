@@ -71,12 +71,25 @@ def recall_labels(h_rules: np.ndarray, ep: np.ndarray, t: np.ndarray, n: int, ho
 class LangSource:
     """One data root: index of usable non-terminal rows + StepBuffer arrays."""
 
-    def __init__(self, root, k_prev: int = 2, recall_horizon: int = 7, name: str | None = None):
+    def __init__(self, root, k_prev: int = 2, recall_horizon: int = 7, name: str | None = None,
+                 max_n: int | None = None):
         self.root = Path(root).resolve()
         self.name = name or self.root.name
         self.k = int(k_prev)
         self.recall_horizon = int(recall_horizon)
         self.rs = RelabelSampler(self.root / "item_buffer", split="train", k_prev=self.k)
+        self.max_n = max_n
+        if max_n is not None:   # a frozen dataset: rows beyond max_n (collected later) are invisible
+            orig = self.rs.buf.refresh
+
+            def capped():
+                orig()
+                if self.rs.buf.n > max_n:
+                    self.rs.buf.n = int(max_n)
+                    self.rs.buf.head = int(max_n)
+                return self.rs.buf.n
+
+            self.rs.buf.refresh = capped
         self.step: dict[str, np.ndarray] = {}
         self.lines: dict[int, dict] = {}
         self.first_cache: dict[int, tuple] = {}
@@ -211,12 +224,16 @@ class LangSampler:
     """sample(B) -> batch dict (Section 4.4 output table)."""
 
     def __init__(self, roots, cfg, tasks=None, embodiments=None, seed: int = 0, probe: bool = False,
-                 n_threads: int = 8, split: str = "train"):
+                 n_threads: int = 8, split: str = "train", max_rows: dict | None = None):
         self.cfg = cfg
         self.k = int(cfg.k_prev)
         self.sources = []
+        self.max_rows = {str(Path(k).resolve()): int(v) for k, v in (max_rows or {}).items()}
         for r in roots:   # shards still being collected may have no rows (or no arrays) yet
-            src = LangSource(r, self.k, int(cfg.recall_horizon_ticks))
+            if self.max_rows and str(Path(r).resolve()) not in self.max_rows:
+                continue   # frozen dataset: shards started after the freeze are not part of it
+            src = LangSource(r, self.k, int(cfg.recall_horizon_ticks),
+                             max_n=self.max_rows.get(str(Path(r).resolve())))
             if src.rows.size and "scene_tokens" in src.step:
                 self.sources.append(src)
             else:

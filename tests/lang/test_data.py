@@ -171,3 +171,15 @@ def test_prefetch(root):
     assert b1["scene_tokens"].shape == (8, 3, 12, 256)
     pf.stop()
     assert pf.thread is None
+
+
+def test_frozen_rows_cap(tmp_path):
+    root = make_root(tmp_path / "f", episodes=4, capacity=400)       # 4 x 40 rows
+    full = LangSampler([root], cfg(), seed=0)
+    capped = LangSampler([root], cfg(), seed=0, max_rows={str(root): 80})
+    assert len(full) == 4 * 39 and len(capped) == 2 * 39             # the first two episodes only
+    assert set(capped.sources[0].eid.tolist()) == {1000, 1001}
+    capped.refresh()                                                  # stays frozen on refresh
+    assert len(capped) == 2 * 39
+    other = make_root(tmp_path / "g", episodes=1, capacity=100)
+    assert len(LangSampler([root, other], cfg(), seed=0, max_rows={str(root): 80})) == 2 * 39

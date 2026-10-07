@@ -100,7 +100,8 @@ def caches_of(spec) -> list[Path]:
 class LangTrainer:
     def __init__(self, cfg: LangConfig, run_dir: Path, data_roots, val_roots=(), text_caches=(),
                  tasks=None, embodiments=None, use_wandb: bool = True, seed: int = 0, probe_n: int = 512,
-                 name: str | None = None, prefetch: bool = True, device: str = "cuda", text_encoder=None):
+                 name: str | None = None, prefetch: bool = True, device: str = "cuda", text_encoder=None,
+                 max_rows: dict | None = None):
         self.cfg, self.run = cfg, Path(run_dir).resolve()
         self.dev = device
         self.run.mkdir(parents=True, exist_ok=True)
@@ -110,7 +111,8 @@ class LangTrainer:
         from .data import LangSampler, PrefetchSampler
         from .text import TextStore
 
-        self.sampler = LangSampler(data_roots, cfg, tasks=tasks, embodiments=embodiments, seed=seed, n_threads=16)
+        self.sampler = LangSampler(data_roots, cfg, tasks=tasks, embodiments=embodiments, seed=seed, n_threads=16,
+                                   max_rows=max_rows)
         n_tok = self.sampler.sources[0].step["scene_tokens"].shape[1] if self.sampler.sources else 1200
         self.policy_enc = LangPolicyEncoder(cfg, n_tok=n_tok).to(device)
         self.actor = TokenActor().to(device)
@@ -617,6 +619,8 @@ def main(argv=None) -> int:
     p.add_argument("--probe-every", type=int, default=5000)
     p.add_argument("--ckpt-every", type=int, default=5000)
     p.add_argument("--init-weights", default=None)
+    p.add_argument("--freeze-data", action="store_true",
+                   help="train on the rows present at the first start (data_manifest.json), even if shards grow")
     p = sub.add_parser("rounds")
     add_common(p)
     p.add_argument("--collect-rounds", type=int, default=100)
@@ -643,8 +647,19 @@ def main(argv=None) -> int:
         return run_rounds(cfg, args, roots, vals, caches, tasks, embs)
     if not args.resume and (Path(args.run) / "state.pt").exists():
         raise SystemExit(f"{args.run} has a state.pt: pass --resume or use a new run directory")
+    max_rows = None
+    if args.freeze_data:   # the dataset is the rows present at the first start (shards may still grow)
+        man = Path(args.run) / "data_manifest.json"
+        if not man.exists():
+            Path(args.run).mkdir(parents=True, exist_ok=True)
+            rows = {str(r.resolve()): int(json.loads((r / "item_buffer" / "header.json").read_text()).get("n", 0))
+                    for r in roots if (r / "item_buffer" / "header.json").exists()}
+            man.write_text(json.dumps({"frozen_at": time.ctime(), "rows": rows,
+                                       "total": sum(rows.values())}, indent=1))
+        max_rows = json.loads(man.read_text())["rows"]
+        print(f"[lang-train] frozen dataset: {sum(max_rows.values())} rows in {len(max_rows)} roots ({man})")
     tr = LangTrainer(cfg, Path(args.run), roots, vals, caches, tasks=tasks, embodiments=embs,
-                     use_wandb=not args.no_wandb, seed=args.seed)
+                     use_wandb=not args.no_wandb, seed=args.seed, max_rows=max_rows)
     if args.resume and (tr.run / "state.pt").exists():
         tr.load_state()
         print(f"[lang-train] resumed at step {tr.step}", flush=True)
