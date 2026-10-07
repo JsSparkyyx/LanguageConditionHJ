@@ -213,7 +213,7 @@ def cmd_filtered(args) -> int:
     tasks = CANON_TASKS if args.task == "all" else tuple(args.task.split(","))
     for i, task in enumerate(tasks):
         seed = RECON_SEED_BASE + 500_000 + CANON_EMBODIMENTS.index(args.embodiment) * 1000 + i
-        host = CANON_T1_HOSTS[i % 5] if task == "selective_avoid" else None
+        host = (args.host or CANON_T1_HOSTS[i % 5]) if task == "selective_avoid" else None
         cfg_ep = dataclasses.replace(cfg, task=task, embodiment=args.embodiment, item_host=host,
                                      item_out_root=str(Path(args.out).resolve().parent / "_runner"))
         rec = {"task": task, "embodiment": args.embodiment, "seed": seed, "host": host}
@@ -402,6 +402,7 @@ def main(argv=None) -> int:
     p.add_argument("--out", required=True)
     p = sub.add_parser("filtered")
     p.add_argument("--task", default="all")
+    p.add_argument("--host", default=None, help="T1 host (default: round-robin)")
     p.add_argument("--embodiment", required=True, choices=CANON_EMBODIMENTS)
     p.add_argument("--out", required=True)
     p = sub.add_parser("roles")

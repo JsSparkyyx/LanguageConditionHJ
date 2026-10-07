@@ -53,21 +53,29 @@ def cmd_filter(args) -> int:
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     pe, actor, critics, text = _models(cfg, [Path(c) for c in args.text_cache])
-    buf, side = make_pair(out, cfg, int(cfg.max_steps_per_episode * 1.1) + 16)
-    host = CANON_T1_HOSTS[0] if args.task == "selective_avoid" else None
+    buf, side = make_pair(out, cfg, 4 * int(cfg.max_steps_per_episode * 1.1) + 16)
+    host = CANON_T1_HOSTS[1] if args.task == "selective_avoid" else None
     seed0 = SEED_BASE + CANON_TASKS.index(args.task) * 1000 + CANON_EMBODIMENTS.index(args.embodiment) * 100
-    summ = run_episodes(cfg, out, [(args.task, args.embodiment, host)], seed0, buf, side,
-                        models=(pe, actor, critics), filter_frac=1.0, video_every=1, text_store=text,
-                        rng_policy=np.random.default_rng(0))
+    # a scene can have no sampleable rule (e.g. T3 with a held-out box): then the loop runs it nominal,
+    # correctly; try the next seeds until a filter episode ran
+    attempt = 0
+    for _ in range(4):
+        summ = run_episodes(cfg, out, [(args.task, args.embodiment, host)], seed0, buf, side,
+                            models=(pe, actor, critics), filter_frac=1.0, video_every=1, text_store=text,
+                            rng_policy=np.random.default_rng(0), attempt0=attempt)
+        attempt = int(summ["attempt"])
+        line = json.loads((out / "lang_episodes.jsonl").read_text().splitlines()[-1])
+        if line.get("filter"):
+            break
     p = parity(out)
-    line = json.loads((out / "lang_episodes.jsonl").read_text().splitlines()[-1])
     vids = sorted((out / "videos").glob("*.mp4")) if (out / "videos").exists() else []
     res = {"summary": summ, "parity_ok": p["ok"], "len_equal": p["len_equal"], "h_parity": p["h_parity_max_abs"],
            "filter": line.get("filter"), "named": line.get("named_rule_id"), "designation": line.get("designation"),
            "sentence": line.get("sentence"), "status": line.get("status"), "n_ticks": line.get("n_ticks"),
            "intervention_rate": line.get("intervention_rate"), "videos": [str(v) for v in vids],
            "rows_match_line": line["rows"][1] == p["n_buffer"]}
-    res["ok"] = bool(res["parity_ok"] and res["rows_match_line"] and vids and line.get("status") in ("ok", "timeout"))
+    res["ok"] = bool(res["parity_ok"] and res["rows_match_line"] and vids and line.get("filter")
+                     and line.get("status") in ("ok", "timeout"))
     (out / "check.json").write_text(json.dumps(res, indent=1, default=str))
     print(res)
     return 0 if res["ok"] else 1

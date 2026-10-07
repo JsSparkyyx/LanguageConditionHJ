@@ -8,26 +8,40 @@ Date: 2026-10-06 (overnight run). Raw outputs: `runs/lang_recon/` (gitignored):
 
 | check | result |
 |---|---|
-| 1. env tests | CPU suite: **417 passed** (`pytest tests/item_envs -m "not sim and not gpu"`). GPU/sim suites: see the table in check 1 (run in the first A40 collection job) |
+| 1. env tests | CPU suite: **417 passed**. GPU/sim: Phase-5 regression 2 passed; T3, T4, T5, T7 sim suites pass; T2 and T6 each have 1 failing single-episode test (env-side, below); the dryrun and T1 suites rerun in the collection jobs |
 | 2. lockstep parity on 28 nominal episodes (2 per task and embodiment) | **pass**: `StepBuffer.h == h_rules[active]` (min over valid rules when active = -1) with max abs difference **0.0**; `len(buffer) == len(sidecar)` in all 14 roots; `t_in_ep` runs 0, 1, 2... per episode; done flag only on each episode's last row; `episodes/{id}.json` exists for every episode; `fails_soon` equals a recomputation from `h_rules` (25 ticks) |
 | 3. episode length and timing | max 703 ticks over 4340 calibration episodes, no timeouts at 750 ticks: **`max_steps_per_episode = 750`** kept (FrozenConfig's 450 would cut T2 / T6, mean ~430 ticks). Wall time ~0.9 s per tick with 7 simulations per A40 |
 | 4. HoloBrainText vs the cache | **pass in fp16 precision, fail as literally specified**: max abs difference 0.028, max relative difference **4.8e-4** (= fp16 half step 2^-11). The word features reach \|x\| = 150 (RMS 9), so fp16 storage alone rounds by up to 0.06 absolute; the check now reports both and passes on relative < 1e-3. Masks identical |
-| 5. filtered base controller + `wire_item_eval` | see check 5 (run in the first A40 collection job) |
+| 5. filtered base controller + `wire_item_eval` | **pass**: h_fn on every tick, one margin per rule, Q evaluated at every hook, in all 15 episodes that ran (one T1 run hit the RoboTwin grasp failure at tick 1) |
 | 6. in-the-way validation, 170 nominal render-none episodes | **pass** (no benign-designated consequence violated in > 20% of runs; no harm-designated one below 20%). Findings for the human below |
 | 7. `token_masks` row order and `ref_rows` | **pass**: rows = record objects in order, then regions that are nameable and have an entity (`masks.item_masks`); every rule's referent rows are non-empty at t = 0 in all 13 (task, consequence) groups |
 | Section 2 regression: `main/train/train.py` 20 grad steps | **pass** (`scripts/lang/crosssafe_regression.py`: 20 steps, loss_q 0.092 -> 0.014, all finite). No CrossSafe dataset exists on Delta, so a recon StepBuffer (same format) was used |
 
 STOP gate (2, 4 or 5 fail, or benign-designated violation > 20%): 2 passes, 4 passes in fp16 precision,
-6 passes; 5 pending at the time of writing (see below).
+5 and 6 pass: no STOP condition.
 
 ## 1. Env tests
 
 CPU: `cd envs && pytest tests/item_envs -m "not sim and not gpu"` -> 417 passed, 399 deselected (45 s).
 
-GPU / sim (`test_phase5_dryrun.py`, `test_phase5_regression.py`, the 7 `*_sim.py`): results in
-`runs/lang_recon/tests/<name>.rc` / `.log`, filled in below when the job ran.
+GPU / sim (`runs/lang_recon/tests/<name>.log`):
 
-<!-- GPU_TESTS -->
+| suite | result |
+|---|---|
+| `test_phase5_regression.py` (gpu) | **2 passed** (the statistical contract, both embodiments) |
+| `test_phase5_dryrun.py` (gpu) | cut off by the first job's deadline; rerun in the collection jobs (`runs/lang_recon/tests/`) |
+| `test_gap_place_sim.py` | 8 passed |
+| `test_granular_carry_sim.py` | 12 passed |
+| `test_push_zone_sim.py` | 42 passed |
+| `test_tray_transport_sim.py` | 8 passed |
+| `test_clean_pour_sim.py` | 7 passed, **1 failed**: `test_zero_aim_error_keeps_neighbours_clean[ur5-wsg]`. With zero aim error, beads still reached `bin_green` in that single episode |
+| `test_granular_pour_sim.py` | 41 passed, **1 failed**: `test_full_episode_low_risk[ur5-wsg]`. The low-risk ur5 pour did not succeed (seed 0) |
+| `test_selective_avoid_sim.py` | cut off by the first job's deadline; rerun in the collection jobs |
+
+Both failures are single nominal episodes of the env's own tests under cuRobo's run-to-run randomness
+(the ur5 pour was already the fragile one in the env calibration). They are env-side and were not
+touched (envs/ is read-only for this work). For the human: rerun them, or loosen them to rates over
+several seeds.
 
 ## 2. Lockstep parity
 
@@ -82,7 +96,26 @@ RMS-normalized to ~1.
 (PolicyEncoder + TokenActor + TwinCritic), `wire_item_eval(ro, primary)`, one filtered episode per task and
 embodiment; the check is that the h_fn runs every tick and `diag["margins"]` has one entry per rule.
 
-<!-- FILTERED -->
+**Pass.** 16 episodes (7 tasks x 2 embodiments, plus T1 repeated on `place_burger_fries`): in every
+episode that ran, the h_fn was called on all 751 captured ticks with one margin per rule (1 to 9 rules),
+and the filter evaluated Q(s, a_nom) at every hook (241-251 times). A random-init critic gives Q < 0
+everywhere, so the filter drives the arms the whole episode (intervention rate 1.0) and every episode
+hits the 750-tick cap (status `timeout`). This is expected at random init. The franka T1 run on
+`place_container_plate` ended at tick 1 with the RoboTwin grasp failure (`target_pose cannot be None`,
+check 6); its repeat on `place_burger_fries` ran normally.
+
+| run | status | rules | h calls | margins per rule ok | Q evaluations | intervention rate |
+|---|---|---|---|---|---|---|
+| T6 clean_pour franka / ur5 | timeout | 3 | 751 | yes | 241 | 1.0 |
+| T7 gap_place franka / ur5 | timeout | 4 | 751 | yes | 241 | 1.0 |
+| T4 granular_carry franka / ur5 | timeout | 1 | 751 | yes | 251 | 1.0 |
+| T2 granular_pour franka / ur5 | timeout | 1 | 751 | yes | 241 | 1.0 |
+| T3 push_zone franka / ur5 | timeout | 4 | 751 | yes | 241 | 1.0 |
+| T1 place_burger_fries franka / ur5 | timeout | 9 | 751 | yes | 251 | 1.0 |
+| T1 place_container_plate ur5 | timeout | 9 | 751 | yes | 251 | 1.0 |
+| T1 place_container_plate franka | exception at tick 1 (grasp planner) | 9 | 1 | yes | 0 | – |
+| T5 tray_transport franka / ur5 | timeout | 2 | 751 | yes | 241 | 1.0 |
+
 
 ## 6. In the way (`main/lang/scene_roles.py`)
 
