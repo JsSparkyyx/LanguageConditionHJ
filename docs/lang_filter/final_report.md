@@ -167,11 +167,27 @@ next to the preview run (36% of the warmup) at step 16000:
 | imminent-harm AUROC (base: other-episode sentences) | 0.856 (0.742) | – |
 | V <= h + 0.05 | 0.925 | – |
 
-Per task (training templates): T5 0.92, T3 0.77, T6 0.72, T1 0.61, T7 0.54. In plain words: with more
-data the model got better at telling *what kind* of harm a sentence names, and no better than a coin at
-telling *which item* it names, although the vanilla model already lets scene and body tokens read the
-words. This is one run each, but it is the condition DESIGN_CONTEXT 5.2 sets for the advanced version
-(object slots plus an entity pointer): referent grounding is the bottleneck.
+Per task (training templates): T5 0.92, T3 0.77, T6 0.72, T1 0.61, T7 0.54.
+
+The pooled referent score (0.507) is a mix that differs by task (pairs: same consequence, other item):
+
+| task | referent pairs | official | preview |
+|---|---|---|---|
+| T1 selective_avoid (avoid / stay, other object) | 884 | 0.51 | 0.64 |
+| T6 clean_pour (keep beads out of the other container) | 386 | **0.25** (reversed) | 0.43 |
+| T7 gap_place (other neighbour) | 362 | 0.53 | 0.51 |
+| T5 tray_transport (other block) | 178 | 0.92 | 0.92 |
+| T3 push_zone (other mat / object) | 32 | 0.88 | 0.59 |
+
+So: at chance on T1 and T7, reversed on T6, good on T5 and T3. Two cautions before reading this as
+"cannot ground the referent":
+- the rank metric caveat above (benign rules with a low but safe h). It can make T6 look reversed: a
+  container next to the stream reads low h without ever being hit;
+- T5 has a shortcut: the block at risk is always the tall one, and sentences may say "the tall block".
+
+The check that separates the two: rank only pairs whose current h are within 0.1 of each other (then only
+the sentence can explain a Q difference). Until that is run, referent grounding is the likely bottleneck
+on T1 and T7 (the condition DESIGN_CONTEXT 5.2 sets for the advanced version), not a proven one.
 
 **Bead rules: h now counts beads** (user request, `margins.particle_h`). Once n >= 1 beads break a bead
 rule, h = -(0.5 + 0.5 (min(n, 20) - 1) / 19): one bead -0.5, 2 beads -0.53, 10 beads -0.74, 20 or more
