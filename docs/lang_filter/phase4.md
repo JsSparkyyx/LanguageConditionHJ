@@ -29,7 +29,17 @@ round trip.
 
 GPU / simulator (`python -m main.lang.phase4_checks`, outputs in `runs/lang_phase4/`):
 
-<!-- PHASE4_RESULTS -->
+| check | result |
+|---|---|
+| one filter episode per task and embodiment with a random-init language model (`filter`) | **14 / 14** ran to completion with the filter engaged (named rule harm- or benign-designated, a training sentence, Q_cf from the other designation when it exists), StepBuffer + sidecar + `lang_episodes.jsonl` in lockstep (h parity 0.0, rows match the line), one panel video each. A random critic gives Q < 0 everywhere, so the actor drives the whole episode and every one hits the 750-tick cap. T3 ur5's first scene had no sampleable rule (a held-out box), which the loop correctly ran nominal; the check now retries seeds until a filter episode runs (`filter_v2`) |
+| deployment frame 0 == collection's s0 row, same seed (`frame0`, T5, both embodiments) | **max abs difference 0.0** (fp16), frame scale ~3.5 |
+| exactly one capture before the first physics step | **1** in collect mode and **1** in deployment mode, both embodiments |
+| history never grows on cache misses | CPU test (`test_rollout_shim.py`) |
+| `trace["status"]` | forced timeout -> `timeout`; forced exception in physics -> `exception` (`RuntimeError: forced failure for the status test`) |
+| resume after exit 75 | rounds smoke below (`resume_check_pre.json` vs `resume_check_post.json`) |
+
+Panel check (one frame, T7 harm run): instruction, rule id, h_named = -1.000 with a red border (the random
+actor tipped the tall block), Q, Q_cf, the most at-risk unnamed rule, FILTER, intervened ticks, block counter.
 
 ## Smoke run (3 rounds x 2 episodes x 256 grad steps, exit 75 forced before round 3)
 

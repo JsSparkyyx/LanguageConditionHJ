@@ -59,4 +59,66 @@ changes nothing for a fixed-batch test):
 
 ## Offline run (`full`, 20k steps, probes every 2k)
 
+### Preview run (36% of the warmup, frozen), offline probe at step 8000
+
+`runs/lang/lang_full_paired_off_preview`: the 151 warmup episodes present at 02:47 (46,863 rows),
+`--freeze-data`, otherwise the `full` defaults; probes every 2k steps. Offline probe
+(`eval_offline/checkpoint_step8000/`), validation data only:
+
+rank_acc = P[Q(harmful rule) < Q(benign rule)] over symmetric pairs at the same state (chance 0.5).
+
+| axis | pooled | T1 | T2 | T3 | T4 | T5 | T6 | T7 | referent | consequence |
+|---|---|---|---|---|---|---|---|---|---|---|
+| train | 0.668 (4421) | 0.66 (2043) | – | 0.56 (154) | – | 0.94 (178) | 0.81 (1261) | 0.42 (785) | 0.569 (1842) | 0.617 (329) |
+| heldout_template | 0.649 (4421) | 0.63 (2043) | – | 0.49 (154) | – | 0.88 (178) | 0.79 (1261) | 0.44 (785) | 0.553 (1842) | 0.590 (329) |
+| heldout_word | 0.599 (2193) | 0.57 (687) | – | 0.28 (18) | – | 0.78 (178) | 0.86 (525) | 0.42 (785) | 0.515 (934) | 0.646 (226) |
+| heldout_item | 0.105 (76) | 0.16 (25) | – | 0.08 (51) | – | – | – | – | 0.261 (23) | 0.333 (3) |
+| shuffled | 0.501 (4421) | 0.49 (2043) | – | 0.55 (154) | – | 0.51 (178) | 0.50 (1261) | 0.50 (785) | 0.488 (1842) | 0.541 (329) |
+
+Mixed pairs (only one member axis-eligible): rank_acc - rank_acc_base (r1's sentence from another episode).
+
+| axis | n pairs | rank_acc | rank_acc_base | difference |
+|---|---|---|---|---|
+| heldout_word | 1724 | 0.722 | 0.577 | +0.145 |
+| heldout_item | 810 | 0.606 | 0.588 | +0.019 |
+
+Per (state, rule): AUROC of -Q for fails_soon (base: other-episode sentences), precision / recall of Q < 0 against fails_soon_recall (7 ticks), v_le_h = P[Q <= h + 0.05].
+
+| axis | n | auroc | auroc_base | prec@0 | rec@0 | v_le_h | para_std | para_std_ratio |
+|---|---|---|---|---|---|---|---|---|
+| train | 13213 | 0.832 | 0.688 | 0.472 | 0.691 | 0.852 | 0.090 | 0.338 |
+| heldout_template | 13213 | 0.828 | 0.688 | 0.436 | 0.690 | 0.841 | nan | nan |
+| heldout_word | 10385 | 0.836 | 0.695 | 0.448 | 0.736 | 0.871 | nan | nan |
+| heldout_item | 1094 | 0.400 | 0.517 | 0.011 | 0.024 | 0.885 | nan | nan |
+| shuffled | 13213 | 0.683 | 0.688 | 0.261 | 0.515 | 0.837 | nan | nan |
+
+Per task (train axis):
+
+| task | n | auroc | auroc_base | rank_acc | v_le_h |
+|---|---|---|---|---|---|
+| selective_avoid | 3268 | 0.612 | 0.516 | 0.661 | 0.895 |
+| granular_pour | 873 | 0.974 | 0.887 | nan | 0.942 |
+| push_zone | 1039 | 0.684 | 0.563 | 0.558 | 0.845 |
+| granular_carry | 514 | 0.873 | 0.730 | nan | 0.932 |
+| tray_transport | 967 | 0.864 | 0.668 | 0.938 | 0.827 |
+| clean_pour | 3164 | 0.902 | 0.772 | 0.807 | 0.876 |
+| gap_place | 3388 | 0.728 | 0.635 | 0.424 | 0.761 |
+
+Reading:
+- **Q1**: the sentence matters. On training templates, ranking of the harmful vs benign rule at the
+  same state is 0.668 (4,421 pairs). The shuffled control is exactly chance (0.501), and the sentence
+  lifts the imminent-harm AUROC from 0.688 (other-episode sentence) to 0.832.
+- **Per task**: strong on T5 (0.94) and T6 (0.81), weak on T3 (0.56), **below chance on T7 (0.42)**:
+  for the gap-place neighbours (upright vs stay of the same or the other block) the ordering is
+  systematically wrong.
+- **Q2**: referent decisions (same consequence, different item) 0.569 < consequence decisions (same
+  item, different consequence) 0.617. Which item is meant is the harder part.
+- **Q4**: held-out templates cost little (0.649), held-out nouns more (0.599; mixed pairs +0.145 over
+  their baseline). **Held-out items fail first and badly**: 0.105 on symmetric pairs (inverted, 76
+  pairs), AUROC 0.40 vs 0.52 baseline, no gain on mixed pairs (+0.019).
+
+Training probes (step 2000 / 4000 / 6000): `text_sens` 0.81 / 0.77 / 0.69; body-to-scene attention on the
+named referent 2.2x / 1.7x / 3.8x its token share (queries 1.9x / 1.5x / 2.6x); paraphrase spread 0.38-0.40
+of the rule-to-rule spread.
+
 <!-- OFFLINE_RUN -->
