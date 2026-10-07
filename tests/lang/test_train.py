@@ -1,0 +1,94 @@
+"""LangTrainer on CPU with fake data and a stub text encoder: one update,
+target coverage, checkpoint round trip, exact resume."""
+
+import dataclasses
+
+import numpy as np
+import pytest
+import torch
+
+from main.lang.config import LangConfig
+from main.lang.data import stable_hash
+from main.lang.train import LangTrainer, load_policy, target_rank_acc
+
+from .fake_data import make_root
+
+
+class StubText:
+    def embed(self, sentences):
+        e = torch.stack([torch.randn(24, 256, generator=torch.Generator().manual_seed(stable_hash(s) % 2**31))
+                         for s in sentences])
+        m = torch.zeros(len(sentences), 24, dtype=torch.bool)
+        m[:, :10] = True
+        return e, m
+
+
+@pytest.fixture
+def root(tmp_path):
+    return make_root(tmp_path / "data", episodes=4, capacity=400)
+
+
+def trainer(run, root, prefetch=False, **kw):
+    cfg = dataclasses.replace(LangConfig(), batch_size=8, **kw)
+    return LangTrainer(cfg, run, [root], (), (), use_wandb=False, prefetch=prefetch, device="cpu",
+                       text_encoder=StubText(), seed=0)
+
+
+def test_grad_step_and_targets(tmp_path, root):
+    torch.set_num_threads(4)
+    tr = trainer(tmp_path / "run", root)
+    out = tr.grad_step(log=True)
+    for k in ("loss/q", "loss/pi", "q/mean", "lang/pair_rank_acc", "grad/encoder", "grad/text_adapter", "actor/action_std"):
+        assert k in out
+    assert np.isfinite(out["loss/q"]) and np.isfinite(out["loss/pi"])
+    live = list(tr.policy_enc.parameters()) + list(tr.critics.parameters())
+    targ = list(tr.policy_enc_targ.parameters()) + list(tr.critics_targ.parameters())
+    assert len(live) == len(targ) == len(tr.target_pairs)
+    assert all(a.shape == b.shape and not a.requires_grad for a, b in zip(targ, live))
+    assert all(p.requires_grad for p in live)   # restored after the actor step
+
+
+def test_checkpoint_roundtrip(tmp_path, root):
+    tr = trainer(tmp_path / "run", root)
+    tr.grad_step()
+    p = tr.save_ckpt()
+    tr2 = trainer(tmp_path / "run2", root)
+    tr2.load_weights(p)
+    for a, b in zip(tr.policy_enc.state_dict().values(), tr2.policy_enc.state_dict().values()):
+        assert torch.equal(a, b)
+    off = trainer(tmp_path / "run3", root, lang_film=False)
+    with pytest.raises(ValueError):
+        off.load_weights(p)
+
+
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_exact_resume(tmp_path, root, prefetch):
+    torch.set_num_threads(4)
+    a = trainer(tmp_path / "a", root, prefetch=prefetch)
+    for _ in range(4):
+        a.grad_step()
+    b = trainer(tmp_path / "b", root, prefetch=prefetch)
+    for _ in range(2):
+        b.grad_step()
+    b.save_state()
+    if b.prefetch is not None:
+        b.prefetch.stop()
+    c = trainer(tmp_path / "b", root, prefetch=prefetch)
+    c.load_state()
+    assert c.step == 2
+    for _ in range(2):
+        c.grad_step()
+    for x, y in zip(a.policy_enc.state_dict().values(), c.policy_enc.state_dict().values()):
+        assert torch.allclose(x, y, atol=1e-6)
+    for x, y in zip(a.actor.state_dict().values(), c.actor.state_dict().values()):
+        assert torch.allclose(x, y, atol=1e-6)
+    for t in (a, b, c):
+        if t.prefetch is not None:
+            t.prefetch.stop()
+
+
+def test_target_rank_acc():
+    q = np.array([0.1, 0.5, 0.3, 0.2, 0.9, 0.9])
+    y = np.array([0.0, 0.6, 0.5, 0.1, 0.4, 0.42])
+    pair = np.array([0, 0, 1, 1, 2, 2])
+    assert target_rank_acc(q, y, pair) == 1.0   # pair 2 below the 0.05 threshold
