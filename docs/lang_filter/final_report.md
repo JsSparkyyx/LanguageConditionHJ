@@ -12,9 +12,9 @@ run), `phase4.md` (rounds), `phase5.md` (closed loop).
 | 0 recon | **done**, no STOP condition | `recon.md`: lockstep parity exact (28 episodes), text cache equal in fp16 precision, filtered controller ok, in-the-way designations within bounds, masks ok, CrossSafe and env Phase-5 regressions pass; 2 env single-episode sim tests fail (env-side) |
 | 1 collection | **done** 06:03: warmup 420 episodes (30 per task and embodiment, 6 per T1 host; 419 ok, 1 env exception; 82 GB), validation 70 (13.5 GB); all labels within the 2-80% band; delay audit flags every task (gamma decision) | `collect_report_warmup.md`, `collect_report_val.md` |
 | 2 model | **done** | `phase2.md`: 19 model tests, 20.7 M parameters, 22 GB at B = 64 |
-| 3 trainer, probes, offline probe | code **done**, sanity passes on recon data; <!-- P3 --> | `phase3.md` |
-| 4 rollout + rounds | code **done**; filter episodes with a random-init language model run in lockstep with panel videos; <!-- P4 --> | `phase4.md` |
-| 5 closed loop | code **done**; the grid machinery ran on the smoke checkpoint; <!-- P5 --> | `phase5.md` |
+| 3 trainer, probes, offline probe | **sanity gate passes** on warmup data (overfit 1.000, shuffled 0.547 / label 0.506, switches off 0.0). Official 20k-step run on the full warmup (`runs/lang/lang_full_paired_off_1007`) is running on A100 (~2.5k steps per hour, done ~13:30); a preview run on a frozen 36% of the warmup is further along, and its offline probe at step 8000 is in `phase3.md` | `phase3.md` |
+| 4 rollout + rounds | **checks pass**: 14/14 filter episodes in lockstep with videos, deployment frame 0 == collection s0 (diff 0.0), one capture before physics in both modes, forced timeout / exception statuses; rounds smoke resumed correctly after a job kill (crash path); the exit-75 path is being exercised by `runs/lang_phase4/rounds_exit75` | `phase4.md` |
+| 5 closed loop | small grid (2 scenes per combo, axes train + heldout_template) running on the preview checkpoint at step 8000, 8 children over A40 nodes, resuming across jobs; partial tables in `phase5.md` | `phase5.md` |
 | 6 matrix + report | `scripts/lang/matrix.sh` prints the runs; nothing beyond `full` was launched | this file |
 
 
@@ -38,8 +38,9 @@ run), `phase4.md` (rounds), `phase5.md` (closed loop).
 | `main/lang/eval_closed.py` | closed-loop grid (Section 9.2), sharded parallel children |
 | `main/lang/report.py` | one table per research question |
 | `main/lang/recon.py`, `phase4_checks.py`, `collect_report.py` | Phase 0 checks, Phase 4 simulator checks, the Phase 1 data report incl. the delay audit |
-| `scripts/lang/` | `in_container.sh`; `chain.sh` / `chain2.sh` (chained 1-hour interactive jobs; A40 for simulation, A100 for torch-only stages); `gpu_stage.sbatch`, `par_gpu.sh`, `par_cmds.sh`; `stage.sbatch`, `long.sbatch`; `matrix.sh` (prints only); `run_rounds.sh`; `crosssafe_regression.py`; `profile_step.py` |
-| `tests/lang/` | 71 CPU tests (seed scheme, scene roles on records of all 7 tasks, schedule, shard resume, model, sampler, trainer resume, metrics, offline probe, closed-loop aggregates, shim history) |
+| `main/lang/workqueue.py` | shared work queue for chained jobs of any size (atomic claims, heartbeats, stale takeover, slot weights) |
+| `scripts/lang/` | `in_container.sh`; chains `chain.sh` -> `chain5.sh` (chained interactive jobs; `chain5.sh` with multi-node stages and configurable job length is the current one); `gpu_stage.sbatch`, `gpu_stage_mn.sbatch`, `par_gpu.sh`, `par_cmds.sh`; `stage.sbatch`, `long.sbatch`; `matrix.sh` (prints only); `run_rounds.sh`; `crosssafe_regression.py`; `profile_step.py` |
+| `tests/lang/` | 74 CPU tests (seed scheme, scene roles on records of all 7 tasks, schedule, shard resume, model, sampler, trainer resume, metrics, offline probe, closed-loop aggregates, shim history) |
 
 ## 2. Deviations from the plan, and why
 
@@ -92,9 +93,10 @@ Each item names the evidence and a recommendation; nothing below was decided for
    gamma = 0.9. The T3 numbers are inflated: its risky segment is the whole push. T5 tipping (0.80 s)
    and T7 scraping (0.60-0.64 s) are the clean cases. Recommendation: try 0.95 (horizon ~20 ticks) as
    one extra offline run against 0.9; with 0.9 the critic can only warn ~7 ticks ahead.
-2. **Warmup size (30 episodes per task and embodiment = 420).** Collection runs at ~1 episode per
-   minute per A40 in 1-hour interactive slots, about 3 slots of 3-4 GPUs. The label balance in
-   `collect_report_warmup.md` decides whether T4 / T7 (few harmful rows) need more.
+2. **Warmup size (30 episodes per task and embodiment = 420, collected).** Harmful labels are 5.9% (T7)
+   to 55% (T4) of sampleable rule-rows, mixed rows 20-58% in the multi-rule tasks
+   (`collect_report_warmup.md`). T7 is the thinnest: its scraped block tips in only 33% of runs (stay
+   72%). More data is ~1 episode per minute per A40 GPU.
 3. **T1 near-path candidates.** Designated *unclear* by the plan (never named), but violated in 59-79% of
    nominal runs (78-100% on the two stacking hosts, which rarely have an on-path candidate). Promoting
    `near_path` to harm-designated would give T1's stacking hosts harm runs; keeping it leaves them
@@ -108,10 +110,17 @@ Each item names the evidence and a recommendation; nothing below was decided for
    (~4.5 h on a 4-GPU node). Recommendation: 10 scenes per combo on `train` + `heldout_template` for the
    first comparison.
 7. **Matrix runs to launch.** `bash scripts/lang/matrix.sh` prints all of them; nothing beyond `full` was
-   launched. Each offline run is ~2.6 h on an H200 at 20k steps (~15 units).
-8. **Env-side issues (envs/ is read-only for this work).** `place_container_plate` fails its grasp
-   (`target_pose cannot be None`, RoboTwin `_base_task.py:1212`) in ~30% of episodes (recorded as
-   `status: exception`, kept).
+   launched. An offline run of 20k steps is ~8 h on A100 (~16 units) or ~2.6 h on H200 when that queue
+   is open (~16 units).
+8. **Env-side issues (envs/ is read-only for this work).** `place_container_plate` sometimes fails its
+   grasp (`target_pose cannot be None`, RoboTwin `_base_task.py:1212`): 4 of ~15 recon runs, 1 of 12 in
+   the warmup (kept as `status: exception`). Two env sim tests fail on single episodes
+   (`test_full_episode_low_risk[ur5-wsg]` T2, `test_zero_aim_error_keeps_neighbours_clean[ur5-wsg]` T6).
+   T5's benign-designated (short) blocks tip in 17% of warmup runs.
+9. **The offline rank metric.** `rank_acc` labels pairs by `fails_soon`, but some benign rules have a
+   permanently low h (T3 `zone_include` ~0.2), so a correct critic can rank them "wrong"
+   (`phase3.md`, caveat). Recommendation: also report pairs with matched current h, before reading the
+   held-out-item and T7 numbers as failures.
 
 
 ## 4. How to run (all inside `scripts/lang/in_container.sh`, cwd = repo root)

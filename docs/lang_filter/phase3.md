@@ -117,6 +117,15 @@ Reading:
   their baseline). **Held-out items fail first and badly**: 0.105 on symmetric pairs (inverted, 76
   pairs), AUROC 0.40 vs 0.52 baseline, no gain on mixed pairs (+0.019).
 
+**Caveat on `rank_acc` (for the human).** Pairs are labelled by `fails_soon` (h < 0 within 25 ticks), but
+Q is a value. Some benign rules sit permanently at low h: T3's `zone_include` (box stays on the table)
+reads h ~0.2 at every tick. A harmful rule can read h = 1.0 until shortly before its violation. For such
+pairs a correct critic gives the benign rule the lower Q, and the pair counts as wrong. The inverted
+held-out-item score (mostly T3 rules about a held-out box, where `zone_include` is one member) and part of
+T7 (stay vs upright of one block) may come from this, not from misreading the sentence. A version
+restricted to pairs whose current h are within 0.1 of each other, or the target-rank form used in the
+sanity check, would separate the two.
+
 Training probes (step 2000 / 4000 / 6000): `text_sens` 0.81 / 0.77 / 0.69; body-to-scene attention on the
 named referent 2.2x / 1.7x / 3.8x its token share (queries 1.9x / 1.5x / 2.6x); paraphrase spread 0.38-0.40
 of the rule-to-rule spread.
