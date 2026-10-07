@@ -63,6 +63,24 @@ run), `phase4.md` (rounds), `phase5.md` (closed loop).
    ~1120 filtered episodes per checkpoint (~90 h of simulation), which one child per embodiment
    cannot finish.
 
+8. **A shared work queue instead of per-GPU command lists** (`main/lang/workqueue.py`,
+   `gpu_stage_mn.sbatch`). Free A40 GPUs came as single GPUs on nodes whose memory was mostly taken,
+   so a job now asks for `--nodes=1-4 --gpus-per-node=1` with 24 GB per node and starts at once with
+   whatever exists (2-3 nodes per job). Each node's worker claims commands atomically.
+9. **Training on A100 (fp32), not H200.** The H200 queue filled up (estimated start: the next
+   afternoon). A100 runs the step in 1.22-1.27 s, so 20k steps take ~7 h across 1-hour jobs.
+10. **A preview offline run on a frozen 36% of the warmup** (`runs/lang/lang_full_paired_off_preview`,
+    `--freeze-data`: the 151 episodes, 46,863 rows, present at 02:47). It gives curves and probes by
+    morning. The plan's Phase-3 run on the full warmup starts when collection ends, as
+    `runs/lang/lang_full_paired_off_1007`.
+11. **Sanity check details**: the shuffled control is scored on fresh sentence draws and judged on the
+    mean of its last 4 scorings. A label-based score (Q(harmful) < Q(benign), exactly chance under
+    shuffling) is reported next to it, because the target-rank score depends on the sentence through
+    the target critic.
+12. **Collection is not success-only, and episodes with an env exception are kept** with
+    `status: exception` (as the plan says). The `place_container_plate` grasp failure produces 1-row
+    episodes that never enter training (terminal rows are excluded).
+
 <!-- DEVIATIONS_MORE -->
 
 ## 3. Decisions reserved for the human
@@ -95,3 +113,28 @@ Each item names the evidence and a recommendation; nothing below was decided for
    (`target_pose cannot be None`, RoboTwin `_base_task.py:1212`) in ~30% of episodes (recorded as
    `status: exception`, kept).
 
+
+## 4. How to run (all inside `scripts/lang/in_container.sh`, cwd = repo root)
+
+```
+# collection (resumable shards; any number of 1-hour jobs)
+python -m main.lang.collect warmup --out data/lang/warmup/shard_g<g> --embodiment ur5-wsg --shard <i> --n-shards 15 --no-masks
+python -m main.lang.collect validation --out data/lang/val/shard_g<g> --embodiment ur5-wsg --shard <i> --n-shards 5
+python -m main.lang.collect_report data/lang/warmup --out docs/lang_filter/collect_report_warmup.md
+# text caches
+cd envs && python scripts/item_envs/build_text_cache.py --episodes ../data/lang/warmup/shard_g*/item_buffer/episodes --out ../data/lang/warmup/text_cache.pt --device cuda
+# sanity gate, offline training, offline probe
+python -m main.lang.train sanity --data data/lang/warmup --run runs/lang/sanity_full
+python -m main.lang.train offline --data data/lang/warmup --val data/lang/val --run runs/lang/<name> --grad-steps 20000 --probe-every 2000 --resume
+python -m main.lang.eval_offline --run runs/lang/<name> --ckpt checkpoint_final.pt --val data/lang/val
+# rounds, closed loop, tables
+bash scripts/lang/run_rounds.sh --data data/lang/warmup --val data/lang/val --run runs/lang/<name> --collect-rounds 100
+python -m main.lang.eval_closed --run runs/lang/<name> --ckpt checkpoint_final.pt --val data/lang/val --scenes-per-combo 20 --n-shards 5 --parallel 10 --gpus 4
+python -m main.lang.report --runs runs/lang/* --out docs/lang_filter/results/
+bash scripts/lang/matrix.sh            # prints the experiment matrix; --submit queues it
+```
+
+Job orchestration used tonight: `scripts/lang/chain4.sh` (A40, multi-node work queue over
+`runs/lang_pipeline/work.cmds`) and `scripts/lang/chain2.sh` / `chain3.sh` (A100, one stage per line of
+`runs/lang_pipeline_a100*/queue.txt`). Each chain's log is `runs/lang_pipeline*/chain.log`; a file named
+`state/hold` pauses a chain.

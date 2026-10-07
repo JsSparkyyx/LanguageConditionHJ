@@ -439,7 +439,7 @@ def parent(args) -> int:
     out_dir = run / "eval_closed" / Path(args.ckpt).stem
     out_dir.mkdir(parents=True, exist_ok=True)
     embs = CANON_EMBODIMENTS if args.embodiments == "all" else tuple(args.embodiments.split(","))
-    jobs = [(e, i) for e in embs for i in range(int(args.n_shards))]
+    jobs = [] if args.merge_only else [(e, i) for e in embs for i in range(int(args.n_shards))]
     crashes = {j: 0 for j in jobs}
     pending, running = list(jobs), {}
     slot = 0
@@ -504,6 +504,7 @@ def main(argv=None) -> int:
     ap.add_argument("--text-cache", nargs="*", default=None)
     ap.add_argument("--video-every", type=int, default=0)
     ap.add_argument("--child", action="store_true")
+    ap.add_argument("--merge-only", action="store_true", help="aggregate existing episode rows, run nothing")
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--n-shards", type=int, default=1, help="work items (task, scene) split per embodiment")
     ap.add_argument("--parallel", type=int, default=2, help="children at once")
