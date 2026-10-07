@@ -1,0 +1,216 @@
+{
+ "episode_id": 900000000,
+ "task": "selective_avoid",
+ "host_task": "place_container_plate",
+ "embodiment": "ur5-wsg",
+ "seed": 900000000,
+ "active_rule": -1,
+ "active_instruction": null,
+ "objects": [
+  {
+   "id": 0,
+   "item_id": "container",
+   "category": "bowl",
+   "category_key": "bowl",
+   "synonyms": [],
+   "color": null,
+   "size": null,
+   "role": "task_object",
+   "kind": "rigid"
+  },
+  {
+   "id": 1,
+   "item_id": "plate",
+   "category": "plate",
+   "category_key": "plate",
+   "synonyms": [],
+   "color": null,
+   "size": null,
+   "role": "support",
+   "kind": "rigid"
+  },
+  {
+   "id": 2,
+   "item_id": "obj_0",
+   "category": "pill bottle",
+   "category_key": "pill_bottle",
+   "synonyms": [
+    "pill jar",
+    "small bottle"
+   ],
+   "color": null,
+   "size": null,
+   "role": "candidate",
+   "kind": "rigid"
+  },
+  {
+   "id": 3,
+   "item_id": "obj_1",
+   "category": "drink box",
+   "category_key": "drink_box",
+   "synonyms": [
+    "juice box",
+    "carton"
+   ],
+   "color": null,
+   "size": null,
+   "role": "candidate",
+   "kind": "rigid"
+  },
+  {
+   "id": 4,
+   "item_id": "obj_2",
+   "category": "cylinder",
+   "category_key": "cylinder",
+   "synonyms": [
+    "tall cylinder"
+   ],
+   "color": "yellow",
+   "size": null,
+   "role": "candidate",
+   "kind": "rigid"
+  }
+ ],
+ "regions": [
+  {
+   "id": 0,
+   "region_id": "table_top",
+   "kind": "table_top",
+   "names": [
+    "table",
+    "tabletop"
+   ],
+   "color": null,
+   "role": null,
+   "nameable": true
+  }
+ ],
+ "rules": [
+  {
+   "idx": 0,
+   "rule_id": "avoid|obj_0|-",
+   "consequence": "avoid",
+   "subject": {
+    "object": 2
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": false,
+   "split": "heldout_item",
+   "ambiguous": false,
+   "sampleable": false
+  },
+  {
+   "idx": 1,
+   "rule_id": "avoid|obj_1|-",
+   "consequence": "avoid",
+   "subject": {
+    "object": 3
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 2,
+   "rule_id": "avoid|obj_2|-",
+   "consequence": "avoid",
+   "subject": {
+    "object": 4
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 3,
+   "rule_id": "avoid|obj_0+obj_1+obj_2|-",
+   "consequence": "avoid",
+   "subject": {
+    "objects": [
+     2,
+     3,
+     4
+    ]
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": true,
+   "split": "heldout_item",
+   "ambiguous": false,
+   "sampleable": false
+  },
+  {
+   "idx": 4,
+   "rule_id": "stay|obj_0|-",
+   "consequence": "stay",
+   "subject": {
+    "object": 2
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.03,
+    "disp_max_m": 0.03,
+    "tilt_max_deg": 20.0
+   },
+   "set": false,
+   "split": "heldout_item",
+   "ambiguous": false,
+   "sampleable": false
+  },
+  {
+   "idx": 5,
+   "rule_id": "stay|obj_1|-",
+   "consequence": "stay",
+   "subject": {
+    "object": 3
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.03,
+    "disp_max_m": 0.03,
+    "tilt_max_deg": 20.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 6,
+   "rule_id": "stay|obj_2|-",
+   "consequence": "stay",
+   "subject": {
+    "object": 4
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.03,
+    "disp_max_m": 0.03,
+    "tilt_max_deg": 20.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  }
+ ]
+}

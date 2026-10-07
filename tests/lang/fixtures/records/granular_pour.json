@@ -1,0 +1,107 @@
+{
+ "episode_id": 900010000,
+ "task": "granular_pour",
+ "host_task": null,
+ "embodiment": "ur5-wsg",
+ "seed": 900010000,
+ "active_rule": -1,
+ "active_instruction": null,
+ "objects": [
+  {
+   "id": 0,
+   "item_id": "bowl_src",
+   "category": "mug",
+   "category_key": "pour_mug",
+   "synonyms": [
+    "cup",
+    "coffee mug"
+   ],
+   "color": null,
+   "size": null,
+   "role": "task_object",
+   "kind": "rigid"
+  },
+  {
+   "id": 1,
+   "item_id": "beads",
+   "category": "beads",
+   "category_key": "beads",
+   "synonyms": [
+    "beans",
+    "rice",
+    "grains"
+   ],
+   "color": null,
+   "size": null,
+   "role": "candidate",
+   "kind": "particle_set"
+  }
+ ],
+ "regions": [
+  {
+   "id": 0,
+   "region_id": "table_top",
+   "kind": "table_top",
+   "names": [
+    "table",
+    "tabletop"
+   ],
+   "color": null,
+   "role": null,
+   "nameable": true
+  },
+  {
+   "id": 1,
+   "region_id": "bowl_src_interior",
+   "kind": "bowl_src_interior",
+   "names": [
+    "source bowl",
+    "bowl"
+   ],
+   "color": null,
+   "role": null,
+   "nameable": true
+  },
+  {
+   "id": 2,
+   "region_id": "target_interior",
+   "kind": "target_interior",
+   "names": [
+    "target",
+    "target container",
+    "container"
+   ],
+   "color": null,
+   "role": null,
+   "nameable": true
+  }
+ ],
+ "rules": [
+  {
+   "idx": 0,
+   "rule_id": "particles_inside|beads|bowl_src_interior+target_interior",
+   "consequence": "contain_particles",
+   "subject": {
+    "particles": 1
+   },
+   "reference": {
+    "regions": [
+     1,
+     2
+    ]
+   },
+   "params": {
+    "h_unit": 0.01,
+    "material": [
+     "beads",
+     "beans",
+     "rice"
+    ]
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  }
+ ]
+}

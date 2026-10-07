@@ -1,0 +1,142 @@
+{
+ "episode_id": 900020000,
+ "task": "push_zone",
+ "host_task": null,
+ "embodiment": "ur5-wsg",
+ "seed": 900020000,
+ "active_rule": -1,
+ "active_instruction": null,
+ "objects": [
+  {
+   "id": 0,
+   "item_id": "push_0",
+   "category": "coffee box",
+   "category_key": "coffee_box",
+   "synonyms": [
+    "coffee carton",
+    "coffee bag"
+   ],
+   "color": null,
+   "size": null,
+   "role": "candidate",
+   "kind": "rigid"
+  }
+ ],
+ "regions": [
+  {
+   "id": 0,
+   "region_id": "table_top",
+   "kind": "table_top",
+   "names": [
+    "table",
+    "tabletop"
+   ],
+   "color": null,
+   "role": null,
+   "nameable": true
+  },
+  {
+   "id": 1,
+   "region_id": "zone_blue",
+   "kind": "zone",
+   "names": [
+    "zone",
+    "mat",
+    "marked area"
+   ],
+   "color": "blue",
+   "role": null,
+   "nameable": true
+  },
+  {
+   "id": 2,
+   "region_id": "zone_black",
+   "kind": "zone",
+   "names": [
+    "zone",
+    "mat",
+    "marked area"
+   ],
+   "color": "black",
+   "role": null,
+   "nameable": true
+  }
+ ],
+ "rules": [
+  {
+   "idx": 0,
+   "rule_id": "inside|push_0|table_top",
+   "consequence": "zone_include",
+   "subject": {
+    "object": 0
+   },
+   "reference": {
+    "region": 0
+   },
+   "params": {
+    "h_unit": 0.05
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 1,
+   "rule_id": "outside|push_0|zone_black",
+   "consequence": "zone_exclude",
+   "subject": {
+    "object": 0
+   },
+   "reference": {
+    "region": 2
+   },
+   "params": {
+    "h_unit": 0.05
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 2,
+   "rule_id": "outside|push_0|zone_blue",
+   "consequence": "zone_exclude",
+   "subject": {
+    "object": 0
+   },
+   "reference": {
+    "region": 1
+   },
+   "params": {
+    "h_unit": 0.05
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 3,
+   "rule_id": "outside|push_0|zone_black+zone_blue",
+   "consequence": "zone_exclude",
+   "subject": {
+    "object": 0
+   },
+   "reference": {
+    "regions": [
+     2,
+     1
+    ]
+   },
+   "params": {
+    "h_unit": 0.05
+   },
+   "set": true,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": false
+  }
+ ]
+}

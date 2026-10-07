@@ -1,0 +1,139 @@
+{
+ "episode_id": 0,
+ "task": "gap_place",
+ "host_task": null,
+ "embodiment": "ur5-wsg",
+ "seed": 0,
+ "active_rule": -1,
+ "active_instruction": null,
+ "objects": [
+  {
+   "id": 0,
+   "item_id": "payload",
+   "category": "wooden block",
+   "category_key": "wooden_block",
+   "synonyms": [
+    "block",
+    "cube"
+   ],
+   "color": null,
+   "size": null,
+   "role": "task_object",
+   "kind": "rigid"
+  },
+  {
+   "id": 1,
+   "item_id": "block_0",
+   "category": "block",
+   "category_key": "block",
+   "synonyms": [
+    "brick",
+    "pillar"
+   ],
+   "color": "yellow",
+   "size": "tall",
+   "role": "candidate",
+   "kind": "rigid"
+  },
+  {
+   "id": 2,
+   "item_id": "block_1",
+   "category": "block",
+   "category_key": "block",
+   "synonyms": [
+    "brick",
+    "pillar"
+   ],
+   "color": "green",
+   "size": "short",
+   "role": "candidate",
+   "kind": "rigid"
+  }
+ ],
+ "regions": [
+  {
+   "id": 0,
+   "region_id": "table_top",
+   "kind": "table_top",
+   "names": [
+    "table",
+    "tabletop"
+   ],
+   "color": null,
+   "role": null,
+   "nameable": true
+  }
+ ],
+ "rules": [
+  {
+   "idx": 0,
+   "rule_id": "upright|block_0|-",
+   "consequence": "upright",
+   "subject": {
+    "object": 1
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.17453292519943295,
+    "tilt_max_deg": 10.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 1,
+   "rule_id": "upright|block_1|-",
+   "consequence": "upright",
+   "subject": {
+    "object": 2
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.17453292519943295,
+    "tilt_max_deg": 10.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 2,
+   "rule_id": "stay|block_0|-",
+   "consequence": "stay",
+   "subject": {
+    "object": 1
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.02,
+    "disp_max_m": 0.02,
+    "tilt_max_deg": 10.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 3,
+   "rule_id": "stay|block_1|-",
+   "consequence": "stay",
+   "subject": {
+    "object": 2
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.02,
+    "disp_max_m": 0.02,
+    "tilt_max_deg": 10.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  }
+ ]
+}

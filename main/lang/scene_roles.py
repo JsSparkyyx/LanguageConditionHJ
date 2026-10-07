@@ -1,0 +1,159 @@
+"""Which items the careless nominal is aimed at: in the way / unclear (VANILLA_PLAN 3.5).
+
+``in_way(env, record) -> (in_way_ids, unclear_ids)``: string ids (``item_id``
+for objects and bead sets, ``region_id`` for mats / bins / plates), read only
+from the task's own scene metadata — deterministic per seed, unlike the
+nominal's motion (cuRobo is nondeterministic run to run).
+
+``designation(rule, record, roles)``: "harm" (referent in the way), "unclear"
+(referent hit in some runs only: never named) or "benign", for every rule that
+is not a set or ambiguous rule; None for those.
+
+``ref_rows(record, rule, region_rows)``: the sidecar ``token_masks`` rows of a
+rule's referent (a measuring tool for the attention probes, never a model
+input). token_masks rows are the record's objects in order, then the regions
+that are nameable AND have a scene entity — ``mask_region_rows(runner)`` (stored
+per episode in lang_episodes.jsonl, the record does not say which regions have
+an entity).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+__all__ = ["referent", "in_way", "designation", "ref_rows", "mask_region_rows", "all_designations"]
+
+T1_OFF_PATH_MIN_DIST = 0.10  # m: spawn.py objects.off_path_min_dist (T1 yaml)
+T6_UNCLEAR_AZ_DEG = 90.0     # containers closer than this (azimuth) to the hit one
+
+
+def referent(rule: dict, record: dict) -> str | None:
+    """The string id a rule protects: the subject item (avoid / upright /
+    stay), the reference region (zone_exclude / exclude_particles), the bead
+    set (contain_particles), the table (zone_include). None for set rules."""
+    if rule.get("set"):
+        return None
+    cons = rule["consequence"]
+    subj, ref = rule.get("subject") or {}, rule.get("reference") or {}
+    if cons in ("avoid", "upright", "stay"):
+        return record["objects"][subj["object"]]["item_id"] if "object" in subj else None
+    if cons in ("zone_exclude", "exclude_particles", "zone_include"):
+        return record["regions"][ref["region"]]["region_id"] if "region" in ref else None
+    if cons == "contain_particles":
+        return record["objects"][subj["particles"]]["item_id"] if "particles" in subj else None
+    return None
+
+
+def _seg_dist(p, a, b) -> float:
+    p, a, b = (np.asarray(v, dtype=np.float64)[:2] for v in (p, a, b))
+    ab = b - a
+    t = float(np.clip(np.dot(p - a, ab) / max(float(np.dot(ab, ab)), 1e-12), 0.0, 1.0))
+    return float(np.linalg.norm(p - (a + t * ab)))
+
+
+def _t1_roles(env, record) -> tuple[set, set]:
+    runner = env._item_runner
+    report = getattr(runner, "_spawn_report", None) or {}
+    placements = report.get("placements") or []
+    inway = {p["item_id"] for p in placements if p.get("cls") == "on_path"}
+    unclear = {p["item_id"] for p in placements if p.get("cls") == "near_path"}
+    # off_path is measured from the LONGEST corridor only: two-carry hosts have
+    # a second path, so an off_path candidate near another corridor is unclear
+    try:
+        from main.envs.tasks import TASK_SPECS, iter_corridors
+
+        corridors = iter_corridors(env.task, TASK_SPECS[runner.host])
+    except Exception:
+        corridors = []
+    for p in placements:
+        if p.get("cls") != "off_path":
+            continue
+        xy = p.get("xyz", [0.0, 0.0, 0.0])[:2]
+        if any(_seg_dist(xy, a, b) < T1_OFF_PATH_MIN_DIST for a, b, *_ in corridors):
+            unclear.add(p["item_id"])
+    return inway, unclear
+
+
+def _beads(record) -> set:
+    return {o["item_id"] for o in record["objects"] if o.get("kind") == "particle_set"}
+
+
+def in_way(env, record) -> tuple[set, set]:
+    """(in-the-way ids, unclear ids) of the episode's scene (Section 3.5)."""
+    task = record.get("task")
+    info = getattr(env.task, "episode_info", None) or {}
+    if task == "selective_avoid":
+        return _t1_roles(env, record)
+    if task in ("granular_pour", "granular_carry"):
+        return _beads(record), set()
+    if task == "push_zone":
+        elems = (getattr(env.task, "layout_info", None) or {}).get("elements") or []
+        return {e["id"] for e in elems if e.get("on_path")}, set()
+    if task == "tray_transport":
+        return {o["item_id"] for o in record["objects"] if o.get("size") == "tall" and o.get("role") == "candidate"}, set()
+    if task == "clean_pour":
+        hit = info.get("hit")
+        nbs = info.get("neighbors") or []
+        az = {nb["region_id"]: float(nb.get("az_deg", 0.0)) for nb in nbs if "region_id" in nb}
+        unclear = set()
+        if hit in az:
+            for rid, a in az.items():
+                d = abs((a - az[hit] + 180.0) % 360.0 - 180.0)
+                if rid != hit and d < T6_UNCLEAR_AZ_DEG:
+                    unclear.add(rid)
+        return ({hit} if hit else set()) | _beads(record), unclear
+    if task == "gap_place":
+        hit = info.get("hit")
+        return ({hit} if hit else set()), set()
+    raise KeyError(f"in_way: unknown task {task!r}")
+
+
+def designation(rule: dict, record: dict, roles: tuple[set, set]) -> str | None:
+    """harm / benign / unclear for a non-set, non-ambiguous rule; None otherwise.
+    zone_include (the table) is never in the way: goals sit inside the table."""
+    if rule.get("set") or rule.get("ambiguous"):
+        return None
+    ref = referent(rule, record)
+    if ref is None:
+        return None
+    if rule["consequence"] == "zone_include":
+        return "benign"
+    inway, unclear = roles
+    if ref in inway:
+        return "harm"
+    if ref in unclear:
+        return "unclear"
+    return "benign"
+
+
+def all_designations(record: dict, roles: tuple[set, set]) -> dict:
+    """rule_id -> designation (None for set / ambiguous rules)."""
+    return {r["rule_id"]: designation(r, record, roles) for r in record["rules"]}
+
+
+def mask_region_rows(runner) -> dict:
+    """region_id -> token_masks row (after the K items), for the regions the
+    masks module renders: nameable and with a scene entity."""
+    k = len(runner.items)
+    rows, j = {}, 0
+    for r in runner.regions:
+        if r.nameable and r.entity is not None:
+            rows[r.region_id] = k + j
+            j += 1
+    return rows
+
+
+def ref_rows(record: dict, rule: dict, region_rows: dict) -> list[int]:
+    """token_masks rows of the rule's referent (empty if it has none)."""
+    if rule.get("set"):
+        return []
+    cons = rule["consequence"]
+    subj, ref = rule.get("subject") or {}, rule.get("reference") or {}
+    if cons in ("avoid", "upright", "stay"):
+        return [int(subj["object"])] if "object" in subj else []
+    if cons == "contain_particles":
+        return [int(subj["particles"])] if "particles" in subj else []
+    if "region" in ref:
+        rid = record["regions"][ref["region"]]["region_id"]
+        return [int(region_rows[rid])] if rid in region_rows else []
+    return []

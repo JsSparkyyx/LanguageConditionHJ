@@ -1,0 +1,334 @@
+{
+ "episode_id": 0,
+ "task": "selective_avoid",
+ "host_task": "place_container_plate",
+ "embodiment": "franka-panda",
+ "seed": 0,
+ "active_rule": -1,
+ "active_instruction": null,
+ "objects": [
+  {
+   "id": 0,
+   "item_id": "container",
+   "category": "bowl",
+   "category_key": "bowl",
+   "synonyms": [],
+   "color": null,
+   "size": null,
+   "role": "task_object",
+   "kind": "rigid"
+  },
+  {
+   "id": 1,
+   "item_id": "plate",
+   "category": "plate",
+   "category_key": "plate",
+   "synonyms": [],
+   "color": null,
+   "size": null,
+   "role": "support",
+   "kind": "rigid"
+  },
+  {
+   "id": 2,
+   "item_id": "obj_0",
+   "category": "box",
+   "category_key": "box",
+   "synonyms": [
+    "crate"
+   ],
+   "color": "yellow",
+   "size": null,
+   "role": "candidate",
+   "kind": "rigid"
+  },
+  {
+   "id": 3,
+   "item_id": "obj_1",
+   "category": "box",
+   "category_key": "box",
+   "synonyms": [
+    "crate"
+   ],
+   "color": "yellow",
+   "size": null,
+   "role": "candidate",
+   "kind": "rigid"
+  },
+  {
+   "id": 4,
+   "item_id": "obj_2",
+   "category": "cylinder",
+   "category_key": "cylinder",
+   "synonyms": [
+    "tall cylinder"
+   ],
+   "color": "yellow",
+   "size": null,
+   "role": "candidate",
+   "kind": "rigid"
+  },
+  {
+   "id": 5,
+   "item_id": "obj_3",
+   "category": "coffee box",
+   "category_key": "coffee_box",
+   "synonyms": [
+    "coffee carton",
+    "coffee bag"
+   ],
+   "color": null,
+   "size": null,
+   "role": "candidate",
+   "kind": "rigid"
+  },
+  {
+   "id": 6,
+   "item_id": "obj_4",
+   "category": "can",
+   "category_key": "can",
+   "synonyms": [
+    "tin",
+    "tin can"
+   ],
+   "color": null,
+   "size": null,
+   "role": "candidate",
+   "kind": "rigid"
+  }
+ ],
+ "regions": [
+  {
+   "id": 0,
+   "region_id": "table_top",
+   "kind": "table_top",
+   "names": [
+    "table",
+    "tabletop"
+   ],
+   "color": null,
+   "role": null,
+   "nameable": true
+  }
+ ],
+ "rules": [
+  {
+   "idx": 0,
+   "rule_id": "avoid|obj_0|-",
+   "consequence": "avoid",
+   "subject": {
+    "object": 2
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": true,
+   "sampleable": false
+  },
+  {
+   "idx": 1,
+   "rule_id": "avoid|obj_1|-",
+   "consequence": "avoid",
+   "subject": {
+    "object": 3
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": true,
+   "sampleable": false
+  },
+  {
+   "idx": 2,
+   "rule_id": "avoid|obj_2|-",
+   "consequence": "avoid",
+   "subject": {
+    "object": 4
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 3,
+   "rule_id": "avoid|obj_3|-",
+   "consequence": "avoid",
+   "subject": {
+    "object": 5
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 4,
+   "rule_id": "avoid|obj_4|-",
+   "consequence": "avoid",
+   "subject": {
+    "object": 6
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 5,
+   "rule_id": "avoid|obj_0+obj_1|-",
+   "consequence": "avoid",
+   "subject": {
+    "objects": [
+     2,
+     3
+    ]
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": true,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": false
+  },
+  {
+   "idx": 6,
+   "rule_id": "avoid|obj_0+obj_1+obj_2+obj_3+obj_4|-",
+   "consequence": "avoid",
+   "subject": {
+    "objects": [
+     2,
+     3,
+     4,
+     5,
+     6
+    ]
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.05,
+    "margin_m": 0.01
+   },
+   "set": true,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": false
+  },
+  {
+   "idx": 7,
+   "rule_id": "stay|obj_0|-",
+   "consequence": "stay",
+   "subject": {
+    "object": 2
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.03,
+    "disp_max_m": 0.03,
+    "tilt_max_deg": 20.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": true,
+   "sampleable": false
+  },
+  {
+   "idx": 8,
+   "rule_id": "stay|obj_1|-",
+   "consequence": "stay",
+   "subject": {
+    "object": 3
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.03,
+    "disp_max_m": 0.03,
+    "tilt_max_deg": 20.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": true,
+   "sampleable": false
+  },
+  {
+   "idx": 9,
+   "rule_id": "stay|obj_2|-",
+   "consequence": "stay",
+   "subject": {
+    "object": 4
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.03,
+    "disp_max_m": 0.03,
+    "tilt_max_deg": 20.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 10,
+   "rule_id": "stay|obj_3|-",
+   "consequence": "stay",
+   "subject": {
+    "object": 5
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.03,
+    "disp_max_m": 0.03,
+    "tilt_max_deg": 20.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  },
+  {
+   "idx": 11,
+   "rule_id": "stay|obj_4|-",
+   "consequence": "stay",
+   "subject": {
+    "object": 6
+   },
+   "reference": null,
+   "params": {
+    "h_unit": 0.03,
+    "disp_max_m": 0.03,
+    "tilt_max_deg": 20.0
+   },
+   "set": false,
+   "split": "train",
+   "ambiguous": false,
+   "sampleable": true
+  }
+ ]
+}
