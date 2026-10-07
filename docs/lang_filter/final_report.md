@@ -123,6 +123,33 @@ Each item names the evidence and a recommendation; nothing below was decided for
    held-out-item and T7 numbers as failures.
 
 
+## 5. Results so far (08:00)
+
+- **Data** (`collect_report_warmup.md`): 420 warmup + 70 validation episodes, balanced, no episode
+  at the cap; harmful labels 6-55% of sampleable rule-rows; benign-designated rules violated in at
+  most 17% of runs (T5).
+- **Sanity gate** (Section 6.4): passes on warmup data.
+- **Offline language probe, preview run at step 8000** (`phase3.md`):
+  - rank accuracy 0.668 on training templates, shuffled control 0.501;
+  - imminent-harm AUROC 0.832 vs 0.688 with other-episode sentences;
+  - held-out templates 0.649, held-out nouns 0.599, held-out items 0.105 (inverted, partly a metric
+    artifact, see the caveat);
+  - referent decisions 0.569 < consequence decisions 0.617;
+  - T7 below chance (0.42).
+- **Training probes**: attention on the named referent rises to ~4x its token share in both runs, with
+  no supervision on grounding. The text-sensitivity and paraphrase-spread probes look healthy.
+- **Closed loop, preview at step 8000, partial** (`phase5.md`): weak protection (0.10 on the train axis,
+  0.30 on held-out templates). Benign runs intervene on 1.2% of ticks, but 20% of them intervene at
+  least once. Interventions cost the task.
+- **Still running (resumable chains)**:
+  - the official 20k-step run on the full warmup (A100x8, ~step 5k, ~2.5k steps per hour), followed by
+    its offline probe;
+  - the preview run (A100x4, ~step 13.5k), offline probe at the end;
+  - the closed-loop grid children, the rounds smoke (rounds 0-3 done once, finishing) and the exit-75
+    rounds check (A40).
+
+  `runs/lang_pipeline*/chain.log` show progress; `bash scripts/lang/matrix.sh` lists what to launch next.
+
 ## 4. How to run (all inside `scripts/lang/in_container.sh`, cwd = repo root)
 
 ```
