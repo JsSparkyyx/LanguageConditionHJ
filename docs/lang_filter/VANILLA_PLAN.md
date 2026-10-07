@@ -868,18 +868,25 @@ python -m main.lang.collect report data/lang/warmup
 
 ### 7.4 Resume and the init limit (rounds)
 
-- At the **start** of each round, write `state.pt`:
-  - weights, targets, optimizers, step, α;
-  - round index, schedule cursors, RNG states;
-  - the ring's `n` and `head`.
-- **Init limit**: the trainer checks between rounds. When the next round could pass 200 environment
-  inits (inits so far + 5 × `episodes_per_round` > 200), it writes the checkpoint and the next round's
-  start state and exits with code 75. `scripts/lang/run_rounds.sh` relaunches with `--resume` until the
-  run completes.
-- **Crash mid-round**: `--resume` loads the last round-start state, calls `discard_to(n)` on both the
-  StepBuffer and the sidecar (valid because the ring has not wrapped), drops that round's lines from
-  `lang_episodes.jsonl`, and collects the round again with the same ids. Re-collection overwrites those
-  ids' `episodes/{id}.json`, which is consistent because their old rows were discarded.
+Changed 2026-10-07: a round (2048 steps plus 4 episodes, about 85 min on an A40) is longer than the
+1-hour jobs, so the run also stops and resumes **inside** a round.
+
+- `state.pt` holds weights, targets, optimizers, step, α, round index, schedule cursors, RNG states, the
+  ring's `n` and `head`, and where in the round the run is:
+  - `phase = "collect"`: the round's slots, how many are done, the next attempt counter. Written at the
+    round start and after **every** collected episode;
+  - `phase = "train"`: the round's step target. Written when collection ends, every 500 steps, and when
+    the run stops.
+- **Clean stop** (state saved, exit code 75): at the time budget (`--time-budget` or `$STAGE_DEADLINE`;
+  no episode starts that would not finish in time), on SIGTERM / SIGUSR1, and at the init limit (when
+  inits so far + 5 × `episodes_per_round` > 200 before a round, or 200 inside one).
+  `scripts/lang/run_rounds.sh` and `scripts/lang/bridges/rounds.sbatch` relaunch with `--resume`.
+- **Resume**, also after a hard kill: load `state.pt`, `discard_to(n)` on the StepBuffer and the sidecar
+  (valid because the ring has not wrapped), drop the lines of later episodes from `lang_episodes.jsonl`
+  and `eval/rounds.jsonl`, add the ring to the sampler (after the roll-back), and continue in the saved
+  phase with the remaining slots and their seeds. A hard kill loses at most the episode in progress or
+  500 steps. Re-collection overwrites those ids' `episodes/{id}.json`, which is consistent because their
+  old rows were discarded.
 
 ### 7.5 `LangRolloutController(RolloutController)` (`main/lang/rollout.py`)
 

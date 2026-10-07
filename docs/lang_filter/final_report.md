@@ -204,6 +204,9 @@ other four tasks' rows are unchanged and stay in use. The bead tasks need recoll
 
 ## 4. How to run (all inside `scripts/lang/in_container.sh`, cwd = repo root)
 
+On Bridges-2 or any other Slurm cluster without Delta's container: `scripts/lang/bridges/README.md`
+(copy list, setup check, bead data, smoke test, the self-resubmitting rounds job, monitoring).
+
 ```
 # collection (resumable shards; any number of 1-hour jobs)
 python -m main.lang.collect warmup --out data/lang/warmup/shard_g<g> --embodiment ur5-wsg --shard <i> --n-shards 15 --no-masks
