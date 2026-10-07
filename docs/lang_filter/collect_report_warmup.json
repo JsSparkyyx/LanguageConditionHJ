@@ -1,0 +1,1199 @@
+{
+ "root": "/work/nvme/bifq/project/LanguageConditionHJ/data/lang/warmup",
+ "shards": 30,
+ "episodes": 420,
+ "skipped_slots": 0,
+ "status": {
+  "ok": 419,
+  "exception": 1
+ },
+ "per_combo": {
+  "clean_pour|franka-panda": 30,
+  "clean_pour|ur5-wsg": 30,
+  "gap_place|franka-panda": 30,
+  "gap_place|ur5-wsg": 30,
+  "granular_carry|franka-panda": 30,
+  "granular_carry|ur5-wsg": 30,
+  "granular_pour|franka-panda": 30,
+  "granular_pour|ur5-wsg": 30,
+  "push_zone|franka-panda": 30,
+  "push_zone|ur5-wsg": 30,
+  "selective_avoid|franka-panda": 30,
+  "selective_avoid|ur5-wsg": 30,
+  "tray_transport|franka-panda": 30,
+  "tray_transport|ur5-wsg": 30
+ },
+ "per_t1_host": {
+  "place_bread_basket|franka-panda": 6,
+  "place_bread_basket|ur5-wsg": 6,
+  "place_burger_fries|franka-panda": 6,
+  "place_burger_fries|ur5-wsg": 6,
+  "place_container_plate|franka-panda": 6,
+  "place_container_plate|ur5-wsg": 6,
+  "stack_blocks_two|franka-panda": 6,
+  "stack_blocks_two|ur5-wsg": 6,
+  "stack_bowls_two|franka-panda": 6,
+  "stack_bowls_two|ur5-wsg": 6
+ },
+ "length": {
+  "push_zone": {
+   "mean": 212.93333333333334,
+   "p95": 347.25,
+   "max": 566,
+   "cap": 750,
+   "at_cap": 0
+  },
+  "tray_transport": {
+   "mean": 210.63333333333333,
+   "p95": 225.05,
+   "max": 230,
+   "cap": 750,
+   "at_cap": 0
+  },
+  "granular_carry": {
+   "mean": 264.3,
+   "p95": 408.5499999999999,
+   "max": 444,
+   "cap": 750,
+   "at_cap": 0
+  },
+  "gap_place": {
+   "mean": 376.7,
+   "p95": 411.29999999999995,
+   "max": 431,
+   "cap": 750,
+   "at_cap": 0
+  },
+  "clean_pour": {
+   "mean": 457.1333333333333,
+   "p95": 546.3,
+   "max": 577,
+   "cap": 750,
+   "at_cap": 0
+  },
+  "selective_avoid": {
+   "mean": 243.75,
+   "p95": 357.54999999999995,
+   "max": 380,
+   "cap": 750,
+   "at_cap": 0
+  },
+  "granular_pour": {
+   "mean": 447.8,
+   "p95": 507.29999999999995,
+   "max": 597,
+   "cap": 750,
+   "at_cap": 0
+  }
+ },
+ "success": {
+  "push_zone|ur5-wsg": 0.6,
+  "tray_transport|ur5-wsg": 0.9333333333333333,
+  "granular_carry|ur5-wsg": 0.6333333333333333,
+  "gap_place|ur5-wsg": 0.1,
+  "clean_pour|ur5-wsg": 0.06666666666666667,
+  "selective_avoid|ur5-wsg": 0.6666666666666666,
+  "granular_pour|ur5-wsg": 0.36666666666666664,
+  "granular_carry|franka-panda": 0.8,
+  "push_zone|franka-panda": 0.5,
+  "tray_transport|franka-panda": 0.9666666666666667,
+  "selective_avoid|franka-panda": 0.6333333333333333,
+  "gap_place|franka-panda": 0.26666666666666666,
+  "clean_pour|franka-panda": 0.03333333333333333,
+  "granular_pour|franka-panda": 0.4666666666666667
+ },
+ "violation_by_designation": {
+  "selective_avoid|avoid": {
+   "benign": {
+    "rate": 0.040983606557377046,
+    "n": 122
+   },
+   "unclear": {
+    "rate": 0.845360824742268,
+    "n": 97
+   },
+   "harm": {
+    "rate": 0.8333333333333334,
+    "n": 24
+   }
+  },
+  "selective_avoid|stay": {
+   "benign": {
+    "rate": 0.03278688524590164,
+    "n": 122
+   },
+   "unclear": {
+    "rate": 0.6185567010309279,
+    "n": 97
+   },
+   "harm": {
+    "rate": 0.6666666666666666,
+    "n": 24
+   }
+  },
+  "granular_pour|contain_particles": {
+   "harm": {
+    "rate": 0.9,
+    "n": 60
+   }
+  },
+  "push_zone|stay": {
+   "harm": {
+    "rate": 0.8181818181818182,
+    "n": 22
+   },
+   "benign": {
+    "rate": 0.0,
+    "n": 16
+   }
+  },
+  "push_zone|upright": {
+   "harm": {
+    "rate": 0.8181818181818182,
+    "n": 22
+   },
+   "benign": {
+    "rate": 0.0,
+    "n": 16
+   }
+  },
+  "push_zone|zone_exclude": {
+   "harm": {
+    "rate": 0.9512195121951219,
+    "n": 82
+   },
+   "benign": {
+    "rate": 0.0,
+    "n": 33
+   }
+  },
+  "push_zone|zone_include": {
+   "benign": {
+    "rate": 0.08333333333333333,
+    "n": 60
+   }
+  },
+  "granular_carry|contain_particles": {
+   "harm": {
+    "rate": 0.7,
+    "n": 60
+   }
+  },
+  "tray_transport|upright": {
+   "harm": {
+    "rate": 0.7166666666666667,
+    "n": 60
+   },
+   "benign": {
+    "rate": 0.16666666666666666,
+    "n": 90
+   }
+  },
+  "clean_pour|contain_particles": {
+   "harm": {
+    "rate": 0.9666666666666667,
+    "n": 60
+   }
+  },
+  "clean_pour|exclude_particles": {
+   "harm": {
+    "rate": 0.8333333333333334,
+    "n": 60
+   },
+   "unclear": {
+    "rate": 0.07547169811320754,
+    "n": 53
+   },
+   "benign": {
+    "rate": 0.0,
+    "n": 21
+   }
+  },
+  "gap_place|stay": {
+   "harm": {
+    "rate": 0.7166666666666667,
+    "n": 60
+   },
+   "benign": {
+    "rate": 0.011111111111111112,
+    "n": 90
+   }
+  },
+  "gap_place|upright": {
+   "harm": {
+    "rate": 0.3333333333333333,
+    "n": 60
+   },
+   "benign": {
+    "rate": 0.011111111111111112,
+    "n": 90
+   }
+  }
+ },
+ "labels": {
+  "tray_transport": {
+   "harmful_rule_row_frac": 0.1824623560673162,
+   "mixed_row_frac": 0.3140528564646305,
+   "rows": 12638,
+   "sampleable_rules_per_episode": 2.5
+  },
+  "granular_carry": {
+   "harmful_rule_row_frac": 0.5522764535250346,
+   "mixed_row_frac": 0.0,
+   "rows": 15858,
+   "sampleable_rules_per_episode": 1.0
+  },
+  "gap_place": {
+   "harmful_rule_row_frac": 0.058575851393188855,
+   "mixed_row_frac": 0.19799132820104415,
+   "rows": 22602,
+   "sampleable_rules_per_episode": 5.0
+  },
+  "clean_pour": {
+   "harmful_rule_row_frac": 0.2541796606734742,
+   "mixed_row_frac": 0.47484322590053957,
+   "rows": 27428,
+   "sampleable_rules_per_episode": 3.2333333333333334
+  },
+  "selective_avoid": {
+   "harmful_rule_row_frac": 0.14025800886170253,
+   "mixed_row_frac": 0.5783931623931624,
+   "rows": 14625,
+   "sampleable_rules_per_episode": 6.966666666666667
+  },
+  "granular_pour": {
+   "harmful_rule_row_frac": 0.446330206937621,
+   "mixed_row_frac": 0.0,
+   "rows": 26868,
+   "sampleable_rules_per_episode": 1.0
+  },
+  "push_zone": {
+   "harmful_rule_row_frac": 0.13284013408854467,
+   "mixed_row_frac": 0.3576675433028022,
+   "rows": 11027,
+   "sampleable_rules_per_episode": 3.2666666666666666
+  }
+ },
+ "h_quantiles": {
+  "avoid": {
+   "t0": [
+    0.6335736584663392,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "all": [
+    -0.2651629850268364,
+    0.02028191229328513,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  "contain_particles": {
+   "t0": [
+    0.9240732711553573,
+    0.9343620657920837,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "all": [
+    -1.0,
+    -1.0,
+    -1.0,
+    0.9378605484962463,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  "exclude_particles": {
+   "t0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "all": [
+    -0.835422694683075,
+    -0.48324822187423705,
+    0.07210665196180344,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  "stay": {
+   "t0": [
+    0.8874340987205506,
+    0.9642708539962769,
+    0.9986011981964111,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "all": [
+    -1.0,
+    -1.0,
+    0.9951543211936951,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  "upright": {
+   "t0": [
+    0.9982374721765518,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "all": [
+    -1.0,
+    -1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  "zone_exclude": {
+   "t0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "all": [
+    -0.4128756821155548,
+    -0.13572385013103486,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  "zone_include": {
+   "t0": [
+    0.18976914882659912,
+    0.1922325000166893,
+    0.19942128285765648,
+    0.19995935261249542,
+    0.19999773427844048,
+    0.1999994471669197,
+    0.1999998089671135
+   ],
+   "all": [
+    0.16764592200517656,
+    0.18439390882849693,
+    0.1978669986128807,
+    0.19992025196552277,
+    0.19999784231185913,
+    0.19999960064888,
+    0.19999991357326508
+   ]
+  }
+ },
+ "violation_non_ok": {
+  "selective_avoid|benign": {
+   "rate": 0.0,
+   "n": 6
+  },
+  "selective_avoid|unclear": {
+   "rate": 0.0,
+   "n": 4
+  }
+ },
+ "delay_audit": {
+  "selective_avoid|avoid": {
+   "n": 40,
+   "median_s": 0.6400000000000001,
+   "p25_s": 0.48,
+   "p75_s": 1.0900000000000003,
+   "no_risky_segment": 16,
+   "flag": true
+  },
+  "selective_avoid|stay": {
+   "n": 43,
+   "median_s": 0.6800000000000002,
+   "p25_s": 0.5200000000000002,
+   "p75_s": 1.1000000000000005,
+   "no_risky_segment": 5,
+   "flag": true
+  },
+  "granular_pour|contain_particles": {
+   "n": 19,
+   "median_s": 1.5199999999999996,
+   "p25_s": 0.5399999999999996,
+   "p75_s": 1.8600000000000003,
+   "no_risky_segment": 0,
+   "flag": true
+  },
+  "push_zone|stay": {
+   "n": 9,
+   "median_s": 3.04,
+   "p25_s": 1.96,
+   "p75_s": 3.3600000000000003,
+   "no_risky_segment": 0,
+   "flag": true
+  },
+  "push_zone|upright": {
+   "n": 9,
+   "median_s": 3.4000000000000004,
+   "p25_s": 2.04,
+   "p75_s": 5.760000000000001,
+   "no_risky_segment": 0,
+   "flag": true
+  },
+  "push_zone|zone_exclude": {
+   "n": 28,
+   "median_s": 1.6799999999999997,
+   "p25_s": 1.0100000000000002,
+   "p75_s": 2.33,
+   "no_risky_segment": 0,
+   "flag": true
+  },
+  "push_zone|zone_include": {
+   "n": 2,
+   "median_s": 1.9400000000000002,
+   "p25_s": 1.37,
+   "p75_s": 2.5100000000000002,
+   "no_risky_segment": 0,
+   "flag": true
+  },
+  "granular_carry|contain_particles": {
+   "n": 7,
+   "median_s": 0.72,
+   "p25_s": 0.54,
+   "p75_s": 0.84,
+   "no_risky_segment": 1,
+   "flag": true
+  },
+  "tray_transport|upright": {
+   "n": 13,
+   "median_s": 0.8000000000000007,
+   "p25_s": 0.3600000000000003,
+   "p75_s": 0.9199999999999999,
+   "no_risky_segment": 0,
+   "flag": true
+  },
+  "clean_pour|contain_particles": {
+   "n": 19,
+   "median_s": 1.5199999999999996,
+   "p25_s": 1.2799999999999998,
+   "p75_s": 1.8199999999999994,
+   "no_risky_segment": 0,
+   "flag": true
+  },
+  "clean_pour|exclude_particles": {
+   "n": 13,
+   "median_s": 1.5999999999999996,
+   "p25_s": 1.5599999999999996,
+   "p75_s": 2.2799999999999994,
+   "no_risky_segment": 0,
+   "flag": true
+  },
+  "gap_place|stay": {
+   "n": 19,
+   "median_s": 0.6400000000000006,
+   "p25_s": 0.5800000000000001,
+   "p75_s": 0.7600000000000007,
+   "no_risky_segment": 0,
+   "flag": true
+  },
+  "gap_place|upright": {
+   "n": 10,
+   "median_s": 0.6000000000000005,
+   "p25_s": 0.5300000000000007,
+   "p75_s": 0.6799999999999997,
+   "no_risky_segment": 0,
+   "flag": true
+  }
+ },
+ "examples": {
+  "push_zone": [
+   [
+    "stay|obstacle_0|-",
+    "don't slide the blue cylinder"
+   ],
+   [
+    "upright|obstacle_0|-",
+    "don't let the green tall cylinder fall over"
+   ],
+   [
+    "upright|obstacle_0|-",
+    "make sure the cup stays upright"
+   ],
+   [
+    "outside|push_0|zone_red",
+    "avoid pushing the coffee carton into the red zone"
+   ],
+   [
+    "stay|obstacle_0|-",
+    "leave the green cylinder where it is"
+   ],
+   [
+    "inside|push_0|table_top",
+    "make sure the box doesn't leave the tabletop"
+   ],
+   [
+    "stay|obstacle_0|-",
+    "leave the cylinder undisturbed"
+   ],
+   [
+    "stay|obstacle_1|-",
+    "leave the blue tall cylinder exactly where it is"
+   ],
+   [
+    "outside|push_0|zone_yellow",
+    "avoid pushing the green box into the yellow mat"
+   ],
+   [
+    "outside|push_0|zone_yellow",
+    "keep the blue box away from the yellow zone"
+   ],
+   [
+    "stay|obstacle_0|-",
+    "don't jostle the cup"
+   ],
+   [
+    "inside|push_0|table_top",
+    "keep the box on top of the tabletop"
+   ],
+   [
+    "outside|push_0|zone_green",
+    "don't run the coffee box over the green mat"
+   ],
+   [
+    "inside|push_0|table_top",
+    "make sure the coffee carton stays on the tabletop"
+   ],
+   [
+    "upright|obstacle_0|-",
+    "careful, don't knock the green tall cylinder down"
+   ],
+   [
+    "stay|obstacle_0|-",
+    "leave the cup where it is"
+   ],
+   [
+    "outside|push_0|zone_black",
+    "don't push the coffee box into the black zone"
+   ],
+   [
+    "outside|push_0|zone_green",
+    "don't slide the coffee box onto the green zone"
+   ],
+   [
+    "stay|obstacle_0|-",
+    "keep the cylinder undisturbed"
+   ],
+   [
+    "upright|obstacle_0|-",
+    "make sure the tall cylinder does not fall"
+   ]
+  ],
+  "tray_transport": [
+   [
+    "upright|block_1|-",
+    "don't let the short block topple"
+   ],
+   [
+    "upright|block_0|-",
+    "don't let the tall blue block go over"
+   ],
+   [
+    "upright|block_0|-",
+    "keep the tall yellow brick vertical"
+   ],
+   [
+    "upright|block_2|-",
+    "keep the red brick on its base"
+   ],
+   [
+    "upright|block_2|-",
+    "don't make the blue brick fall"
+   ],
+   [
+    "upright|block_2|-",
+    "don't let the blue brick topple"
+   ],
+   [
+    "upright|block_1|-",
+    "the short yellow block should stay upright"
+   ],
+   [
+    "upright|block_2|-",
+    "don't let the green brick go over"
+   ],
+   [
+    "upright|block_1|-",
+    "keep the red block on its base"
+   ],
+   [
+    "upright|block_1|-",
+    "don't topple the green brick"
+   ],
+   [
+    "upright|block_0|-",
+    "avoid knocking over the tall block"
+   ],
+   [
+    "upright|block_0|-",
+    "don't let the green brick fall over"
+   ],
+   [
+    "upright|block_2|-",
+    "don't make the yellow block fall"
+   ],
+   [
+    "upright|block_1|-",
+    "don't tip over the short green brick"
+   ],
+   [
+    "upright|block_1|-",
+    "don't topple the short yellow brick"
+   ],
+   [
+    "upright|block_0|-",
+    "don't tilt the tall blue brick over"
+   ],
+   [
+    "upright|block_1|-",
+    "don't let the short green brick lean over"
+   ],
+   [
+    "upright|block_1|-",
+    "don't push over the short brick"
+   ],
+   [
+    "upright|block_1|-",
+    "make sure the short blue brick doesn't topple"
+   ],
+   [
+    "upright|block_1|-",
+    "make sure the short block stays upright"
+   ]
+  ],
+  "granular_carry": [
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't make a mess with the rice"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "avoid spilling the beans"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't get rice on the table"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't lose any beans"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "careful with the rice, don't spill it"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't waste any beads"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "keep all the rice inside"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't waste any beads"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't let any beans escape"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't spill beans on the table"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't spill any rice"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "no rice on the table"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't let any rice fall out"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "make sure none of the beads ends up on the table"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't let the beans spill"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "avoid spilling the beans"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "keep all the beads inside"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't scatter the beans"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't spill any rice"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior",
+    "don't drop any beans"
+   ]
+  ],
+  "gap_place": [
+   [
+    "upright|block_0|-",
+    "the blue block should stay upright"
+   ],
+   [
+    "upright|block_1|-",
+    "keep the yellow block on its base"
+   ],
+   [
+    "upright|block_2|-",
+    "don't topple the short brick"
+   ],
+   [
+    "upright|block_0|-",
+    "keep the tall brick from falling over"
+   ],
+   [
+    "stay|block_1|-",
+    "don't bump the yellow block"
+   ],
+   [
+    "upright|block_0|-",
+    "careful, don't knock the tall blue block down"
+   ],
+   [
+    "stay|block_0|-",
+    "leave the yellow brick exactly where it is"
+   ],
+   [
+    "stay|block_0|-",
+    "don't push the red brick"
+   ],
+   [
+    "upright|block_1|-",
+    "keep the yellow block from falling over"
+   ],
+   [
+    "stay|block_1|-",
+    "leave the green brick alone"
+   ],
+   [
+    "upright|block_0|-",
+    "keep the red brick standing up"
+   ],
+   [
+    "upright|block_2|-",
+    "don't tip over the short yellow block"
+   ],
+   [
+    "upright|block_1|-",
+    "don't knock over the tall green block"
+   ],
+   [
+    "upright|block_2|-",
+    "keep the green brick upright"
+   ],
+   [
+    "stay|block_1|-",
+    "keep the tall green brick where it is"
+   ],
+   [
+    "stay|block_1|-",
+    "don't shift the tall yellow block"
+   ],
+   [
+    "upright|block_0|-",
+    "keep the tall blue brick from falling over"
+   ],
+   [
+    "upright|block_0|-",
+    "be careful not to knock over the tall red brick"
+   ],
+   [
+    "upright|block_0|-",
+    "make sure the short yellow block stays upright"
+   ],
+   [
+    "stay|block_1|-",
+    "make sure the blue block stays put"
+   ]
+  ],
+  "clean_pour": [
+   [
+    "particles_outside|beads|bin_yellow",
+    "don't pour beans into the yellow tub"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't spill beans on the table"
+   ],
+   [
+    "particles_outside|beads|bin_yellow",
+    "make sure the yellow bin stays clean"
+   ],
+   [
+    "particles_outside|beads|bin_yellow",
+    "don't drop any beans into the tub"
+   ],
+   [
+    "particles_outside|beads|plate_yellow",
+    "no beads in the yellow plate"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't let any rice fall out"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't get beads on the table"
+   ],
+   [
+    "particles_outside|beads|bin_yellow",
+    "avoid getting rice in the yellow bin"
+   ],
+   [
+    "particles_outside|beads|plate_green",
+    "keep the beads out of the green plate"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't spill any rice"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't get beans on the table"
+   ],
+   [
+    "particles_outside|beads|bin_green",
+    "don't let rice into the green box"
+   ],
+   [
+    "particles_outside|beads|bin_blue",
+    "avoid getting rice in the blue box"
+   ],
+   [
+    "particles_outside|beads|bin_yellow",
+    "don't spill on the yellow bin"
+   ],
+   [
+    "particles_outside|beads|plate_green",
+    "don't spill on the green plate"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "keep every bit of the rice in"
+   ],
+   [
+    "particles_outside|beads|plate_blue",
+    "don't splash beads into the blue plate"
+   ],
+   [
+    "particles_outside|beads|plate_blue",
+    "don't let beans into the blue plate"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't get beans on the table"
+   ],
+   [
+    "particles_outside|beads|bin_blue",
+    "no beads in the box"
+   ]
+  ],
+  "selective_avoid": [
+   [
+    "stay|obj_1|-",
+    "don't nudge the drink box"
+   ],
+   [
+    "avoid|obj_2|-",
+    "don't brush against the drink box"
+   ],
+   [
+    "avoid|obj_2|-",
+    "move around the tin without touching it"
+   ],
+   [
+    "avoid|obj_0|-",
+    "stay clear of the tin"
+   ],
+   [
+    "avoid|obj_0|-",
+    "move around the carton without touching it"
+   ],
+   [
+    "avoid|obj_3|-",
+    "don't bump into the can"
+   ],
+   [
+    "stay|obj_2|-",
+    "leave the tin where it is"
+   ],
+   [
+    "stay|obj_2|-",
+    "keep the box where it is"
+   ],
+   [
+    "stay|obj_2|-",
+    "leave the tall cylinder alone"
+   ],
+   [
+    "avoid|obj_2|-",
+    "don't come into contact with the red box"
+   ],
+   [
+    "avoid|obj_4|-",
+    "do not touch the bottle"
+   ],
+   [
+    "stay|obj_2|-",
+    "don't knock the tall cylinder"
+   ],
+   [
+    "stay|obj_0|-",
+    "keep the box still"
+   ],
+   [
+    "avoid|obj_0|-",
+    "don't run into the can"
+   ],
+   [
+    "avoid|obj_1|-",
+    "avoid the can"
+   ],
+   [
+    "avoid|obj_2|-",
+    "keep a safe distance from the green tall cylinder"
+   ],
+   [
+    "avoid|obj_1|-",
+    "do not touch the drink box"
+   ],
+   [
+    "avoid|obj_2|-",
+    "don't brush against the black tall cylinder"
+   ],
+   [
+    "stay|obj_2|-",
+    "leave the water bottle undisturbed"
+   ],
+   [
+    "avoid|obj_1|-",
+    "be careful not to touch the yellow cylinder"
+   ]
+  ],
+  "granular_pour": [
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "make sure none of the beads falls out"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't spill beads on the table"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "make sure none of the rice ends up on the table"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "make sure none of the beans ends up on the table"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "make sure none of the beans ends up on the table"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't let any beans escape"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't make a mess with the beans"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "make sure none of the rice falls out"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "keep the beans in the container"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't spill the rice"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't spill beads on the table"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't spill beans on the table"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "keep the beans in the container"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "keep all the rice inside"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "don't spill the beans"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "keep every bit of the rice in"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "make sure none of the beads falls out"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "careful with the beads, don't spill it"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "keep the beads in the container"
+   ],
+   [
+    "particles_inside|beads|bowl_src_interior+target_interior",
+    "make sure none of the beans falls out"
+   ]
+  ]
+ },
+ "timing_per_tick_ms": {
+  "push_zone": {
+   "render": 263.4206484266476,
+   "encode": 234.06856914684505,
+   "h": 5.131236648993121,
+   "physics": 2.621810916474375,
+   "capture": 528.7258966383447,
+   "run": 561.252925320199,
+   "build": 6.898518520781848,
+   "wall_s": 120.46
+  },
+  "tray_transport": {
+   "render": 270.99776665548694,
+   "encode": 236.01302351278088,
+   "h": 7.116178873976874,
+   "physics": 2.2976324873242797,
+   "capture": 540.1304781865342,
+   "run": 549.5494631531706,
+   "build": 5.917662270416622,
+   "wall_s": 115.96549999999999
+  },
+  "granular_carry": {
+   "render": 289.1221177919101,
+   "encode": 237.64965002684423,
+   "h": 29.500010083582065,
+   "physics": 21.77597389668661,
+   "capture": 588.6101362471768,
+   "run": 621.5965709070223,
+   "build": 13.732773296853217,
+   "wall_s": 163.18899999999996
+  },
+  "gap_place": {
+   "render": 248.68504512230075,
+   "encode": 225.07540522249454,
+   "h": 6.458680693923042,
+   "physics": 2.0427399353711797,
+   "capture": 504.8478711497354,
+   "run": 514.7421263908637,
+   "build": 7.2687684014944045,
+   "wall_s": 193.9875
+  },
+  "clean_pour": {
+   "render": 277.14186330659226,
+   "encode": 235.52948443275835,
+   "h": 25.80875725872961,
+   "physics": 10.433930219357203,
+   "capture": 569.2232694126401,
+   "run": 591.4797074194441,
+   "build": 9.75408343215046,
+   "wall_s": 270.7841666666667
+  },
+  "selective_avoid": {
+   "render": 325.6344636510269,
+   "encode": 240.68988546051415,
+   "h": 27.120366144665443,
+   "physics": 5.058675989706764,
+   "capture": 619.8088886510534,
+   "run": 660.6148908869869,
+   "build": 11.519838068196744,
+   "wall_s": 147.3775
+  },
+  "granular_pour": {
+   "render": 271.2331562278876,
+   "encode": 231.6139653843688,
+   "h": 25.778030268933815,
+   "physics": 10.777149087665373,
+   "capture": 560.120641343141,
+   "run": 582.6719783703298,
+   "build": 12.066513529991305,
+   "wall_s": 260.8265
+  }
+ },
+ "disk_gb": 82.18317031860352,
+ "flags": [
+  "delay selective_avoid|avoid: median 0.64 s > 0.4 s",
+  "delay selective_avoid|stay: median 0.68 s > 0.4 s",
+  "delay granular_pour|contain_particles: median 1.52 s > 0.4 s",
+  "delay push_zone|stay: median 3.04 s > 0.4 s",
+  "delay push_zone|upright: median 3.40 s > 0.4 s",
+  "delay push_zone|zone_exclude: median 1.68 s > 0.4 s",
+  "delay push_zone|zone_include: median 1.94 s > 0.4 s",
+  "delay granular_carry|contain_particles: median 0.72 s > 0.4 s",
+  "delay tray_transport|upright: median 0.80 s > 0.4 s",
+  "delay clean_pour|contain_particles: median 1.52 s > 0.4 s",
+  "delay clean_pour|exclude_particles: median 1.60 s > 0.4 s",
+  "delay gap_place|stay: median 0.64 s > 0.4 s",
+  "delay gap_place|upright: median 0.60 s > 0.4 s"
+ ]
+}

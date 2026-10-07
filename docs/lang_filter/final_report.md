@@ -10,7 +10,7 @@ run), `phase4.md` (rounds), `phase5.md` (closed loop).
 | phase | state | evidence |
 |---|---|---|
 | 0 recon | **done**, no STOP condition | `recon.md`: lockstep parity exact (28 episodes), text cache equal in fp16 precision, filtered controller ok, in-the-way designations within bounds, masks ok, CrossSafe and env Phase-5 regressions pass; 2 env single-episode sim tests fail (env-side) |
-| 1 collection | <!-- P1 --> | `collect_report_warmup.md`, `collect_report_val.md` |
+| 1 collection | **done** 06:03: warmup 420 episodes (30 per task and embodiment, 6 per T1 host; 419 ok, 1 env exception; 82 GB), validation 70 (13.5 GB); all labels within the 2-80% band; delay audit flags every task (gamma decision) | `collect_report_warmup.md`, `collect_report_val.md` |
 | 2 model | **done** | `phase2.md`: 19 model tests, 20.7 M parameters, 22 GB at B = 64 |
 | 3 trainer, probes, offline probe | code **done**, sanity passes on recon data; <!-- P3 --> | `phase3.md` |
 | 4 rollout + rounds | code **done**; filter episodes with a random-init language model run in lockstep with panel videos; <!-- P4 --> | `phase4.md` |
