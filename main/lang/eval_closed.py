@@ -641,7 +641,8 @@ def merged_rows(out_dir: Path) -> list[dict]:
     --n-shards, or a re-run item, never count twice), all under the current env code hash (review O8)."""
     code_hash, filter_hash = env_code_hash(), filter_code_hash()
     by_key, stale = {}, 0
-    for f in sorted(out_dir.glob("episodes_emb-*.jsonl"), key=lambda p: p.stat().st_mtime):
+    # the newest file wins; equal timestamps (a fast file system) fall back to the name, never to dir order
+    for f in sorted(out_dir.glob("episodes_emb-*.jsonl"), key=lambda p: (p.stat().st_mtime, p.name)):
         for ln in f.read_text().splitlines():
             try:
                 d = json.loads(ln)

@@ -168,8 +168,8 @@ def test_make_ring_pairs_a_missing_sidecar(tmp_path):
 def test_resume_refuses_another_h_definition(tmp_path, rounds_root):
     """Review: state.pt records the h definition; a resume under another one refuses."""
     run = tmp_path / "r"
-    with pytest.raises(RuntimeError):
-        _rounds(run, rounds_root, FakeCollect(kill_at=(1, 0)), resume=False)
+    with pytest.raises(RuntimeError):   # (1, 0) is FakeCollect's skipped slot: kill at (1, 1)
+        _rounds(run, rounds_root, FakeCollect(kill_at=(1, 1)), resume=False)
     st = torch.load(run / "state.pt", weights_only=False)
     assert st.get("h_code") and "git_head" in st
     st["h_code"] = "0" * 12

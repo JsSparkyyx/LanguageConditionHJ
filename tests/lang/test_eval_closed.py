@@ -111,6 +111,9 @@ def test_merged_rows_dedupe_and_hash(tmp_path):
     (tmp_path / "episodes_emb-e.jsonl").write_text("".join(json.dumps(x) + "\n" for x in a))
     b = [{"key": ["t", 0, "train", "harm"], "embodiment": "e", "v": 9, "code_hash": h}]
     (tmp_path / "episodes_emb-e_s1.jsonl").write_text("".join(json.dumps(x) + "\n" for x in b))
+    import os
+    os.utime(tmp_path / "episodes_emb-e.jsonl", (1000, 1000))      # the s1 file is the newer one
+    os.utime(tmp_path / "episodes_emb-e_s1.jsonl", (2000, 2000))
     rows = merged_rows(tmp_path)
     assert sorted((r["embodiment"], r["v"]) for r in rows) == [("e", 9), ("f", 2)]
 
