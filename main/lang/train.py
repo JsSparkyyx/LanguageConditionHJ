@@ -218,9 +218,21 @@ class LangTrainer:
             y = (1 - gamma) * h + gamma * torch.minimum(h, 0.5 * (q1_t + q2_t))
         q1, q2, _, _ = self.critics(enc, dtheta, Jlin, Jang, ji)
         loss_q = F.mse_loss(q1, y) + F.mse_loss(q2, y)
+        loss = loss_q
+        aux_out = {}
+        if getattr(cfg, "aux_target_loss", False):   # V4 (decision 5b): trains the encoder and the head
+            pred = self.policy_enc.aux_predict(enc)
+            tgt, val = _t(b["aux_target"], dev=d), _t(b["aux_valid"], torch.bool, d)
+            if bool(val.any()):
+                loss_aux = F.huber_loss(pred[val], tgt[val], delta=float(cfg.aux_huber_delta))
+                loss = loss_q + float(cfg.aux_loss_weight) * loss_aux
+                err = (pred - tgt).norm(dim=-1).detach()
+                aux_out = {"aux/loss": float(loss_aux),
+                           "aux/center_err_cm_t": 100.0 * float(err[:, 0][val[:, 0]].mean()) if val[:, 0].any() else float("nan"),
+                           "aux/center_err_cm_0": 100.0 * float(err[:, 1][val[:, 1]].mean()) if val[:, 1].any() else float("nan")}
         self.opt_e.zero_grad(set_to_none=True)
         self.opt_c.zero_grad(set_to_none=True)
-        loss_q.backward()
+        loss.backward()
         gn = {}
         if log:
             from .metrics import grad_norm
@@ -251,7 +263,7 @@ class LangTrainer:
             for tp, sp in self.target_pairs:
                 tp.mul_(1 - tau).add_(tau * sp)
         self.step += 1
-        out = {"loss/q": float(loss_q), "loss/pi": float(loss_pi), "alpha": alpha, "gamma": gamma, **gn}
+        out = {"loss/q": float(loss_q), "loss/pi": float(loss_pi), "alpha": alpha, "gamma": gamma, **gn, **aux_out}
         if log:
             out.update(self._diagnostics(b, enc_d, q1, q2, y, h, logp, dtheta, dmax, Jlin, Jang, ji))
         return out
@@ -328,7 +340,29 @@ class LangTrainer:
             self.prober = Prober(self.val_sampler, n=self.probe_n)
         t0 = time.time()
         out = self.prober.run(self.probe_forward, self.run / "probes", self.step)
+        if getattr(self.cfg, "aux_target_loss", False):
+            out.update(self.aux_probe())
         out["perf/probe_s"] = time.time() - t0
+        return out
+
+    @torch.no_grad()
+    def aux_probe(self, n: int = 256) -> dict:
+        """V4: the head's centre error on validation (cm; mean and median, frames t and 0): does the model locate
+        the named item, whether or not Q uses it (decision 5b)."""
+        sub = self.val_sampler.sample(n)
+        was = self.policy_enc.training
+        self.policy_enc.eval()
+        words, wmask = self.text.lookup(sub["sentence"], splits=["probe"] * len(sub["sentence"]))
+        enc, _, _, _ = self.encode(sub, words, wmask)
+        self.policy_enc.train(was)
+        err = (self.policy_enc.aux_predict(enc) - _t(sub["aux_target"], dev=self.dev)).norm(dim=-1).cpu().numpy() * 100
+        val = np.asarray(sub["aux_valid"], bool)
+        out = {}
+        for f, name in ((0, "t"), (1, "0")):
+            e = err[:, f][val[:, f]]
+            if e.size:
+                out[f"probe/aux_center_err_cm_{name}"] = float(e.mean())
+                out[f"probe/aux_center_err_cm_{name}_median"] = float(np.median(e))
         return out
 
     # ------------------------------------------------------------ checkpoint --

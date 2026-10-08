@@ -92,6 +92,24 @@ def ref_centers(A, rec: dict, rule: dict, slots) -> tuple[np.ndarray, np.ndarray
     return c, v
 
 
+def named_centers(A, rec: dict, rule: dict, slots) -> tuple[np.ndarray, np.ndarray]:
+    """V4 targets (decision 5b): the named item's world centre at each frame row: the subject object's centre
+    (ref_centers), or for a rule on ONE region (zone_exclude / zone_include / exclude_particles) the region's
+    centre, the translation of its region_T (region rows follow the record's regions list). Invalid for bead-set
+    and multi-region rules."""
+    c, v = ref_centers(A, rec, rule, slots)
+    if v.any() or "object" in (rule.get("subject") or {}):
+        return c, v
+    ref = rule.get("reference") or {}
+    if rule["consequence"] in ("zone_exclude", "zone_include", "exclude_particles") and "region" in ref:
+        k = int(ref["region"])
+        for f, slot in enumerate(slots):
+            T = np.asarray(A["region_T"][slot, k], np.float64)
+            if np.isfinite(T).all() and abs(T[3, 3] - 1.0) < 1e-6:
+                c[f], v[f] = T[:3, 3], True
+    return c, v
+
+
 def bead_h_of(sources) -> str:
     """Which bead h the bead-task rows of these sources carry: "count" (n_violating stored, 2026-10-07 on),
     "old" (soft-min / plain clip, only when drop_stale_bead_rows is off), "mixed", or "none" (no bead rows)."""
@@ -431,6 +449,7 @@ class LangSampler:
         h, hn, fs, fsr, pair = [], [], [], [], []
         tag = {k: [] for k in ("ref_center", "ref_center_valid", "ref_center_next", "ref_center_valid_next")} \
             if getattr(self.cfg, "oracle_ref_tag", False) else None
+        aux = {"aux_target": [], "aux_valid": []} if getattr(self.cfg, "aux_target_loss", False) else None
         ref = np.zeros((len(picks), 3, out["scene_tokens"].shape[2]), dtype=np.float16) if self.probe else None
         for b, (gi, col, p) in enumerate(picks):
             j, i = int(self.sid[gi]), int(self.loc[gi])
@@ -454,6 +473,9 @@ class LangSampler:
             h.append(float(A["h_rules"][rows["row"], col])), hn.append(float(A["h_rules"][rows["next_row"], col]))
             fs.append(bool(A["fails_soon"][rows["row"], col])), fsr.append(bool(s.recall[rows["row"], col]))
             pair.append(int(p))
+            if aux is not None:   # V4: the named item's centre at frames t and 0
+                c, v = named_centers(A, rec, rule, (rows["row"], rows["first_row"]))
+                aux["aux_target"].append(c), aux["aux_valid"].append(v)
             if tag is not None:   # V3: the named object's centre in frames [t, t-k, 0] and [t+1, t+1-k, 0]
                 c, v = ref_centers(A, rec, rule, (rows["row"], rows["prev_row"], rows["first_row"]))
                 cn, vn = ref_centers(A, rec, rule, (rows["next_row"], rows["next_prev_row"], rows["first_row"]))
@@ -475,6 +497,8 @@ class LangSampler:
             out["ref_mask"] = ref
         if tag is not None:
             out.update({k2: np.stack(v) for k2, v in tag.items()})
+        if aux is not None:
+            out.update({k2: np.stack(v) for k2, v in aux.items()})
         n_pairs = int((out["pair"] >= 0).sum() // 2)
         self.stats["pairs"] += n_pairs
         self.stats["mixed"] += sum(1 for p in range(n_pairs)

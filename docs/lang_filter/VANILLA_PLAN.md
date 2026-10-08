@@ -71,7 +71,7 @@ review before you continue. Judge with numbers. Videos are for humans.
 | harmful / benign at tick t | rule j is harmful at t if `fails_soon[t, j]` (h_j < 0 somewhere in ticks t … t+24 of the episode), else benign |
 | mixed row | a row with at least one harmful and one benign sampleable rule |
 | in the way | an item the careless nominal is aimed at or will run into, read from the task's own scene metadata (Section 3.5). Deterministic per seed |
-| harm-designated / benign-designated rule | a rule (not a set or ambiguous rule) whose referent is / is not in the way. Referents that the nominal hits in some runs are `unclear` and never named. Used to choose named rules in rounds (sampleable rules only) and in evaluation (rules eligible for the axis) |
+| harm-designated / benign-designated rule | a rule (not a set or ambiguous rule) whose referent is / is not in the way. Referents that the nominal hits in some runs (formerly `unclear`) count as in the way since 2026-10-08 (Yuxuan), with their reason kept (`in_way_reasons`). Used to choose named rules in rounds (sampleable rules only) and in evaluation (rules eligible for the axis) |
 | primary rule | the environment's **scenario referent** (`active_rule_id="primary"`), drawn by each task from a calibrated mix of in-the-way and benign scenarios (for example T6: hit container 70%, other 30%), and in T3 sometimes a pair rule. Stored as a label only, never used to decide harm or benign |
 | named rule | the rule a sentence refers to, in a training sample or a filter run |
 | frames t, t−k, 0 | scene tokens at the current tick, k ticks earlier (k = 2), and at the episode's first tick |
@@ -308,8 +308,9 @@ nominal runs (then the in-the-way classification is wrong for that task).
 ### 3.5 In the way (`main/lang/scene_roles.py`)
 
 `in_way(env, record) -> (set[str], set[str])`: the ids of the items and regions the careless nominal is
-aimed at or will run into, and the ids that are unclear. All of them come from the task's own scene
-metadata, which is deterministic per seed:
+aimed at or will run into (second set empty since 2026-10-08: the "unclear" ids below count as in the way,
+Yuxuan; `in_way_reasons` keeps why: T1 on_path / near_path / second_corridor, T6 aimed / diagonal). All of
+them come from the task's own scene metadata, which is deterministic per seed:
 
 | task | in the way (and unclear) |
 |---|---|
@@ -331,10 +332,11 @@ Ids are the env's string ids (`item_id`, `region_id`). A record rule points to i
 and `record["regions"][k]["region_id"]` (the bead set: its particle object's `item_id`). A test on one
 saved record per task checks the conversion.
 
-`designation(rule, record, roles) -> "harm" | "benign" | "unclear"`, for every rule that is not a set or
-ambiguous rule (evaluation names held-out rules too, which are never sampleable): **harm-designated** if
-its referent is in the way, **unclear** if its referent is unclear, else **benign-designated**. Rounds
-name only sampleable rules (Section 7.1). Unclear rules are never named. Store every rule's designation
+`designation(rule, record, roles) -> "harm" | "benign"`, for every rule that is not a set or ambiguous
+rule (evaluation names held-out rules too, which are never sampleable): **harm-designated** if its referent
+is in the way (the formerly unclear ones included since 2026-10-08), else **benign-designated**. Rounds name
+only sampleable rules (Section 7.1). T6 harm runs are reported split by aimed-at vs diagonal container (the
+diagonal one's rule breaks in about 8% of nominal episodes). Store every rule's designation
 and the environment's `primary` / `referent_kind` in `lang_episodes.jsonl`.
 
 ---
@@ -1230,7 +1232,7 @@ question and the figures.
 | `softmin_T_h` | 0.05 | h units, not scaled by `h_scale` |
 | `harmful_frac`, `pair_frac`, `task_balance` | 0.5, 0.5, true | |
 | `recall_horizon_ticks` | 7 | `fails_soon` itself is the env's 25 ticks |
-| `gamma`, `gamma_final` | 0.9, 0.9 | **human decides** after the delay audit. Must be equal |
+| `gamma`, `gamma_final` | 0.95, 0.95 | decided 2026-10-08 (Yuxuan; 0.9 before). Must be equal; a run keeps its saved value |
 | `batch_size`, `lr`, `tau` | 64, 3e-4, 0.005 | B fixed unless the human approves |
 | `alpha_start`, `alpha_final`, `alpha_anneal_steps` | 0.2, 0.02, 20000 | |
 | `filter_margin`, `filter_release_margin`, `hj_hold_ticks` | 0, 0, 3 | |

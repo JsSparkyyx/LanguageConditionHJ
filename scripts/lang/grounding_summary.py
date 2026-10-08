@@ -8,9 +8,10 @@ states: the pairs of all runs are the same pairs). Per variant and pair the seed
 0 wrong) are averaged, then rank accuracy per group with an episode-cluster bootstrap 95% interval of that
 seed mean; each seed's own value is listed too. Groups: referent pairs (same consequence, other object) and
 consequence pairs (same object, other consequence), T1 + T7 pooled and per task, already harmed / not yet;
-the sentence-only prior on the same pairs. E4 (Yuxuan, 2026-10-08): primary = referent, already harmed, T1 +
-T7 pooled. Text fix: V1 or V2 >= 0.85 with its interval above V0's interval. Grounding bottleneck: V3 >= 0.85
-while V1 and V2 < 0.75. Not grounding: V3 < 0.75. Otherwise in between.
+the sentence-only prior on the same pairs. Decision (Yuxuan, 2026-10-08, decision 5; replaces E4): primary =
+referent, already harmed, T1 + T7 pooled. a (V1 / V2) or b (V4, the auxiliary target loss) >= 0.85: keep the
+vanilla model with that change. Only if neither does but V3 (the oracle tag) does: propose slots plus a pointer.
+V4 is run only if a does not fix it (on the better of V1 / V2 if either helped, else on V0).
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 LABELS = {"v0": "V0 baseline", "v1": "V1 words normalized", "v2": "V2 V1 + [CLS] / [SEP] hidden",
-          "v3": "V3 oracle tag (ceiling)"}
+          "v3": "V3 oracle tag (ceiling)", "v4": "V4 auxiliary target loss"}
 
 
 def pair_outcomes(rows: list[dict], ax: str = "train") -> dict:
@@ -75,7 +76,7 @@ def main(argv=None) -> int:
     by_var = defaultdict(dict)   # variant -> seed -> pair outcomes
     meta = {}
     for r in runs:
-        m = re.search(r"_(v\d)_s(\d+)$", r.name)
+        m = re.search(r"_(v\d)(?:_[a-z0-9]+)?_s(\d+)$", r.name)
         f = r / "eval_offline" / args.out_name / "rows.json.gz"
         if not m or not f.exists():
             continue
@@ -104,13 +105,23 @@ def main(argv=None) -> int:
     def prim(v):
         return res.get(v, {}).get("referent/already_harmed/T1 + T7", {}).get("mean", (float("nan"),) * 3)
 
-    v0, v1, v2, v3 = (prim(v) for v in ("v0", "v1", "v2", "v3"))
-    text_fix = any(x[0] >= 0.85 and x[1] > v0[2] for x in (v1, v2) if x[0] == x[0])
-    bottleneck = v3[0] >= 0.85 and all(x[0] < 0.75 for x in (v1, v2) if x[0] == x[0])
-    not_grounding = v3[0] == v3[0] and v3[0] < 0.75
-    outcome = ("the text path is the fix" if text_fix else "grounding is the bottleneck" if bottleneck else
-               "not grounding" if not_grounding else "in between")
-    res["_e4"] = {"primary": {k: x for k, x in zip(("v0", "v1", "v2", "v3"), (v0, v1, v2, v3))}, "outcome": outcome}
+    v0, v1, v2, v3, v4 = (prim(v) for v in ("v0", "v1", "v2", "v3", "v4"))
+    ok = lambda x: x[0] == x[0] and x[0] >= 0.85  # noqa: E731
+    best_a = max((("v1", v1), ("v2", v2)), key=lambda kv: kv[1][0] if kv[1][0] == kv[1][0] else -1)
+    if ok(v1) or ok(v2):
+        outcome = f"a fixes it: keep the vanilla model with {LABELS[best_a[0]]}"
+    elif ok(v4):
+        outcome = "b fixes it: keep the vanilla model with the auxiliary target loss (V4)"
+    elif v4[0] != v4[0]:
+        helped = best_a[1][0] == best_a[1][0] and best_a[1][0] > v0[2]   # above V0's interval
+        outcome = (f"a does not fix it; run V4 on {LABELS[best_a[0]] if helped else LABELS['v0']} "
+                   f"({'it helped' if helped else 'neither V1 nor V2 is above V0'})")
+    elif ok(v3):
+        outcome = "neither a nor b reaches 0.85 but the oracle does: propose slots plus a pointer"
+    else:
+        outcome = "neither a, b nor the oracle reaches 0.85: the bottleneck is not (only) referent grounding"
+    res["_e4"] = {"primary": {k: x for k, x in zip(("v0", "v1", "v2", "v3", "v4"), (v0, v1, v2, v3, v4))},
+                  "outcome": outcome, "best_a": best_a[0]}
     f = lambda t: f"{t[0]:.2f} [{t[1]:.2f}, {t[2]:.2f}]" if t[0] == t[0] else "–"  # noqa: E731
     L = ["# Grounding runs: summary (review round 3, Part II E2 / E4)", "",
          f"Runs: {', '.join(f'{k} (step {s})' for k, s in sorted(meta.items()))}. Cells: rank accuracy, the seed mean "
@@ -133,7 +144,7 @@ def main(argv=None) -> int:
         L.append("| sentence prior | " + " | ".join(f(c0.get(f"{kind}/{s}/{g}", {}).get("prior", (float('nan'),) * 3))
                                                    for s in ("already_harmed", "not_yet") for g, _ in groups) + " |")
         L.append("")
-    L += ["## E4 decision", "", "Primary: referent, already harmed, T1 + T7 pooled: " +
+    L += ["## Decision (decision 5)", "", "Primary: referent, already harmed, T1 + T7 pooled: " +
           ", ".join(f"{k} {f(x)}" for k, x in res["_e4"]["primary"].items()) + f". Outcome: **{outcome}**.", ""]
     Path(args.md).write_text("\n".join(L) + "\n")
     Path(args.md).with_suffix(".json").write_text(json.dumps(res, indent=1, default=float))

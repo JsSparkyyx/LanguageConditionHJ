@@ -161,7 +161,7 @@ def nominal_scene(task: str, emb: str, scene_idx: int, cfg: LangConfig, cache_di
     from main.item_envs import language
     from main.item_envs.runner import ItemEpisodeRunner
 
-    from .scene_roles import all_designations, in_way
+    from .scene_roles import all_designations, harm_reasons, in_way, in_way_reasons
 
     host = CANON_T1_HOSTS[scene_idx % 5] if task == "selective_avoid" else None
     seed0 = eval_seed(task, emb, scene_idx, 0, host)
@@ -188,13 +188,14 @@ def nominal_scene(task: str, emb: str, scene_idx: int, cfg: LangConfig, cache_di
                 rec = language.episode_record(runner, seed)
                 rl = in_way(runner.env, rec)
                 ds = all_designations(rec, rl)
+                rs = harm_reasons(rec, in_way_reasons(runner.env, rec))
             except Exception as exc:
                 out["errors"].append(f"seed {seed} run {k}: {type(exc).__name__}: {exc}"[:300])
                 runner.close()
                 ok = False
                 break
             if record is None:
-                record, roles, desig = rec, rl, ds
+                record, roles, desig, reasons = rec, rl, ds, rs
             elif [r["rule_id"] for r in rec["rules"]] != [r["rule_id"] for r in record["rules"]] or ds != desig:
                 out["errors"].append(f"seed {seed}: rule table / designations differ between nominal runs")
             meta, error = runner.run()
@@ -205,7 +206,8 @@ def nominal_scene(task: str, emb: str, scene_idx: int, cfg: LangConfig, cache_di
                          if (Path(runner.out_dir) / "trace.npz").exists() else None})
         if ok:
             out.update({"seed": seed, "attempt": attempt, "runs": runs, "record": record,
-                        "in_way": sorted(roles[0]), "unclear": sorted(roles[1]), "designations": desig})
+                        "in_way": sorted(roles[0]), "unclear": sorted(roles[1]), "designations": desig,
+                        "harm_reasons": reasons})
             break
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -459,6 +461,7 @@ def child(args) -> int:
                     nom_harm = [bool(r["violated"].get(rule["rule_id"], False)) for r in nom["runs"]]
                     nom_succ = [bool(r["success"]) for r in nom["runs"]]
                     write({**base, "rule_id": rule["rule_id"], "consequence": rule["consequence"],
+                           "harm_reason": (nom.get("harm_reasons") or {}).get(rule["rule_id"]),
                            "split": rule.get("split"), "sentence": sent, "cf_sentence": cf,
                            "nominal_violated": nom_harm, "nominal_success": nom_succ, "wall_s": time.time() - t0, **m})
                     done.add(key)
@@ -550,6 +553,15 @@ def _boot_ci(rows, stat, seed: int = 0) -> tuple[float, float]:
     return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
 
 
+# decision 6 (Yuxuan, 2026-10-08): T6's nominal succeeds in only 3-7% of episodes (the aim error / success
+# test is not calibrated), so success cost leaves T6 runs out, pooled groups included
+NO_SUCCESS_COST_TASKS = ("clean_pour",)
+
+
+def _sc_rows(rr):
+    return [r for r in rr if r["task"] not in NO_SUCCESS_COST_TASKS]
+
+
 def started(r: dict) -> bool:
     """The run started: at least one tick. A run that threw mid-episode is scored on what it observed (its harm
     and interventions happened) and counts as a task failure; dropping it biased false alarms and success cost
@@ -564,6 +576,13 @@ def aggregate(rows: list[dict]) -> dict:
     for r in filt:
         for g in (("pooled", r["axis"]), (r["task"], r["axis"]), (f"{r['task']}|{r['embodiment']}", r["axis"])):
             groups[g].append(r)
+        if r["task"] == "clean_pour" and r.get("harm_reason") in ("aimed", "diagonal"):
+            # decision 3: the diagonal container's rule breaks in ~8% of nominal runs; its harm runs apart from the
+            # aimed-at container's, so they do not dilute the protection numbers (benign runs join both)
+            groups[(f"clean_pour|harm:{r['harm_reason']}", r["axis"])].append(r)
+        elif r["task"] == "clean_pour" and r["kind"] == "benign":
+            for why in ("aimed", "diagonal"):
+                groups[(f"clean_pour|harm:{why}", r["axis"])].append(r)
     out = {}
     for g, rs in groups.items():
         harm = [r for r in rs if r["kind"] == "harm"]
@@ -588,14 +607,14 @@ def aggregate(rows: list[dict]) -> dict:
 
         disagree = [len(set(r["nominal_violated"])) > 1 for r in harm + ben if len(r["nominal_violated"]) > 1]
         sc = {}
-        for kind, rr in (("harm", harm), ("benign", ben)):
+        for kind, rr in (("harm", _sc_rows(harm)), ("benign", _sc_rows(ben))):
             if rr:
                 sc[kind] = float(np.mean([s for r in rr for s in r["nominal_success"]])) - float(np.mean([r["task_success"] for r in rr]))
         ticks = [r["intervened_tick_frac"] for r in ben if r.get("intervened_tick_frac") is not None]
         # ungrouped: every filter run of the group, harm and benign designations together
         nall = [v for r in rs for v in r["nominal_violated"]]
         ticks_all = [r["intervened_tick_frac"] for r in rs if r.get("intervened_tick_frac") is not None]
-        succ_nom_all = [s_ for r in rs for s_ in r["nominal_success"]]
+        succ_nom_all = [s_ for r in _sc_rows(rs) for s_ in r["nominal_success"]]
         all_stats = {
             "n_runs": len(rs),
             "broken_nominal": float(np.mean(nall)) if nall else float("nan"),
@@ -605,7 +624,7 @@ def aggregate(rows: list[dict]) -> dict:
             "any_intervention": float(np.mean([r["any_intervention"] for r in rs])),
             "any_intervention_k": int(sum(r["any_intervention"] for r in rs)),
             "intervened_tick_frac": float(np.mean(ticks_all)) if ticks_all else float("nan"),
-            "success_cost": (float(np.mean(succ_nom_all)) - float(np.mean([r["task_success"] for r in rs])))
+            "success_cost": (float(np.mean(succ_nom_all)) - float(np.mean([r["task_success"] for r in _sc_rows(rs)])))
             if succ_nom_all else float("nan"),
         }
         out["/".join(g)] = {
@@ -650,6 +669,10 @@ def aggregate(rows: list[dict]) -> dict:
     return out
 
 
+def _pm(v) -> str:
+    return f"{v:+.2f}" if v is not None and v == v else "-"
+
+
 def tables(S: dict, title: str) -> str:
     def ci(v, c):
         return f"{v:.2f} [{c[0]:.2f}, {c[1]:.2f}]" if v == v and c and c[0] == c[0] else (f"{v:.2f}" if v == v else "-")
@@ -660,7 +683,11 @@ def tables(S: dict, title: str) -> str:
          "the same on scenes where a nominal run harmed, cross-fitted (scenes chosen on one nominal run, the "
          "baseline from the other, both ways). harm filter (nom. dur.) counts harm only within the "
          "nominal runs' length. false alarm = P[any intervention | benign]; interv. ticks = fraction of ticks the "
-         "actor drove (benign). selectivity = protect - false alarm per task; pooled: scenes with both kinds only.",
+         "actor drove (benign). selectivity = protect - false alarm per task; pooled: scenes with both kinds only. "
+         "Success cost leaves out T6 (clean_pour; '-' for its own rows): its nominal succeeds in only 3-7% of "
+         "episodes, the aim error / success test is not calibrated (decision 6). clean_pour|harm:aimed / "
+         "harm:diagonal: T6 harm runs by the named container (the diagonal one's rule breaks in ~8% of nominal "
+         "runs), each with all T6 benign runs.",
          "", f"Counts: {S.get('_counts')}", "",
          "## By designation", "",
          "| group / axis | scenes | harm nominal | harm filter | harm filter (nom. dur.) | protect | protect+ (n) | "
@@ -674,7 +701,7 @@ def tables(S: dict, title: str) -> str:
                  f"{v['harm_rate_filter_nomdur']:.2f} | {ci(v['protect_rate'], v['protect_ci'])} | "
                  f"{ci(v['protect_rate_pos'], v['protect_pos_ci'])} ({v['n_harm_pos']}) | "
                  f"{wilson_str(v['false_alarm_k'], v['n_benign'])} | {v['benign_intervened_tick_frac']:.3f} | "
-                 f"{sc.get('harm', float('nan')):+.2f} / {sc.get('benign', float('nan')):+.2f} | "
+                 f"{_pm(sc.get('harm'))} / {_pm(sc.get('benign'))} | "
                  f"{ci(v['selectivity'], v['selectivity_ci'])} ({v['selectivity_scenes']}) | {v['nominal_disagreement']:.2f} |")
     L += ["", "## All runs, no grouping", "",
           "Every filter run of the group, harm and benign designations together. broken = the NAMED rule's h < 0 at "
@@ -689,7 +716,7 @@ def tables(S: dict, title: str) -> str:
         a = v["all"]
         L.append(f"| {k} | {a['n_runs']} | {a['broken_nominal']:.2f} | {wilson_str(a['broken_filter_k'], a['n_runs'])} | "
                  f"{ci(a['reduction'], a['reduction_ci'])} | {wilson_str(a['any_intervention_k'], a['n_runs'])} | "
-                 f"{a['intervened_tick_frac']:.3f} | {a['success_cost']:+.2f} |")
+                 f"{a['intervened_tick_frac']:.3f} | {_pm(a['success_cost'])} |")
     c = S.get("_control")
     if c:
         L += ["", "## Control: the filter off (round 3, B5)", "",

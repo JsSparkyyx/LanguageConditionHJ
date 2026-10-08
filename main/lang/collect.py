@@ -180,7 +180,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     from main.train.collect import CKPT_DIR, make_kinematics
 
     from .rollout import LangRolloutController
-    from .scene_roles import all_designations, in_way, mask_region_rows
+    from .scene_roles import all_designations, harm_reasons, in_way, in_way_reasons, mask_region_rows
 
     out_root = Path(out_root).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
@@ -257,6 +257,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         record = language.episode_record(runner, seed)
         roles = in_way(env, record)
         desig = all_designations(record, roles)
+        reasons = harm_reasons(record, in_way_reasons(env, record))   # why each harm rule is (decision 3)
         primary = runner._primary_rule_id(env.task)
         info = getattr(env.task, "episode_info", None) or {}
         layout = getattr(env.task, "layout_info", None) or {}
@@ -336,7 +337,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             "named_consequence": named["consequence"] if named else None,
             "designation": desig.get(named["rule_id"]) if named else None,
             "sentence": sentence, "cf_sentence": cf_sentence, "designations": desig,
-            "in_way": sorted(roles[0]), "unclear": sorted(roles[1]),
+            "in_way": sorted(roles[0]), "unclear": sorted(roles[1]), "harm_reasons": reasons,
             "primary": primary, "referent_kind": info.get("referent_kind"),
             "scenario": layout.get("scenario"),
             "status": trace.get("status", "ok"), "exception": trace.get("exception"),
@@ -491,7 +492,7 @@ TRAIN_ONLY_FIELDS = frozenset({
     "k_prev", "n_queries", "max_text_tokens", "text_backend", "backend_paths", "trunk_depth", "critic_depth",
     "lang_scene", "lang_body", "lang_film", "lang_queries", "lang_rtoken", "film_zero_init", "softmin_T_h",
     "activation_checkpointing", "tf32_train", "text_out_norm", "mask_special_tokens", "oracle_ref_tag",
-    "oracle_tag_sigma", "shuffle_text", "relabel", "harmful_frac", "pair_frac", "task_balance",
+    "oracle_tag_sigma", "aux_target_loss", "aux_loss_weight", "aux_huber_delta", "shuffle_text", "relabel", "harmful_frac", "pair_frac", "task_balance",
     "recall_horizon_ticks", "drop_stale_bead_rows", "episodes_per_round", "grad_steps_per_round", "collect_rounds",
     "named_harm_frac", "filter_episode_frac", "warmup_episodes_per_task", "val_episodes_per_task",
 })
@@ -606,7 +607,7 @@ def cmd_shard(args, kind: str) -> int:
     if args.tasks != "all":
         cfg = dataclasses.replace(cfg, task_choices=tuple(args.tasks.split(",")))
     out = Path(args.out).resolve()
-    g = shard_g(args.embodiment, args.shard, args.n_shards)
+    g = shard_g(args.embodiment, args.shard, args.n_shards) + int(getattr(args, "g_base", 0) or 0)
     stream = getattr(args, "stream", "default")
     offset = warmup_offset(g) if kind == "warmup" else valg_offset(g) if stream == "grounding" else val_offset(g)
     slots = shard_schedule(cfg.task_choices, args.embodiment, args.shard, args.n_shards, args.episodes_per_task, g)
@@ -713,7 +714,9 @@ def main(argv=None) -> int:
         p.add_argument("--time-budget", type=float, default=None, help="seconds; then pause (exit 75)")
         if kind == "validation":
             p.add_argument("--stream", choices=("default", "grounding"), default="default",
-                           help="grounding: the T1 / T7 grounding validation ids (config.valg_offset, round 3 E1)")
+                           help="grounding: the 20-per-task ur5-wsg validation ids (config.valg_offset; T1 / T7 at "
+                                "g 0-3, round 3 E1; T2-T6 at g 4-8, decision 4)")
+            p.add_argument("--g-base", type=int, default=0, help="added to the shard's g (its episode-id offset)")
     p = sub.add_parser("recon")
     p.add_argument("--out", required=True)
     p.add_argument("--embodiment", required=True, choices=CANON_EMBODIMENTS)

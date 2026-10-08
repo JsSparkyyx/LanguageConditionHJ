@@ -47,7 +47,10 @@ Seven tasks, built, calibrated and validated (`envs/docs/item_envs/tasks_overvie
   scene layout decides which items are **in the way** of the careless motion, deterministically per
   seed: T1 on-path objects, T3 on-path mats and objects, T5 the tall block, T6 the container the stream
   is aimed at, T7 the neighbour the slide scrapes. T2 and T4 have only the beads. Items the nominal hits
-  only in some runs (T1 near-path objects, T6's diagonal container) are unclear and never named.
+  only in some runs count as in the way too, so designations are only harm or benign (Yuxuan, 2026-10-08):
+  T1 near-path objects, T1 off-path objects within 10 cm of a second corridor, and T6's diagonal container
+  are harm-designated. The nominal breaks the diagonal container's rule in only about 8% of episodes, so T6
+  harm runs are reported split by "aimed-at container" vs "diagonal" (`scene_roles.in_way_reasons`).
 - Each task also draws a **primary** rule from a calibrated mix of in-the-way and benign scenarios (for
   example T6: the hit container 70%, another one 30%). The primary rule is a label only. Harm and benign
   designations for named rules come from "in the way".
@@ -76,7 +79,8 @@ Seven tasks, built, calibrated and validated (`envs/docs/item_envs/tasks_overvie
   `h = −(0.5 + 0.5·(min(n, 20) − 1)/19)`, so one bead reads −0.5 and 20 or more read −1, whatever
   their depth. The safe side stays `clip(margin / h_unit, 0, 1)` with a hard min over beads. Reason:
   under the plain clip, one stray bead 1 cm out and a whole spill both read −1. Example: 3 beads on
-  the table give h = −(0.5 + 0.5·2/19) = −0.553.
+  the table give h = −(0.5 + 0.5·2/19) = −0.553. Training uses this h as stored, with no relabel to −1
+  (Yuxuan, 2026-10-08).
 - The sidecar buffer (lockstep with `StepBuffer`) stores, per tick, every rule's `h_rules`, its
   `fails_soon` bit (h < 0 within the next 25 ticks), raw margins, `t_in_ep`, and token masks.
   - Nominal collection records all rules at once (StepBuffer h = min over rules). Filter episodes name
@@ -135,7 +139,8 @@ CrossSafe plus text, trained only with the HJ-SAC losses.
   sub-layers, value heads on the 22 body tokens and the 4 queries, `Q = softmin_T` over those 26 values,
   T = 0.05 in h units. For contact rules a link carries the minimum. For spill, tilt, displacement and
   zones a query does.
-- **Loss**: CrossSafe HJ-SAC. Target `y = (1−γ) h + γ min(h, mean of target twins at t+1)`, γ = 0.9.
+- **Loss**: CrossSafe HJ-SAC. Target `y = (1−γ) h + γ min(h, mean of target twins at t+1)`, γ = 0.95
+  (0.9 until 2026-10-08; runs keep the γ of their saved config).
   The critic loss trains the encoder, all new modules and the critics. The actor loss trains the actor
   only.
 - **Frozen**: HoloBrain vision, robot state encoder, BERT, `text_feat_map`. Everything else from
@@ -196,8 +201,21 @@ Hardware: SO-101 or the UR5 setup, to be decided.
 
 - k = 2 ticks for the past frame. T = 0.05. Batch 64, lr 3e-4. TF32 matmuls in the training step only
   (user, 2026-10-08; `tf32_train`), fp32 everywhere else.
-- γ = 0.9, to be revisited if the delay audit shows consequences arriving more than about 10 ticks
-  after their cause (T5 tipping, beads in flight).
+- γ = 0.95 by default (Yuxuan, 2026-10-08; `GAMMA` defaults to 0.95 in the job scripts). Runs keep the γ of
+  their saved config.
+- Validation: 20 ur5-wsg episodes per task, all 7 tasks, masks on, their own episode ids (91M-100M) and text
+  cache (T1 / T7 in `data/lang/val_grounding`, T2-T6 in `data/lang/val20`).
+- Object reading (grounding), in this order, each step only if the previous one does not fix it (T1 and T7,
+  ur5-wsg, 6,000 steps, 2 seeds, scored on "already harmed" and "not yet" pairs with intervals): (a) text
+  fixes V1 (a final RMSNorm on the text adapter's outputs) and V2 (V1 plus [CLS] / [SEP] hidden from the word
+  attention); (b) V4, an auxiliary target loss: readout query q₁ predicts the named item's 3D centre at frames
+  t and 0 through a small MLP head (Huber loss in metres, λ = 0.1 of the critic loss; labels from the sidecar
+  `item_pose` / `region_T`, training only; the head is unused at deployment; `aux_target_loss`), on the better
+  of V1 / V2 if either helped, else on V0; (c) the oracle tag V3 stays the ceiling reference. Decision: if a or
+  b reaches ≥ 0.85 on "already harmed" referent pairs (T1 and T7 pooled), keep the vanilla model with that
+  change; only if neither does but V3 does, propose slots plus a pointer (5.2).
+- T6 success: left as is (its nominal succeeds in 3-7% of episodes); success cost is not reported on T6.
+- Projection solver for deployment: deferred.
 - Novelty check needed against:
   - object-centric RL;
   - language-conditioned latent safety filters (arXiv 2608.00315, closest prior work);

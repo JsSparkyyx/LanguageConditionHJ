@@ -307,6 +307,14 @@ class LangPolicyEncoder(nn.Module):
         self.use_ckpt = bool(getattr(cfg, "activation_checkpointing", False))
         if getattr(cfg, "oracle_ref_tag", False):   # V3: one learned tag vector, zero-init
             self.e_tag = nn.Parameter(torch.zeros(DIM))
+        if getattr(cfg, "aux_target_loss", False):  # V4: q1 -> the named item's centre at frames t and 0
+            if not self.K:
+                raise ValueError("aux_target_loss needs the readout queries (lang_queries)")
+            self.aux_head = nn.Sequential(nn.RMSNorm(DIM), nn.Linear(DIM, DIM), nn.SiLU(), nn.Linear(DIM, 6))
+
+    def aux_predict(self, enc) -> torch.Tensor:
+        """V4: [B, 2, 3] predicted world centre of the named item at frames t and 0, from q1's final token."""
+        return self.aux_head(enc.queries[:, 0]).view(-1, 2, 3)
 
     def encode_text(self, words, word_mask):
         word_mask = word_mask.bool()

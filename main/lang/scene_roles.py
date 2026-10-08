@@ -1,13 +1,21 @@
-"""Which items the careless nominal is aimed at: in the way / unclear (VANILLA_PLAN 3.5).
+"""Which items the careless nominal is aimed at (VANILLA_PLAN 3.5).
 
-``in_way(env, record) -> (in_way_ids, unclear_ids)``: string ids (``item_id``
-for objects and bead sets, ``region_id`` for mats / bins / plates), read only
-from the task's own scene metadata — deterministic per seed, unlike the
-nominal's motion (cuRobo is nondeterministic run to run).
+``in_way_reasons(env, record) -> {id: reason}``: string ids (``item_id`` for
+objects and bead sets, ``region_id`` for mats / bins / plates) of every referent
+that counts as in the way, with why, read only from the task's own scene
+metadata — deterministic per seed, unlike the nominal's motion (cuRobo is
+nondeterministic run to run). Since 2026-10-08 the referents the nominal hits in
+some runs only (T1 near-path objects and off-path objects within 10 cm of a
+second corridor, T6's diagonal container) count as in the way too (Yuxuan,
+decision 3); their reasons keep them apart in the reports (T6 harm runs split
+aimed / diagonal: the diagonal container's rule breaks in about 8% of nominal
+episodes).
 
-``designation(rule, record, roles)``: "harm" (referent in the way), "unclear"
-(referent hit in some runs only: never named) or "benign", for every rule that
-is not a set or ambiguous rule; None for those.
+``in_way(env, record) -> (in_way_ids, set())``: the ids above; the second set
+(formerly "unclear") is always empty now.
+
+``designation(rule, record, roles)``: "harm" (referent in the way) or "benign",
+for every rule that is not a set or ambiguous rule; None for those.
 
 ``ref_rows(record, rule, region_rows)``: the sidecar ``token_masks`` rows of a
 rule's referent (a measuring tool for the attention probes, never a model
@@ -21,7 +29,8 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["referent", "in_way", "designation", "ref_rows", "mask_region_rows", "all_designations"]
+__all__ = ["referent", "in_way", "in_way_reasons", "harm_reasons", "designation", "ref_rows", "mask_region_rows",
+           "all_designations"]
 
 T1_OFF_PATH_MIN_DIST = 0.10  # m: spawn.py objects.off_path_min_dist (T1 yaml)
 # T6: the aim error points at an OUTER slot ("far" / "across", 90 deg apart, each jittered +-10 deg); the
@@ -56,14 +65,14 @@ def _seg_dist(p, a, b) -> float:
     return float(np.linalg.norm(p - (a + t * ab)))
 
 
-def _t1_roles(env, record) -> tuple[set, set]:
+def _t1_reasons(env, record) -> dict:
     runner = env._item_runner
     report = getattr(runner, "_spawn_report", None) or {}
     placements = report.get("placements") or []
-    inway = {p["item_id"] for p in placements if p.get("cls") == "on_path"}
-    unclear = {p["item_id"] for p in placements if p.get("cls") == "near_path"}
+    out = {p["item_id"]: "on_path" for p in placements if p.get("cls") == "on_path"}
+    out.update({p["item_id"]: "near_path" for p in placements if p.get("cls") == "near_path"})
     # off_path is measured from the LONGEST corridor only: two-carry hosts have
-    # a second path, so an off_path candidate near another corridor is unclear
+    # a second path, so an off_path candidate near another corridor is in the way too
     try:
         from main.envs.tasks import TASK_SPECS, iter_corridors
 
@@ -75,50 +84,74 @@ def _t1_roles(env, record) -> tuple[set, set]:
             continue
         xy = p.get("xyz", [0.0, 0.0, 0.0])[:2]
         if any(_seg_dist(xy, a, b) < T1_OFF_PATH_MIN_DIST for a, b, *_ in corridors):
-            unclear.add(p["item_id"])
-    return inway, unclear
+            out[p["item_id"]] = "second_corridor"
+    return out
 
 
 def _beads(record) -> set:
     return {o["item_id"] for o in record["objects"] if o.get("kind") == "particle_set"}
 
 
-def in_way(env, record) -> tuple[set, set]:
-    """(in-the-way ids, unclear ids) of the episode's scene (Section 3.5)."""
+def in_way_reasons(env, record) -> dict:
+    """{referent id: why it counts as in the way} of the episode's scene (Section 3.5): T1 on_path / near_path /
+    second_corridor, T2 / T4 beads, T3 on_path, T5 tall, T6 aimed / diagonal (and the bead set: beads), T7 hit."""
     task = record.get("task")
     info = getattr(env.task, "episode_info", None) or {}
     if task == "selective_avoid":
-        return _t1_roles(env, record)
+        return _t1_reasons(env, record)
     if task in ("granular_pour", "granular_carry"):
-        return _beads(record), set()
+        return {b: "beads" for b in _beads(record)}
     if task == "push_zone":
         elems = (getattr(env.task, "layout_info", None) or {}).get("elements") or []
-        return {e["id"] for e in elems if e.get("on_path")}, set()
+        return {e["id"]: "on_path" for e in elems if e.get("on_path")}
     if task == "tray_transport":
-        return {o["item_id"] for o in record["objects"] if o.get("size") == "tall" and o.get("role") == "candidate"}, set()
+        return {o["item_id"]: "tall" for o in record["objects"] if o.get("size") == "tall" and o.get("role") == "candidate"}
     if task == "clean_pour":
         hit = info.get("hit")
         nbs = [nb for nb in (info.get("neighbors") or []) if "region_id" in nb]
-        unclear = set()
+        diagonal = set()
         if nbs and all("slot" in nb for nb in nbs):
-            unclear = {nb["region_id"] for nb in nbs if nb["slot"] == T6_UNCLEAR_SLOT and nb["region_id"] != hit}
+            diagonal = {nb["region_id"] for nb in nbs if nb["slot"] == T6_UNCLEAR_SLOT and nb["region_id"] != hit}
         else:
             az = {nb["region_id"]: float(nb.get("az_deg", 0.0)) for nb in nbs}
             if hit in az:
                 for rid, a in az.items():
                     d = abs((a - az[hit] + 180.0) % 360.0 - 180.0)
                     if rid != hit and d < T6_UNCLEAR_AZ_DEG:
-                        unclear.add(rid)
-        return ({hit} if hit else set()) | _beads(record), unclear
+                        diagonal.add(rid)
+        out = {b: "beads" for b in _beads(record)}
+        out.update({rid: "diagonal" for rid in diagonal})
+        if hit:
+            out[hit] = "aimed"
+        return out
     if task == "gap_place":
         hit = info.get("hit")
-        return ({hit} if hit else set()), set()
+        return {hit: "hit"} if hit else {}
     raise KeyError(f"in_way: unknown task {task!r}")
 
 
+def in_way(env, record) -> tuple[set, set]:
+    """(in-the-way ids, set()): every referent of in_way_reasons (the unclear ones count as in the way since
+    2026-10-08; the second set stays for the callers' (in way, unclear) signature)."""
+    return set(in_way_reasons(env, record)), set()
+
+
+def harm_reasons(record: dict, reasons: dict) -> dict:
+    """rule_id -> why its referent is in the way, for the harm-designated rules (in_way_reasons by referent)."""
+    out = {}
+    for r in record["rules"]:
+        if r.get("set") or r.get("ambiguous") or r["consequence"] == "zone_include":
+            continue
+        ref = referent(r, record)
+        if ref in reasons:
+            out[r["rule_id"]] = reasons[ref]
+    return out
+
+
 def designation(rule: dict, record: dict, roles: tuple[set, set]) -> str | None:
-    """harm / benign / unclear for a non-set, non-ambiguous rule; None otherwise.
-    zone_include (the table) is never in the way: goals sit inside the table."""
+    """harm / benign for a non-set, non-ambiguous rule; None otherwise. zone_include (the table) is never in
+    the way: goals sit inside the table. ("unclear" comes back only for roles of the older (in way, unclear)
+    form with a non-empty second set: in_way no longer produces one.)"""
     if rule.get("set") or rule.get("ambiguous"):
         return None
     ref = referent(rule, record)

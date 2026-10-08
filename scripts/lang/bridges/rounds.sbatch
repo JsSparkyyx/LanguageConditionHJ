@@ -15,10 +15,10 @@
 # itself again (RESUBMIT=0 to disable); the next job resumes where it stopped. A restart for the
 # per-process environment-init limit (also exit 75) relaunches inside the same job, and so does a crash
 # after progress (state.pt newer than at the launch; at most 3 per job). Defaults are the plan's
-# (ROUNDS=100, EPISODES=4, STEPS=2048, PROBE=10); GAMMA (default 0.9, the plan's) sets the HJ discount
+# (ROUNDS=100, EPISODES=4, STEPS=2048, PROBE=10); GAMMA (default 0.95, decided 2026-10-08) sets the HJ discount
 # (gamma and gamma_final); EXTRA_ARGS goes to `train rounds` unchanged (e.g. "--no-wandb"). Keep the same
 # values on every resubmission of one run. Two gamma runs = two RUN directories, e.g.
-#   RUN=runs/lang/rounds_g090 sbatch ...   and   RUN=runs/lang/rounds_g095 GAMMA=0.95 sbatch ...
+#   RUN=runs/lang/rounds_g095 sbatch ...   and   RUN=runs/lang/rounds_g090 GAMMA=0.9 sbatch ...
 #   Bridges-2:  SBATCH_FLAGS="-A <account> -p GPU-shared --gpus=<rtx type>:1"
 #   Delta:      SBATCH_FLAGS="-A bifq-delta-gpu -p gpuA40x4 --gpus-per-node=1 --mem=64g"
 #               PY="bash scripts/lang/in_container.sh python"   (the container wrapper)
@@ -33,7 +33,7 @@ source scripts/lang/bridges/_env.sh
 # online wandb: WANDB_KEY_FILE names a file with an `export WANDB_API_KEY=...` line (read here, never printed)
 if [[ -n "${WANDB_KEY_FILE:-}" ]]; then source scripts/lang/wandb_env.sh; fi
 RUN="${RUN:?set RUN=runs/lang/<name>}"
-ROUNDS=${ROUNDS:-100}; EPISODES=${EPISODES:-4}; STEPS=${STEPS:-2048}; PROBE=${PROBE:-10}; GAMMA=${GAMMA:-0.9}
+ROUNDS=${ROUNDS:-100}; EPISODES=${EPISODES:-4}; STEPS=${STEPS:-2048}; PROBE=${PROBE:-10}; GAMMA=${GAMMA:-0.95}
 DATA=${DATA:-data/lang/warmup}; VAL=${VAL:-data/lang/val}
 # RUN / DATA / VAL become absolute here (review round 3, C4): the trainer runs with cwd = the code checkout
 # (LANG_REPO when set), so a relative path would point into that checkout, while state_mtime below reads

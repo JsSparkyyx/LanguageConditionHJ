@@ -64,7 +64,7 @@ def test_canonical_indices_ignore_filters():
 
 def test_langconfig_roundtrip(tmp_path):
     cfg = C.LangConfig()
-    assert cfg.gamma == cfg.gamma_final == 0.9
+    assert cfg.gamma == cfg.gamma_final == 0.95   # the default since 2026-10-08 (decision 1)
     assert cfg.item_out_root and cfg.bank_hash
     p = cfg.save(tmp_path / "c.json")
     back = C.LangConfig.load(p)
@@ -80,7 +80,7 @@ def test_langconfig_replace_keeps_item_fields():
 
 def test_langconfig_guards():
     with pytest.raises(AssertionError):
-        C.LangConfig(gamma_final=0.95)
+        C.LangConfig(gamma_final=0.9)    # != gamma (0.95 by default)
     with pytest.raises(AssertionError):
         C.LangConfig(item_out_root="")
     with pytest.raises(AssertionError):

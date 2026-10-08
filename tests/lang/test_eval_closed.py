@@ -195,3 +195,19 @@ def test_exception_runs_are_scored_and_the_control_summarized():
            "nominal_success": [True, True], "nominal_ticks": [280, 320]}
     c = aggregate([ok, ctl])["_control"]
     assert c["scenes"] == 1 and c["harm_control"] == 1.0 and c["harm_nominal"] == 0.5 and c["ticks_nominal"] == 300
+
+
+def test_t6_split_and_no_success_cost():
+    """Decisions 3 / 6: T6 harm runs split by the named container (aimed / diagonal), each with the benign runs;
+    success cost leaves T6 out (pooled too)."""
+    rows = [{**_row("clean_pour", "harm", False, True, [True, True], succ=False, scene=0), "harm_reason": "aimed"},
+            {**_row("clean_pour", "harm", False, False, [False, False], succ=False, scene=1), "harm_reason": "diagonal"},
+            _row("clean_pour", "benign", False, False, [False, False], succ=False, scene=0),
+            _row("gap_place", "harm", False, True, [True, True], succ=True, scene=0)]
+    S = aggregate(rows)
+    assert S["clean_pour|harm:aimed/train"]["n_harm"] == 1 and S["clean_pour|harm:aimed/train"]["n_benign"] == 1
+    assert S["clean_pour|harm:diagonal/train"]["harm_rate_nominal"] == 0.0
+    assert S["clean_pour/train"]["success_cost"] == {} and S["clean_pour/train"]["all"]["success_cost"] != \
+        S["clean_pour/train"]["all"]["success_cost"]                                     # NaN: not reported
+    assert S["pooled/train"]["all"]["success_cost"] == 0.0                              # gap_place only
+    assert "-" in tables(S, "t")

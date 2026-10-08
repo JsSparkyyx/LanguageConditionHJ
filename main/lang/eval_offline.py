@@ -335,6 +335,20 @@ class Evaluator:
         enc = self.pe(_t(b["state_tokens"], dev=d), _t(b["body_tokens"], dev=d), _t(b["link_pos"], dev=d),
                       _t(b["body_mask"], torch.bool, d), _t(b["joint_index"], torch.int64, d),
                       _t(b["scene_tokens"], dev=d), _t(b["scene_pos"], dev=d), words=words, word_mask=wmask, **kw)
+        self._aux_err = None
+        if hasattr(self.pe, "aux_head") and keys is not None and cols is not None:   # V4: the head's centre error
+            from .data import named_centers
+
+            pred = self.pe.aux_predict(enc).float().cpu().numpy()
+            err = np.full((len(keys), 2), np.nan)
+            for n, ((j, i), col) in enumerate(zip(keys, cols)):
+                if col is None:
+                    continue
+                src = self.sources[j]
+                rec, rows = src.rs.records[int(src.eid[i])], src.rows_of(i)
+                c, v = named_centers(src.rs.buf.arrays, rec, rec["rules"][int(col)], (rows["row"], rows["first_row"]))
+                err[n] = np.where(v, np.linalg.norm(pred[n] - c, axis=-1) * 100.0, np.nan)
+            self._aux_err = err
         q = self.critics.qmin(enc, _t(b["dtheta"], dev=d), _t(b["Jlin"], dev=d), _t(b["Jang"], dev=d),
                               _t(b["joint_index"], torch.int64, d))
         return q.float().cpu().numpy()
@@ -343,11 +357,14 @@ class Evaluator:
         """items: (state key, sentence[, rule column of the sentence's rule in that state]) -> Q, batched;
         state reads cached per chunk. The column feeds the V3 oracle tag (None: no tag)."""
         out = np.zeros(len(items), np.float32)
+        self.aux_err = np.full((len(items), 2), np.nan) if hasattr(self.pe, "aux_head") else None
         for a in range(0, len(items), self.batch):
             chunk = items[a:a + self.batch]
             reads = [cache[it[0]] for it in chunk]
             out[a:a + len(chunk)] = self.q_batch(reads, [it[1] for it in chunk], [it[0] for it in chunk],
                                                  [it[2] if len(it) > 2 else None for it in chunk])
+            if self.aux_err is not None and self._aux_err is not None:
+                self.aux_err[a:a + len(chunk)] = self._aux_err
         return out
 
     # ---------------------------------------------------------------- run --
@@ -418,11 +435,13 @@ class Evaluator:
                                 items.append((k, sent, col))
                                 meta.append((r_idx, "para"))
             qs = self.run_items(items, cache)
-            for (r_idx, ax), qv in zip(meta, qs):
+            for n, ((r_idx, ax), qv) in enumerate(zip(meta, qs)):
                 if ax == "para":
                     rows[r_idx]["q"].setdefault("para", []).append(float(qv))
                 else:
                     rows[r_idx]["q"][ax] = float(qv)
+                if ax == "train" and self.aux_err is not None:   # V4: centre error (cm) at frames t and 0
+                    rows[r_idx]["aux_err_cm"] = [float(x) for x in self.aux_err[n]]
             print(f"[eval_offline] {min(c0 + chunk_states, len(states))}/{len(states)} states, {len(rows)} (state, rule) "
                   f"rows, {time.time() - t0:.0f}s", flush=True)
         return summarize(rows), rows
@@ -632,6 +651,14 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
                 m["rank_acc_minus_base"] = m["rank_acc"] - m["rank_acc_base"]
             out[name] = m
         out[f"{ax}/_censored_pairs"] = {"n": n_censored}
+        if ax == "train":   # V4: the head's centre error per task (cm), over the scored (state, rule) rows
+            for t in ("pooled",) + CANON_TASKS:
+                e = np.array([r["aux_err_cm"] for r in rows if r.get("aux_err_cm") is not None
+                              and (t == "pooled" or r["task"] == t)], dtype=np.float64).reshape(-1, 2)
+                if e.size and np.isfinite(e).any():
+                    out[f"aux/{t}"] = {"n": int(np.isfinite(e[:, 0]).sum()), "err_cm_t_mean": float(np.nanmean(e[:, 0])),
+                                       "err_cm_t_median": float(np.nanmedian(e[:, 0])),
+                                       "err_cm_0_mean": float(np.nanmean(e[:, 1])), "err_cm_0_median": float(np.nanmedian(e[:, 1]))}
         for kind in ("symmetric", "mixed"):   # task-macro mean (every task weighs the same; review E4)
             tm = [out[f"{ax}/{kind}/task/{t}"]["rank_acc"] for t in CANON_TASKS if f"{ax}/{kind}/task/{t}" in out]
             if tm and f"{ax}/{kind}/pooled" in out:
@@ -901,6 +928,14 @@ def tables_md(M: dict, title: str) -> str:
             L.append(f"| {name} | {m['n']} ({m.get('n_episodes', '?')}) | {_ci(m, 'auroc', 3)} | {_ci(m, 'auroc_h', 3)} | "
                      f"{_ci(m, 'auroc_text', 3)} | {_ci(m, 'auroc_not_yet', 3)} | "
                      f"{m.get('auroc_h_not_yet', float('nan')):.3f} | {m['v_le_h']:.3f} |")
+    aux = [(t, M[f"aux/{t}"]) for t in ("pooled",) + CANON_TASKS if f"aux/{t}" in M]
+    if aux:
+        L += ["", "**V4 head: the named item's centre (decision 5b)**, error in cm on the scored rows (training "
+              "templates), frames t and 0.", "", "| rows | n | t: mean | t: median | 0: mean | 0: median |",
+              "|---|---|---|---|---|---|"]
+        for t, m in aux:
+            L.append(f"| {t} | {m['n']} | {m['err_cm_t_mean']:.1f} | {m['err_cm_t_median']:.1f} | "
+                     f"{m['err_cm_0_mean']:.1f} | {m['err_cm_0_median']:.1f} |")
     return "\n".join(L) + "\n"
 
 

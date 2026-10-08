@@ -50,7 +50,8 @@ def test_designation_values():
 
 
 def test_in_way_t1_placements_and_second_corridor(monkeypatch):
-    # off_path candidate within 10 cm of a SECOND corridor -> unclear
+    # near_path, and an off_path candidate within 10 cm of a SECOND corridor: in the way since 2026-10-08
+    # (Yuxuan, decision 3), each with its reason
     placements = [
         {"item_id": "c0", "cls": "on_path", "xyz": [0.0, 0.0, 0.8]},
         {"item_id": "c1", "cls": "near_path", "xyz": [0.1, 0.0, 0.8]},
@@ -68,7 +69,9 @@ def test_in_way_t1_placements_and_second_corridor(monkeypatch):
     monkeypatch.setitem(tasks_mod.TASK_SPECS, "place_burger_fries", tasks_mod.TASK_SPECS["place_burger_fries"])
     runner = NS(_spawn_report={"placements": placements}, host="place_burger_fries")
     inway, unclear = SR.in_way(_env(runner=runner), {"task": "selective_avoid", "objects": []})
-    assert inway == {"c0"} and unclear == {"c1", "c2"}
+    assert inway == {"c0", "c1", "c2"} and unclear == set()
+    assert SR.in_way_reasons(_env(runner=runner), {"task": "selective_avoid", "objects": []}) == {
+        "c0": "on_path", "c1": "near_path", "c2": "second_corridor"}
 
 
 def test_in_way_other_tasks():
@@ -81,16 +84,19 @@ def test_in_way_other_tasks():
                                                   _obj(2, "block_1", size="short")]}
     assert SR.in_way(_env(), rec5) == ({"block_0"}, set())
     rec6 = {"task": "clean_pour", "objects": [beads]}
-    # R1: the diagonal slot is unclear, the other outer slot is benign even when jitter puts it < 90 deg away
+    # R1: the diagonal slot (in the way since 2026-10-08, reason "diagonal"); the other outer slot is benign even
+    # when jitter puts it < 90 deg away
     nbs = [{"region_id": "bin_0", "az_deg": 90.0, "slot": "far"}, {"region_id": "bin_1", "az_deg": 128.0, "slot": "far_across"},
            {"region_id": "plate_2", "az_deg": 171.0, "slot": "across"}]
-    inway, unclear = SR.in_way(_env({"episode_info": {"hit": "bin_0", "neighbors": nbs}}), rec6)
-    assert inway == {"bin_0", "beads"} and unclear == {"bin_1"}
+    env6 = _env({"episode_info": {"hit": "bin_0", "neighbors": nbs}})
+    inway, unclear = SR.in_way(env6, rec6)
+    assert inway == {"bin_0", "bin_1", "beads"} and unclear == set()
+    assert SR.in_way_reasons(env6, rec6) == {"bin_0": "aimed", "bin_1": "diagonal", "beads": "beads"}
     # records without slot names: the 67.5 deg azimuth cut (45 +- 20 vs 90 +- 20)
     nbs = [{"region_id": "bin_0", "az_deg": 0.0}, {"region_id": "bin_1", "az_deg": 45.0},
            {"region_id": "plate_2", "az_deg": 81.0}]
     inway, unclear = SR.in_way(_env({"episode_info": {"hit": "bin_0", "neighbors": nbs}}), rec6)
-    assert inway == {"bin_0", "beads"} and unclear == {"bin_1"}
+    assert inway == {"bin_0", "bin_1", "beads"} and unclear == set()
     assert SR.in_way(_env({"episode_info": {"hit": "block_1"}}), {"task": "gap_place", "objects": []}) == ({"block_1"}, set())
     with pytest.raises(KeyError):
         SR.in_way(_env(), {"task": "nope", "objects": []})
@@ -133,3 +139,11 @@ def test_fixture_records(fixtures_dir):
                 parts = rule["rule_id"].split("|")
                 assert ref in parts, (f.name, rule["rule_id"], ref)
     assert len(seen) == len(files)
+
+
+def test_harm_reasons_per_rule():
+    """Every harm-designated rule carries its referent's reason; zone_include and set rules none."""
+    rec = {"objects": [_obj(0, "a"), _obj(1, "b")], "regions": [_reg(0, "table_top")],
+           "rules": [_rule("r0", "avoid", {"object": 0}), _rule("r1", "stay", {"object": 1}),
+                     _rule("r2", "zone_include", {"object": 0}, {"region": 0})]}
+    assert SR.harm_reasons(rec, {"a": "near_path", "table_top": "x"}) == {"r0": "near_path"}

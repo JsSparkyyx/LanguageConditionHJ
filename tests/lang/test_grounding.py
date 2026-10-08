@@ -33,7 +33,7 @@ def test_oracle_tag_weights_follow_the_named_object():
     assert torch.all(w[0, 3:] == 0)                          # frame without a known centre: no tag
 
 
-@pytest.mark.parametrize("switch", ["text_out_norm", "mask_special_tokens", "oracle_ref_tag"])
+@pytest.mark.parametrize("switch", ["text_out_norm", "mask_special_tokens", "oracle_ref_tag", "aux_target_loss"])
 def test_switches_train_and_default_off(tmp_path, switch):
     """Each switch trains (one grad step on fake data); all default off, so the official runs are unchanged."""
     assert getattr(LangConfig(), switch) is False
@@ -44,8 +44,14 @@ def test_switches_train_and_default_off(tmp_path, switch):
         assert b["ref_center"].shape == (8, 3, 3) and b["ref_center_valid"].shape == (8, 3)
         assert b["ref_center_next"].shape == (8, 3, 3)
         assert hasattr(tr.policy_enc, "e_tag") and float(tr.policy_enc.e_tag.abs().sum()) == 0.0
-    out = tr.grad_step()
+    if switch == "aux_target_loss":
+        b = tr.sampler.sample(8)
+        assert b["aux_target"].shape == (8, 2, 3) and b["aux_valid"].shape == (8, 2)
+        assert hasattr(tr.policy_enc, "aux_head")
+    out = tr.grad_step(log=True)
     assert np.isfinite(out["loss/q"])
+    if switch == "aux_target_loss" and "aux/loss" in out:
+        assert np.isfinite(out["aux/loss"]) and out["aux/center_err_cm_t"] >= 0
     if switch == "text_out_norm":
         assert hasattr(tr.policy_enc.text_adapter, "norm_w")
 
@@ -157,4 +163,20 @@ def test_grounding_summary_averages_seeds_and_decides(tmp_path):
     assert res["v1"]["referent/already_harmed/T1 + T7"]["mean"][0] == 1.0
     assert 0.3 < res["v0"]["referent/already_harmed/T1 + T7"]["mean"][0] < 0.7
     assert res["v0"]["referent/already_harmed/T1 + T7"]["prior"][0] == 1.0
-    assert res["_e4"]["outcome"] == "the text path is the fix"
+    assert res["_e4"]["outcome"].startswith("a fixes it")
+
+
+def test_v4_head_error_in_probe_and_eval(tmp_path):
+    """V4: the head's centre error is reported on validation (training probe) and per row (eval_offline)."""
+    from main.lang.eval_offline import Evaluator
+
+    root = make_root(tmp_path / "val", episodes=2, capacity=200)
+    tr = trainer(tmp_path / "run", root, aux_target_loss=True)
+    tr.val_sampler = tr.sampler
+    pr = tr.aux_probe(n=8)
+    assert all(np.isfinite(v) for v in pr.values())
+    tr.grad_step()
+    tr.save_ckpt()
+    ev = Evaluator(tmp_path / "run", "checkpoint.pt", [root], device="cpu", batch=16, text_encoder=StubText())
+    M, rows = ev.evaluate(per_task=6, n_para=2, chunk_states=4)
+    assert any(r.get("aux_err_cm") is not None for r in rows)

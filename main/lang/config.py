@@ -106,6 +106,11 @@ def bank_hash() -> str:
 
 @dataclass
 class LangConfig(FrozenConfig):
+    # --- HJ discount (FrozenConfig fields, new default; Yuxuan 2026-10-08, decision 1). A saved config keeps
+    # its own value, so runs started at 0.9 resume at 0.9 ---
+    gamma: float = 0.95
+    gamma_final: float = 0.95
+
     # --- tasks and embodiments (FrozenConfig fields, new defaults) ---
     task: str = "selective_avoid"
     embodiment: str = "ur5-wsg"
@@ -149,6 +154,12 @@ class LangConfig(FrozenConfig):
     mask_special_tokens: bool = False    # V2: [CLS] / [SEP] out of the keys of body / scene-reads-words
     oracle_ref_tag: bool = False         # V3: simulator-state tag of the named object's scene tokens (offline
     oracle_tag_sigma: float = 0.04       #     measuring tool only; the rollout refuses it), width in metres
+    # V4 (Yuxuan 2026-10-08, decision 5b): readout query q1 predicts the named item's centre at frames t and 0
+    # (simulator labels, training only; the head is unused at deployment). Huber loss in metres, weight
+    # aux_loss_weight relative to the critic loss; it trains the encoder and the head
+    aux_target_loss: bool = False
+    aux_loss_weight: float = 0.1
+    aux_huber_delta: float = 1.0          # metres (PyTorch's default Huber delta)
 
     # --- sampling / relabeling ---
     shuffle_text: bool = False
