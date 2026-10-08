@@ -217,8 +217,9 @@ only, 11,415 old-h bead rows left out; 31 validation episodes; [ ] = 95% episode
 | T5 tray_transport | 0.92 [0.84, 0.99] | 0.90 | 0.92 | 0.89 |
 | T7 gap_place | 0.54 [0.36, 0.75] | 0.91 | 0.54 | 0.62 |
 
-- The label is not the problem: the order by the discounted HJ return agrees with the `fails_soon` order on
-  all but 14 of 3160 pairs, so the score against it equals rank_acc.
+- The label is not what keeps the score low: scored against the discounted HJ return instead of
+  `fails_soon` (3146 of 3160 pairs differ by more than 0.05), the pooled score is the same (0.62), and so
+  are T1, T5 and T7; only T3 moves, up (0.77 -> 0.83).
 - 2079 of the 3160 pairs have the harmful rule ALREADY broken at that tick. The model ranks those 0.67
   [0.54, 0.78], violations 1-7 ticks ahead 0.57, 8-25 ticks ahead 0.51: little foresight on T1 / T7.
 - T3 is the exception: the model (0.77) beats the current-h reader (0.60) and agrees with the HJ return
