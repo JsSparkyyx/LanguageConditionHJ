@@ -32,13 +32,16 @@ if last:
     print("train: " + "  ".join(f"{name} {last[k]:.4g}" for k, name in keys if last.get(k) is not None))
 rnd = [r for r in rows if "round/collect_s" in r]
 if rnd:
-    print("round  harm runs: harmed / intervened | benign runs: intervened / success | episodes  collect min")
+    print("round  harm runs: harmed / intervened | benign runs: intervened / success | all runs: harmed / intervened / "
+          "interv. ticks / success | episodes  collect min")
     for r in rnd[-10:]:
         g = lambda k: r.get(k)  # noqa: E731
         f = lambda v: "  -  " if v is None else f"{v:.2f}"  # noqa: E731
         print(f"{int(r['round/index']):5d}  {f(g('round_overview/harm/harm_named'))} / {f(g('round_overview/harm/any_intervention'))}"
               f"          | {f(g('round_overview/benign/any_intervention'))} / {f(g('round_overview/benign/task_success'))}"
-              f"          | {int(g('round_overview/n_filter_episodes') or 0):3d}      {r['round/collect_s'] / 60:5.1f}")
+              f"          | {f(g('round_overview/all/harm_named'))} / {f(g('round_overview/all/any_intervention'))} / "
+              f"{f(g('round_overview/all/intervened_tick_frac'))} / {f(g('round_overview/all/task_success'))}"
+              f"   | {int(g('round_overview/n_filter_episodes') or 0):3d}      {r['round/collect_s'] / 60:5.1f}")
 vids = sorted((run / "ring" / "videos").glob("*.mp4"), key=lambda p: p.stat().st_mtime) if (run / "ring" / "videos").exists() else []
 print(f"videos: {len(vids)} in {run / 'ring' / 'videos'}" + ("; newest: " + ", ".join(v.name for v in vids[-3:]) if vids else ""))
 for p in ("eval/trend.png", "eval/harm_named", "eval/any_intervention", "probes"):

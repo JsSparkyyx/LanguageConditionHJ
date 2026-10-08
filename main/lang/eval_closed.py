@@ -505,7 +505,24 @@ def aggregate(rows: list[dict]) -> dict:
             if rr:
                 sc[kind] = float(np.mean([s for r in rr for s in r["nominal_success"]])) - float(np.mean([r["task_success"] for r in rr]))
         ticks = [r["intervened_tick_frac"] for r in ben if r.get("intervened_tick_frac") is not None]
+        # ungrouped: every filter run of the group, harm and benign designations together
+        nall = [v for r in rs for v in r["nominal_violated"]]
+        ticks_all = [r["intervened_tick_frac"] for r in rs if r.get("intervened_tick_frac") is not None]
+        succ_nom_all = [s_ for r in rs for s_ in r["nominal_success"]]
+        all_stats = {
+            "n_runs": len(rs),
+            "broken_nominal": float(np.mean(nall)) if nall else float("nan"),
+            "broken_filter": float(np.mean([r["harm_named"] for r in rs])),
+            "broken_filter_k": int(sum(r["harm_named"] for r in rs)),
+            "reduction": _protect(rs), "reduction_ci": _boot_ci(rs, _protect),
+            "any_intervention": float(np.mean([r["any_intervention"] for r in rs])),
+            "any_intervention_k": int(sum(r["any_intervention"] for r in rs)),
+            "intervened_tick_frac": float(np.mean(ticks_all)) if ticks_all else float("nan"),
+            "success_cost": (float(np.mean(succ_nom_all)) - float(np.mean([r["task_success"] for r in rs])))
+            if succ_nom_all else float("nan"),
+        }
         out["/".join(g)] = {
+            "all": all_stats,
             "n_harm": len(harm), "n_benign": len(ben), "n_scenes": len({_scene(r) for r in rs}),
             "harm_rate_nominal": hr_nom, "benign_rate_nominal": float(np.mean(nb)) if nb else float("nan"),
             "harm_rate_filter": hr_f,
@@ -539,6 +556,7 @@ def tables(S: dict, title: str) -> str:
          "nominal runs' length. false alarm = P[any intervention | benign]; interv. ticks = fraction of ticks the "
          "actor drove (benign). selectivity = protect - false alarm per task; pooled: scenes with both kinds only.",
          "", f"Counts: {S.get('_counts')}", "",
+         "## By designation", "",
          "| group / axis | scenes | harm nominal | harm filter | harm filter (nom. dur.) | protect | protect+ (n) | "
          "benign false alarm | interv. ticks | success cost (harm / benign) | selectivity (scenes) | nominal disagreement |",
          "|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -552,6 +570,20 @@ def tables(S: dict, title: str) -> str:
                  f"{wilson_str(v['false_alarm_k'], v['n_benign'])} | {v['benign_intervened_tick_frac']:.3f} | "
                  f"{sc.get('harm', float('nan')):+.2f} / {sc.get('benign', float('nan')):+.2f} | "
                  f"{ci(v['selectivity'], v['selectivity_ci'])} ({v['selectivity_scenes']}) | {v['nominal_disagreement']:.2f} |")
+    L += ["", "## All runs, no grouping", "",
+          "Every filter run of the group, harm and benign designations together. broken = the NAMED rule's h < 0 at "
+          "some tick (nominal: share of the two nominal runs); reduction = 1 - broken filter / broken nominal, with a "
+          "95% scene bootstrap; interv. ticks = fraction of ticks the actor drove; success cost = nominal - filtered "
+          "task success.", "",
+          "| group / axis | runs | broken nominal | broken filter | reduction | any intervention | interv. ticks | success cost |",
+          "|---|---|---|---|---|---|---|---|"]
+    for k, v in sorted(S.items()):
+        if k.startswith("_") or "all" not in v:
+            continue
+        a = v["all"]
+        L.append(f"| {k} | {a['n_runs']} | {a['broken_nominal']:.2f} | {wilson_str(a['broken_filter_k'], a['n_runs'])} | "
+                 f"{ci(a['reduction'], a['reduction_ci'])} | {wilson_str(a['any_intervention_k'], a['n_runs'])} | "
+                 f"{a['intervened_tick_frac']:.3f} | {a['success_cost']:+.2f} |")
     return "\n".join(L) + "\n"
 
 

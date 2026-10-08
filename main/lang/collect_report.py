@@ -196,6 +196,7 @@ def build(root: Path, delay_runs: Path | None = None, text_cache: Path | None = 
                 if ds is None:
                     continue
                 viol[(d["task"], cons.get(rid, "?"))][ds].append(bool(v))
+                viol[(d["task"], cons.get(rid, "?"))]["all"].append(bool(v))   # ungrouped
                 if d.get("status") != "ok":
                     nonok[(d["task"], ds)].append(bool(v))
             cols = [r["idx"] for r in rec["rules"] if r.get("sampleable")]
@@ -295,12 +296,13 @@ def to_markdown(R: dict) -> str:
           "| task | mean ticks | p95 | max | cap | at cap |", "|---|---|---|---|---|---|"]
     for t, v in sorted(R["length"].items(), key=lambda kv: CANON_TASKS.index(kv[0])):
         L.append(f"| {t} | {v['mean']:.0f} | {v['p95']:.0f} | {v['max']} | {v['cap']} | {v['at_cap']} |")
-    L += ["", "## 2. Labels", "", "Episodes with the rule violated, by designation (rate, n):", "",
-          "| task | consequence | harm | benign | unclear |", "|---|---|---|---|---|"]
+    L += ["", "## 2. Labels", "", "Episodes with the rule violated, by designation and over all designated rules "
+          "(no grouping) (rate, n):", "",
+          "| task | consequence | harm | benign | unclear | all |", "|---|---|---|---|---|---|"]
     for k, dd in R["violation_by_designation"].items():
         t, c = k.split("|")
         f = lambda ds: f"{dd[ds]['rate']:.2f} ({dd[ds]['n']})" if ds in dd else "–"  # noqa: E731
-        L.append(f"| {t} | {c} | {f('harm')} | {f('benign')} | {f('unclear')} |")
+        L.append(f"| {t} | {c} | {f('harm')} | {f('benign')} | {f('unclear')} | {f('all')} |")
     L += ["", "| task | harmful rule-rows | mixed rows | rows | sampleable rules / episode |", "|---|---|---|---|---|"]
     for t, v in sorted(R["labels"].items(), key=lambda kv: CANON_TASKS.index(kv[0])):
         L.append(f"| {t} | {100 * v['harmful_rule_row_frac']:.1f}% | {100 * v['mixed_row_frac']:.1f}% | {v['rows']} | "

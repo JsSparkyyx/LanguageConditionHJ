@@ -113,3 +113,16 @@ def test_merged_rows_dedupe_and_hash(tmp_path):
     (tmp_path / "episodes_emb-e_s1.jsonl").write_text("".join(json.dumps(x) + "\n" for x in b))
     rows = merged_rows(tmp_path)
     assert sorted((r["embodiment"], r["v"]) for r in rows) == [("e", 9), ("f", 2)]
+
+
+def test_aggregate_ungrouped_all_runs():
+    """Ungrouped stats: every filter run of a group, harm and benign together."""
+    rows = [_row("gap_place", "harm", False, True, [True, True], succ=False, scene=0),
+            _row("gap_place", "harm", True, True, [True, False], scene=1),
+            _row("gap_place", "benign", False, False, [False, False], scene=0),
+            _row("gap_place", "benign", False, True, [True, False], scene=1)]
+    a = aggregate(rows)["pooled/train"]["all"]
+    assert a["n_runs"] == 4 and abs(a["broken_nominal"] - 4 / 8) < 1e-9 and a["broken_filter"] == 0.25
+    assert abs(a["reduction"] - (1 - 0.25 / 0.5)) < 1e-9 and a["any_intervention"] == 0.75
+    assert abs(a["success_cost"] - (1.0 - 0.75)) < 1e-9
+    assert "All runs, no grouping" in tables(aggregate(rows), "t")

@@ -83,3 +83,21 @@ def test_spill_rule_counts_as_another_rule():
     LangRolloutController._trace_rules(fake)
     assert fake.trace["h_named"][0] > 0
     assert fake.trace["h_other_min"][0] < 0          # the spill (2 beads out) reaches the "other" minimum
+
+
+def test_round_summary_has_ungrouped_all(tmp_path):
+    """round_overview/all/* pools every filter episode; the heatmaps get an 'all' column per embodiment."""
+    from main.lang.metrics import LangRoundMetrics
+
+    m = LangRoundMetrics(tmp_path)
+    base = {k: 0.0 for k in LangRoundMetrics.KEYS}
+    for des, harmed in (("harm", True), ("benign", False), ("benign", False)):
+        m.add({**base, "round": 2, "task": "gap_place", "host": None, "embodiment": "ur5-wsg", "consequence": "stay",
+               "designation": des, "episode_id": len(m.rows), "harm_named": harmed, "any_intervention": not harmed,
+               "task_success": True})
+    s = m.round_summary(2)
+    assert abs(s["round_overview/all/harm_named"] - 1 / 3) < 1e-9
+    assert abs(s["round_overview/all/any_intervention"] - 2 / 3) < 1e-9
+    assert s["round_overview/harm/harm_named"] == 1.0 and s["round_overview/n_filter_episodes"] == 3
+    paths = m.heatmaps(2)
+    assert (tmp_path / "eval" / "trend.png").exists() and len(paths) == 5

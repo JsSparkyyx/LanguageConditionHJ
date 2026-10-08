@@ -373,8 +373,8 @@ class LangRoundMetrics:
     def round_summary(self, round_idx: int) -> dict:
         rows = [r for r in self.rows if r["round"] == round_idx]
         out = {}
-        for d in ("harm", "benign"):
-            sel = [r for r in rows if r["designation"] == d]
+        for d in ("harm", "benign", "all"):   # all = every filter episode, whatever its designation
+            sel = rows if d == "all" else [r for r in rows if r["designation"] == d]
             if not sel:
                 continue
             for k in ("harm_named", "any_intervention", "intervention_rate", "intervened_tick_frac", "task_success",
@@ -395,17 +395,17 @@ class LangRoundMetrics:
             return []
         from .config import CANON_EMBODIMENTS, CANON_TASKS
 
-        cols = [(e, d) for e in CANON_EMBODIMENTS for d in ("harm", "benign")]
+        cols = [(e, d) for e in CANON_EMBODIMENTS for d in ("harm", "benign", "all")]
         paths = []
         for metric in ("harm_named", "any_intervention", "intervention_rate", "task_success"):
             M = np.full((len(CANON_TASKS), len(cols)), np.nan)
             for i, t in enumerate(CANON_TASKS):
                 for j, (e, d) in enumerate(cols):
                     v = [float(r[metric]) for r in self.rows
-                         if r["task"] == t and r["embodiment"] == e and r["designation"] == d]
+                         if r["task"] == t and r["embodiment"] == e and (d == "all" or r["designation"] == d)]
                     if v:
                         M[i, j] = np.mean(v)
-            fig, ax = plt.subplots(figsize=(6, 4))
+            fig, ax = plt.subplots(figsize=(8, 4))
             im = ax.imshow(M, vmin=0, vmax=1, cmap="viridis")
             ax.set_xticks(range(len(cols)), [f"{e[:5]}\n{d}" for e, d in cols], fontsize=7)
             ax.set_yticks(range(len(CANON_TASKS)), CANON_TASKS, fontsize=7)
@@ -427,18 +427,20 @@ class LangRoundMetrics:
 
     def trend(self, plt) -> Path:
         """eval/trend.png: per round, harm_named on harm-designated runs (should fall), any_intervention
-        on benign-designated runs (should stay low), task_success and v_le_h_frac on all filter runs."""
+        on benign-designated runs (should stay low), the same two over ALL filter runs (dashed, no
+        grouping), task_success and v_le_h_frac on all filter runs."""
         rounds = sorted({int(r["round"]) for r in self.rows})
         series = (("harm_named", "harm", "harmed (harm runs)"), ("any_intervention", "benign", "intervened (benign runs)"),
+                  ("harm_named", None, "harmed (all runs)"), ("any_intervention", None, "intervened (all runs)"),
                   ("task_success", None, "task success"), ("v_le_h_frac", None, "Q <= h + 0.05"))
         fig, ax = plt.subplots(figsize=(7, 3.5))
         for key, des, label in series:
             ys = []
             for rd in rounds:
                 v = [float(r[key]) for r in self.rows if int(r["round"]) == rd and (des is None or r["designation"] == des)
-                     and r[key] == r[key]]
+                     and r.get(key) is not None and r[key] == r[key]]
                 ys.append(np.mean(v) if v else np.nan)
-            ax.plot(rounds, ys, marker=".", label=label)
+            ax.plot(rounds, ys, marker=".", label=label, ls="--" if "(all runs)" in label else "-")
         ax.set_ylim(-0.05, 1.05)
         ax.set_xlabel("round")
         ax.set_title(f"filter episodes per round ({len(self.rows)} so far)", fontsize=9)
