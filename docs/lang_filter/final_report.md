@@ -100,7 +100,10 @@ Each item names the evidence and a recommendation; nothing below was decided for
 3. **T1 near-path candidates.** Designated *unclear* by the plan (never named), but violated in 59-79% of
    nominal runs (78-100% on the two stacking hosts, which rarely have an on-path candidate). Promoting
    `near_path` to harm-designated would give T1's stacking hosts harm runs; keeping it leaves them
-   benign-only.
+   benign-only. Review R2 (2026-10-07) adds: nominal runs break the unclear (near-path) T1 rules as often
+   as the on-path ones (avoid 0.85 vs 0.83, stay 0.62 vs 0.67, `collect_report_warmup.md`), the warmup
+   has 24 harm vs 97 unclear T1 rules, and the closed-loop grid had no T1 harm run at all. The reviewer
+   recommends promoting them.
 4. **Text feature scale.** HoloBrain word features have RMS 9 (outliers to 150) and pass the identity
    `in_proj` unnormalized into keys / values (`phase2.md`). Training is stable so far; a fixed scale or an
    RMSNorm on `w'` would be a one-line change, to try only if probes show the text attention saturating.
@@ -138,9 +141,13 @@ Each item names the evidence and a recommendation; nothing below was decided for
   - T7 below chance (0.42).
 - **Training probes**: attention on the named referent rises to ~4x its token share in both runs, with
   no supervision on grounding. The text-sensitivity and paraphrase-spread probes look healthy.
-- **Closed loop, preview at step 8000, partial** (`phase5.md`): weak protection (0.10 on the train axis,
-  0.30 on held-out templates). Benign runs intervene on 1.2% of ticks, but 20% of them intervene at
-  least once. Interventions cost the task.
+- **Closed loop, preview at step 8000, partial** (`phase5.md`): protection 0.10 on the train axis and
+  0.30 on held-out templates, from 47 filtered runs of a partial grid (25 missing). Each task cell has 1-4
+  harm runs; with 2 scenes per combo T1 covers hosts 0 and 1 only and has no harm run at all (see
+  decision 3). That is too few runs to claim a protection level (no intervals were computed then; the
+  grid now reports scene-bootstrap intervals). Benign runs intervene on 1.2% of filter DECISIONS, which is
+  about 3.5% of ticks (one engaged decision holds 3 ticks: 3r / (1 + 2r)); 20% of them intervene at
+  least once. Interventions cost the task. (Corrected 2026-10-07, review F / M7.)
 - **Still running (resumable chains)**:
   - the official 20k-step run on the full warmup (A100x4 chain, step 4642 at 08:40, ~2.5k steps per hour, done ~15:30), followed by
     its offline probe;
@@ -169,6 +176,10 @@ next to the preview run (36% of the warmup) at step 16000:
 
 Per task (training templates): T5 0.92, T3 0.77, T6 0.72, T1 0.61, T7 0.54.
 
+All T2 / T4 / T6 numbers in this section (including T6's 0.72 and its referent 0.25 below) were computed
+with the OLD bead h (before the bead-count h). The offline probe now leaves those rows out until the bead
+data is recollected, so current tables have no T2 / T4 / T6 columns.
+
 The pooled referent score (0.507) is a mix that differs by task (pairs: same consequence, other item):
 
 | task | referent pairs | official | preview |
@@ -185,15 +196,24 @@ So: at chance on T1 and T7, reversed on T6, good on T5 and T3. Two cautions befo
   container next to the stream reads low h without ever being hit;
 - T5 has a shortcut: the block at risk is always the tall one, and sentences may say "the tall block".
 
-The check that separates the two: rank only pairs whose current h are within 0.1 of each other (then only
-the sentence can explain a Q difference). Until that is run, referent grounding is the likely bottleneck
-on T1 and T7 (the condition DESIGN_CONTEXT 5.2 sets for the advanced version), not a proven one.
+What is at stake is the label, not the attribution: both members of a pair share the state and the action,
+so a Q difference always comes from the sentence. The question is whether `fails_soon` (h < 0 within 25
+ticks) is what a gamma = 0.9 critic should rank by. A violation k ticks ahead is worth about 1 - 2 * 0.9^k
+(0.30 at k = 10), above a benign rule that sits at a low but safe h, so a correct critic can lose such a
+pair (review E1). The offline probe now reports, on the same pairs, the ranking by current h (no model),
+the agreement with the discounted HJ return of the recorded h, a scene-free text prior, strata by time to
+the violation, and episode-bootstrap intervals (validation has 10 episodes per task, so the official vs
+preview swings above, T1 0.51 vs 0.64 and T3 0.88 vs 0.59, fit episode-level noise). Until those numbers
+are in, referent grounding is a possible bottleneck on T1 and T7, not a shown one.
 
 **Bead rules: h now counts beads** (user request, `margins.particle_h`). Once n >= 1 beads break a bead
 rule, h = -(0.5 + 0.5 (min(n, 20) - 1) / 19): one bead -0.5, 2 beads -0.53, 10 beads -0.74, 20 or more
--1. Before, one bead 1 cm out already read -1, the same as a whole spill. The safe side is unchanged
-(depth of the worst bead / unit, now a hard min over beads instead of a 5 mm soft-min, which could read
-< 0 with no bead out). Per-tick counts are stored (`n_violating` in the sidecar, `violation_counts` in
+-1. Before, one bead 1 cm out already read -1, the same as a whole spill. The safe side is depth of the
+worst bead / unit, clipped to [0, 1], over the hard min of the beads. (Correction, review B1: the first
+bead-count commit 58b048b still took a 1 mm soft-min, because every bead rule set T: 0.001 in its task yaml;
+it read up to 0.46 low on the safe side and could put the margin below 0 with no bead out. Since commit
+deb43e7 the yaml sets no T: margin < 0 exactly when a bead is out. The bead shards collected
+in between were moved to `data/lang_stale/bead_softmin_1007/` and are being collected again.) Per-tick counts are stored (`n_violating` in the sidecar, `violation_counts` in
 `trace.npz`), so this kind of change can be relabeled offline next time.
 
 Consequence for the data: the warmup and validation shards hold the old bead h and no counts, so their

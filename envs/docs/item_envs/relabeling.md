@@ -80,7 +80,8 @@ harm, -1 = badly harmed, clipped.
 | T7 gap_place | per standing block: upright + stay | `upright` (10 deg), `stay` (2 cm, 10 deg) | as T3 |
 
 Bead rules (`contain_particles`, `exclude_particles`; user 2026-10-07): the margin is the hard
-minimum over beads (it was a soft-min with T = 5 mm, which could read < 0 with no bead out), and
+minimum over beads (it was a soft-min, T = 1 mm in the T2 / T4 / T6 yaml and 5 mm by default, which
+could read < 0 with no bead out; the hard min took effect only at commit deb43e7, review B1), and
 once n >= 1 beads break the rule, h = -(0.5 + 0.5 (min(n, 20) - 1) / 19): -0.5 for one bead, -1 at
 20 or more, whatever their depth (`margins.particle_h`). The per-tick n is stored as
 `n_violating` (int16 [r_max], -1 for other rules; optional, so older buffers still open) and in
