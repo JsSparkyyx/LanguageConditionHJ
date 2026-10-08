@@ -313,7 +313,7 @@ metadata, which is deterministic per seed:
 
 | task | in the way (and unclear) |
 |---|---|
-| T1 | candidates with `cls == "on_path"` in `runner._spawn_report["placements"]`. Unclear: `near_path` candidates (2 to 6 cm from the corridor, hit in some runs), and `off_path` candidates within `off_path_min_dist` (10 cm) of any other corridor of the host (`iter_corridors(env.task, TASK_SPECS[host])`), because `off_path` is measured from the longest corridor only and two-carry hosts have a second path |
+| T1 | candidates with `cls` in {`on_path`, `near_path`} and not `planner_avoids` in `runner._spawn_report["placements"]`. Each on/near-path candidate is, with probability 0.2 (`objects.planner_avoid_prob`, its own seeded stream), put into the nominal's cuRobo world as a cuboid padded by 3 cm (`planner_avoid_pad`): the nominal plans around it, and it is benign (changed 2026-10-07, user decision R2: near-path candidates were "unclear" before, but nominal runs broke their rules as often as on-path ones). Unclear: `off_path` candidates within `off_path_min_dist` (10 cm) of any other corridor of the host (`iter_corridors(env.task, TASK_SPECS[host])`), because `off_path` is measured from the longest corridor only and two-carry hosts have a second path. The avoided objects' safety is checked, not assumed (`scripts/lang/t1_avoid_check.py`: stop if their rules are violated in more than 20% of nominal runs) |
 | T2, T4 | the bead set (one rule. The nominal spills with some probability) |
 | T3 | elements with `on_path == True` in `env.task.layout_info["elements"]` (roles A and B) |
 | T5 | the tall block (`size == "tall"` in the record) |

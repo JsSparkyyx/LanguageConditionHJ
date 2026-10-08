@@ -164,6 +164,43 @@ class ItemEpisodeRunner:
         self._held_error: str | None = None
 
     # ----------------------------------------------------------------- setup ----
+    def _add_planner_avoids(self, env, specs) -> None:
+        """Table + one padded cuboid per planner_avoids candidate in both MotionGen worlds. If the update
+        fails, the flags are cleared: an object the nominal does not avoid must never read benign."""
+        from .spawn import planner_avoid_boxes
+
+        rep = self._spawn_report
+        pad = float((self.task_cfg.get("objects") or {}).get("planner_avoid_pad", 0.03))
+        boxes = planner_avoid_boxes(specs, rep, pad)
+        rep["planner_avoid_boxes"] = len(boxes)
+        if not boxes:
+            return
+        try:
+            from curobo.geom.types import WorldConfig
+
+            from main.envs.obstacle import _obstacle_in_base, _table_world_dict
+
+            n_set = 0
+            for planner in (env.robot.left_planner, env.robot.right_planner):
+                if planner is None or not hasattr(planner, "motion_gen"):
+                    continue
+                world = _table_world_dict(planner)
+                for k, (xyz, quat, half) in enumerate(boxes):
+                    world["cuboid"][f"planner_avoid_{k}"] = _obstacle_in_base(planner, xyz, quat, half)
+                cfg = WorldConfig.from_dict(world)
+                planner.motion_gen.update_world(cfg)
+                if getattr(planner, "motion_gen_batch", None) is not None:
+                    planner.motion_gen_batch.update_world(cfg)
+                n_set += 1
+            if n_set == 0:
+                raise RuntimeError("no cuRobo MotionGen planner to update")
+            print(f"[runner] cuRobo world: table + {len(boxes)} planner-avoided object(s), pad {pad * 100:.0f} cm")
+        except Exception as exc:
+            print(f"[runner] planner_avoids world update FAILED ({exc}): flags cleared, the nominal ignores them")
+            rep["planner_avoid_error"] = str(exc)[:300]
+            for p in rep.get("placements") or []:
+                p["planner_avoids"] = False
+
     def setup(self, build_controller: bool = True) -> None:
         """Build env + items + regions + rules + controller. May raise (recorded by run()).
 
@@ -213,7 +250,8 @@ class ItemEpisodeRunner:
                 objects["on_path_count"] = int(self.risk_params.task["on_path_count"])
             spawn_cfg["objects"] = objects
             specs, self._spawn_report = spawn_candidates(
-                env, spawn_cfg, np.random.RandomState(self.seed + 4241)
+                env, spawn_cfg, np.random.RandomState(self.seed + 4241),
+                avoid_rng=np.random.RandomState(self.seed + 6007),   # R2 planner_avoids stream
             )
             if not specs:
                 print(
@@ -225,8 +263,12 @@ class ItemEpisodeRunner:
                 )
         # Cached MotionGen may still hold cuboids from a previous episode;
         # the nominal's world model is the TABLE ONLY — it never plans around
-        # items. T1: refreshed AFTER spawning, so candidates never enter it.
+        # items. T1: refreshed AFTER spawning, so candidates never enter it ...
         update_curobo_world(env.robot)
+        # ... except the ones the spawn flagged planner_avoids (R2): those go in as padded cuboids, so the
+        # nominal plans around them and they are benign (scene_roles)
+        if self.task_name == "selective_avoid" and self._spawn_report:
+            self._add_planner_avoids(env, specs)
 
         self.items = [_item_from_meta(d) for d in getattr(task, "item_meta", [])]
         item_map = {s.item_id: s for s in self.items}

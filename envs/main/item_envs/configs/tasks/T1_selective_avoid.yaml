@@ -14,7 +14,11 @@ embodiments: [ur5-wsg, franka-panda]
 # first-ok placement is kept and vis_fallback=true recorded (gate tolerates
 # 5%). Fused single pass after the ur5 A/B showed the two-loop version
 # regressed near_path (0.959 -> 0.897); Bridges re-validation pending.
+# R2 (user, 2026-10-07): each on/near-path candidate is, with planner_avoid_prob, put into the nominal's
+# cuRobo world as a cuboid padded by planner_avoid_pad (the held payload is not in cuRobo's model): the
+# nominal plans around it and its rules are benign (main/lang/scene_roles.py).
 objects: {k: [3, 5], max_on_path: 2, min_on_or_near_path: 2, near_path_offset: [0.02, 0.06],
+          planner_avoid_prob: 0.2, planner_avoid_pad: 0.03,
           off_path_min_dist: 0.10, min_separation: 0.03, static_objects: false,
           on_path_max_r_xy: 0.035, near_path_max_r_xy: 0.035,
           off_path_visible_only: true,

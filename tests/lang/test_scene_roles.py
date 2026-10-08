@@ -56,6 +56,8 @@ def test_in_way_t1_placements_and_second_corridor(monkeypatch):
         {"item_id": "c1", "cls": "near_path", "xyz": [0.1, 0.0, 0.8]},
         {"item_id": "c2", "cls": "off_path", "xyz": [0.0, 0.30, 0.8]},
         {"item_id": "c3", "cls": "off_path", "xyz": [0.5, -0.4, 0.8]},
+        {"item_id": "c4", "cls": "on_path", "xyz": [0.05, 0.0, 0.8], "planner_avoids": True},
+        {"item_id": "c5", "cls": "near_path", "xyz": [-0.1, 0.03, 0.8], "planner_avoids": True},
     ]
     import numpy as np
 
@@ -68,7 +70,9 @@ def test_in_way_t1_placements_and_second_corridor(monkeypatch):
     monkeypatch.setitem(tasks_mod.TASK_SPECS, "place_burger_fries", tasks_mod.TASK_SPECS["place_burger_fries"])
     runner = NS(_spawn_report={"placements": placements}, host="place_burger_fries")
     inway, unclear = SR.in_way(_env(runner=runner), {"task": "selective_avoid", "objects": []})
-    assert inway == {"c0"} and unclear == {"c1", "c2"}
+    # R2: on- and near-path objects are in the way unless the nominal avoids them (then benign); only the
+    # off_path one near the second corridor stays unclear
+    assert inway == {"c0", "c1"} and unclear == {"c2"}
 
 
 def test_in_way_other_tasks():

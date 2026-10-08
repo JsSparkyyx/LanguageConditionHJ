@@ -97,6 +97,10 @@ export SBATCH_FLAGS="-A <account> -p GPU-shared --gpus=<rtx type>:1"
 sbatch $SBATCH_FLAGS scripts/lang/bridges/rounds.sbatch
 ```
 
+- gamma: the default is 0.9 (the plan's). The 0.95 run is a second run in its own directory:
+  `RUN=runs/lang/rounds_g095 GAMMA=0.95 sbatch $SBATCH_FLAGS scripts/lang/bridges/rounds.sbatch`.
+  Other config overrides: `SET="key=value ..."` (not inside EXTRA_ARGS). A run keeps the config of its
+  first start; resubmissions inherit the variables through `--export=ALL`.
 - 100 rounds take ~85 min each on an A40 (67 min of training at ~0.5 steps/s, 15-20 min of collection):
   ~140 GPU-hours, ~3 jobs of 48 h. Smaller: `export STEPS=1024` (~50 min per round) before the first
   `sbatch`, and keep it for every resubmission.

@@ -14,8 +14,10 @@
 # itself again (RESUBMIT=0 to disable); the next job resumes where it stopped. A restart for the
 # per-process environment-init limit (also exit 75) relaunches inside the same job, and so does a crash
 # after progress (state.pt newer than at the launch; at most 3 per job). Defaults are the plan's
-# (ROUNDS=100, EPISODES=4, STEPS=2048, PROBE=10); EXTRA_ARGS goes to `train rounds` unchanged
-# (e.g. "--no-wandb"). Keep the same values on every resubmission of one run.
+# (ROUNDS=100, EPISODES=4, STEPS=2048, PROBE=10); GAMMA (default 0.9, the plan's) sets the HJ discount
+# (gamma and gamma_final); EXTRA_ARGS goes to `train rounds` unchanged (e.g. "--no-wandb"). Keep the same
+# values on every resubmission of one run. Two gamma runs = two RUN directories, e.g.
+#   RUN=runs/lang/rounds_g090 sbatch ...   and   RUN=runs/lang/rounds_g095 GAMMA=0.95 sbatch ...
 #SBATCH --job-name=lang-rounds
 #SBATCH --partition=GPU-shared
 #SBATCH --gpus=1
@@ -26,7 +28,12 @@ set -u
 cd "${SLURM_SUBMIT_DIR:?submit from the repo root}"
 source scripts/lang/bridges/_env.sh
 RUN="${RUN:?set RUN=runs/lang/<name>}"
-ROUNDS=${ROUNDS:-100}; EPISODES=${EPISODES:-4}; STEPS=${STEPS:-2048}; PROBE=${PROBE:-10}
+ROUNDS=${ROUNDS:-100}; EPISODES=${EPISODES:-4}; STEPS=${STEPS:-2048}; PROBE=${PROBE:-10}; GAMMA=${GAMMA:-0.9}
+# the run's config is fixed by its first start (lang_config.json); a resumed run keeps it
+# more LangConfig overrides go in SET="key=value ...", never in EXTRA_ARGS: a second --set would replace
+# this one (argparse keeps the last)
+# shellcheck disable=SC2206
+GAMMA_ARGS=(--set "gamma=$GAMMA" "gamma_final=$GAMMA" ${SET:-})
 end=$(date -d "$(squeue -h -j "$SLURM_JOB_ID" -o %e)" +%s 2>/dev/null || echo 0)
 [[ $end -gt 0 ]] || end=$(( $(date +%s) + 47 * 3600 ))
 export STAGE_DEADLINE=$(( end - 600 ))
@@ -39,7 +46,7 @@ while true; do
   # shellcheck disable=SC2086
   $PY -m main.lang.train rounds --data data/lang/warmup --val data/lang/val --run "$RUN" \
       --collect-rounds "$ROUNDS" --episodes-per-round "$EPISODES" --grad-steps-per-round "$STEPS" \
-      --probe-every-rounds "$PROBE" --resume ${EXTRA_ARGS:-}
+      --probe-every-rounds "$PROBE" "${GAMMA_ARGS[@]}" --resume ${EXTRA_ARGS:-}
   rc=$?
   echo "[rounds.sbatch] train rounds exit $rc at $(date)"
   if [[ $rc -ne 0 && $rc -ne 75 ]]; then

@@ -60,8 +60,12 @@ def _t1_roles(env, record) -> tuple[set, set]:
     runner = env._item_runner
     report = getattr(runner, "_spawn_report", None) or {}
     placements = report.get("placements") or []
-    inway = {p["item_id"] for p in placements if p.get("cls") == "on_path"}
-    unclear = {p["item_id"] for p in placements if p.get("cls") == "near_path"}
+    # R2 (user, 2026-10-07): on- and near-path objects are in the way unless the nominal plans around
+    # them (planner_avoids: in its cuRobo world); avoided ones are benign. near_path is no longer unclear
+    # (nominal runs broke near-path rules as often as on-path ones: avoid 0.85 vs 0.83)
+    inway = {p["item_id"] for p in placements
+             if p.get("cls") in ("on_path", "near_path") and not p.get("planner_avoids")}
+    unclear = set()
     # off_path is measured from the LONGEST corridor only: two-carry hosts have
     # a second path, so an off_path candidate near another corridor is unclear
     try:
