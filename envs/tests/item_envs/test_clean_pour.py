@@ -77,6 +77,7 @@ def test_rule_table_one_keep_clean_rule_per_neighbour_plus_spill():
     ids = [r.rule_id for r in _rules(nbs)]
     assert ids == [f"particles_outside|beads|{rid}" for rid in sorted(nbs)] + [
         "particles_inside|beads|bowl_src_interior+target_interior"]
+    assert all("T" not in r.params for r in _rules(nbs))   # hard min over beads (2026-10-07)
 
 
 def test_keep_clean_phrases_name_exactly_one_neighbour():

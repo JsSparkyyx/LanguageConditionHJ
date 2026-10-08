@@ -46,8 +46,8 @@ risk:
     aim_error: {dist: uniform, range: [0.08, 0.16]}      # m, the pour aim shifted toward the hit neighbour (its near edge: 13-17 cm out); primary in hit scenes: 12/15 at 0.08-0.18 (t6c/d) but 7/17 at 0.07-0.13 (t6g + final)
 
 rules:
-  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: {role: keep_clean}, region_set: each, T: 0.001}
-  - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior, target_interior], T: 0.001}
+  - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: {role: keep_clean}, region_set: each}
+  - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior, target_interior]}
 
 embodiment_overrides:                     # T2's (granular_pour runs the pour)
   ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006, pour_style: wrist_roll, tip_len: 0.164, roll_pitch_deg: 40}

@@ -350,8 +350,8 @@ def _entry_params(entry: dict, consequence: Consequence) -> dict:
         raise ValueError(f"upright entry needs theta_max_deg: {entry}")
     if consequence is Consequence.STAY:
         params.setdefault("theta_tol", 0.35)
-    if consequence in _REGION_SET:
-        params.setdefault("T", 0.005)
+    # bead rules: no default soft-min temperature (2026-10-07): the margin is the hard min over beads
+    # unless an entry sets T itself
     return params
 
 

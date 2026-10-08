@@ -124,11 +124,10 @@ def test_t2_rule_semantics():
     )
     # no forbidden-mat rules (user decision 2026-10-03)
     assert not any(r.consequence.value == "particles_outside" for r in rules)
-    # softmin temperature: the 0.005 default over 60 beads pulled the t=0 rule
-    # margin negative with every bead inside the bowl (p4-accept failures) —
-    # the yaml pins T = 0.001 on all three entries
+    # no soft-min temperature (2026-10-07): the margin is the hard min over beads, so margin < 0
+    # exactly when a bead is out (the count margins.particle_h uses)
     for rid in EXPECTED_RULE_IDS:
-        assert by_id[rid].params["T"] == 0.001, rid
+        assert "T" not in by_id[rid].params, rid
 
 
 def test_t2_task_file_matches_yaml():
@@ -220,7 +219,7 @@ def test_container_region_margin_contract():
             iu.bead_grid_positions(100, 0.006, geom["inner_radius"], geom["floor_y"],
                                    bands=geom["bands"], rng=np.random)
         )
-        margin = m_particles_inside([pos[:, [0, 2]]], [region], T=0.001)
+        margin = m_particles_inside([pos[:, [0, 2]]], [region])   # hard min, as the rules use it
         assert margin > 0.008, (bid, margin)
         # settle creep: the outer ring rolls up to 1.5 mm outward against the wall
         rho = np.hypot(pos[:, 0], pos[:, 2])

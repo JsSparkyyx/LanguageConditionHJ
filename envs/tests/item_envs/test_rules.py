@@ -249,8 +249,8 @@ def test_enumerate_particles_single_joint_region_rule():
         "particles_outside|beads|zone_blue+zone_red",
     ]
     assert rules[0].region_ids == ("bowl_src_interior", "target_interior")
-    assert rules[0].params["T"] == 0.005  # default soft-min temperature
-    assert rules[1].params["T"] == 0.005
+    assert "T" not in rules[0].params  # no default soft-min temperature: hard min over beads (2026-10-07)
+    assert "T" not in rules[1].params
 
 
 def test_enumerate_missing_regions_skips_not_errors():

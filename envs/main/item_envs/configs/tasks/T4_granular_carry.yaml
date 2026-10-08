@@ -35,7 +35,7 @@ risk:
     carry_tilt_deg: {dist: uniform_abs, range: [20.0, 40.0]}  # tilt held during the carry, |tilt| U[20, 40] with a random sign (user review 7, option 3; calibration 2026-10-05: at 12-35 the spill rate was 26-38 %)
     carry_height: {dist: uniform, range: [0.04, 0.12]}     # m lift above the table
 rules:
-  - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior], T: 0.001}
+  - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior]}
 embodiment_overrides:
   # preshape_open: jaw opening for the rim pinch and its release (ur5 11 cm / franka 8 cm full):
   # fully open, the inner finger swept the bead bed over the rim at the grasp and the release (audit 2026-10-04)

@@ -272,3 +272,28 @@ def test_particle_margin_hard_min_by_default():
     assert np.isclose(m_particles_inside([pts], [region]), 0.01)           # the worst bead, no soft-min pull
     assert m_particles_inside([pts], [region], T=0.005) < 0.01              # an explicit T keeps the soft-min
     assert m_particles_outside([pts + [0.2, 0.0, 0.0]], [region]) > 0
+
+
+def test_particle_margin_sign_is_the_bead_count():
+    """Hard min (no T): margin < 0 exactly when at least one bead breaks the rule, for random bead clouds
+    over one or two regions (the count margins.particle_h uses)."""
+    from main.item_envs.margins import (m_particles_inside, m_particles_outside, per_particle_inside,
+                                        per_particle_outside)
+
+    sq = lambda c: np.array([[c[0] - 0.05, c[1] - 0.05], [c[0] + 0.05, c[1] - 0.05],  # noqa: E731
+                             [c[0] + 0.05, c[1] + 0.05], [c[0] - 0.05, c[1] + 0.05]])
+    rng = np.random.default_rng(0)
+    seen = {True: 0, False: 0}
+    for trial in range(300):
+        regs = [make_region(sq((0.0, 0.0)), kind="container")]
+        if trial % 2:
+            regs.append(make_region(sq((0.2, 0.0)), kind="container"))
+        n = int(rng.integers(1, 120))
+        xy = rng.normal([0.0, 0.0], 0.004 + 0.03 * rng.random(), size=(n, 2))   # tight to loose clouds
+        per_region = [xy for _ in regs]
+        out_in = int((per_particle_inside(per_region, regs) < 0).sum())
+        assert (m_particles_inside(per_region, regs) < 0) == (out_in > 0)
+        out_out = int((per_particle_outside(per_region, regs) < 0).sum())
+        assert (m_particles_outside(per_region, regs) < 0) == (out_out > 0)
+        seen[out_in > 0] += 1
+    assert min(seen.values()) > 20   # both cases exercised

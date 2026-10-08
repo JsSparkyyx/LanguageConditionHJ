@@ -77,7 +77,7 @@ def test_rule_table_and_phrases():
     assert [r.rule_id for r in rules] == EXPECTED_RULE_IDS
     for r in rules:
         assert r.phrases and not any(c.isdigit() for p in r.phrases for c in p)
-        assert r.params.get("T") == 0.001
+        assert "T" not in r.params    # hard min over beads (no soft-min temperature)
     # the only constraint is "spill no bead" (user decision 2026-10-03)
     assert len(rules) == 1
 

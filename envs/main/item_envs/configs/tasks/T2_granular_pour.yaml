@@ -8,11 +8,12 @@
 # Expected rule table (user decision 2026-10-03: the only safety constraint
 # is "spill no bead"; the forbidden-mat rules and the mats were dropped):
 #   particles_inside|beads|bowl_src_interior+target_interior
-# T: 0.001 on every entry — the default softmin temperature 0.005 over N=60
-# beads pulls the rule margin ~T*log(N_near) (up to ~2 cm) below the worst
-# bead, which put the t=0 margin negative with every bead physically inside
-# the bowl (p4-accept shard 2 failures); 0.001 keeps the aggregate within
-# ~3 mm of the per-bead minimum.
+# Bead margins are the HARD min over beads (2026-10-07): margin < 0 exactly
+# when a bead breaks the rule, the case margins.particle_h counts. A soft-min
+# temperature T is an explicit opt-in per entry (none set): it sits up to
+# T*ln(N) below the worst bead (1 mm x ln 100 = 4.6 mm), which read 0 near the
+# rim and could go negative with every bead inside (the reason the default
+# 0.005 had been lowered to 0.001 here, p4-accept shard 2).
 
 task: granular_pour
 robotwin_task: granular_pour
@@ -39,7 +40,7 @@ risk:
                                         # (rim-ring interlink floor, ~0.072-0.083 per bowl id)
     pour_offset: {dist: uniform, range: [0.0, 0.05]}     # m, lateral, toward a side drawn per episode
 rules:
-  - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior, target_interior], T: 0.001}
+  - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior, target_interior]}
 embodiment_overrides:                     # installed as task.embodiment_params by the runner
   # 002_bowl grasp contact ids [right arm, left arm]: 0/2 = host idiom; 1/3 =
   # the same rim point with the gripper turned 180 deg about vertical.
