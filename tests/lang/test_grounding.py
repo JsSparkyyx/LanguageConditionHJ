@@ -117,3 +117,44 @@ def test_word_attention_runs_on_cpu(tmp_path, monkeypatch):
     assert any("critic 2 block" in n for n in names) and any("encoder block" in n for n in names)
     row = out["layers"]["pooled"][names[0]]
     assert row["entropy_head_query"] <= row["entropy_averaged"] + 1e-6 and {"cls", "sep"} <= set(row)
+
+
+def test_grounding_summary_averages_seeds_and_decides(tmp_path):
+    """E2 / E4 summary on synthetic rows: V1 ranks every referent pair right, V0 half: the text fix."""
+    import gzip
+    import importlib.util
+    import json
+
+    from main.lang import REPO
+
+    spec = importlib.util.spec_from_file_location("gs", REPO / "scripts/lang/grounding_summary.py")
+    gs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gs)
+
+    def rows_for(good: float, seed: int):
+        rng = np.random.default_rng(seed)
+        rows = []
+        for ep in range(6):
+            for st in range(10):
+                right = rng.random() < good
+                for harmful, obj in ((True, "a"), (False, "b")):
+                    q = (-0.5 if harmful else 0.5) * (1 if right else -1)
+                    rows.append({"src": 0, "i": ep * 100 + st, "episode_id": ep, "task": "selective_avoid",
+                                 "rule": f"avoid|{obj}", "consequence": "avoid", "referent": obj,
+                                 "fails_soon": harmful, "ttv": 0 if harmful else None, "censored": False,
+                                 "eligible": {"train": True}, "q": {"train": q},
+                                 "prior": {"train": 0.6 if harmful else 0.4}})
+        return rows
+
+    for v, good in (("v0", 0.5), ("v1", 1.0)):
+        for seed in (0, 1):
+            d = tmp_path / f"g1008_{v}_s{seed}" / "eval_offline" / "grounding"
+            d.mkdir(parents=True)
+            with gzip.open(d / "rows.json.gz", "wt") as f:
+                json.dump(rows_for(good, seed), f)
+    assert gs.main(["--runs", str(tmp_path / "g1008_v*"), "--md", str(tmp_path / "s.md")]) == 0
+    res = json.loads((tmp_path / "s.json").read_text())
+    assert res["v1"]["referent/already_harmed/T1 + T7"]["mean"][0] == 1.0
+    assert 0.3 < res["v0"]["referent/already_harmed/T1 + T7"]["mean"][0] < 0.7
+    assert res["v0"]["referent/already_harmed/T1 + T7"]["prior"][0] == 1.0
+    assert res["_e4"]["outcome"] == "the text path is the fix"
