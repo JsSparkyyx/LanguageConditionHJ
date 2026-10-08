@@ -51,8 +51,8 @@ def check(root: Path) -> list[str]:
         r0, r1 = (int(x) for x in d["rows"])
         if r0 != end:
             bad.append(f"episode {eid}: rows start at {r0}, previous episode ended at {end}")
-        if r1 <= r0:
-            bad.append(f"episode {eid}: empty rows [{r0}, {r1})")
+        if r1 <= r0:   # an episode that wrote no rows (failed before its first tick): nothing to corrupt
+            print(f"note {root}: episode {eid} has no rows (status {d.get('status')}, n_ticks {d.get('n_ticks')})")
             continue
         if (np.asarray(ep_buf[r0:r1]) != eid).any() or (np.asarray(ep_side[r0:r1]) != eid).any():
             bad.append(f"episode {eid}: rows [{r0}, {r1}) hold other episode ids")

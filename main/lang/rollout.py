@@ -257,6 +257,12 @@ class LangRolloutController(RolloutController):
         self.timing["run"] = time.perf_counter() - t0
         out["timing"] = dict(self.timing)
         out["n_ticks"] = len(out.get("t", []))
+        if out["n_ticks"] == 0 and trace.get("status") == "ok":
+            # the base run catches an error in the first capture (outside play_once, so play_wrapped never
+            # saw it) and returns an empty trace: that episode did not run
+            trace["status"] = out["status"] = "exception"
+            trace.setdefault("exception", "no tick captured (error before the first tick; see the log)")
+            out.setdefault("exception", trace["exception"])
         return out
 
 

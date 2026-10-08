@@ -297,3 +297,13 @@ def test_particle_margin_sign_is_the_bead_count():
         assert (m_particles_outside(per_region, regs) < 0) == (out_out > 0)
         seen[out_in > 0] += 1
     assert min(seen.values()) > 20   # both cases exercised
+
+
+def test_particle_margin_with_no_beads_is_safe():
+    """No bead yet (a T4 episode's first tick): +inf, not a crash; h reads 1 (safe)."""
+    from main.item_envs.margins import m_particles_inside, m_particles_outside, particle_h
+
+    reg = make_region(np.array([[-0.05, -0.05], [0.05, -0.05], [0.05, 0.05], [-0.05, 0.05]]), kind="container")
+    empty = [np.zeros((0, 2))]
+    assert m_particles_inside(empty, [reg]) == float("inf") and m_particles_outside(empty, [reg]) == float("inf")
+    assert particle_h(0, float("inf"), 0.01) == 1.0

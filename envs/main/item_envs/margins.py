@@ -143,6 +143,16 @@ def per_particle_outside(particle_xy_per_region: list[np.ndarray], regions) -> n
     return (-_per_region_signed_dist(particle_xy_per_region, regions)).min(axis=0)
 
 
+def _bead_min(per_particle: np.ndarray, T: float | None) -> float:
+    """Hard min (or soft-min with T) over beads; +inf with no bead (none can break the rule: what the
+    soft-min returned, and what the bead count of 0 says). A T4 episode whose beads did not exist yet at
+    its first tick crashed on the empty min (round-2 run, val episode 64000001)."""
+    per_particle = np.asarray(per_particle, dtype=np.float64).reshape(-1)
+    if per_particle.size == 0:
+        return float("inf")
+    return softmin(per_particle, T) if T else float(per_particle.min())
+
+
 def m_particles_inside(particle_xy_per_region: list[np.ndarray], regions, T: float | None = None) -> float:
     """Every particle stays in the column above one of the regions.
 
@@ -152,7 +162,7 @@ def m_particles_inside(particle_xy_per_region: list[np.ndarray], regions, T: flo
     temperature T (metres), which can read < 0 with every bead inside.
     """
     per_particle = per_particle_inside(particle_xy_per_region, regions)
-    return softmin(per_particle, T) if T else float(per_particle.min())
+    return _bead_min(per_particle, T)
 
 
 def m_particles_outside(particle_xy_per_region: list[np.ndarray], regions, T: float | None = None) -> float:
@@ -161,7 +171,7 @@ def m_particles_outside(particle_xy_per_region: list[np.ndarray], regions, T: fl
     Per particle: min over regions of -signed_dist_inside; then the min (or soft-min) as above.
     """
     per_particle = per_particle_outside(particle_xy_per_region, regions)
-    return softmin(per_particle, T) if T else float(per_particle.min())
+    return _bead_min(per_particle, T)
 
 
 def set_rule_margin(per_item_margins) -> float:
