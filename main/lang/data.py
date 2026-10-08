@@ -70,6 +70,28 @@ def recall_labels(h_rules: np.ndarray, ep: np.ndarray, t: np.ndarray, n: int, ho
     return out
 
 
+def _quat_rotate(q, v) -> np.ndarray:
+    """Rotate v by the unit quaternion q = [w, x, y, z]."""
+    w, u = float(q[0]), np.asarray(q[1:4], np.float64)
+    return v + 2.0 * np.cross(u, np.cross(u, v) + w * v)
+
+
+def ref_centers(A, rec: dict, rule: dict, slots) -> tuple[np.ndarray, np.ndarray]:
+    """World centre of the rule's subject object at each of the frame rows `slots` (V3 oracle tag, review round 3
+    E2): item_pose position + the rotated item_obb centre offset. valid is False for rules without a subject
+    object (zones, beads) and for rows where the item is not valid."""
+    c, v = np.zeros((len(slots), 3), np.float32), np.zeros(len(slots), bool)
+    subj = rule.get("subject") or {}
+    if "object" not in subj:
+        return c, v
+    k = int(rec["objects"][subj["object"]]["id"])   # record object id = sidecar item row (checked on the data)
+    for f, slot in enumerate(slots):
+        if bool(A["item_valid"][slot, k]):
+            pose, obb = np.asarray(A["item_pose"][slot, k], np.float64), np.asarray(A["item_obb"][slot, k], np.float64)
+            c[f], v[f] = pose[:3] + _quat_rotate(pose[3:7], obb[:3]), True
+    return c, v
+
+
 def bead_h_of(sources) -> str:
     """Which bead h the bead-task rows of these sources carry: "count" (n_violating stored, 2026-10-07 on),
     "old" (soft-min / plain clip, only when drop_stale_bead_rows is off), "mixed", or "none" (no bead rows)."""
@@ -407,6 +429,8 @@ class LangSampler:
                                 "episode_id", "rule_col", "row", "next_row", "prev_row", "first_row", "next_prev_row",
                                 "t_in_ep")}
         h, hn, fs, fsr, pair = [], [], [], [], []
+        tag = {k: [] for k in ("ref_center", "ref_center_valid", "ref_center_next", "ref_center_valid_next")} \
+            if getattr(self.cfg, "oracle_ref_tag", False) else None
         ref = np.zeros((len(picks), 3, out["scene_tokens"].shape[2]), dtype=np.float16) if self.probe else None
         for b, (gi, col, p) in enumerate(picks):
             j, i = int(self.sid[gi]), int(self.loc[gi])
@@ -430,6 +454,11 @@ class LangSampler:
             h.append(float(A["h_rules"][rows["row"], col])), hn.append(float(A["h_rules"][rows["next_row"], col]))
             fs.append(bool(A["fails_soon"][rows["row"], col])), fsr.append(bool(s.recall[rows["row"], col]))
             pair.append(int(p))
+            if tag is not None:   # V3: the named object's centre in frames [t, t-k, 0] and [t+1, t+1-k, 0]
+                c, v = ref_centers(A, rec, rule, (rows["row"], rows["prev_row"], rows["first_row"]))
+                cn, vn = ref_centers(A, rec, rule, (rows["next_row"], rows["next_prev_row"], rows["first_row"]))
+                for k2, x in zip(tag, (c, v, cn, vn)):
+                    tag[k2].append(x)
             if ref is not None:
                 region_rows = (s.lines.get(eid) or {}).get("mask_region_rows") or {}
                 rr = ref_rows(rec, rule, region_rows)
@@ -444,6 +473,8 @@ class LangSampler:
                                               "next_prev_row", "t_in_ep") else v
         if ref is not None:
             out["ref_mask"] = ref
+        if tag is not None:
+            out.update({k2: np.stack(v) for k2, v in tag.items()})
         n_pairs = int((out["pair"] >= 0).sum() // 2)
         self.stats["pairs"] += n_pairs
         self.stats["mixed"] += sum(1 for p in range(n_pairs)

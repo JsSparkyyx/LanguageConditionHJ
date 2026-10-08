@@ -53,10 +53,14 @@ def _mha() -> nn.MultiheadAttention:
 
 
 def _attend(mha, q, kv, pad, probe_store=None, key=None):
-    """mha(q, kv, kv) with key padding; weights only in probe mode."""
+    """mha(q, kv, kv) with key padding; weights only in probe mode (per head too when the store asks: "_heads")."""
     if probe_store is None:
         return mha(q, kv, kv, key_padding_mask=pad, need_weights=False)[0]
-    out, w = mha(q, kv, kv, key_padding_mask=pad, need_weights=True, average_attn_weights=True)
+    heads = bool(probe_store.get("_heads"))
+    out, w = mha(q, kv, kv, key_padding_mask=pad, need_weights=True, average_attn_weights=not heads)
+    if heads:   # [B, H, Nq, L]: per-head entropies (review round 3, B4)
+        probe_store[key + "_heads"] = w.detach()
+        w = w.mean(1)
     probe_store[key] = w.detach()
     return out
 
@@ -99,6 +103,9 @@ class TextAdapter(nn.Module):
         backend = getattr(cfg, "text_backend", "holobrain_bert")
         self.in_proj = nn.Identity() if (backend == "holobrain_bert" and d_in == DIM) else nn.Linear(d_in, DIM)
         self.blocks = nn.ModuleList([TextBlock() for _ in range(depth)])
+        if getattr(cfg, "text_out_norm", False):   # V1 (round 3 E2): the outputs enter the model normalized
+            self.norm_r0, self.norm_w = nn.RMSNorm(DIM), nn.RMSNorm(DIM)
+            self.norm_q = nn.RMSNorm(DIM) if self.K else None
 
     def forward(self, words, word_mask):
         B, L, _ = words.shape
@@ -110,7 +117,31 @@ class TextAdapter(nn.Module):
         pad = torch.cat([torch.zeros(B, 1 + self.K, dtype=torch.bool, device=x.device), ~word_mask.bool()], 1)
         for blk in self.blocks:
             x = blk(x, pad)
-        return x[:, 0], x[:, 1:1 + self.K], x[:, 1 + self.K:]
+        r0, q, w = x[:, 0], x[:, 1:1 + self.K], x[:, 1 + self.K:]
+        if hasattr(self, "norm_r0"):
+            r0, w = self.norm_r0(r0), self.norm_w(w)
+            q = self.norm_q(q) if self.norm_q is not None else q
+        return r0, q, w
+
+
+def drop_special(wm: torch.Tensor) -> torch.Tensor:
+    """V2 (round 3 E2): the word mask without each sentence's first and last real token ([CLS], [SEP]), for the
+    word reads (body / scene-reads-words); a sentence left with no token keeps its mask."""
+    n = wm.sum(-1)
+    idx = torch.arange(wm.shape[1], device=wm.device)[None]
+    out = wm & (idx != 0) & (idx != (n - 1)[:, None])
+    return torch.where(out.any(-1, keepdim=True), out, wm)
+
+
+def oracle_tag_weights(scene_pos: torch.Tensor, center: torch.Tensor, valid: torch.Tensor,
+                       sigma: float) -> torch.Tensor:
+    """V3 (round 3 E2): w_j = exp(-|p_j - c_f|^2 / (2 sigma^2)) for every scene token j of frame f, 0 in frames
+    where the named object's centre c_f is unknown. scene_pos [B, F * n, 3], center [B, F, 3], valid [B, F]."""
+    B, Fn = scene_pos.shape[:2]
+    F = center.shape[1]
+    p = scene_pos.view(B, F, Fn // F, 3)
+    d2 = ((p - center[:, :, None, :]) ** 2).sum(-1)
+    return (torch.exp(-d2 / (2.0 * sigma ** 2)) * valid[:, :, None].to(p.dtype)).reshape(B, Fn)
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +305,8 @@ class LangPolicyEncoder(nn.Module):
             self.r_static = nn.Parameter(torch.randn(1, 1, DIM) * 0.02)
         self.blocks = nn.ModuleList([LangTrunkBlock(cfg) for _ in range(int(cfg.trunk_depth))])
         self.use_ckpt = bool(getattr(cfg, "activation_checkpointing", False))
+        if getattr(cfg, "oracle_ref_tag", False):   # V3: one learned tag vector, zero-init
+            self.e_tag = nn.Parameter(torch.zeros(DIM))
 
     def encode_text(self, words, word_mask):
         word_mask = word_mask.bool()
@@ -282,10 +315,16 @@ class LangPolicyEncoder(nn.Module):
 
     def forward(self, state_tokens, body_tokens, link_pos, body_mask, joint_index,
                 scene_tokens, scene_pos, words=None, word_mask=None, text_out=None,
-                scene_mask=None) -> LangEncoded:
+                scene_mask=None, ref_center=None, ref_valid=None) -> LangEncoded:
         b, x, m = self.injection(state_tokens, body_tokens, link_pos, body_mask, joint_index)
         s, p = self.scene_set(scene_tokens.to(b.device), scene_pos.to(b.device), self.injection)
         B = b.shape[0]
+        if hasattr(self, "e_tag"):   # V3: s_j += w_j e_tag before scene-reads-words (the pointer's answer, given)
+            if ref_center is None or ref_valid is None:
+                raise ValueError("oracle_ref_tag needs ref_center / ref_valid (simulator state; offline only)")
+            w_tag = oracle_tag_weights(p, ref_center.to(p.device, p.dtype), ref_valid.to(p.device),
+                                       float(self.cfg.oracle_tag_sigma))
+            s = s + w_tag[..., None] * self.e_tag
         # every token is valid in training and deployment; scene_mask [B, 3, n_tok] exists for tests
         smask = (torch.ones(s.shape[:2], dtype=torch.bool, device=s.device) if scene_mask is None
                  else scene_mask.to(s.device).bool().flatten(1))
@@ -294,6 +333,8 @@ class LangPolicyEncoder(nn.Module):
         r0, q, w, wm = text_out
         if r0.shape[0] != B:   # one sentence for the whole batch (deployment)
             r0, q, w, wm = (t.expand(B, *t.shape[1:]) for t in (r0, q, w, wm))
+        if getattr(self.cfg, "mask_special_tokens", False):   # V2: also the critic's body-reads-words (enc.word_mask)
+            wm = drop_special(wm)
         if hasattr(self, "scene_reads_words"):
             s = self.scene_reads_words(s, w, wm)
         r = r0[:, None] if self.cfg.lang_rtoken else self.r_static.expand(B, 1, -1)
@@ -389,13 +430,13 @@ class LangTwinCritic(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-def set_probe(module: nn.Module, on: bool) -> list[dict]:
+def set_probe(module: nn.Module, on: bool, heads: bool = False) -> list[dict]:
     """Probe mode on every LangTrunkBlock / SceneReadsWords inside module;
-    returns their probe dicts in module order (empty when off)."""
+    returns their probe dicts in module order (empty when off). heads: also keep per-head weights."""
     stores = []
     for mod in module.modules():
         if isinstance(mod, (LangTrunkBlock, SceneReadsWords)):
-            mod.probe = {} if on else None
+            mod.probe = ({"_heads": True} if heads else {}) if on else None
             if on:
                 stores.append(mod.probe)
     return stores

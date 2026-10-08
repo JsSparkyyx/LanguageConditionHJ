@@ -115,6 +115,10 @@ class LangPolicyShim:
 
 class LangRolloutController(RolloutController):
     def __init__(self, *args, text_store=None, **kwargs):
+        cfg0 = args[0] if args else kwargs.get("cfg")
+        if getattr(cfg0, "oracle_ref_tag", False):
+            raise SystemExit("oracle_ref_tag reads the named object's position from the simulator: an offline "
+                             "measuring tool (review round 3, E2), never run in closed loop")
         t0 = time.perf_counter()
         self._in_capture = False
         self.text_out = self.cf_text_out = None

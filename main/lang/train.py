@@ -186,9 +186,11 @@ class LangTrainer:
         g = lambda k: b[k + suffix]  # noqa: E731
         d = self.dev
         mod = self.policy_enc_targ if target else self.policy_enc
+        kw = ({"ref_center": _t(g("ref_center"), dev=d), "ref_valid": _t(g("ref_center_valid"), torch.bool, d)}
+              if getattr(self.cfg, "oracle_ref_tag", False) else {})   # V3 (round 3 E2)
         enc = mod(_t(g("state_tokens"), dev=d), _t(g("body_tokens"), dev=d), _t(g("link_pos"), dev=d),
                   _t(g("body_mask"), torch.bool, d), _t(g("joint_index"), torch.int64, d),
-                  _t(g("scene_tokens"), dev=d), _t(g("scene_pos"), dev=d), words=words, word_mask=wmask)
+                  _t(g("scene_tokens"), dev=d), _t(g("scene_pos"), dev=d), words=words, word_mask=wmask, **kw)
         return enc, _t(g("Jlin"), dev=d), _t(g("Jang"), dev=d), _t(g("joint_index"), torch.int64, d)
 
     # --------------------------------------------------------------- update --

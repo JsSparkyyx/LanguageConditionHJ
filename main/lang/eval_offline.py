@@ -211,7 +211,7 @@ class TextPrior:
 
 class Evaluator:
     def __init__(self, run: Path, ckpt: str, val_roots, device="cuda", text_caches=(), batch: int = 96,
-                 text_encoder=None, embodiments="trained"):
+                 text_encoder=None, embodiments="trained", tasks=None):
         from .network import LangPolicyEncoder, LangTwinCritic
         from .text import TextStore
         from .train import load_policy
@@ -227,6 +227,7 @@ class Evaluator:
         self.embodiments = (tuple(self.cfg.embodiment_choices) if embodiments == "trained"
                             else None if embodiments in (None, "all") else tuple(embodiments))
         self.dev = device
+        self.tasks = None if tasks in (None, "all") else tuple(tasks)
         self.sources = [LangSource(r, self.cfg.k_prev, self.cfg.recall_horizon_ticks,
                                    drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True)) for r in val_roots]
         n_tok = self.sources[0].step["scene_tokens"].shape[1]
@@ -252,6 +253,8 @@ class Evaluator:
         by_task = defaultdict(list)
         for j, s in enumerate(self.sources):
             sel = s.t % every == 0
+            if self.tasks is not None:
+                sel &= np.isin(s.task, [CANON_TASKS.index(t) for t in self.tasks])
             if self.embodiments is not None:
                 sel &= np.isin(s.emb, list(self.embodiments))
             for i in np.flatnonzero(sel):
@@ -276,13 +279,15 @@ class Evaluator:
                              len(rows))
         return self._ep[key]
 
-    def _base_sentence(self, rule, rec, j, eid, rng) -> str:
+    def _base_sentence(self, rule, rec, j, eid, rng) -> tuple[str, int | None]:
         """The base for auroc_base / rank_acc_base: a sentence naming ANOTHER sampleable rule of the same
-        state (same task and scene; review E3); another episode's only when the state has no other rule."""
+        state (same task and scene; review E3); another episode's only when the state has no other rule.
+        -> (sentence, the rule's column in this state, or None for another episode's sentence)."""
         others = [r for r in rec["rules"] if r.get("sampleable") and r["rule_id"] != rule["rule_id"]]
         if others:
-            return language.sample_sentence(others[int(rng.integers(len(others)))], rec, rng, "train", self.bank)
-        return self._other_sentence(j, eid, rng)
+            o = others[int(rng.integers(len(others)))]
+            return language.sample_sentence(o, rec, rng, "train", self.bank), int(o["idx"])
+        return self._other_sentence(j, eid, rng), None
 
     def _other_sentence(self, j, eid, rng) -> str:
         eps = [(jj, int(e)) for jj, s in enumerate(self.sources) for e in np.unique(s.eid)]
@@ -299,27 +304,50 @@ class Evaluator:
         raise RuntimeError("no other-episode sentence")
 
     # ------------------------------------------------------------ forward --
+    def ref_tag(self, keys, cols) -> tuple[np.ndarray, np.ndarray]:
+        """V3 checkpoints (oracle_ref_tag): the centre of each item's named object in frames [t, t-k, 0];
+        the tag follows each pair member's own named object (review round 3, E2)."""
+        from .data import ref_centers
+
+        c, v = np.zeros((len(keys), 3, 3), np.float32), np.zeros((len(keys), 3), bool)
+        for n, ((j, i), col) in enumerate(zip(keys, cols)):
+            if col is None:
+                continue
+            s = self.sources[j]
+            rec, rows = s.rs.records[int(s.eid[i])], s.rows_of(i)
+            c[n], v[n] = ref_centers(s.rs.buf.arrays, rec, rec["rules"][int(col)],
+                                     (rows["row"], rows["prev_row"], rows["first_row"]))
+        return c, v
+
     @torch.no_grad()
-    def q_batch(self, reads: list[dict], sentences: list[str]) -> np.ndarray:
+    def q_batch(self, reads: list[dict], sentences: list[str], keys=None, cols=None) -> np.ndarray:
         from .train import _t
 
         d = self.dev
         b = {k: np.stack([r[k] for r in reads]) for k in reads[0]}
         words, wmask = self.text.lookup(sentences)
+        kw = {}
+        if getattr(self.cfg, "oracle_ref_tag", False):
+            if keys is None or cols is None:
+                raise ValueError("a V3 (oracle_ref_tag) checkpoint needs each item's state key and rule column")
+            c, v = self.ref_tag(keys, cols)
+            kw = {"ref_center": _t(c, dev=d), "ref_valid": _t(v, torch.bool, d)}
         enc = self.pe(_t(b["state_tokens"], dev=d), _t(b["body_tokens"], dev=d), _t(b["link_pos"], dev=d),
                       _t(b["body_mask"], torch.bool, d), _t(b["joint_index"], torch.int64, d),
-                      _t(b["scene_tokens"], dev=d), _t(b["scene_pos"], dev=d), words=words, word_mask=wmask)
+                      _t(b["scene_tokens"], dev=d), _t(b["scene_pos"], dev=d), words=words, word_mask=wmask, **kw)
         q = self.critics.qmin(enc, _t(b["dtheta"], dev=d), _t(b["Jlin"], dev=d), _t(b["Jang"], dev=d),
                               _t(b["joint_index"], torch.int64, d))
         return q.float().cpu().numpy()
 
     def run_items(self, items, cache) -> np.ndarray:
-        """items: (state key, sentence) -> Q, batched; state reads cached per chunk."""
+        """items: (state key, sentence[, rule column of the sentence's rule in that state]) -> Q, batched;
+        state reads cached per chunk. The column feeds the V3 oracle tag (None: no tag)."""
         out = np.zeros(len(items), np.float32)
         for a in range(0, len(items), self.batch):
             chunk = items[a:a + self.batch]
-            reads = [cache[k] for k, _ in chunk]
-            out[a:a + len(chunk)] = self.q_batch(reads, [s for _, s in chunk])
+            reads = [cache[it[0]] for it in chunk]
+            out[a:a + len(chunk)] = self.q_batch(reads, [it[1] for it in chunk], [it[0] for it in chunk],
+                                                 [it[2] if len(it) > 2 else None for it in chunk])
         return out
 
     # ---------------------------------------------------------------- run --
@@ -351,6 +379,9 @@ class Evaluator:
                     if not any(el.values()):
                         continue
                     col = rule["idx"]
+                    # E0b (round 3): the most endangered object of this consequence in the scene, named or not
+                    same = [r["idx"] for r in rec["rules"] if r["consequence"] == rule["consequence"]
+                            and "object" in (r.get("subject") or {}) and not r.get("set")]
                     base = {"src": j, "i": i, "task": rec["task"], "emb": rec["embodiment"], "episode_id": eid,
                             "t": int(s.t[i]), "rule": rule["rule_id"], "col": col, "consequence": rule["consequence"],
                             "referent": referent(rule, rec), "split": rule.get("split"),
@@ -359,7 +390,9 @@ class Evaluator:
                             "y": float(y_ep[k_ep, col]) if k_ep is not None else None,
                             "ttv": int(nv_ep[k_ep, col]) if k_ep is not None and nv_ep[k_ep, col] >= 0 else None,
                             "words": list(rule_words(rule, rec)), "sentences": {}, "prior": {}, "censored": censored,
-                            "size": subject_size(rule, rec)}
+                            "size": subject_size(rule, rec),
+                            "h_any": float(np.min(A["h_rules"][slot, same])) if same else None,
+                            "fs_any": bool(np.any(A["fails_soon"][slot, same])) if same else None}
                     r_idx = len(rows)
                     rows.append(base)
                     for ax in AXES:
@@ -370,11 +403,11 @@ class Evaluator:
                         base["sentences"][ax] = sent
                         if self.prior is not None:
                             base["prior"][ax] = float(self.prior(sent))
-                        items.append((k, sent))
+                        items.append((k, sent, None if ax == "shuffled" else col))
                         meta.append((r_idx, ax))
                     # base sentence for auroc_base / rank_acc_base: another rule of the same state (E3)
-                    base["sentences"]["base"] = self._base_sentence(rule, rec, j, eid, rng)
-                    items.append((k, base["sentences"]["base"]))
+                    base["sentences"]["base"], base_col = self._base_sentence(rule, rec, j, eid, rng)
+                    items.append((k, base["sentences"]["base"], base_col))
                     meta.append((r_idx, "base"))
                     if rule.get("sampleable") and len(para_rows) < para_states * len(CANON_TASKS) and \
                             stable_hash((eid, int(s.t[i]), col, "para")) % 4 == 0:
@@ -382,7 +415,7 @@ class Evaluator:
                         if len(ss) >= 2:
                             pick = [ss[q] for q in rng.choice(len(ss), size=min(n_para, len(ss)), replace=False)]
                             for sent in pick:
-                                items.append((k, sent))
+                                items.append((k, sent, col))
                                 meta.append((r_idx, "para"))
             qs = self.run_items(items, cache)
             for (r_idx, ax), qv in zip(meta, qs):
@@ -662,6 +695,75 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
     return out
 
 
+SVS_CONS = ("avoid", "stay", "upright")
+
+
+def svs_state(r: dict) -> str | None:
+    """E0b stratum of a state: an object of this consequence is harmed now (h_any < 0), or one will be within
+    25 ticks (not yet), or neither."""
+    if r.get("h_any") is None:
+        return None
+    return "already_harmed" if r["h_any"] < 0 else ("not_yet" if r.get("fs_any") else "neither")
+
+
+def seeing_vs_selecting(rows: list[dict], B: int = 200, seed: int = 0) -> dict:
+    """E0b (review round 3, Part II): over (state, rule) rows of avoid / stay / upright rules with their training
+    sentence, Spearman rho(Q, h_named) (the named rule's current h) and rho(Q, h_any) (the most endangered object
+    of the same consequence in the scene, named or not), per task x state stratum, with episode-cluster
+    bootstrap intervals. rho(Q, h_any) clearly above rho(Q, h_named): the model sees the danger but does not tie
+    it to the named object. h_named vs h_any themselves (how far the two references differ) is reported too."""
+    rr = [r for r in rows if r["consequence"] in SVS_CONS and r["eligible"].get("train") and "train" in r["q"]
+          and r.get("h_any") is not None]
+    out = {}
+    groups = defaultdict(list)
+    for r in rr:
+        st = svs_state(r)
+        for g in ((r["task"], "all"), (r["task"], st)):
+            groups[g].append(r)
+    rng = np.random.default_rng(seed)
+    for (task, st), g in sorted(groups.items()):
+        q = np.array([r["q"]["train"] for r in g])
+        hn = np.array([r["h"] for r in g])
+        ha = np.array([r["h_any"] for r in g])
+        cl = np.array([_ep(r) for r in g])
+        uniq, inv = np.unique(cl, return_inverse=True)
+        members = [np.flatnonzero(inv == k) for k in range(len(uniq))]
+        m = {"n": len(g), "n_episodes": int(len(uniq)), "rho_named": spearman(q, hn), "rho_any": spearman(q, ha),
+             "rho_named_any": spearman(hn, ha), "frac_named_is_min": float(np.mean(hn <= ha + 1e-9))}
+        boots = {"rho_named": [], "rho_any": [], "any_minus_named": []}
+        if len(uniq) >= 2:
+            for _ in range(B):
+                sel = np.concatenate([members[k] for k in rng.integers(len(uniq), size=len(uniq))])
+                a, b = spearman(q[sel], hn[sel]), spearman(q[sel], ha[sel])
+                if a == a and b == b:
+                    boots["rho_named"].append(a), boots["rho_any"].append(b), boots["any_minus_named"].append(b - a)
+        for k, v in boots.items():
+            m[k + "_ci"] = (float(np.percentile(v, 2.5)), float(np.percentile(v, 97.5))) if len(v) >= B // 2 \
+                else (float("nan"), float("nan"))
+        m["any_minus_named"] = m["rho_any"] - m["rho_named"]
+        out[f"{task}/{st}"] = m
+    return out
+
+
+def svs_md(S: dict, title: str) -> str:
+    L = [f"# Seeing versus selecting: {title}", "",
+         "Per (state, rule) of avoid / stay / upright rules, the training sentence. rho_named = Spearman(Q, h of the "
+         "named rule now); rho_any = Spearman(Q, the lowest h now over the scene's rules of the same consequence, "
+         "named or not). States: already_harmed (an object of that consequence is harmed now), not_yet (one will be "
+         "within 25 ticks), neither. [ ] = episode-cluster bootstrap 95% interval. Reading rule: rho_any above "
+         "rho_named with non-overlapping intervals = the model sees the danger but does not select the named "
+         "object. named = min: share of rows whose named rule is itself the most endangered.", "",
+         "| task | state | rows (episodes) | rho(Q, h named) | rho(Q, h any) | any - named | rho(h named, h any) | "
+         "named = min |", "|---|---|---|---|---|---|---|---|"]
+    for k, m in S.items():
+        task, st = k.split("/")
+        c = lambda key: (f"{m[key]:.2f} [{m[key + '_ci'][0]:.2f}, {m[key + '_ci'][1]:.2f}]"  # noqa: E731
+                         if m[key + "_ci"][0] == m[key + "_ci"][0] else f"{m[key]:.2f}")
+        L.append(f"| {task} | {st} | {m['n']} ({m['n_episodes']}) | {c('rho_named')} | {c('rho_any')} | "
+                 f"{c('any_minus_named')} | {m['rho_named_any']:.2f} | {m['frac_named_is_min']:.2f} |")
+    return "\n".join(L) + "\n"
+
+
 def _ci(m: dict, key: str, nd: int = 2) -> str:
     v, c = m.get(key), m.get(key + "_ci")
     if v is None or v != v:
@@ -916,13 +1018,18 @@ def main(argv=None) -> int:
     ap.add_argument("--batch", type=int, default=96)
     ap.add_argument("--embodiments", default="trained",
                     help="validation embodiments scored: 'trained' (the run's, default), 'all', or a comma list")
+    ap.add_argument("--tasks", default="all", help="validation tasks scored (comma list)")
+    ap.add_argument("--seeing-vs-selecting", action="store_true",
+                    help="also write seeing_vs_selecting.{json,md} (review round 3, Part II E0b)")
+    ap.add_argument("--out-name", default=None, help="output directory name under eval_offline/ (default: ckpt)")
     ap.add_argument("--prior-data", nargs="*", default=None,
                     help="training data roots for the scene-free text prior (rank_acc_text), e.g. data/lang/warmup")
     args = ap.parse_args(argv)
     roots = roots_of(args.val)
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.val)
     embs = args.embodiments if args.embodiments in ("trained", "all") else tuple(args.embodiments.split(","))
-    ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch, embodiments=embs)
+    ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch, embodiments=embs,
+                   tasks=None if args.tasks == "all" else args.tasks.split(","))
     if args.prior_data:
         prior_roots = roots_of(args.prior_data)
         if not prior_roots:   # else the prior is a constant 0.5 without a word (round 3, B6)
@@ -934,8 +1041,16 @@ def main(argv=None) -> int:
         if not ev.prior.n_docs:
             raise SystemExit(f"--prior-data {args.prior_data}: the text prior found no training sentences")
     M, rows = ev.evaluate(args.states_per_task, args.paraphrases)
-    out = Path(args.run) / "eval_offline" / Path(args.ckpt).stem
+    out = Path(args.run) / "eval_offline" / (args.out_name or Path(args.ckpt).stem)
     out.mkdir(parents=True, exist_ok=True)
+    import gzip
+
+    with gzip.open(out / "rows.json.gz", "wt") as f:   # every (state, rule) row: later checks need no GPU
+        json.dump(rows, f, default=float)
+    if args.seeing_vs_selecting:
+        S = seeing_vs_selecting(rows)
+        (out / "seeing_vs_selecting.json").write_text(json.dumps(S, indent=1))
+        (out / "seeing_vs_selecting.md").write_text(svs_md(S, f"{Path(args.run).name} / {args.ckpt} (step {ev.ckpt_step})"))
     data = data_info(ev, rows, roots)
     (out / "metrics.json").write_text(json.dumps({"ckpt": args.ckpt, "step": ev.ckpt_step, "data": data, "metrics": M},
                                                  indent=1))

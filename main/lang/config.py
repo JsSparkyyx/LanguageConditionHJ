@@ -144,6 +144,11 @@ class LangConfig(FrozenConfig):
     # step only; collection, probes and evaluation keep fp32 matmuls. A config saved before this field
     # (2026-10-08) loads as False, so older runs resume as they trained
     tf32_train: bool = True
+    # review round 3, Part II E2 (short grounding runs only; all off by default, the official runs unchanged):
+    text_out_norm: bool = False          # V1: a final RMSNorm on the text adapter's outputs (r0, q, w')
+    mask_special_tokens: bool = False    # V2: [CLS] / [SEP] out of the keys of body / scene-reads-words
+    oracle_ref_tag: bool = False         # V3: simulator-state tag of the named object's scene tokens (offline
+    oracle_tag_sigma: float = 0.04       #     measuring tool only; the rollout refuses it), width in metres
 
     # --- sampling / relabeling ---
     shuffle_text: bool = False
