@@ -126,3 +126,38 @@ def test_aggregate_ungrouped_all_runs():
     assert abs(a["reduction"] - (1 - 0.25 / 0.5)) < 1e-9 and a["any_intervention"] == 0.75
     assert abs(a["success_cost"] - (1.0 - 0.75)) < 1e-9
     assert "All runs, no grouping" in tables(aggregate(rows), "t")
+
+
+def test_protect_pos_is_cross_fitted():
+    """C3: a filter that does nothing (harm independent of the nominal runs, same probability) scores about 0
+    on protect_rate_pos; selecting and measuring on the same runs gave about (1 - p)^2."""
+    from main.lang.eval_closed import _protect_pos
+
+    rng = np.random.default_rng(0)
+    harm = []
+    for sc in range(4000):
+        p = 0.3
+        harm.append({"nominal_violated": [bool(rng.random() < p), bool(rng.random() < p)],
+                     "harm_named": bool(rng.random() < p), "task": "t", "embodiment": "e", "scene_idx": sc})
+    assert abs(_protect_pos(harm)) < 0.08
+
+
+def test_merged_rows_drop_filter_rows_of_other_filter_code(tmp_path):
+    """C7: a filter row written under another filter code hash is left out of the merge."""
+    from main.lang.eval_closed import filter_code_hash
+
+    h, fh = env_code_hash(), filter_code_hash()
+    rows = [{"key": ["t", 0, "train", "harm"], "embodiment": "e", "type": "filter", "code_hash": h, "filter_hash": fh},
+            {"key": ["t", 1, "train", "harm"], "embodiment": "e", "type": "filter", "code_hash": h, "filter_hash": "old"},
+            {"key": ["t", 0, "nominal", "-"], "embodiment": "e", "type": "nominal", "code_hash": h, "filter_hash": "old"}]
+    (tmp_path / "episodes_emb-e.jsonl").write_text("".join(json.dumps(x) + "\n" for x in rows))
+    keys = sorted(tuple(r["key"]) for r in merged_rows(tmp_path))
+    assert keys == [("t", 0, "nominal", "-"), ("t", 0, "train", "harm")]
+
+
+def test_pick_rules_prefers_a_rule_eligible_everywhere():
+    """C8: when one rule is eligible on every axis, every axis names it."""
+    rec = {"rules": [{"rule_id": f"r{k}"} for k in range(6)]}
+    des = {f"r{k}": "harm" for k in range(6)}
+    picks = pick_rules(rec, des, 3, ["train", "heldout_word"], lambda r, ax: ax == "train" or r["rule_id"] == "r4")
+    assert picks["train"]["harm"]["rule_id"] == picks["heldout_word"]["harm"]["rule_id"] == "r4"

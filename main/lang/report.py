@@ -90,16 +90,24 @@ def q1(runs) -> str:
 
 
 def q2(runs) -> str:
-    L = ["## Q2: where must language enter? (referent vs consequence decisions)", "",
-         "| run | variant | rank_acc train | referent decisions | consequence decisions | text_sens (probe) |",
-         "|---|---|---|---|---|---|"]
+    """Referent vs consequence decisions where both exist: T1, T3, T7 and their pool (round 2 C6: the pooled
+    referent score also held T5 / T6, which have no consequence pairs)."""
+    tasks = (("T1", "selective_avoid"), ("T3", "push_zone"), ("T7", "gap_place"))
+    L = ["## Q2: where must language enter? (referent vs consequence decisions, T1 / T3 / T7 only)", "",
+         "| run | variant | " + " | ".join(f"{n} referent | {n} consequence" for n, _ in tasks) +
+         " | T1+T3+T7 referent | T1+T3+T7 consequence |",
+         "|---|---|" + "---|---|" * len(tasks) + "---|---|"]
     for r in runs:
         m = r.get("offline")
         if m is None:
             continue
-        L.append(f"| {r['name']} | {r['variant']} | {fmt(g(m, 'train/symmetric/pooled', 'rank_acc'))} | "
-                 f"{fmt(g(m, 'train/symmetric/pooled', 'rank_acc_referent'))} | "
-                 f"{fmt(g(m, 'train/symmetric/pooled', 'rank_acc_consequence'))} | – |")
+        cells = []
+        for _, t in tasks:
+            cells += [fmt(g(m, f"train/symmetric/task/{t}", "rank_acc_referent")),
+                      fmt(g(m, f"train/symmetric/task/{t}", "rank_acc_consequence"))]
+        cells += [fmt(g(m, "train/symmetric/rc_pool", "rank_acc_referent")),
+                  fmt(g(m, "train/symmetric/rc_pool", "rank_acc_consequence"))]
+        L.append(f"| {r['name']} | {r['variant']} | " + " | ".join(cells) + " |")
     return "\n".join(L)
 
 
@@ -131,19 +139,31 @@ def q4(runs) -> str:
 
 
 def closed(runs) -> str:
-    L = ["## Closed loop (compare runs trained the same way)", "",
-         "| run | mode | axis | harm nominal | harm filter | protect | benign false alarm | selectivity | nominal disagreement |",
-         "|---|---|---|---|---|---|---|---|---|"]
+    """One table per (task set, env code hash, filter code hash) of the closed-loop summaries (round 2 C6)."""
+    groups = {}
     for r in runs:
         S = r.get("closed")
         if not S:
             continue
-        for k, v in sorted(S.items()):
-            if not k.startswith("pooled/"):
-                continue
-            L.append(f"| {r['name']} | {r['mode']} | {k.split('/')[1]} | {fmt(v['harm_rate_nominal'], 2)} | "
-                     f"{fmt(v['harm_rate_filter'], 2)} | {fmt(v['protect_rate'], 2)} | {fmt(v['benign_false_alarm'], 2)} | "
-                     f"{fmt(v['selectivity'], 2)} | {fmt(v['nominal_disagreement'], 2)} |")
+        meta = S.get("_meta") or {}
+        groups.setdefault((tuple(meta.get("tasks") or ()), meta.get("code_hash"), meta.get("filter_hash")), []).append(r)
+    L = ["## Closed loop (compare runs trained the same way)"]
+    for (tasks, ch, fh), rr in groups.items():
+        what = (f"tasks {', '.join(tasks)}; env code {ch}, filter code {fh}" if tasks else
+                "task set / code hashes not recorded (summary.json from before 2026-10-08: rerun the merge)")
+        L += ["", f"### {what}", "",
+              "| run | mode | axis | harm nominal | harm filter | protect | protect+ (cross-fit) | benign false alarm | "
+              "selectivity | all runs: broken nominal / filter |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
+        for r in rr:
+            for k, v in sorted(r["closed"].items()):
+                if not k.startswith("pooled/"):
+                    continue
+                a = v.get("all") or {}
+                L.append(f"| {r['name']} | {r['mode']} | {k.split('/')[1]} | {fmt(v['harm_rate_nominal'], 2)} | "
+                         f"{fmt(v['harm_rate_filter'], 2)} | {fmt(v['protect_rate'], 2)} | {fmt(v.get('protect_rate_pos'), 2)} | "
+                         f"{fmt(v['benign_false_alarm'], 2)} | {fmt(v['selectivity'], 2)} | "
+                         f"{fmt(a.get('broken_nominal'), 2)} / {fmt(a.get('broken_filter'), 2)} |")
     return "\n".join(L)
 
 

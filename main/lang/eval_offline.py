@@ -43,6 +43,7 @@ from . import ensure_item_path
 ensure_item_path()
 
 from main.item_envs import language  # noqa: E402
+from main.item_envs.item_buffer import FAILS_SOON_H  # noqa: E402
 
 from .config import CANON_TASKS, LangConfig  # noqa: E402
 from .data import LangSource, stable_hash  # noqa: E402
@@ -136,14 +137,25 @@ def rule_words(rule: dict, rec: dict) -> tuple:
     return (rule["consequence"],) + tuple(str(w) for w in words if w)
 
 
+_WORD = __import__("re").compile(r"[a-z]+")
+
+
+def sentence_words(sentence: str) -> list[str]:
+    return _WORD.findall((sentence or "").lower())
+
+
 class TextPrior:
-    """P(fails_soon | rule words) from training data, Laplace-smoothed, backing off to the consequence: a
-    reader of the sentence that never looks at the scene (review E2)."""
+    """P(fails_soon | the sentence's words): an L2 logistic regression on word presence, fit on training
+    data with training-template sentences of every sampleable rule (weights: the rule's fails_soon counts
+    over its episode). A reader of the ACTUAL sentence (the words the model gets) that never looks at the
+    scene (review E2; round 2 C4: it used to key on the record's category / colour / size, which a sentence
+    may leave out). ``roots`` are recorded so main() can check they are disjoint from the validation data."""
 
-    def __init__(self, roots, k_prev: int = 2):
-        from collections import Counter
-
-        self.k, self.n = Counter(), Counter()
+    def __init__(self, roots, k_prev: int = 2, n_sent: int = 4, seed: int = 0, l2: float = 1e-2, iters: int = 25):
+        self.roots = [str(Path(r).resolve()) for r in roots]
+        bank = language.load_bank()
+        rng = np.random.default_rng(seed)
+        docs, ks, ns = [], [], []
         for r in roots:
             src = LangSource(r, k_prev, 7)
             if not src.rows.size:
@@ -156,13 +168,45 @@ class TextPrior:
                     if not rule.get("sampleable"):
                         continue
                     fs = np.asarray(fs_all[idx, int(rule["idx"])], dtype=bool)
-                    for key in (rule_words(rule, rec), (rule["consequence"],)):
-                        self.k[key] += int(fs.sum())
-                        self.n[key] += int(fs.size)
+                    for _ in range(n_sent):
+                        docs.append(set(sentence_words(language.sample_sentence(rule, rec, rng, "train", bank))))
+                        ks.append(fs.sum() / n_sent)
+                        ns.append(fs.size / n_sent)
+        df = {}
+        for d in docs:
+            for w in d:
+                df[w] = df.get(w, 0) + 1
+        self.vocab = {w: i for i, w in enumerate(sorted(w for w, c in df.items() if c >= 2))}
+        V = len(self.vocab)
+        X = np.zeros((len(docs), V + 1))
+        X[:, V] = 1.0
+        for i, d in enumerate(docs):
+            for w in d:
+                if w in self.vocab:
+                    X[i, self.vocab[w]] = 1.0
+        k, n = np.asarray(ks, dtype=np.float64), np.asarray(ns, dtype=np.float64)
+        w = np.zeros(V + 1)
+        N = max(float(n.sum()), 1.0)
+        reg = 2 * l2 * np.eye(V + 1)
+        reg[V, V] = 0.0
+        for _ in range(iters):   # Newton steps on the weighted binomial log-likelihood
+            p_ = 1 / (1 + np.exp(-np.clip(X @ w, -30, 30)))
+            g = X.T @ (n * p_ - k) / N + reg @ w
+            H = (X * (n * p_ * (1 - p_))[:, None]).T @ X / N + reg + 1e-9 * np.eye(V + 1)
+            step = np.linalg.solve(H, g)
+            w -= step
+            if np.abs(step).max() < 1e-8:
+                break
+        self.w = w
+        self.n_docs = len(docs)
 
-    def __call__(self, words: tuple) -> float:
-        key = words if self.n[words] else (words[0],)
-        return (self.k[key] + 1.0) / (self.n[key] + 2.0)
+    def __call__(self, sentence: str) -> float:
+        x = np.zeros(len(self.vocab) + 1)
+        x[-1] = 1.0
+        for word in set(sentence_words(sentence)):
+            if word in self.vocab:
+                x[self.vocab[word]] = 1.0
+        return float(1 / (1 + np.exp(-np.clip(x @ self.w, -30, 30))))
 
 
 class Evaluator:
@@ -219,7 +263,8 @@ class Evaluator:
             t_in = np.asarray(A["t_in_ep"])[rows]
             rows, t_in = rows[np.argsort(t_in, kind="stable")], np.sort(t_in, kind="stable")
             h = np.asarray(A["h_rules"][rows], dtype=np.float64)
-            self._ep[key] = ({int(t): k for k, t in enumerate(t_in)}, hj_return(h, self.gamma), next_violation(h))
+            self._ep[key] = ({int(t): k for k, t in enumerate(t_in)}, hj_return(h, self.gamma), next_violation(h),
+                             len(rows))
         return self._ep[key]
 
     def _base_sentence(self, rule, rec, j, eid, rng) -> str:
@@ -286,8 +331,12 @@ class Evaluator:
                 eid, slot = int(s.eid[i]), int(s.rows[i])
                 rec = s.rs.records[eid]
                 A = s.rs.buf.arrays
-                tmap, y_ep, nv_ep = self._episode(j, eid)
+                tmap, y_ep, nv_ep, L_ep = self._episode(j, eid)
                 k_ep = tmap.get(int(s.t[i]))
+                # an episode that ran to the tick cap was cut: its last FAILS_SOON_H - 1 rows' fails_soon and
+                # return look past the end (censored; round 2 C8)
+                censored = bool(L_ep >= int(self.cfg.max_steps_per_episode) - 1
+                                and L_ep - 1 - int(s.t[i]) < FAILS_SOON_H - 1)
                 for rule in rec["rules"]:
                     el = {ax: eligible(rule, rec, ax, self.bank) for ax in AXES}
                     if not any(el.values()):
@@ -300,9 +349,7 @@ class Evaluator:
                             "h": float(A["h_rules"][slot, col]), "eligible": el, "q": {},
                             "y": float(y_ep[k_ep, col]) if k_ep is not None else None,
                             "ttv": int(nv_ep[k_ep, col]) if k_ep is not None and nv_ep[k_ep, col] >= 0 else None,
-                            "words": list(rule_words(rule, rec)), "sentences": {}}
-                    if self.prior is not None:
-                        base["prior"] = float(self.prior(tuple(base["words"])))
+                            "words": list(rule_words(rule, rec)), "sentences": {}, "prior": {}, "censored": censored}
                     r_idx = len(rows)
                     rows.append(base)
                     for ax in AXES:
@@ -311,6 +358,8 @@ class Evaluator:
                         sent = (self._other_sentence(j, eid, rng) if ax == "shuffled"
                                 else axis_sentence(rule, rec, ax, (eid, int(s.t[i]), col), self.bank))
                         base["sentences"][ax] = sent
+                        if self.prior is not None:
+                            base["prior"][ax] = float(self.prior(sent))
                         items.append((k, sent))
                         meta.append((r_idx, ax))
                     # base sentence for auroc_base / rank_acc_base: another rule of the same state (E3)
@@ -355,7 +404,8 @@ def _pairs(rows: list[dict]):
 BOOT = 1000          # episode-cluster bootstrap resamples for rank cells (review E4)
 BOOT_AUROC = 200     # ... for AUROC cells
 MC_EPS = 0.05        # rank_acc_mc counts pairs whose HJ returns differ by more than this
-TTV_BINS = (("violated", 0, 0), ("1-7", 1, 7), ("8-25", 8, 25))
+TTV_BINS = (("violated", 0, 0), ("1-7", 1, 7), ("8-24", 8, FAILS_SOON_H - 1))   # fails_soon looks 25 ticks
+RC_TASKS = ("selective_avoid", "push_zone", "gap_place")   # the tasks with both referent and consequence pairs
 SIZE_WORDS = ("tall", "short")
 
 
@@ -404,6 +454,11 @@ def boot_auroc_ci(score, label, clusters, B: int = BOOT_AUROC, seed: int = 0) ->
     return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
 
 
+def _rank(a: float, b: float) -> float:
+    """1 if the harmful member's score a is below the benign member's b, 0.5 on a tie, else 0."""
+    return 0.5 if a == b else float(a < b)
+
+
 def _ep(r) -> str:
     return f"{r['src']}:{r['episode_id']}"
 
@@ -427,9 +482,14 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
 
     def groups(hr, bn, ax):
         g = [("pooled",), ("task", hr["task"]), ("cons", hr["consequence"])]
+        if hr["task"] in RC_TASKS:
+            g.append(("rc_pool",))   # T1 / T3 / T7: referent vs consequence over the same task set (C6)
         b = _ttv_bin(hr.get("ttv"))
         if b:
             g.append(("ttv", b))
+            g.append(("task_ttv", hr["task"], b))
+            # headline per task (C1): the harmful rule already broken, or not yet
+            g.append(("task_state", hr["task"], "violated" if b == "violated" else "not_yet"))
         if hr["task"] == "tray_transport":
             sents = [(x.get("sentences") or {}).get(ax) or "" for x in (hr, bn)]
             sw = any(w in sent.lower().split() for sent in sents for w in SIZE_WORDS)
@@ -438,8 +498,12 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
 
     for ax in AXES:
         acc = defaultdict(lambda: defaultdict(list))
+        n_censored = 0
         for hr, bn in _pairs(rows):
             e1, e2 = hr["eligible"][ax], bn["eligible"][ax]
+            if hr.get("censored") and (e1 or e2):   # the state's 25-tick window runs past a capped end (C8)
+                n_censored += 1
+                continue
             if not (e1 or e2):
                 continue
             if e1 and e2:
@@ -460,28 +524,38 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
             same_cons = hr["consequence"] == bn["consequence"]
             same_ref = hr["referent"] == bn["referent"] and hr["referent"] is not None
             ep = _ep(hr)
-            ok = float(qh < qb)
+            ok = _rank(qh, qb)                      # ties count 0.5 everywhere (C5)
+            ph, pb = (hr.get("prior") or {}).get(ax), (bn.get("prior") or {}).get(ax)
+            if kind == "mixed":                     # the other member's train-sentence prior
+                ph = ph if ph is not None else (hr.get("prior") or {}).get("train")
+                pb = pb if pb is not None else (bn.get("prior") or {}).get("train")
             for g in groups(hr, bn, ax):
                 d = acc[(kind,) + g]
                 d["rank"].append((ep, ok))
                 if qh0 is not None:
-                    d["rank_base"].append((ep, float(qh0 < qb0)))
+                    d["rank_base"].append((ep, _rank(qh0, qb0)))
                 if same_cons and not same_ref:
                     d["rank_ref"].append((ep, ok))
                 if same_ref and not same_cons:
                     d["rank_cons"].append((ep, ok))
-                d["rank_h"].append((ep, 0.5 if hr["h"] == bn["h"] else float(hr["h"] < bn["h"])))
-                if hr.get("y") is not None and bn.get("y") is not None and abs(hr["y"] - bn["y"]) > MC_EPS:
-                    d["rank_mc"].append((ep, float(ok == float(hr["y"] < bn["y"]))))
-                if hr.get("prior") is not None and bn.get("prior") is not None:
-                    d["rank_text"].append((ep, 0.5 if hr["prior"] == bn["prior"] else float(hr["prior"] > bn["prior"])))
+                d["rank_h"].append((ep, _rank(hr["h"], bn["h"])))
+                if hr.get("y") is not None and bn.get("y") is not None:
+                    # the label vs the return of the NOMINAL continuation: does y rank the pair like fails_soon? (C2)
+                    d["rank_y"].append((ep, _rank(hr["y"], bn["y"])))
+                    if abs(hr["y"] - bn["y"]) > MC_EPS:
+                        d["rank_mc"].append((ep, float(ok == float(hr["y"] < bn["y"]))))
+                if ph is not None and pb is not None:
+                    t_ok = _rank(-ph, -pb)               # the prior ranks by a HIGHER P(fails_soon)
+                    d["rank_text"].append((ep, t_ok))
+                    d["model_minus_text"].append((ep, ok - t_ok))   # paired, same pairs (C4)
         for key, d in acc.items():
             name = "/".join([ax] + list(key))
             m = {"n_pairs": len(d["rank"]), "n_episodes": len({c for c, _ in d["rank"]}),
                  "rank_acc": float(np.mean([v for _, v in d["rank"]])), "rank_acc_ci": boot_mean_ci(d["rank"], seed=seed)}
             for src, dst, n_key in (("rank_base", "rank_acc_base", None), ("rank_ref", "rank_acc_referent", "n_referent"),
                                     ("rank_cons", "rank_acc_consequence", "n_consequence"), ("rank_h", "rank_acc_h", None),
-                                    ("rank_mc", "rank_acc_mc", "n_mc"), ("rank_text", "rank_acc_text", None)):
+                                    ("rank_mc", "rank_acc_mc", "n_mc"), ("rank_text", "rank_acc_text", None),
+                                    ("rank_y", "rank_acc_y", None), ("model_minus_text", "model_minus_text", None)):
                 if d[src]:
                     m[dst] = float(np.mean([v for _, v in d[src]]))
                     m[dst + "_ci"] = boot_mean_ci(d[src], seed=seed)
@@ -490,6 +564,7 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
             if "rank_acc_base" in m:
                 m["rank_acc_minus_base"] = m["rank_acc"] - m["rank_acc_base"]
             out[name] = m
+        out[f"{ax}/_censored_pairs"] = {"n": n_censored}
         for kind in ("symmetric", "mixed"):   # task-macro mean (every task weighs the same; review E4)
             tm = [out[f"{ax}/{kind}/task/{t}"]["rank_acc"] for t in CANON_TASKS if f"{ax}/{kind}/task/{t}" in out]
             if tm and f"{ax}/{kind}/pooled" in out:
@@ -512,7 +587,11 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
             pred = q < 0
             tp = float((pred & rec).sum())
             m = out.setdefault(f"{ax}/state/{gname}", {})
+            # AUROC over harm that is NOT yet happening: already-broken rows left out of the positives (C8)
+            nyet = np.array([not (r["fails_soon"] and r.get("ttv") == 0) for r in rr])
             m.update({"n": len(rr), "n_episodes": int(len(set(cl))), "auroc": auroc(-q, fs),
+                      "auroc_not_yet": auroc(-q[nyet], fs[nyet]),
+                      "auroc_not_yet_ci": boot_auroc_ci(-q[nyet], fs[nyet], cl[nyet], seed=seed),
                       "auroc_ci": boot_auroc_ci(-q, fs, cl, seed=seed), "auroc_base": auroc(-qb, fs),
                       "auroc_base_ci": boot_auroc_ci(-qb, fs, cl, seed=seed),
                       "prec_at_0": tp / max(float(pred.sum()), 1e-9), "rec_at_0": tp / max(float(rec.sum()), 1e-9),
@@ -552,9 +631,12 @@ def tables_md(M: dict, title: str) -> str:
     sym = lambda ax, g: M.get(f"{ax}/symmetric/{g}", {})  # noqa: E731
     L = [f"# Offline language probe: {title}", "",
          "rank_acc = P[Q(harmful rule) < Q(benign rule)] over symmetric pairs at the same state (chance 0.5), "
-         "labels from fails_soon (h < 0 within 25 ticks). [ ] = episode-bootstrap 95% interval; cells give "
+         "labels from fails_soon (h < 0 within 25 ticks); ties count 0.5. [ ] = episode-bootstrap 95% interval "
+         "(optimistic: 7-10 validation episodes per task, percentile intervals under-cover); cells give "
          "(pairs / episodes). The shuffled axis is 0.5 by construction (both members get other-episode "
-         "sentences): a code check, not a result.", "",
+         "sentences): a code check, not a result. "
+         f"States whose 25-tick window runs past a time-capped episode's end are left out "
+         f"({M.get('train/_censored_pairs', {}).get('n', 0)} training-axis pairs).", "",
          "| axis | pooled | task macro | " + " | ".join(f"T{i + 1}" for i in range(len(CANON_TASKS))) + " | referent | consequence |",
          "|---|---|---|" + "---|" * len(CANON_TASKS) + "---|---|"]
     for ax in AXES:
@@ -567,23 +649,37 @@ def tables_md(M: dict, title: str) -> str:
         cells.append(f"{_ci(p, 'rank_acc_referent')} ({p['n_referent']})" if p.get("rank_acc_referent") is not None else "–")
         cells.append(f"{_ci(p, 'rank_acc_consequence')} ({p['n_consequence']})" if p.get("rank_acc_consequence") is not None else "–")
         L.append(f"| {ax} | " + " | ".join(cells) + " |")
-    L += ["", "**Label checks (review E1, E2), training templates.** h now: rank by each rule's current h, no model "
-          "(a perfect reader with no foresight). vs HJ return: agreement of Q's order with the discounted HJ return "
-          "y_t = (1 - gamma) h_t + gamma min(h_t, y_t+1) of the recorded h (what the critic learns), pairs with "
-          "|y1 - y2| > 0.05. text prior: rank by P(fails_soon | consequence + referent words) from training data, "
-          "never looking at the scene. Spearman: per state, Q vs y across its rules (>= 3 rules).", "",
-          "| group | rank_acc (pairs) | h now | vs HJ return (pairs) | text prior | Spearman Q, y (states) |",
-          "|---|---|---|---|---|---|"]
+    L += ["", "**Per task: the harmful rule already broken, or not yet** (training templates; round 2 C1). In the "
+          "already-broken cells the current h ranks every pair right by construction, so they test whether the "
+          "model reads the named item's PRESENT state; foresight is judged in closed loop.", "",
+          "| task | already broken: model | h now | not yet broken: model | h now |", "|---|---|---|---|---|"]
+    for t in CANON_TASKS:
+        a, b = sym("train", f"task_state/{t}/violated"), sym("train", f"task_state/{t}/not_yet")
+        if a or b:
+            cell = lambda m: f"{_ci(m, 'rank_acc')} ({m['n_pairs']})" if m else "–"  # noqa: E731
+            L.append(f"| {t} | {cell(a)} | {_ci(a, 'rank_acc_h') if a else '–'} | {cell(b)} | "
+                     f"{_ci(b, 'rank_acc_h') if b else '–'} |")
+    L += ["", "**Label checks (review E1, E2; round 2 C2, C4), training templates.** h now: rank by each rule's "
+          "current h, no model; ties (mostly h = 1.0 on both) count 0.5, so it is not a perfect-reader ceiling. "
+          "y = the return of the NOMINAL continuation, (1 - gamma) h_t + gamma min(h_t, y_t+1) over the recorded "
+          "h: not what the critic learns (it bootstraps through its actor). y ranks like the label: P[y(harmful) < "
+          "y(benign)]. Q vs y: agreement of Q's order with y's (|y1 - y2| > 0.05). text prior: a logistic regression "
+          "on the words of the pair's sentences, fit on training data, never looking at the scene; model - text: "
+          "paired difference with an episode bootstrap. Spearman: per state, Q vs y across its rules (>= 3).", "",
+          "| group | model (pairs) | h now | y ranks like the label | Q vs y (pairs) | text prior | model - text | "
+          "Spearman Q, y (states) |", "|---|---|---|---|---|---|---|---|"]
     for g in ["pooled"] + [f"task/{t}" for t in CANON_TASKS]:
         m = sym("train", g)
         st = M.get(f"train/state/{g}", {})
         if not m:
             continue
-        L.append(f"| {g} | {_ci(m, 'rank_acc')} ({m['n_pairs']}) | {_ci(m, 'rank_acc_h')} | "
-                 f"{_ci(m, 'rank_acc_mc')} ({m.get('n_mc', 0)}) | {_ci(m, 'rank_acc_text')} | "
+        L.append(f"| {g} | {_ci(m, 'rank_acc')} ({m['n_pairs']}) | {_ci(m, 'rank_acc_h')} | {_ci(m, 'rank_acc_y')} | "
+                 f"{_ci(m, 'rank_acc_mc')} ({m.get('n_mc', 0)}) | {_ci(m, 'rank_acc_text')} | {_ci(m, 'model_minus_text')} | "
                  f"{st.get('spearman_q_y', float('nan')):.2f} ({st.get('n_spearman_states', 0)}) |")
-    L += ["", "**By the harmful rule's time to its first violation (review E1c)**, training templates. A gamma = 0.9 "
-          "critic with h = 1 before and -1 after a violation k ticks ahead values it 1 - 2 * 0.9^k (0.30 at k = 10).", "",
+    L += ["", "**By the harmful rule's time to its first violation (review E1c)**, training templates. 1-7 ticks is "
+          "the closest offline test of foresight; the nominal-continuation value of a violation k ticks ahead is "
+          "1 - 2 * 0.9^k (0.30 at k = 10), but the critic values its actor's continuation, so a violation the "
+          "actor can still avoid may rightly stay a near-tie.", "",
           "| harmful rule | rank_acc (pairs / episodes) | h now | vs HJ return |", "|---|---|---|---|"]
     for name, _, _ in TTV_BINS:
         m = sym("train", f"ttv/{name}")
@@ -598,8 +694,8 @@ def tables_md(M: dict, title: str) -> str:
             L.append(f"| {k.replace('_', ' ')} | {_ci(m, 'rank_acc')} ({m['n_pairs']}) |")
     L += ["", "**Referent vs consequence within the tasks that have both (review E5)**, training templates.", "",
           "| task | referent (pairs) | consequence (pairs) |", "|---|---|---|"]
-    for t in ("selective_avoid", "push_zone", "gap_place"):
-        m = sym("train", f"task/{t}")
+    for t, key in [(t, f"task/{t}") for t in RC_TASKS] + [("T1 + T3 + T7 pooled", "rc_pool")]:
+        m = sym("train", key)
         if m:
             L.append(f"| {t} | {_ci(m, 'rank_acc_referent')} ({m.get('n_referent', 0)}) | "
                      f"{_ci(m, 'rank_acc_consequence')} ({m.get('n_consequence', 0)}) |")
@@ -613,12 +709,14 @@ def tables_md(M: dict, title: str) -> str:
                      f"{m.get('rank_acc_minus_base', float('nan')):+.3f} |")
     L += ["", "Per (state, rule): AUROC of -Q for fails_soon (base: another rule's sentence of the same state), "
           "precision / recall of Q < 0 against fails_soon_recall (7 ticks), v_le_h = P[Q <= h + 0.05].", "",
-          "| axis | n (episodes) | auroc | auroc_base | prec@0 | rec@0 | v_le_h | para_std | para_std_ratio |",
-          "|---|---|---|---|---|---|---|---|---|"]
+          "| axis | n (episodes) | auroc | auroc, harm not yet happening | auroc_base | prec@0 | rec@0 | v_le_h | "
+          "para_std | para_std_ratio |",
+          "|---|---|---|---|---|---|---|---|---|---|"]
     for ax in AXES:
         m = M.get(f"{ax}/state/pooled")
         if m:
-            L.append(f"| {ax} | {m['n']} ({m.get('n_episodes', '?')}) | {_ci(m, 'auroc', 3)} | {_ci(m, 'auroc_base', 3)} | "
+            L.append(f"| {ax} | {m['n']} ({m.get('n_episodes', '?')}) | {_ci(m, 'auroc', 3)} | "
+                     f"{_ci(m, 'auroc_not_yet', 3)} | {_ci(m, 'auroc_base', 3)} | "
                      f"{m['prec_at_0']:.3f} | {m['rec_at_0']:.3f} | {m['v_le_h']:.3f} | {m.get('para_std', float('nan')):.3f} | "
                      f"{m.get('para_std_ratio', float('nan')):.3f} |")
     L += ["", "Per task (train axis):", "", "| task | n | auroc | auroc_base | rank_acc | v_le_h |", "|---|---|---|---|---|---|"]
@@ -694,7 +792,9 @@ def data_info(ev, rows, roots) -> dict:
     bead_h = ("none" if not bead_srcs else
               "count" if all((s.root / "item_buffer" / "n_violating.npy").exists() for s in bead_srcs) else "old")
     return {"tasks": sorted({r["task"] for r in rows}), "stale_bead_rows_dropped": int(sum(s.n_stale_dropped for s in ev.sources)),
-            "bead_h": bead_h, "val_roots": [str(r) for r in roots]}
+            "bead_h": bead_h, "val_roots": [str(r) for r in roots],
+            "prior_roots": list(ev.prior.roots) if ev.prior is not None else None,
+            "prior_docs": int(ev.prior.n_docs) if ev.prior is not None else None}
 
 
 def main(argv=None) -> int:
@@ -715,7 +815,11 @@ def main(argv=None) -> int:
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.val)
     ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch)
     if args.prior_data:
-        ev.prior = TextPrior(roots_of(args.prior_data), ev.cfg.k_prev)
+        prior_roots = roots_of(args.prior_data)
+        overlap = {str(Path(r).resolve()) for r in prior_roots} & {str(Path(r).resolve()) for r in roots}
+        if overlap:   # the prior must not have seen the validation episodes (round 2 C4)
+            raise SystemExit(f"--prior-data overlaps --val: {sorted(overlap)}")
+        ev.prior = TextPrior(prior_roots, ev.cfg.k_prev)
     M, rows = ev.evaluate(args.states_per_task, args.paraphrases)
     out = Path(args.run) / "eval_offline" / Path(args.ckpt).stem
     out.mkdir(parents=True, exist_ok=True)

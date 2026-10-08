@@ -42,10 +42,12 @@ def test_hj_return_matches_the_closed_form():
     assert nv[:, 0].tolist() == [2, 1, 0, -1]
 
 
-def _r(state, ep, task, cons, ref, fs, q, h, y=None, ttv=None, prior=None, sent="keep the block still"):
+def _r(state, ep, task, cons, ref, fs, q, h, y=None, ttv=None, prior=None, sent="keep the block still",
+       censored=False):
     el = {ax: ax == "train" for ax in AXES}
     return {"src": 0, "i": state, "episode_id": ep, "task": task, "consequence": cons, "referent": ref,
-            "fails_soon": fs, "q": {"train": q, "base": q}, "h": h, "y": y, "ttv": ttv, "prior": prior,
+            "fails_soon": fs, "q": {"train": q, "base": q}, "h": h, "y": y, "ttv": ttv,
+            "prior": {} if prior is None else {"train": prior}, "censored": censored,
             "eligible": el, "recall": fs, "sentences": {"train": sent}}
 
 
@@ -70,7 +72,23 @@ def test_summarize_label_checks_strata_and_intervals():
     assert M["train/symmetric/ttv/1-7"]["rank_acc"] == 1.0
     assert M["train/symmetric/t5/size_word"]["n_pairs"] == 24
     assert M["train/state/pooled"]["auroc_ci"][0] <= M["train/state/pooled"]["auroc"]
+    # C1: per-task headline cells; C2: y ranks every pair like the label here; C4: paired model - prior
+    assert M["train/symmetric/task_state/tray_transport/violated"]["rank_acc"] == 0.0
+    assert M["train/symmetric/task_state/tray_transport/not_yet"]["rank_acc"] == 1.0
+    assert p["rank_acc_y"] == 1.0 and abs(p["model_minus_text"] - (18 / 24 - 1.0)) < 1e-9
+    assert "train/symmetric/rc_pool" not in M          # T5 has no referent / consequence decisions pool
     assert "Label checks" in tables_md(M, "t")
+
+
+def test_summarize_ties_censoring_and_rc_pool():
+    """C5: a tie scores 0.5; C8: censored states leave the pairs and are counted; C6: T1 / T3 / T7 pool."""
+    rows = [_r(0, 0, "gap_place", "stay", "a", True, 0.3, 0.2), _r(0, 0, "gap_place", "stay", "b", False, 0.3, 0.9),
+            _r(1, 1, "gap_place", "stay", "a", True, 0.1, 0.2, censored=True),
+            _r(1, 1, "gap_place", "stay", "b", False, 0.5, 0.9, censored=True)]
+    M = summarize(rows)
+    p = M["train/symmetric/pooled"]
+    assert p["n_pairs"] == 1 and p["rank_acc"] == 0.5 and M["train/_censored_pairs"]["n"] == 1
+    assert M["train/symmetric/rc_pool"]["n_pairs"] == 1
 
 
 def test_evaluator_prior_and_same_state_base(tmp_path):
