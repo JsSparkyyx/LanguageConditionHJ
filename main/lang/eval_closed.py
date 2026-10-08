@@ -513,7 +513,9 @@ def _boot_ci(rows, stat, seed: int = 0) -> tuple[float, float]:
 
 
 def aggregate(rows: list[dict]) -> dict:
-    filt = [r for r in rows if r.get("type") == "filter" and not r.get("missing") and not r.get("error")]
+    # a filtered run that ended in an exception (failed grasp, error at its first tick) has no outcome
+    filt = [r for r in rows if r.get("type") == "filter" and not r.get("missing") and not r.get("error")
+            and r.get("status") != "exception"]
     groups = defaultdict(list)
     for r in filt:
         for g in (("pooled", r["axis"]), (r["task"], r["axis"]), (f"{r['task']}|{r['embodiment']}", r["axis"])):
@@ -582,6 +584,7 @@ def aggregate(rows: list[dict]) -> dict:
             if any(r.get("lead_time") is not None for r in harm) else float("nan"),
         }
     out["_counts"] = {"filter_runs": len(filt), "missing": sum(1 for r in rows if r.get("missing")),
+                      "not_run": sum(1 for r in rows if r.get("type") == "filter" and r.get("status") == "exception"),
                       "errors": sum(1 for r in rows if r.get("error"))}
     return out
 

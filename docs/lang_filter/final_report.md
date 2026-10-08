@@ -205,35 +205,52 @@ the agreement with the discounted HJ return of the recorded h, a scene-free text
 the violation, and episode-bootstrap intervals (validation has 10 episodes per task, so the official vs
 preview swings above, T1 0.51 vs 0.64 and T3 0.88 vs 0.59, fit episode-level noise).
 
-**Re-scored with those checks (2026-10-07 evening; official step-20000 checkpoint; T1 / T3 / T5 / T7
-only, 11,415 old-h bead rows left out; 31 validation episodes; [ ] = 95% episode-bootstrap interval;
-`eval_offline/checkpoint_final/tables.md`, the earlier file kept as `checkpoint_final_pre_review/`):**
+**Re-scored (round-2 review, 2026-10-08; official step-20000 checkpoint, which was trained on the OLD bead h;
+validation now includes the 30 new bead-count episodes, so T6 is back; 41 episodes for the pair cells; [ ] =
+95% episode bootstrap, optimistic with 7-10 episodes per task; `eval_offline/checkpoint_final/tables.md`;
+earlier versions in `checkpoint_final_pre_review/` and `checkpoint_final_round1/`):**
 
-| training templates | model rank_acc | current h, no model | agrees with HJ return | text prior, no scene |
+| training templates | model | current h, no model | text prior (the pair's sentences only) | model - prior |
 |---|---|---|---|---|
-| pooled | 0.62 [0.53, 0.70] | 0.88 | 0.62 | 0.68 [0.57, 0.78] |
-| T1 selective_avoid | 0.61 [0.53, 0.69] | 0.89 | 0.61 | 0.67 |
-| T3 push_zone | 0.77 [0.63, 0.89] | 0.60 | 0.83 | 0.75 |
-| T5 tray_transport | 0.92 [0.84, 0.99] | 0.90 | 0.92 | 0.89 |
-| T7 gap_place | 0.54 [0.36, 0.75] | 0.91 | 0.54 | 0.62 |
+| pooled | 0.66 [0.58, 0.74] | 0.89 | 0.70 [0.61, 0.78] | -0.04 [-0.14, 0.07] |
+| T1 selective_avoid | 0.61 [0.53, 0.69] | 0.89 | 0.64 | -0.02 [-0.17, 0.17] |
+| T3 push_zone | 0.77 [0.63, 0.89] | 0.60 | 0.56 | +0.21 [0.12, 0.33] |
+| T5 tray_transport | 0.92 [0.84, 0.99] | 0.90 | 0.82 | +0.10 [-0.02, 0.22] |
+| T6 clean_pour | 0.78 [0.66, 0.90] | 0.93 | 0.85 | -0.08 [-0.18, 0.03] |
+| T7 gap_place | 0.54 [0.36, 0.75] | 0.91 | 0.68 | -0.14 [-0.36, 0.16] |
 
-- The label is not what keeps the score low: scored against the discounted HJ return instead of
-  `fails_soon` (3146 of 3160 pairs differ by more than 0.05), the pooled score is the same (0.62), and so
-  are T1, T5 and T7; only T3 moves, up (0.77 -> 0.83).
-- 2079 of the 3160 pairs have the harmful rule ALREADY broken at that tick. The model ranks those 0.67
-  [0.54, 0.78], violations 1-7 ticks ahead 0.57, 8-25 ticks ahead 0.51: little foresight on T1 / T7.
-- T3 is the exception: the model (0.77) beats the current-h reader (0.60) and agrees with the HJ return
-  even more (0.83), the zone_include case the caveat describes.
-- A scene-free prior on the rule's words (consequence + referent category / colour / size, fit on the
-  warmup) beats the model on T1 and T7: the model does not yet use the sentence as well as word statistics
-  there.
-- T5 is partly a shortcut: 0.94 [0.88, 1.00] when a sentence has "tall" / "short", 0.77 [0.44, 0.93] (26
-  pairs) when not.
-- Within the tasks that have both kinds: T1 referent 0.51 [0.44, 0.59] vs consequence 0.73 [0.54, 0.90];
-  T7 0.53 vs 0.57 (intervals overlap); T3 0.88 (32 pairs) vs 0.59 (17).
-- AUROC of -Q for imminent harm: 0.747 [0.683, 0.802] vs 0.622 with another rule's sentence of the same
-  state (was 0.856 vs 0.742 with T2 / T6 included and other-episode base sentences).
-- Held-out items: 3 episodes, no conclusion.
+The harmful rule already broken at that tick, or not yet (model / current h):
+
+| task | already broken | not yet broken |
+|---|---|---|
+| T1 | 0.69 / 1.00 (1272 pairs) | 0.48 / 0.71 (771) |
+| T3 | 0.87 / 1.00 (75) | 0.68 / 0.23 (79) |
+| T5 | 0.91 / 1.00 (130) | 0.94 / 0.61 (48) |
+| T6 | 0.80 / 1.00 (898) | 0.64 / 0.53 (147) |
+| T7 | 0.54 / 1.00 (602) | 0.55 / 0.59 (183) |
+
+What this does and does not show (corrected after review round 2, C1 / C2 / C4):
+- **T1 and T7: the model misreads the named item's PRESENT state.** Where the harmful rule is already broken,
+  the current h ranks every pair right by construction, and the model gets 0.69 (T1) and 0.54 (T7). Most
+  of the misranked pairs are of this kind. (The earlier "little foresight" reading was wrong: those pairs
+  need no foresight.)
+- **T3 and T5 show foresight:** on not-yet-broken pairs the model beats the current h (T3 0.68 vs 0.23, T5
+  0.94 vs 0.61).
+- **The label check is uninformative here:** the return of the NOMINAL continuation ranks 99% of the pairs
+  the same way as `fails_soon`, so agreeing with it says nothing new; and the critic learns the value of its
+  ACTOR's continuation, not the nominal's, so neither the earlier "the label is not the cause" nor any
+  foresight claim follows from it. Foresight proper is judged in closed loop.
+- **The text prior does not beat the model:** keyed on the words of the actual sentences (it used to key on
+  the record's category / colour / size, more than a sentence may say), the paired difference is not
+  significant on T1 or T7 and favours the model on T3. (The earlier "the prior beats the model on T1 / T7"
+  is withdrawn.)
+- Referent vs consequence over T1 + T3 + T7 only: 0.53 [0.45, 0.61] vs 0.70 [0.54, 0.83].
+- AUROC of -Q for harm within 25 ticks: 0.86 [0.83, 0.90]; for harm not yet happening only: 0.69 [0.64, 0.74].
+- T5 is partly a shortcut: 0.94 with "tall" / "short" in a sentence, 0.77 [0.44, 0.93] (26 pairs) without.
+- Word attention (review D1, `word_attention.md`): the first body block puts 45% of its word attention on
+  [CLS] / [SEP] (2.1x their share); every layer prefers the named item's words 1.1-1.7x; entropy 1.5-1.8
+  nats vs 2.24 uniform. Consistent with the unnormalized-keys hypothesis for that block, not decisive. A
+  final RMSNorm on the adapter outputs is a model change, left to the human.
 
 **Bead rules: h now counts beads** (user request, `margins.particle_h`). Once n >= 1 beads break a bead
 rule, h = -(0.5 + 0.5 (min(n, 20) - 1) / 19): one bead -0.5, 2 beads -0.53, 10 beads -0.74, 20 or more
@@ -242,7 +259,8 @@ worst bead / unit, clipped to [0, 1], over the hard min of the beads. (Correctio
 bead-count commit 58b048b still took a 1 mm soft-min, because every bead rule set T: 0.001 in its task yaml;
 it read up to 0.46 low on the safe side and could put the margin below 0 with no bead out. Since commit
 deb43e7 the yaml sets no T: margin < 0 exactly when a bead is out. The bead shards collected
-in between were moved to `data/lang_stale/bead_softmin_1007/` and are being collected again.) Per-tick counts are stored (`n_violating` in the sidecar, `violation_counts` in
+in between were moved to `data/lang_stale/bead_softmin_1007/`; the recollection finished on 2026-10-07,
+180 warmup + 30 validation episodes, every bead cell consistent.) Per-tick counts are stored (`n_violating` in the sidecar, `violation_counts` in
 `trace.npz`), so this kind of change can be relabeled offline next time.
 
 Consequence for the data: the warmup and validation shards hold the old bead h and no counts, so their

@@ -300,7 +300,19 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                 ro.video.close()
         if writer is not None:
             writer.check()
-        ro.buf.end_episode()  # lockstep teardown: raises on a pairing bug (stops the process)
+        try:
+            ro.buf.end_episode()  # lockstep teardown: every queued sidecar row was paired
+        except RuntimeError as exc:
+            # a tick raised between queuing its sidecar row and the StepBuffer append (an encode / CUDA error;
+            # the base run caught it as an episode error): the pairing of this episode is broken. Roll both
+            # rings back to its start and record it as an exception episode, instead of ending the process
+            # (independent review, round 2)
+            print(f"{log_prefix}[collect] {task}/{emb} seed {seed}: {exc}; episode rolled back", flush=True)
+            getattr(ro.buf, "_rows", []).clear()
+            buf.discard_to(n_before)
+            sidecar.discard_to(n_before)
+            trace["status"] = "exception"
+            trace["exception"] = f"lockstep after a tick error ({exc})"[:800]
         buf.flush()
         sidecar.flush()
         rows = np.arange(n_before, len(buf)) % buf.capacity
@@ -410,6 +422,8 @@ def resume_point(out: Path, buf, sidecar) -> tuple[int, int, int]:
             continue
         r0, r1 = (int(x) for x in d["rows"])
         eid = int(d["episode_id"])
+        if r1 == r0:   # an episode that failed before its first tick wrote no rows (review, round 2)
+            continue
         ends_ok = (r1 > r0 and int(es[r0]) == eid and int(es[r1 - 1]) == eid and int(ts[r0]) == 0
                    and int(ts[r1 - 1]) == r1 - r0 - 1 and (eb is None or (int(eb[r0]) == eid and int(eb[r1 - 1]) == eid)))
         if not ends_ok:
@@ -433,7 +447,9 @@ def h_code_hash(tasks) -> str:
     from . import REPO
 
     root = REPO / "envs/main/item_envs"
-    files = [root / "margins.py", root / "rules.py"]
+    # margins and rules define h; runner / margin_hook compute margins and bead counts per tick; item_buffer
+    # turns h into the fails_soon labels
+    files = [root / f for f in ("margins.py", "rules.py", "runner.py", "margin_hook.py", "item_buffer.py")]
     for t in sorted(tasks):
         files += sorted((root / "configs/tasks").glob(f"*_{t}.yaml"))
     h = hashlib.md5()

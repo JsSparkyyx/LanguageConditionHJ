@@ -1,5 +1,7 @@
 # Response to the code review of 2026-10-07 (at commit 5b09d75)
 
+> Superseded in part by `review_response_round2_2026-10-08.md`: the T1 avoided-object scenario (R2) was a misreading and is reverted, and three conclusions of the re-scored probe below are withdrawn there ("little foresight", "the label is not the cause", "the prior beats the model").
+
 Every item was checked against the code before changing anything; every one held. Below: what was done,
 where, the test that covers it, and comments where the fix differs from the suggestion or has limits.
 The two decisions (D1, R2) are Yuxuan's and are not discussed here (D1: the rounds job takes `GAMMA`,

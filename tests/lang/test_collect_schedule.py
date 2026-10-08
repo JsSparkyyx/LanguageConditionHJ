@@ -109,3 +109,21 @@ def test_h_code_hash_depends_on_the_tasks():
 
     a = h_code_hash(["granular_pour", "clean_pour"])
     assert a == h_code_hash(["clean_pour", "granular_pour"]) and a != h_code_hash(["gap_place"])
+
+
+def test_resume_point_accepts_an_episode_without_rows(tmp_path):
+    """Review: an episode that failed before its first tick (rows [n, n]) does not block a resume."""
+    import json
+
+    from main.item_envs.item_buffer import ItemSidecarBuffer
+    from main.lang.collect import resume_point
+    from main.train.buffer import StepBuffer
+
+    from .fake_data import make_root
+
+    root = make_root(tmp_path / "s", episodes=2, capacity=200)
+    lines = [{"episode_id": 1000, "rows": [0, 40], "attempt_next": 1, "slot": 0},
+             {"episode_id": 999, "rows": [40, 40], "attempt_next": 2, "slot": 1, "status": "exception"},
+             {"episode_id": 1001, "rows": [40, 80], "attempt_next": 3, "slot": 2}]
+    (root / "lang_episodes.jsonl").write_text("".join(json.dumps(d) + "\n" for d in lines))
+    assert resume_point(root, StepBuffer(root / "buffer"), ItemSidecarBuffer(root / "item_buffer")) == (3, 3, 80)

@@ -32,6 +32,15 @@ def _gens(d: Path, name: str) -> list[int]:
     return sorted(out)
 
 
+def read_owner(d: Path, name: str, gen: int) -> str | None:
+    """The random token the claim's creator wrote: generation numbers restart at 0 once every claim directory
+    is gone, so the token, not the number, identifies a claim (review)."""
+    try:
+        return (Path(d) / f"{name}.{gen}" / "owner").read_text().strip() or None
+    except FileNotFoundError:
+        return None
+
+
 def read_beat(d: Path, name: str, gen: int) -> int | None:
     try:
         return int((Path(d) / f"{name}.{gen}" / "beat").read_text().strip() or 0)
@@ -55,9 +64,16 @@ def beat(d: Path, name: str, gen: int, count: int) -> bool:
 
 
 def try_take(d: Path, name: str, stale_s: float, seen: dict | None = None) -> int | None:
-    """Generation now held, or None when the top claim is live or not yet shown stale (or another process
-    won the race). ``seen``: the caller's memory of observed counters, {(dir, name, gen): (count, t_local)},
-    kept across calls; a claim with a counter is stale only when the same count was seen ``stale_s`` ago."""
+    """Generation now held, or None (see try_take_token)."""
+    got = try_take_token(d, name, stale_s, seen)
+    return None if got is None else got[0]
+
+
+def try_take_token(d: Path, name: str, stale_s: float, seen: dict | None = None) -> tuple[int, str] | None:
+    """(generation, owner token) now held, or None when the top claim is live or not yet shown stale (or
+    another process won the race). ``seen``: the caller's memory of observed counters,
+    {(dir, name, gen, owner): (count, t_local)}, kept across calls; a claim with a counter is stale only when
+    the same count of the same owner was seen ``stale_s`` ago."""
     d = Path(d)
     seen = {} if seen is None else seen
     for _ in range(3):              # the top claim may be released between listing and reading
@@ -74,7 +90,7 @@ def try_take(d: Path, name: str, stale_s: float, seen: dict | None = None) -> in
                 if age <= stale_s:
                     return None
             else:
-                key, now = (str(d), name, top), time.monotonic()
+                key, now = (str(d), name, top, read_owner(d, name, top)), time.monotonic()
                 prev = seen.get(key)
                 if prev is None or prev[0] != count:
                     seen[key] = (count, now)
@@ -86,36 +102,52 @@ def try_take(d: Path, name: str, stale_s: float, seen: dict | None = None) -> in
             (d / f"{name}.{target}").mkdir()
         except FileExistsError:     # another process took this generation first
             return None
+        import uuid
+
+        token = uuid.uuid4().hex
+        (d / f"{name}.{target}" / "owner").write_text(token)
         beat(d, name, target, 0)
-        return target
+        # the claims below are dead (that is why this generation could be taken): remove them, so a later
+        # taker does not wait out a frozen counter again after this claim is released, and a stalled holder
+        # that wakes up finds its directory gone (holds() False) instead of the lock back (review)
+        for g in gens:
+            release(d, name, g)
+        return target, token
     return None
 
 
-def holds(d: Path, name: str, gen: int) -> bool:
-    """Still the live claim: its directory exists and no higher generation was taken over."""
+def holds(d: Path, name: str, gen: int, token: str | None = None) -> bool:
+    """Still the live claim: its directory exists, no higher generation was taken over, and (with a token)
+    it is still this holder's claim, not a later one that reused the number."""
     d = Path(d)
     gens = _gens(d, name)
-    return bool(gens) and gens[-1] == gen and (d / f"{name}.{gen}").is_dir()
+    if not (gens and gens[-1] == gen and (d / f"{name}.{gen}").is_dir()):
+        return False
+    return token is None or read_owner(d, name, gen) == token
 
 
 def release(d: Path, name: str, gen: int) -> None:
     p = Path(d) / f"{name}.{gen}"
-    for f in p.glob("beat*"):
+    for _ in range(3):              # a heartbeat of another process may write a beat file meanwhile
+        for f in list(p.glob("beat*")) + list(p.glob("owner")):
+            try:
+                f.unlink()
+            except OSError:
+                pass
         try:
-            f.unlink()
+            p.rmdir()
+            return
+        except FileNotFoundError:
+            return
         except OSError:
-            pass
-    try:
-        p.rmdir()
-    except OSError:
-        pass
+            time.sleep(0.05)
 
 
 class Heartbeat:
     """Background counter for one claim; ``lost`` turns True when the claim directory disappears."""
 
-    def __init__(self, d: Path, name: str, gen: int, beat_s: float = 30.0):
-        self.d, self.name, self.gen = Path(d), name, gen
+    def __init__(self, d: Path, name: str, gen: int, beat_s: float = 30.0, token: str | None = None):
+        self.d, self.name, self.gen, self.token = Path(d), name, gen, token
         self.count, self.lost = 0, False
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._run, args=(beat_s,), daemon=True)
@@ -124,13 +156,17 @@ class Heartbeat:
     def _run(self, beat_s: float) -> None:
         while not self._stop.wait(beat_s):
             self.count += 1
-            if not beat(self.d, self.name, self.gen, self.count):
+            mine = self.token is None or read_owner(self.d, self.name, self.gen) == self.token
+            if not (mine and beat(self.d, self.name, self.gen, self.count)):   # never beat a successor's claim
                 if not self.lost:
                     print(f"[locks] {self.d / f'{self.name}.{self.gen}'} disappeared: the claim is lost", flush=True)
                 self.lost = True
 
     def stop(self) -> None:
+        """Stop and wait for the thread: a beat in flight must not recreate the beat file after release."""
         self._stop.set()
+        if self._t.is_alive() and self._t is not threading.current_thread():
+            self._t.join(timeout=10)
 
 
 class WriterLock:
@@ -156,14 +192,15 @@ class WriterLock:
         self.root.mkdir(parents=True, exist_ok=True)
         t_end = time.monotonic() + float(wait_s)
         seen = {}
-        self.gen = try_take(self.root, self.NAME, stale_s, seen)
-        while self.gen is None and time.monotonic() < t_end:
+        got = try_take_token(self.root, self.NAME, stale_s, seen)
+        while got is None and time.monotonic() < t_end:
             time.sleep(min(10.0, max(t_end - time.monotonic(), 0.1)))
-            self.gen = try_take(self.root, self.NAME, stale_s, seen)
-        if self.gen is None:
+            got = try_take_token(self.root, self.NAME, stale_s, seen)
+        if got is None:
             raise WriterLock.LockHeld(f"{self.root}: another process is writing here "
                                       f"({self.NAME}.* heartbeat alive within {stale_s:.0f}s)")
-        self._hb = Heartbeat(self.root, self.NAME, self.gen, beat_s)
+        self.gen, self.token = got
+        self._hb = Heartbeat(self.root, self.NAME, self.gen, beat_s, self.token)
         self._released = False
         atexit.register(self.release)
 
@@ -172,7 +209,7 @@ class WriterLock:
         return self.root / f"{self.NAME}.{self.gen}"
 
     def check(self) -> None:
-        if self._released or self._hb.lost or not holds(self.root, self.NAME, self.gen):
+        if self._released or self._hb.lost or not holds(self.root, self.NAME, self.gen, self.token):
             raise WriterLock.LockLost(f"{self.root}: writer lock {self.NAME}.{self.gen} is no longer held "
                                       "(taken over after a stall?): stopping without writing")
 
@@ -180,5 +217,5 @@ class WriterLock:
         if not getattr(self, "_released", True):
             self._released = True
             self._hb.stop()
-            if holds(self.root, self.NAME, self.gen):   # never remove a successor's claim
+            if holds(self.root, self.NAME, self.gen, self.token):   # never remove a successor's claim
                 release(self.root, self.NAME, self.gen)

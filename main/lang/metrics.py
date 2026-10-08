@@ -370,8 +370,15 @@ class LangRoundMetrics:
         with open(self.dir / "rounds.jsonl", "a") as f:
             f.write(json.dumps(row, default=float) + "\n")
 
+    @staticmethod
+    def ran(r: dict) -> bool:
+        """The episode ran: ok, or cut at the tick cap. An exception episode (a failed grasp, an error at the
+        first tick) has no outcome and would read as a clean, quiet filter run (independent review)."""
+        return r.get("status") in (None, "ok", "timeout")
+
     def round_summary(self, round_idx: int) -> dict:
-        rows = [r for r in self.rows if r["round"] == round_idx]
+        all_rows = [r for r in self.rows if r["round"] == round_idx]
+        rows = [r for r in all_rows if self.ran(r)]
         out = {}
         for d in ("harm", "benign", "all"):   # all = every filter episode, whatever its designation
             sel = rows if d == "all" else [r for r in rows if r["designation"] == d]
@@ -382,6 +389,7 @@ class LangRoundMetrics:
                 vals = [float(r[k]) for r in sel if r.get(k) is not None and r[k] == r[k]]   # older rows lack new keys
                 out[f"round_overview/{d}/{k}"] = float(np.mean(vals)) if vals else float("nan")
         out["round_overview/n_filter_episodes"] = len(rows)
+        out["round_overview/n_not_run"] = len(all_rows) - len(rows)
         return out
 
     def heatmaps(self, round_idx: int) -> list[Path]:
@@ -401,8 +409,8 @@ class LangRoundMetrics:
             M = np.full((len(CANON_TASKS), len(cols)), np.nan)
             for i, t in enumerate(CANON_TASKS):
                 for j, (e, d) in enumerate(cols):
-                    v = [float(r[metric]) for r in self.rows
-                         if r["task"] == t and r["embodiment"] == e and (d == "all" or r["designation"] == d)]
+                    v = [float(r[metric]) for r in self.rows if self.ran(r)
+                         and r["task"] == t and r["embodiment"] == e and (d == "all" or r["designation"] == d)]
                     if v:
                         M[i, j] = np.mean(v)
             fig, ax = plt.subplots(figsize=(8, 4))
@@ -437,8 +445,8 @@ class LangRoundMetrics:
         for key, des, label in series:
             ys = []
             for rd in rounds:
-                v = [float(r[key]) for r in self.rows if int(r["round"]) == rd and (des is None or r["designation"] == des)
-                     and r.get(key) is not None and r[key] == r[key]]
+                v = [float(r[key]) for r in self.rows if self.ran(r) and int(r["round"]) == rd
+                     and (des is None or r["designation"] == des) and r.get(key) is not None and r[key] == r[key]]
                 ys.append(np.mean(v) if v else np.nan)
             ax.plot(rounds, ys, marker=".", label=label, ls="--" if "(all runs)" in label else "-")
         ax.set_ylim(-0.05, 1.05)

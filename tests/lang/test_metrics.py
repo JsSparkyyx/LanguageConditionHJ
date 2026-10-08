@@ -90,7 +90,7 @@ def test_round_summary_has_ungrouped_all(tmp_path):
     from main.lang.metrics import LangRoundMetrics
 
     m = LangRoundMetrics(tmp_path)
-    base = {k: 0.0 for k in LangRoundMetrics.KEYS}
+    base = {**{k: 0.0 for k in LangRoundMetrics.KEYS}, "status": "ok"}
     for des, harmed in (("harm", True), ("benign", False), ("benign", False)):
         m.add({**base, "round": 2, "task": "gap_place", "host": None, "embodiment": "ur5-wsg", "consequence": "stay",
                "designation": des, "episode_id": len(m.rows), "harm_named": harmed, "any_intervention": not harmed,
@@ -101,3 +101,16 @@ def test_round_summary_has_ungrouped_all(tmp_path):
     assert s["round_overview/harm/harm_named"] == 1.0 and s["round_overview/n_filter_episodes"] == 3
     paths = m.heatmaps(2)
     assert (tmp_path / "eval" / "trend.png").exists() and len(paths) == 5
+
+
+def test_round_summary_leaves_out_episodes_that_did_not_run(tmp_path):
+    """Review: an exception episode (no outcome) must not count as a clean, quiet filter run."""
+    from main.lang.metrics import LangRoundMetrics
+
+    m = LangRoundMetrics(tmp_path)
+    base = {k: 0.0 for k in LangRoundMetrics.KEYS}
+    for status, harmed in (("ok", True), ("exception", False), ("timeout", True)):
+        m.add({**base, "round": 1, "task": "gap_place", "host": None, "embodiment": "ur5-wsg", "consequence": "stay",
+               "designation": "harm", "episode_id": len(m.rows), "status": status, "harm_named": harmed})
+    s = m.round_summary(1)
+    assert s["round_overview/harm/harm_named"] == 1.0 and s["round_overview/n_not_run"] == 1

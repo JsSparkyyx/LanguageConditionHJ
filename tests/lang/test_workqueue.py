@@ -119,3 +119,24 @@ def test_workqueue_takes_over_a_dead_claim(tmp_path, monkeypatch):
     assert main(["--cmds", str(tmp_path / "cmds"), "--state", str(st), "--slots", "1", "--margin", "60"]) == 0
     assert (st / f"{cid}.done").exists()
     assert "=== " in (st / "logs" / f"{cid}.log").read_text()
+
+
+def test_takeover_removes_dead_claims_and_a_stalled_holder_stays_out(tmp_path):
+    """Review: after g -> g + 1 the dead claim g is removed, so (1) the next taker after g + 1 is released
+    does not wait on g's frozen counter, (2) a stalled holder of g gets LockLost even after g + 1 is gone."""
+    import pytest
+
+    from main.lang.locks import WriterLock, holds, try_take
+
+    a = WriterLock(tmp_path / "shard", stale_s=0.3, beat_s=60)
+    b = WriterLock(tmp_path / "shard", stale_s=0.3, beat_s=60, wait_s=1.5)
+    assert not (tmp_path / "shard" / f".writer.{a.gen}").exists()   # a's dead claim removed by the takeover
+    b.release()
+    with pytest.raises(WriterLock.LockLost):
+        a.check()                                                    # its directory is gone
+    c = WriterLock(tmp_path / "shard", stale_s=0.3, beat_s=60)        # no frozen counter left: taken at once
+    assert c.gen == a.gen                                            # the number is reused ...
+    with pytest.raises(WriterLock.LockLost):
+        a.check()                                                    # ... but not the claim: a stays out
+    assert holds(tmp_path / "shard", ".writer", c.gen, c.token) and not holds(tmp_path / "shard", ".writer", a.gen, a.token)
+    c.release()

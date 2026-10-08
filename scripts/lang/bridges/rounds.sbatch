@@ -43,7 +43,7 @@ export STAGE_DEADLINE=$(( end - 600 ))
 echo "[rounds.sbatch] job $SLURM_JOB_ID on $(hostname), run $RUN, stop at $(date -d @"$STAGE_DEADLINE")"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 state_mtime() { stat -c %Y "$RUN/state.pt" 2>/dev/null || echo 0; }
-crashes=0
+crashes=0; no_progress_retries=0
 while true; do
   before=$(state_mtime)
   # shellcheck disable=SC2086
@@ -56,15 +56,18 @@ while true; do
     # a crash: resume from the last saved point if the run got further since the last launch (up to 3
     # times per job; near the job's end, by resubmitting); a crash that repeats without progress stops the
     # chain for a human to look at
-    if (( $(state_mtime) > before && crashes < 3 )); then
-      crashes=$((crashes + 1))
+    # one retry without progress per job too: the first save of a launch comes only after its first
+    # episode (~5 min) or its first 500 steps (~17 min), and a transient error there must not end the run
+    progressed=$(( $(state_mtime) > before ? 1 : 0 ))
+    if (( crashes < 3 && (progressed || no_progress_retries < 1) )); then
+      crashes=$((crashes + 1)); (( progressed )) || no_progress_retries=$((no_progress_retries + 1))
       if (( $(date +%s) < STAGE_DEADLINE - 1800 )); then
-        echo "[rounds.sbatch] crash $crashes after progress: resuming"; continue
+        echo "[rounds.sbatch] crash $crashes (progress: $progressed): resuming"; continue
       fi
-      echo "[rounds.sbatch] crash $crashes after progress near the job's end: resubmitting"
+      echo "[rounds.sbatch] crash $crashes (progress: $progressed) near the job's end: resubmitting"
       rc=75
     else
-      echo "[rounds.sbatch] crash without progress (or 3 already): stopping; see the log above"
+      echo "[rounds.sbatch] crash again without progress (or 3 already): stopping; see the log above"
       exit $rc
     fi
   fi
