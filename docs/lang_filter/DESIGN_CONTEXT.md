@@ -45,17 +45,9 @@ Seven tasks, built, calibrated and validated (`envs/docs/item_envs/tasks_overvie
 
 - The nominal controller is careless on purpose (the environment's risk knob). In multi-item tasks the
   scene layout decides which items are **in the way** of the careless motion, deterministically per
-  seed: T1 on- and near-path objects, T3 on-path mats and objects, T5 the tall block, T6 the container the
-  stream is aimed at, T7 the neighbour the slide scrapes. T2 and T4 have only the beads. Items the nominal
-  hits only in some runs (T6's diagonal container, T1 off-path objects next to a second corridor) are
-  unclear and never named.
-- **T1 avoided objects** (user decision R2, 2026-10-07): each on/near-path object is, with probability 0.2,
-  put into the nominal's cuRobo world (a cuboid padded by 3 cm), so the nominal plans around it. Such an
-  object is benign: the same kind of object in the same kind of place can be safe or harmed depending on
-  what the nominal does, not on its position alone. Designations are never relabelled at random: a benign
-  rule must actually be safe under the nominal, which `scripts/lang/t1_avoid_check.py` measures (stop if
-  avoided objects' rules break in more than 20% of runs). Near-path objects were "unclear" until then,
-  but nominal runs broke their rules as often as on-path ones (avoid 0.85 vs 0.83).
+  seed: T1 on-path objects, T3 on-path mats and objects, T5 the tall block, T6 the container the stream
+  is aimed at, T7 the neighbour the slide scrapes. T2 and T4 have only the beads. Items the nominal hits
+  only in some runs (T1 near-path objects, T6's diagonal container) are unclear and never named.
 - Each task also draws a **primary** rule from a calibrated mix of in-the-way and benign scenarios (for
   example T6: the hit container 70%, another one 30%). The primary rule is a label only. Harm and benign
   designations for named rules come from "in the way".

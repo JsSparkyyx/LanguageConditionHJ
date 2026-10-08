@@ -217,7 +217,6 @@ class Placement:
     t_fallback: bool = False  # on_path t came from the ON_PATH_FALLBACK_T window
     degraded_from: str | None = None  # drawn class when cls was degraded; None = as drawn
     vis_fallback: bool = False  # fix 5 (F5b): covered cell infeasible -> unrestricted placement
-    planner_avoids: bool = False  # R2 (2026-10-07): the nominal plans around this on/near-path object
 
     def report_dict(self) -> dict:
         return {
@@ -233,7 +232,6 @@ class Placement:
             "t_fallback": bool(self.t_fallback),
             "degraded_from": self.degraded_from,
             "vis_fallback": bool(self.vis_fallback),
-            "planner_avoids": bool(self.planner_avoids),
         }
 
 
@@ -1073,34 +1071,7 @@ def _arm_link_keepaways(env, table_z: float, cfg: dict) -> list:
 # ---------------------------------------------------------------------------
 
 
-def draw_planner_avoids(placements, p: float, rng: np.random.RandomState) -> None:
-    """R2: planner_avoids ~ Bernoulli(p) for every on_path / near_path placement; one draw per placement
-    whatever its class, so a placement's flag does not depend on the other placements' classes."""
-    u = rng.random_sample(len(placements))
-    for pl, ui in zip(placements, u):
-        pl.planner_avoids = bool(pl.cls in ("on_path", "near_path") and ui < p)
-
-
-def planner_avoid_boxes(specs, report: dict, pad: float) -> list[tuple]:
-    """(world xyz of the OBB centre, wxyz quat, half extents + pad) of every candidate the report flags
-    planner_avoids, for the nominal's cuRobo world. The pad covers what cuRobo does not model: the held
-    payload and the avoid rule's own 1 cm margin."""
-    from .geometry import quat_wxyz_to_mat
-
-    avoid = {p["item_id"] for p in (report.get("placements") or []) if p.get("planner_avoids")}
-    boxes = []
-    for s_ in specs:
-        if s_.item_id not in avoid:
-            continue
-        pose = entity_of(s_).get_pose()
-        q = np.asarray(pose.q, dtype=np.float64)
-        c = np.asarray(pose.p, dtype=np.float64) + quat_wxyz_to_mat(q) @ np.asarray(s_.obb_center_local, dtype=np.float64)
-        boxes.append((c, q, np.asarray(s_.half_extents, dtype=np.float64) + float(pad)))
-    return boxes
-
-
-def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState,
-                     avoid_rng: np.random.RandomState | None = None) -> tuple[list[ItemSpec], dict]:
+def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[list[ItemSpec], dict]:
     """Spawn K dynamic candidate objects on a CrossSafe host task.
 
     env: a built CEHJ ``Env`` whose ``task_name`` is one of the T1 hosts.
@@ -1120,14 +1091,6 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState,
     ``task.item_meta`` (the same channel robotwin_tasks/_item_utils writes)
     so runner-style consumers see the candidates. Does NOT call
     update_curobo_world — that is the caller's job.
-
-    R2 (user, 2026-10-07): every on_path / near_path placement of the kept
-    layout gets ``planner_avoids`` ~ Bernoulli(``objects.planner_avoid_prob``),
-    drawn from ``avoid_rng`` (the caller's own seeded stream, one draw per
-    placement): the layout draws of ``rng`` are untouched, so a seed keeps its
-    layout. The runner puts avoided objects into the nominal's cuRobo world
-    (``planner_avoid_boxes``), so the nominal plans around them and they are
-    benign; scene_roles reads the flag from ``report["placements"]``.
 
     Fix 3 (F5): when ``objects.off_path_visible_only`` is set, the measured
     visibility band (``_vis_band_for``) is loaded ONCE here and threaded into
@@ -1350,10 +1313,6 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState,
             print(f"[spawn] MAX_LAYOUTS hit; keeping the last (unsettled) layout")
 
     if placements is not None and specs:
-        p_avoid = float(cfg.get("planner_avoid_prob", 0.0))
-        report["planner_avoid_prob"] = p_avoid
-        if avoid_rng is not None and p_avoid > 0:
-            draw_planner_avoids(placements, p_avoid, avoid_rng)
         report["placements"] = [pl.report_dict() for pl in placements]
         # fix-2 counters describe the FINAL kept layout (rejected attempts
         # are not counted); k + k_dropped = the drawn K of that layout
