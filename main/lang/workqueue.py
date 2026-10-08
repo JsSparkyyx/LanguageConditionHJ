@@ -53,12 +53,12 @@ def fails(state: Path, cid: str) -> int:
     return int(p.read_text() or 0) if p.exists() else 0
 
 
-def try_claim(state: Path, cid: str, seen: dict | None = None) -> int | None:
-    """The claim generation held (<cid>.lock.<g>, main.lang.locks), or None. Taking over a dead job's stale
+def try_claim(state: Path, cid: str, seen: dict | None = None) -> tuple[int, str] | None:
+    """(generation, owner token) of the claim held (<cid>.lock.<g>, main.lang.locks), or None. Taking over a dead job's stale
     claim creates the next generation: one winner among racing workers (review O1). A claim is stale once
     its heartbeat counter stood still for STALE_S on THIS worker's clock (``seen`` remembers what it saw;
     round 2 B1). A fresh claim of the older code (<cid>.lock) still counts."""
-    from .locks import try_take
+    from .locks import try_take_token
 
     legacy = state / f"{cid}.lock"
     try:
@@ -66,7 +66,7 @@ def try_claim(state: Path, cid: str, seen: dict | None = None) -> int | None:
             return None
     except FileNotFoundError:
         pass
-    return try_take(state, f"{cid}.lock", STALE_S, seen)
+    return try_take_token(state, f"{cid}.lock", STALE_S, seen)
 
 
 def main(argv=None) -> int:
@@ -86,29 +86,30 @@ def main(argv=None) -> int:
     running: dict[str, subprocess.Popen] = {}
     weights: dict[str, int] = {}
     reserved = None   # (cid, cmd, weight): a heavy command claimed, waiting for enough free slots
-    held: dict[str, int] = {}   # cid -> claim generation
+    held: dict[str, tuple] = {}   # cid -> (claim generation, owner token)
     seen: dict = {}             # heartbeat counters observed on other workers' claims (locks.try_take)
     stop = threading.Event()
 
     def heartbeat():
-        from .locks import beat
+        from .locks import beat, read_owner
 
         n = 0
         while not stop.is_set():
             n += 1
-            for cid, g in list(held.items()):
-                if not beat(state, f"{cid}.lock", g, n):
+            for cid, (g, tok) in list(held.items()):
+                # only this worker's own claim: a reused generation number belongs to someone else (round 3)
+                if read_owner(state, f"{cid}.lock", g) != tok or not beat(state, f"{cid}.lock", g, n):
                     # the claim vanished (taken over after a stall?): the command's own writer lock still
                     # keeps its data root single-writer; report it
                     print(f"[workqueue] {host} claim {cid}.lock.{g} disappeared", flush=True)
             stop.wait(30)
 
     def unclaim(cid):
-        from .locks import release
+        from .locks import holds, release
 
-        g = held.pop(cid, None)
-        if g is not None:
-            release(state, f"{cid}.lock", g)
+        got = held.pop(cid, None)
+        if got is not None and holds(state, f"{cid}.lock", got[0], got[1]):   # never another worker's claim
+            release(state, f"{cid}.lock", got[0])
 
     threading.Thread(target=heartbeat, daemon=True).start()
     paused: set[str] = set()   # exited 75 in this worker: left to a later job

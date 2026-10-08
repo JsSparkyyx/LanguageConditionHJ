@@ -148,6 +148,8 @@ class LangTrainer:
         self.val_sampler = LangSampler(val_roots, probe_cfg, tasks=tasks, embodiments=embodiments, seed=seed + 2,
                                        probe=True) if val_roots else None
         self.prober = None
+        self.identity: dict = {}   # code_identity(): saved with every state (set by the rounds / offline drivers)
+        self.writer = None         # WriterLock of this run: checked right before a save replaces a file
         self.probe_n = int(probe_n)
         self.step = 0
         self.round = 0
@@ -191,15 +193,17 @@ class LangTrainer:
 
     # --------------------------------------------------------------- update --
     def grad_step(self, b: dict | None = None, log: bool = False) -> dict:
-        with matmul_tf32(getattr(self.cfg, "tf32_train", False)):
-            return self._grad_step(b, log)
-
-    def _grad_step(self, b: dict | None = None, log: bool = False) -> dict:
-        cfg = self.cfg
         if b is None:
-            b = self.prefetch.next() if self.prefetch is not None else self.sampler.sample(cfg.batch_size)
+            b = self.prefetch.next() if self.prefetch is not None else self.sampler.sample(self.cfg.batch_size)
             self._last_rng_after = b.get("_rng_after")
+        # outside TF32: a sentence missing from the cache is encoded here and cached for collection and probes
+        # too, so it must be encoded in fp32 (review round 3, C8)
         words, wmask = self.text.lookup(b["sentence"], splits=["train"] * len(b["sentence"]))
+        with matmul_tf32(getattr(self.cfg, "tf32_train", False)):
+            return self._grad_step(b, words, wmask, log)
+
+    def _grad_step(self, b: dict, words, wmask, log: bool = False) -> dict:
+        cfg = self.cfg
         enc, Jlin, Jang, ji = self.encode(b, words, wmask)
         d = self.dev
         h = _t(b["h"], dev=d)
@@ -334,14 +338,28 @@ class LangTrainer:
         d.update({"actor": self.actor.state_dict(), "critics": self.critics.state_dict(),
                   "lang_config": self.cfg.to_dict(), "bank_hash": self.cfg.bank_hash,
                   "text_backend": self.cfg.text_backend, "step": self.step, "round": self.round,
-                  "switches": self.cfg.path_switches()})
+                  "switches": self.cfg.path_switches(),
+                  # what the weights were trained on (review round 3, B1): evaluations group on it
+                  "bead_h_train": _bead_h_of(self.sampler.sources), "identity": dict(self.identity)})
         return d
 
+    def _publish(self, obj, p: Path) -> Path:
+        """torch.save to a temp file unique to this process, then replace p, checking the run's writer lock
+        right before: a stale process that lost the run never replaces the new owner's file, and two savers
+        never share a temp file (review round 3, C3)."""
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+        try:
+            torch.save(obj, tmp)
+            if self.writer is not None:
+                self.writer.check()
+            os.replace(tmp, p)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+        return p
+
     def save_ckpt(self, name: str = "checkpoint.pt") -> Path:
-        p = self.run / name
-        tmp = p.with_suffix(".tmp")
-        torch.save(self.ckpt_dict(), tmp)
-        os.replace(tmp, p)
+        p = self._publish(self.ckpt_dict(), self.run / name)
         self.text.save_extra()
         return p
 
@@ -367,11 +385,8 @@ class LangTrainer:
               "sampler_rng": self.sampler.rng.bit_generator.state,
               "prefetch_rng": self._last_rng_after if self._last_rng_after is not None
               else (self.prefetch.rng_state() if self.prefetch is not None else None),
-              "lang_config": self.cfg.to_dict(), **(extra or {})}
-        p = self.run / "state.pt"
-        tmp = p.with_suffix(".tmp")
-        torch.save(st, tmp)
-        os.replace(tmp, p)
+              "lang_config": self.cfg.to_dict(), **self.identity, **(extra or {})}
+        p = self._publish(st, self.run / "state.pt")
         self.text.save_extra()
         return p
 
@@ -607,6 +622,8 @@ def add_common(p):
         p.add_argument(f"--no-{s}", action="store_true", help=f"lang_{s} off")
     p.add_argument("--no-wandb", action="store_true")
     p.add_argument("--resume", action="store_true")
+    p.add_argument("--accept-code-change", action="store_true",
+                   help="resume although the code is at another git commit than the run's last save")
     p.add_argument("--time-budget", type=float, default=None, help="seconds; then save state and exit 75")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--activation-checkpointing", action="store_true")
@@ -631,6 +648,55 @@ def config_from_args(args) -> LangConfig:
         if diff:
             print(f"[lang-train] {saved} has no state.pt yet: using these flags, not the saved ones {diff}")
     return cfg
+
+
+def _bead_h_of(sources) -> str:
+    from .data import bead_h_of
+
+    return bead_h_of(sources)
+
+
+def code_identity(tasks, roots) -> dict:
+    """What a run's stored rows and weights depend on, saved in state.pt (review rounds 2 and 3, C4): the h
+    definition (h_code_v2 over the run's tasks; h_code, the first hash, for older states), the resolved
+    training data roots and the git commit of the code that runs (plus whether its checkout is dirty)."""
+    import subprocess
+
+    from .collect import h_code_hash, h_code_hash_v2
+
+    repo = str(Path(__file__).resolve().parents[2])
+    try:
+        head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True,
+                              timeout=20).stdout.strip()
+        dirty = bool(subprocess.run(["git", "-C", repo, "status", "--porcelain", "--untracked-files=no"],
+                                    capture_output=True, text=True, timeout=20).stdout.strip())
+    except Exception:
+        head, dirty = "", None
+    return {"h_code": h_code_hash(CANON_TASKS), "h_code_v2": h_code_hash_v2(tasks or CANON_TASKS),
+            "git_head": head, "git_dirty": dirty, "data_roots": sorted(str(Path(r).resolve()) for r in roots)}
+
+
+def check_resume_identity(st: dict, ident: dict, run, accept_code_change: bool = False) -> None:
+    """Refuse a resume whose h definition or training data differ from the run's start, or whose code is at
+    another git commit (unless accept_code_change: a deliberate, logged update)."""
+    run = Path(run)
+    key = "h_code_v2" if st.get("h_code_v2") else "h_code"
+    if st.get(key) and st[key] != ident[key]:
+        # the stored rows were labelled under another h definition: mixing them silently would corrupt the
+        # training targets. Run from the code the run started with.
+        raise SystemExit(f"{run}: the h definition changed since this run started ({key} {st[key]}, now "
+                         f"{ident[key]}; started at git {str(st.get('git_head') or '?')[:10]}): resume from that "
+                         "code (a worktree at that commit) or start a new run")
+    if st.get("data_roots") is not None and list(st["data_roots"]) != list(ident["data_roots"]):
+        a, b = set(st["data_roots"]), set(ident["data_roots"])
+        raise SystemExit(f"{run}: the training data roots changed since this run started (missing "
+                         f"{sorted(a - b)[:3]}, new {sorted(b - a)[:3]}, {len(a)} -> {len(b)} roots): check --data")
+    if st.get("git_head") and ident.get("git_head") and st["git_head"] != ident["git_head"]:
+        if not accept_code_change:
+            raise SystemExit(f"{run}: this code is at git {ident['git_head'][:10]}, the run's last save at "
+                             f"{st['git_head'][:10]}: resume from that commit, or pass --accept-code-change")
+        print(f"[lang-train] code changed {st['git_head'][:10]} -> {ident['git_head'][:10]} (--accept-code-change)",
+              flush=True)
 
 
 def trained_subsets(cfg) -> tuple:
@@ -692,6 +758,11 @@ def main(argv=None) -> int:
     tasks, embs = trained_subsets(cfg)
     roots = roots_of(args.data)
     vals = roots_of(args.val) if args.val else []
+    # an empty glob must not train on the ring alone or skip every probe without a word (review round 3, C4)
+    if not roots:
+        raise SystemExit(f"--data {args.data}: no data shards found")
+    if args.val and not vals:
+        raise SystemExit(f"--val {args.val}: no validation shards found")
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.data) + caches_of(args.val)
     if args.mode == "rounds":
         from .rounds import run_rounds
@@ -710,14 +781,30 @@ def main(argv=None) -> int:
                                        "total": sum(rows.values())}, indent=1))
         max_rows = json.loads(man.read_text())["rows"]
         print(f"[lang-train] frozen dataset: {sum(max_rows.values())} rows in {len(max_rows)} roots ({man})")
-    tr = LangTrainer(cfg, Path(args.run), roots, vals, caches, tasks=tasks, embodiments=embs,
-                     use_wandb=not args.no_wandb, seed=args.seed, max_rows=max_rows)
-    if args.resume and (tr.run / "state.pt").exists():
-        tr.load_state()
-        print(f"[lang-train] resumed at step {tr.step}", flush=True)
-    elif args.init_weights:
-        tr.load_weights(args.init_weights)
-    return tr.train_offline(args.grad_steps, args.probe_every, args.time_budget, args.ckpt_every)
+    from .locks import WriterLock
+
+    # one writer per run (review round 3, C3): a second process waits out a crashed one's lock, then refuses
+    Path(args.run).mkdir(parents=True, exist_ok=True)
+    try:
+        writer = WriterLock(Path(args.run), wait_s=200.0)
+    except WriterLock.LockHeld as exc:
+        raise SystemExit(f"[lang-train] {exc}: is another job training this run?")
+    try:
+        tr = LangTrainer(cfg, Path(args.run), roots, vals, caches, tasks=tasks, embodiments=embs,
+                         use_wandb=not args.no_wandb, seed=args.seed, max_rows=max_rows)
+        tr.identity, tr.writer = code_identity(tasks or cfg.task_choices, roots), writer
+        if args.resume and (tr.run / "state.pt").exists():
+            st = tr.load_state()
+            check_resume_identity(st, tr.identity, tr.run, args.accept_code_change)
+            print(f"[lang-train] resumed at step {tr.step}", flush=True)
+        elif args.init_weights:
+            tr.load_weights(args.init_weights)
+        return tr.train_offline(args.grad_steps, args.probe_every, args.time_budget, args.ckpt_every)
+    except WriterLock.LockLost as exc:   # another process owns the run now: write nothing more
+        print(f"[lang-train] {exc} (exit 75)", flush=True)
+        return 75
+    finally:
+        writer.release()
 
 
 if __name__ == "__main__":

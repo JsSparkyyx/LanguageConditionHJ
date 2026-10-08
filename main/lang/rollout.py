@@ -168,9 +168,9 @@ class LangRolloutController(RolloutController):
         t0 = time.perf_counter()
         writer = getattr(self, "writer", None)   # main.lang.locks.WriterLock of the data root (collection)
         if writer is not None:
-            self._n_lock_check = getattr(self, "_n_lock_check", 0) + 1
-            if self._n_lock_check % 25 == 1:     # ~1 s: a stalled writer stops before it overwrites rows
-                writer.check()
+            # every capture, in memory (the lock files every 2 s); collect.guard_writes also checks right before
+            # each row write, so a stall anywhere inside the capture is caught too (review round 3, C1)
+            writer.check_fast()
         self._in_capture = True
         try:
             return super()._capture_tick()
@@ -234,6 +234,7 @@ class LangRolloutController(RolloutController):
         trace = self.trace
 
         def play_wrapped(*a, **k):
+            trace["play_started"] = True
             try:
                 return orig_play(*a, **k)
             except RolloutTimeout:
@@ -257,11 +258,13 @@ class LangRolloutController(RolloutController):
         self.timing["run"] = time.perf_counter() - t0
         out["timing"] = dict(self.timing)
         out["n_ticks"] = len(out.get("t", []))
-        if out["n_ticks"] == 0 and trace.get("status") == "ok":
-            # the base run catches an error in the first capture (outside play_once, so play_wrapped never
-            # saw it) and returns an empty trace: that episode did not run
+        if not trace.get("play_started") and trace.get("status") == "ok":
+            # the base run catches an error in the first capture (outside play_once, so play_wrapped never ran)
+            # and returns: whether or not that capture had appended its row, the episode never ran
+            # (review round 2: zero ticks; round 3, C7: one row appended before the error)
             trace["status"] = out["status"] = "exception"
-            trace.setdefault("exception", "no tick captured (error before the first tick; see the log)")
+            trace.setdefault("exception", f"play_once never started ({out['n_ticks']} tick(s) captured; "
+                                          "an error in the first capture, see the log)")
             out.setdefault("exception", trace["exception"])
         return out
 

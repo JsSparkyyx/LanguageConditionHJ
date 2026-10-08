@@ -43,10 +43,9 @@ ensure_item_path()
 
 from .collect import InitLimit, read_lines, run_episodes, stage_deadline  # noqa: E402
 from .config import CANON_EMBODIMENTS, CANON_TASKS, round_offset  # noqa: E402
-from .train import EXIT_RESUME, LOG_EVERY, STATE_EVERY, LangTrainer  # noqa: E402
+from .train import EXIT_RESUME, LOG_EVERY, STATE_EVERY, LangTrainer, check_resume_identity, code_identity  # noqa: E402
 
 
-_CODE_ID: dict = {}   # code_identity() of this process, set once per run_rounds call
 
 
 class RoundSchedule:
@@ -145,16 +144,13 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
     lj = run / "ring" / "lang_episodes.jsonl"
     # where in a round the run is (module docstring); None = the start of round `start_round`
     start_round, pos = 0, None
-    _CODE_ID.clear()
-    _CODE_ID.update(code_identity())
+    # h definition, data roots and git commit, saved with every state; a resume refuses a change (rounds 2-3)
+    tr.identity = code_identity(tasks or cfg.task_choices, roots)
+    if writer is not None:
+        tr.writer = writer
     if args.resume and (run / "state.pt").exists():
         st = tr.load_state()
-        if st.get("h_code") and st["h_code"] != _CODE_ID["h_code"]:
-            # the ring's rows were labelled under another h definition: mixing them silently would corrupt
-            # the training targets (review, round 2). Run from the code the run started with.
-            raise SystemExit(f"{run}: the h definition changed since this run started (h_code {st['h_code']}, "
-                             f"now {_CODE_ID['h_code']}; started at git {st.get('git_head', '?')[:10]}): "
-                             "resume from that code (a worktree at that commit) or start a new run")
+        check_resume_identity(st, tr.identity, run, bool(getattr(args, "accept_code_change", False)))
         start_round = int(st["round"])
         sched.load(st["schedule"])
         rng_policy.bit_generator.state = st["rng_policy"]
@@ -164,10 +160,15 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                    "steps_target": st.get("steps_target")}
         n = int(st["ring_n"])
         if (len(ring_buf), len(ring_side)) != (n, n):
-            print(f"[rounds] resume: ring {len(ring_buf)} -> {n} rows (the episode in progress is collected again)")
+            # the episode in progress is collected again under the next seed (attempt + 1): rows a stalled
+            # former writer might still add then carry another episode id (review round 3, C1)
+            print(f"[rounds] resume: ring {len(ring_buf)} -> {n} rows (the episode in progress is collected "
+                  "again, next seed)")
             ring_buf.discard_to(n)
             ring_side.discard_to(n)
             ring_buf.flush(), ring_side.flush()
+            if pos is not None and pos["phase"] == "collect":
+                pos["attempt"] += 1
         if (len(ring_buf), len(ring_side)) != (n, n):
             raise SystemExit(f"{run}: ring at ({len(ring_buf)}, {len(ring_side)}) rows after the roll-back to {n}")
 
@@ -354,24 +355,9 @@ def resume_fingerprint(tr: LangTrainer, sched: RoundSchedule, rng_policy, ring_b
             "torch_rng": hsh(torch.get_rng_state().tolist()), "ring_n": int(len(ring_buf))}
 
 
-def code_identity() -> dict:
-    """What the ring's labels depend on (review, round 2): the h definition (collect.h_code_hash over every
-    task) and, for information, the git commit."""
-    import subprocess
-
-    from .collect import h_code_hash
-
-    try:
-        head = subprocess.run(["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "HEAD"],
-                              capture_output=True, text=True, timeout=20).stdout.strip()
-    except Exception:
-        head = ""
-    return {"h_code": h_code_hash(CANON_TASKS), "git_head": head}
-
-
 def save_round_state(tr: LangTrainer, sched: RoundSchedule, rng_policy, ring_buf, r_pos: dict | None = None) -> None:
     r_pos = r_pos or {}
-    tr.save_state({"schedule": sched.state(), "rng_policy": rng_policy.bit_generator.state, **_CODE_ID,
+    tr.save_state({"schedule": sched.state(), "rng_policy": rng_policy.bit_generator.state,
                    "ring_n": int(len(ring_buf)), "ring_head": int(ring_buf.head),
                    "phase": r_pos.get("phase"), "slots": [list(x) for x in r_pos.get("slots") or []],
                    "slots_done": int(r_pos.get("done", 0)), "attempt_next": int(r_pos.get("attempt", 0)),

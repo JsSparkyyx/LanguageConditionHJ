@@ -114,3 +114,11 @@ def test_round_summary_leaves_out_episodes_that_did_not_run(tmp_path):
                "designation": "harm", "episode_id": len(m.rows), "status": status, "harm_named": harmed})
     s = m.round_summary(1)
     assert s["round_overview/harm/harm_named"] == 1.0 and s["round_overview/n_not_run"] == 1
+    # rows that record n_ticks (round 3, B2): an exception mid-run is scored on what it observed; no tick = not run
+    for status, harmed, ticks in (("exception", True, 40), ("exception", False, 0)):
+        m.add({**base, "round": 2, "task": "gap_place", "host": None, "embodiment": "ur5-wsg", "consequence": "stay",
+               "designation": "harm", "episode_id": len(m.rows), "status": status, "harm_named": harmed,
+               "n_ticks": ticks})
+    s = m.round_summary(2)
+    assert s["round_overview/harm/harm_named"] == 1.0 and s["round_overview/n_not_run"] == 1
+    assert s["round_overview/n_exception_scored"] == 1

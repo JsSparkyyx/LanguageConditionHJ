@@ -203,3 +203,27 @@ def test_stale_bead_rows_dropped(tmp_path):
     assert LangSource(b_, k_prev=2, drop_stale_bead=False).rows.size == 2 * 39
     smp = LangSampler([a, b_], cfg(relabel="random"), seed=0)
     assert set(smp.sample(16)["task"]) == {"gap_place"}
+
+
+def test_rows_capped_at_the_last_episode_line(tmp_path):
+    """Review round 3, C2: rows past the last recorded episode are invisible (an episode in progress, a stale
+    writer's rows), and a header with fewer rows than the episode lines record is refused."""
+    import json
+
+    import pytest
+
+    root = make_root(tmp_path / "s", episodes=3, capacity=200)              # 3 x 40 rows
+    lj = root / "lang_episodes.jsonl"
+    lines = [json.loads(x) for x in lj.read_text().splitlines()]
+    for k, d in enumerate(lines):
+        d["rows"] = [40 * k, 40 * k + 40]
+    lj.write_text("".join(json.dumps(d) + "\n" for d in lines[:2]))         # episode 1002 has no line yet
+    assert set(LangSource(root, k_prev=2).eid.tolist()) == {1000, 1001}
+    lj.write_text("".join(json.dumps(d) + "\n" for d in lines))
+    assert set(LangSource(root, k_prev=2).eid.tolist()) == {1000, 1001, 1002}
+    hp = root / "item_buffer" / "header.json"
+    h = json.loads(hp.read_text())
+    h["n"] = h["head"] = 100                                                 # a stale writer's header
+    hp.write_text(json.dumps(h))
+    with pytest.raises(RuntimeError, match="episode lines end"):
+        LangSource(root, k_prev=2)

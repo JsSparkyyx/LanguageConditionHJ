@@ -71,7 +71,10 @@ HASHED_CODE = ("envs/main/item_envs/**/*.py", "envs/main/item_envs/**/*.yaml", "
                "main/envs/*.py", "main/lang/scene_roles.py")
 # what a FILTERED run also depends on (round 2 C7): the language controller, the metrics, the model code
 FILTER_CODE = ("main/lang/rollout.py", "main/lang/eval_closed.py", "main/lang/network.py", "main/lang/text.py",
-               "main/lang/collect.py", "main/train/rollout.py", "main/train/filter.py", "main/network/*.py")
+               "main/lang/collect.py", "main/train/rollout.py", "main/train/filter.py", "main/network/*.py",
+               # round 3, B5: the environment / config code a filtered run also executes
+               "main/train/collect.py", "main/train/config.py", "main/train/hfunc.py", "main/lang/config.py",
+               "main/lang/train.py")
 
 
 def _hash_files(patterns) -> str:
@@ -226,8 +229,10 @@ class Models:
         from .text import TextStore
         from .train import load_policy
 
-        ck = torch.load(run / ckpt if not Path(ckpt).is_absolute() else ckpt, map_location="cuda", weights_only=False)
+        path = run / ckpt if not Path(ckpt).is_absolute() else Path(ckpt)
+        ck = torch.load(path, map_location="cuda", weights_only=False)
         self.cfg = LangConfig.from_dict(ck["lang_config"])
+        self.step, self.sha = int(ck.get("step", 0)), ckpt_sha(path)   # round 3, B1
         self.pe = LangPolicyEncoder(self.cfg).cuda().eval()
         load_policy(self.pe, ck)
         self.actor = TokenActor().cuda().eval()
@@ -278,8 +283,17 @@ def run_metrics(trace: dict, nom: dict, named_id: str, kind: str) -> dict:
     return m
 
 
+def ckpt_sha(path: Path) -> str:
+    from .eval_offline import file_sha
+
+    return file_sha(Path(path))
+
+
 def filter_run(models: Models, cfg: LangConfig, nom: dict, rule: dict, kind: str, axis: str, sentence: str,
-               cf_sentence: str | None, inits: dict, encoder, kins, video_dir: Path | None) -> dict:
+               cf_sentence: str | None, inits: dict, encoder, kins, video_dir: Path | None,
+               filter_active: bool = True) -> dict:
+    """One closed-loop run naming `rule`. filter_active=False: the control (round 3, B5) — the same language
+    controller with the filter never engaging, to compare with the standalone runner's nominal runs."""
     import dataclasses
 
     import torch
@@ -299,7 +313,8 @@ def filter_run(models: Models, cfg: LangConfig, nom: dict, rule: dict, kind: str
     set_global_seeds(seed)
     inits["n"] += 1
     ro = LangRolloutController(cfg_ep, seed, mode="filtered", encoder=encoder, kin=kins[emb],
-                               policy_enc=models.pe, actor=models.actor, critics=models.critics, filter_active=True,
+                               policy_enc=models.pe, actor=models.actor, critics=models.critics,
+                               filter_active=bool(filter_active),
                                episode_id=seed, rng=np.random.RandomState(seed),
                                max_steps=10 * int(cfg.max_steps_per_episode), controller_cls=RiskTickController,
                                text_store=models.text)
@@ -344,6 +359,7 @@ def child(args) -> int:
     tag = f"emb-{args.embodiment}" + (f"_s{args.shard}" if args.n_shards > 1 else "")
     jsonl = out_dir / f"episodes_{tag}.jsonl"
     code_hash, filter_hash = env_code_hash(), filter_code_hash()
+    sha = ckpt_sha(run / args.ckpt if not Path(args.ckpt).is_absolute() else Path(args.ckpt))
     done = set()
     if jsonl.exists():
         for ln in jsonl.read_text().splitlines():
@@ -357,6 +373,9 @@ def child(args) -> int:
             if _is_filter_row(d) and d.get("filter_hash") != filter_hash:
                 raise SystemExit(f"{jsonl}: filter rows written under filter code hash {d.get('filter_hash')}, now "
                                  f"{filter_hash}: evaluate into a fresh directory (move {out_dir} away)")
+            if _is_filter_row(d) and d.get("ckpt_sha") not in (None, sha):   # a rewritten checkpoint (round 3, B1)
+                raise SystemExit(f"{jsonl}: filter rows of checkpoint {d.get('ckpt_sha')}, {args.ckpt} is now {sha}: "
+                                 f"the weights changed; evaluate into a fresh directory (move {out_dir} away)")
             done.add(tuple(d["key"]))
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.val or [])
     models = Models(run, args.ckpt, caches)
@@ -374,7 +393,8 @@ def child(args) -> int:
 
     def write(row):
         with open(jsonl, "a") as f:
-            f.write(json.dumps({**row, "code_hash": code_hash, "filter_hash": filter_hash}, default=str) + "\n")
+            f.write(json.dumps({**row, "code_hash": code_hash, "filter_hash": filter_hash, "ckpt_sha": sha,
+                                "ckpt_step": models.step}, default=str) + "\n")
 
     work = [(task, si) for task in tasks for si in range(int(args.scenes_per_combo))]
     work = [w for k, w in enumerate(work) if k % int(args.n_shards) == int(args.shard)]
@@ -444,6 +464,22 @@ def child(args) -> int:
                     print(f"[eval_closed] {task} {args.embodiment} scene {si} {axis}/{kind} {rule['rule_id']} "
                           f"'{sent}': harm {m.get('harm_named')} (nominal {nom_harm}) interv {m.get('intervention_rate')} "
                           f"success {m.get('task_success')} {m.get('error') or ''}", flush=True)
+            # control (round 3, B5): the language controller with the filter off on the first scenes; it should
+            # reproduce the standalone runner's nominal outcomes up to cuRobo's run-to-run variation
+            ckey = (task, si, "control", "harm")
+            rule = all_picks[axes[0]]["harm"] or all_picks[axes[0]]["benign"]
+            if si < int(args.control_scenes) and ckey not in done and rule is not None:
+                if inits["n"] + 1 > cfg.max_inits_per_process:
+                    return EXIT_INIT
+                sent = hsel(language.sentences(rule, rec, "train", bank), (nom["seed"], "control"))
+                m = filter_run(models, cfg, nom, rule, "harm", "control", sent, None, inits, encoder, kins, None,
+                               filter_active=False)
+                write({"key": list(ckey), "type": "control", "task": task, "embodiment": args.embodiment,
+                       "scene_idx": si, "host": nom["host"], "seed": nom["seed"], "rule_id": rule["rule_id"],
+                       "nominal_violated": [bool(r["violated"].get(rule["rule_id"], False)) for r in nom["runs"]],
+                       "nominal_success": [bool(r["success"]) for r in nom["runs"]],
+                       "nominal_ticks": [r.get("n_ticks") for r in nom["runs"]], **m})
+                done.add(ckey)
     return 0
 
 
@@ -512,10 +548,16 @@ def _boot_ci(rows, stat, seed: int = 0) -> tuple[float, float]:
     return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
 
 
+def started(r: dict) -> bool:
+    """The run started: at least one tick. A run that threw mid-episode is scored on what it observed (its harm
+    and interventions happened) and counts as a task failure; dropping it biased false alarms and success cost
+    down whenever interventions cause the exceptions (review round 3, B2)."""
+    return int(r.get("n_ticks") or 0) > 0
+
+
 def aggregate(rows: list[dict]) -> dict:
-    # a filtered run that ended in an exception (failed grasp, error at its first tick) has no outcome
-    filt = [r for r in rows if r.get("type") == "filter" and not r.get("missing") and not r.get("error")
-            and r.get("status") != "exception"]
+    filt = [({**r, "task_success": False} if r.get("status") == "exception" else r) for r in rows
+            if r.get("type") == "filter" and not r.get("missing") and not r.get("error") and started(r)]
     groups = defaultdict(list)
     for r in filt:
         for g in (("pooled", r["axis"]), (r["task"], r["axis"]), (f"{r['task']}|{r['embodiment']}", r["axis"])):
@@ -583,9 +625,26 @@ def aggregate(rows: list[dict]) -> dict:
             "lead_time_mean": float(np.mean([r["lead_time"] for r in harm if r.get("lead_time") is not None]))
             if any(r.get("lead_time") is not None for r in harm) else float("nan"),
         }
+    not_run = defaultdict(int)
+    for r in rows:
+        if r.get("type") == "filter" and not r.get("missing") and not r.get("error") and not started(r):
+            not_run[f"{r['task']}|{r['kind']}"] += 1
     out["_counts"] = {"filter_runs": len(filt), "missing": sum(1 for r in rows if r.get("missing")),
-                      "not_run": sum(1 for r in rows if r.get("type") == "filter" and r.get("status") == "exception"),
+                      "not_run": int(sum(not_run.values())), "not_run_by_task_kind": dict(not_run),
+                      "exceptions_scored": sum(1 for r in filt if r.get("status") == "exception"),
                       "errors": sum(1 for r in rows if r.get("error"))}
+    ctl = [r for r in rows if r.get("type") == "control" and not r.get("error") and started(r)]
+    if ctl:   # round 3, B5: the controller with the filter off against the standalone nominal runs
+        nv = [v for r in ctl for v in r["nominal_violated"]]
+        ns = [v for r in ctl for v in r["nominal_success"]]
+        nt = [t for r in ctl for t in r.get("nominal_ticks") or [] if t]
+        out["_control"] = {"scenes": len(ctl), "harm_control": float(np.mean([r["harm_named"] for r in ctl])),
+                           "harm_nominal": float(np.mean(nv)) if nv else float("nan"),
+                           "success_control": float(np.mean([r["task_success"] for r in ctl])),
+                           "success_nominal": float(np.mean(ns)) if ns else float("nan"),
+                           "ticks_control": float(np.mean([r["n_ticks"] for r in ctl])),
+                           "ticks_nominal": float(np.mean(nt)) if nt else float("nan"),
+                           "interventions_control": float(np.mean([r.get("intervention_rate") or 0.0 for r in ctl]))}
     return out
 
 
@@ -629,16 +688,29 @@ def tables(S: dict, title: str) -> str:
         L.append(f"| {k} | {a['n_runs']} | {a['broken_nominal']:.2f} | {wilson_str(a['broken_filter_k'], a['n_runs'])} | "
                  f"{ci(a['reduction'], a['reduction_ci'])} | {wilson_str(a['any_intervention_k'], a['n_runs'])} | "
                  f"{a['intervened_tick_frac']:.3f} | {a['success_cost']:+.2f} |")
+    c = S.get("_control")
+    if c:
+        L += ["", "## Control: the filter off (round 3, B5)", "",
+              "The language controller with the filter never engaging, on the first scenes of each task, against the "
+              "standalone runner's two nominal runs of the same scenes. The two paths should agree up to cuRobo's "
+              "run-to-run variation; a gap means the filtered runs' baseline is not the nominal one.", "",
+              "| | control (filter off) | standalone nominal |", "|---|---|---|",
+              f"| named rule broken | {c['harm_control']:.2f} | {c['harm_nominal']:.2f} |",
+              f"| task success | {c['success_control']:.2f} | {c['success_nominal']:.2f} |",
+              f"| ticks | {c['ticks_control']:.0f} | {c['ticks_nominal']:.0f} |",
+              f"| scenes | {c['scenes']} | |", f"| interventions (must be 0) | {c['interventions_control']:.3f} | |"]
     return "\n".join(L) + "\n"
 
 
 def _is_filter_row(d: dict) -> bool:
-    return d.get("type") == "filter" and not d.get("missing") and not d.get("error")
+    """A row produced by the language controller (filtered runs and the filter-off control)."""
+    return d.get("type") in ("filter", "control") and not d.get("missing") and not d.get("error")
 
 
-def merged_rows(out_dir: Path) -> list[dict]:
+def merged_rows(out_dir: Path, embodiments=None) -> list[dict]:
     """Every episodes_emb-*.jsonl row, one per (embodiment, key) (the last written wins: files from different
-    --n-shards, or a re-run item, never count twice), all under the current env code hash (review O8)."""
+    --n-shards, or a re-run item, never count twice), all under the current env code hash (review O8), of the
+    evaluated embodiments only (round 3, C8: rows of another embodiment in the same directory stay out)."""
     code_hash, filter_hash = env_code_hash(), filter_code_hash()
     by_key, stale = {}, 0
     # the newest file wins; equal timestamps (a fast file system) fall back to the name, never to dir order
@@ -650,6 +722,8 @@ def merged_rows(out_dir: Path) -> list[dict]:
                 continue
             if d.get("code_hash") != code_hash or (_is_filter_row(d) and d.get("filter_hash") != filter_hash):
                 stale += 1
+                continue
+            if embodiments is not None and d.get("embodiment") not in embodiments:
                 continue
             by_key[(d.get("embodiment"), tuple(d["key"]))] = d
     if stale:
@@ -684,7 +758,8 @@ def parent(args) -> int:
             emb, sh = pending.pop(0)
             cmd = [sys.executable, "-m", "main.lang.eval_closed", "--run", str(run), "--ckpt", args.ckpt,
                    "--scenes-per-combo", str(args.scenes_per_combo), "--axes", args.axes, "--tasks", args.tasks,
-                   "--video-every", str(args.video_every), "--embodiment", emb, "--child",
+                   "--video-every", str(args.video_every), "--control-scenes", str(args.control_scenes),
+                   "--embodiment", emb, "--child",
                    "--shard", str(sh), "--n-shards", str(args.n_shards)]
             if args.val:
                 cmd += ["--val", *args.val]
@@ -713,11 +788,15 @@ def parent(args) -> int:
                 if crashes[j] >= 10:
                     continue
             pending.append(j)
-    rows = merged_rows(out_dir)
+    rows = merged_rows(out_dir, set(embs))
     S = aggregate(rows)
-    # what the numbers cover (round 2 C6): report.py groups runs on this
-    S["_meta"] = {"tasks": sorted({r["task"] for r in rows if r.get("type") == "filter" and r.get("task")}),
-                  "code_hash": env_code_hash(), "filter_hash": filter_code_hash(), "ckpt": args.ckpt}
+    # what the numbers cover (rounds 2 C6, 3 B1): report.py groups runs on this
+    fr = [r for r in rows if r.get("type") == "filter"]
+    S["_meta"] = {"tasks": sorted({r["task"] for r in fr if r.get("task")}),
+                  "embodiments": sorted({r["embodiment"] for r in fr if r.get("embodiment")}),
+                  "code_hash": env_code_hash(), "filter_hash": filter_code_hash(), "ckpt": args.ckpt,
+                  "ckpt_sha": sorted({r["ckpt_sha"] for r in fr if r.get("ckpt_sha")}),
+                  "ckpt_step": sorted({r["ckpt_step"] for r in fr if r.get("ckpt_step") is not None})}
     (out_dir / "summary.json").write_text(json.dumps(S, indent=1, default=float))
     (out_dir / "tables.md").write_text(tables(S, f"{run.name} / {args.ckpt}"))
     print((out_dir / "tables.md").read_text())
@@ -737,6 +816,8 @@ def main(argv=None) -> int:
     ap.add_argument("--val", nargs="*", default=[])
     ap.add_argument("--text-cache", nargs="*", default=None)
     ap.add_argument("--video-every", type=int, default=0)
+    ap.add_argument("--control-scenes", type=int, default=0,
+                    help="per (task, embodiment): this many scenes also get a filter-off run (round 3, B5)")
     ap.add_argument("--child", action="store_true")
     ap.add_argument("--merge-only", action="store_true", help="aggregate existing episode rows, run nothing")
     ap.add_argument("--shard", type=int, default=0)

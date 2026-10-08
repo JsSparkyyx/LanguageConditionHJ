@@ -140,3 +140,32 @@ def test_takeover_removes_dead_claims_and_a_stalled_holder_stays_out(tmp_path):
         a.check()                                                    # ... but not the claim: a stays out
     assert holds(tmp_path / "shard", ".writer", c.gen, c.token) and not holds(tmp_path / "shard", ".writer", a.gen, a.token)
     c.release()
+
+
+def test_writes_are_checked_and_a_woken_writer_stops(tmp_path):
+    """Review round 3, C1: guard_writes checks the lock right before every row write; check_fast reads the
+    lock files whenever the last look is old (always after a stall), so a writer that wakes after a takeover
+    writes nothing more."""
+    import pytest
+
+    from main.lang.collect import guard_writes
+    from main.lang.locks import WriterLock
+
+    a = WriterLock(tmp_path / "shard", stale_s=0.3, beat_s=60)
+    rows = []
+
+    class Buf:
+        def append(self, row):
+            rows.append(row)
+
+    buf = Buf()
+    guard_writes(a, buf)
+    guard_writes(a, buf)                      # idempotent: one check per write, not two
+    buf.append(1)
+    b = WriterLock(tmp_path / "shard", stale_s=0.3, beat_s=60, wait_s=1.5)   # takes over the "stalled" a
+    a._last_full -= 10.0                      # a wakes: its last look at the lock files is old
+    with pytest.raises(WriterLock.LockLost):
+        buf.append(2)
+    assert rows == [1]
+    a.release()
+    b.release()

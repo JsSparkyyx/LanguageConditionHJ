@@ -194,6 +194,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     rng_policy = rng_policy if rng_policy is not None else np.random.default_rng(episode_offset)
     attempt = int(attempt0)
     summary = {"episodes": 0, "skipped": 0, "status": {}, "inits": 0, "wall": 0.0, "stopped": False}
+    if writer is not None:
+        guard_writes(writer, buf, sidecar)
     for slot_i, (task, emb, host) in enumerate(slots):
         if deadline is not None:
             est = summary["wall"] / summary["episodes"] if summary["episodes"] else 420.0
@@ -291,13 +293,18 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         if use_filter:
             ctx = torch.no_grad()
             ctx.__enter__()
+        lost = False
         try:
             trace = ro.run()
+        except BaseException as exc:
+            lost = writer is not None and isinstance(exc, type(writer).LockLost)
+            raise
         finally:
             if use_filter:
                 ctx.__exit__(None, None, None)
             if ro.video is not None:
-                ro.video.close()
+                # after a lost lock the new owner records the same seed: never publish over its video
+                ro.video.discard() if lost else ro.video.close()
         if writer is not None:
             writer.check()
         try:
@@ -313,6 +320,11 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             sidecar.discard_to(n_before)
             trace["status"] = "exception"
             trace["exception"] = f"lockstep after a tick error ({exc})"[:800]
+        # arrays first (the heavy msync), then the lock check, then the small header writes: a writer that
+        # stalls in the sync and wakes after a takeover never writes headers (review round 3, C2)
+        sync_arrays(buf, sidecar)
+        if writer is not None:
+            writer.check()
         buf.flush()
         sidecar.flush()
         rows = np.arange(n_before, len(buf)) % buf.capacity
@@ -339,15 +351,15 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             "retries": errors, "slot": slot_offset + slot_i, "attempt_next": attempt, "masks": bool(with_masks),
             "video": str(ro.video.path) if getattr(ro.video, "path", None) else None, **(extra_line or {}),
         }
-        if round_metrics is not None and line["filter"]:
-            from .metrics import LangRoundMetrics
-
-            rm, r_idx = round_metrics
-            rm.add(LangRoundMetrics.episode_row(r_idx, line, trace))
         if writer is not None:
             writer.check()
         with open(jsonl, "a") as f:
             f.write(json.dumps(_jsonable(line)) + "\n")
+        if round_metrics is not None and line["filter"]:   # after the line (round 3, C2): never a row without it
+            from .metrics import LangRoundMetrics
+
+            rm, r_idx = round_metrics
+            rm.add(LangRoundMetrics.episode_row(r_idx, line, trace))
         summary["episodes"] += 1
         summary["status"][line["status"]] = summary["status"].get(line["status"], 0) + 1
         summary["wall"] += line["wall_s"]
@@ -383,6 +395,31 @@ def _check_fresh(out: Path) -> None:
         raise SystemExit(f"{out} is not empty: shards are collected into fresh directories only")
 
 
+def guard_writes(writer, *buffers) -> None:
+    """Check the writer lock right before every row write of these buffers (review round 3, C1): the
+    in-memory heartbeat flag, and the lock files whenever the last look is over 2 s old (always after a
+    stall). The rollout's per-capture check alone missed a stall inside a capture (render / encode)."""
+    for b in buffers:
+        if getattr(b, "_guarded_by", None) is writer:
+            continue
+        orig = b.__dict__.get("_unguarded_append", b.append)
+
+        def append(row, _orig=orig):
+            writer.check_fast()
+            return _orig(row)
+
+        b._unguarded_append, b.append, b._guarded_by = orig, append, writer
+
+
+def sync_arrays(*buffers) -> None:
+    """msync the memory-mapped arrays of these buffers (their flush() does this and then writes header.json)."""
+    for b in buffers:
+        for arr in getattr(b, "arrays", {}).values():
+            f = getattr(arr, "flush", None)
+            if f is not None:
+                f()
+
+
 def read_lines(jsonl: Path) -> list[dict]:
     """lang_episodes.jsonl lines; a crash-truncated last line is dropped (and the file rewritten)."""
     if not jsonl.exists():
@@ -394,8 +431,10 @@ def read_lines(jsonl: Path) -> list[dict]:
             out.append(json.loads(ln))
         except json.JSONDecodeError:
             bad = True
-    if bad:
-        jsonl.write_text("".join(json.dumps(d) + "\n" for d in out))
+    if bad:   # temp file + replace: a kill mid-rewrite must not cut the record (round 3, C8)
+        tmp = jsonl.with_suffix(f".jsonl.{__import__('os').getpid()}.tmp")
+        tmp.write_text("".join(json.dumps(d) + "\n" for d in out))
+        tmp.replace(jsonl)
     return out
 
 
@@ -403,7 +442,8 @@ def resume_point(out: Path, buf, sidecar) -> tuple[int, int, int]:
     """(slots done, attempt, rows) of an interrupted shard; both rings are
     rolled back to the end of the last recorded episode (an episode killed
     mid-run, or flushed without its line, is discarded and collected again
-    with the same seed, i.e. the same scene)."""
+    with the NEXT seed (attempt + 1): rows a stalled former writer might still add then carry another
+    episode id than the new rows at the same positions, so check_shards sees them; review round 3, C1)."""
     lines = read_lines(out / "lang_episodes.jsonl")
     done = len(lines)
     attempt = int(lines[-1]["attempt_next"]) if lines else 0
@@ -435,13 +475,98 @@ def resume_point(out: Path, buf, sidecar) -> tuple[int, int, int]:
         sidecar.discard_to(rows)
         buf.flush()
         sidecar.flush()
+        attempt += 1
     return done, attempt, rows
 
 
+# Config fields that shape only training, evaluation or bookkeeping, never what a collection episode does.
+# collect_hash leaves them out, so adding or changing one (e.g. tf32_train) does not stop a shard from
+# resuming (review round 3, C5).
+TRAIN_ONLY_FIELDS = frozenset({
+    # CrossSafe FrozenConfig
+    "gamma", "gamma_final", "gamma_anneal_steps", "batch_size", "lr", "tau", "alpha_start", "alpha_final",
+    "alpha_anneal_steps", "grad_steps", "eval_every", "eval_sweep_every_epochs", "eval_ema", "checkpoint_every",
+    "save_every_epochs", "eval_seeds", "ablate_geometry", "ablate_injection", "video_bbox", "n_episodes",
+    # LangConfig: model, sampling, precision, rounds bookkeeping
+    "k_prev", "n_queries", "max_text_tokens", "text_backend", "backend_paths", "trunk_depth", "critic_depth",
+    "lang_scene", "lang_body", "lang_film", "lang_queries", "lang_rtoken", "film_zero_init", "softmin_T_h",
+    "activation_checkpointing", "tf32_train", "text_out_norm", "mask_special_tokens", "oracle_ref_tag",
+    "oracle_tag_sigma", "shuffle_text", "relabel", "harmful_frac", "pair_frac", "task_balance",
+    "recall_horizon_ticks", "drop_stale_bead_rows", "episodes_per_round", "grad_steps_per_round", "collect_rounds",
+    "named_harm_frac", "filter_episode_frac", "warmup_episodes_per_task", "val_episodes_per_task",
+})
+
+
+def collect_hash(cfg) -> str:
+    """Hash of the config fields a collection episode depends on (everything but TRAIN_ONLY_FIELDS)."""
+    import hashlib
+
+    d = {k: v for k, v in cfg.to_dict().items() if k not in TRAIN_ONLY_FIELDS}
+    return hashlib.md5(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
+# what defines h (review round 3, C6): whole files, plus the h functions of files that mostly hold other code
+H_FILES = ("margins.py", "rules.py", "geometry.py", "robot_distance.py", "item_shapes.py", "regions.py",
+           "configs/objects.yaml")
+H_FUNCS = {"runner.py": ("rule_margins", "rule_violation_counts", "_pose7", "_velocity6"),
+           "margin_hook.py": ("ItemMarginHFn",)}
+
+
+def _source_of(path: Path, names) -> str:
+    """The source of the named top-level functions / classes (parsed, not imported)."""
+    import ast
+
+    src = path.read_text()
+    nodes = {n.name: n for n in ast.parse(src).body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    missing = sorted(set(names) - set(nodes))
+    if missing:
+        raise RuntimeError(f"h_code: {path} has no {missing} (update collect.H_FUNCS)")
+    return "\n".join(ast.get_source_segment(src, nodes[n]) for n in names)
+
+
+def h_code_hash_v2(tasks) -> str:
+    """Hash of exactly what defines h for these tasks (review round 3, C6): margins, rules, the distance and
+    shape code, regions, the object table, the robot's collision spheres, the h functions of runner.py and
+    margin_hook.py, the tasks' yaml files, the RoboTwin scene builders the task links actually point to
+    (resolved), and the distance mode (ITEM_DISTANCE). Unrelated edits to runner / item_buffer / margin_hook
+    no longer refuse a resume. Recorded as `h_code_v2`; `h_code` (h_code_hash) stays for older shards / runs."""
+    import hashlib
+    import os
+
+    from . import REPO
+
+    root = REPO / "envs/main/item_envs"
+    h = hashlib.md5()
+
+    def add(name: str, data: bytes) -> None:
+        h.update(name.encode())
+        h.update(data)
+
+    for f in H_FILES:
+        add(f, (root / f).read_bytes())
+    for f in sorted((root / "configs/collision_spheres").glob("*.yml")):
+        add(f"collision_spheres/{f.name}", f.read_bytes())
+    for f, names in H_FUNCS.items():
+        add(f, _source_of(root / f, names).encode())
+    robotwin = REPO.parent / "RoboTwin" / "envs"
+    for t in sorted(tasks):
+        for y in sorted((root / "configs/tasks").glob(f"*_{t}.yaml")):
+            add(y.name, y.read_bytes())
+        link = robotwin / f"{t}.py"
+        if link.exists():
+            add(f"robotwin/{t}.py", link.resolve().read_bytes())
+    util = robotwin / "_item_utils.py"
+    if util.exists():
+        add("robotwin/_item_utils.py", util.resolve().read_bytes())
+    add("ITEM_DISTANCE", (os.environ.get("ITEM_DISTANCE") or "shape").encode())   # robot_distance's default
+    return h.hexdigest()[:12]
+
+
 def h_code_hash(tasks) -> str:
-    """Hash of what defines h for these tasks: margins.py, rules.py and the tasks' yaml files. Recorded in
-    shard.json: a shard written under another h definition (e.g. the 1 mm soft-min bead margin of
-    2026-10-07) refuses to resume (round 2 B2)."""
+    """The first h hash (kept to compare shards and runs that recorded only it): margins.py, rules.py,
+    runner.py, margin_hook.py, item_buffer.py and the tasks' yaml files. Recorded in shard.json: a shard
+    written under another h definition (e.g. the 1 mm soft-min bead margin of 2026-10-07) refuses to resume
+    (round 2 B2)."""
     import hashlib
 
     from . import REPO
@@ -459,6 +584,23 @@ def h_code_hash(tasks) -> str:
     return h.hexdigest()[:12]
 
 
+def shard_meta_diff(old: dict, meta: dict, out: Path) -> list:
+    """The shard.json fields that stop a resume. config_hash is recorded only: the collection fields are
+    compared through collect_hash, recomputed from the shard's config.json for shards written before it
+    existed (review round 3, C5). h is compared on h_code_v2 when the old shard has it, else on h_code."""
+    skip = {"config_hash", "collect_hash", "h_code", "h_code_v2"}
+    diff = [k for k in meta if k not in skip and old.get(k) != meta[k]]
+    old_c = old.get("collect_hash")
+    if old_c is None and (out / "config.json").exists():
+        old_c = collect_hash(LangConfig.load(out / "config.json"))
+    if old_c != meta["collect_hash"]:
+        diff.append("collect_hash")
+    key = "h_code_v2" if "h_code_v2" in old else "h_code"
+    if old.get(key) != meta[key]:
+        diff.append(key)
+    return sorted(diff)
+
+
 def cmd_shard(args, kind: str) -> int:
     cfg = LangConfig()
     if args.tasks != "all":
@@ -469,8 +611,9 @@ def cmd_shard(args, kind: str) -> int:
     slots = shard_schedule(cfg.task_choices, args.embodiment, args.shard, args.n_shards, args.episodes_per_task, g)
     meta = {"kind": kind, "embodiment": args.embodiment, "shard": args.shard, "n_shards": args.n_shards,
             "g": g, "episode_offset": offset, "episodes_per_task": args.episodes_per_task,
-            "slots": [list(x) for x in slots], "config_hash": cfg.hash(), "bank_hash": cfg.bank_hash,
-            "masks": not args.no_masks, "h_code": h_code_hash(cfg.task_choices)}
+            "slots": [list(x) for x in slots], "config_hash": cfg.hash(), "collect_hash": collect_hash(cfg),
+            "bank_hash": cfg.bank_hash, "masks": not args.no_masks, "h_code": h_code_hash(cfg.task_choices),
+            "h_code_v2": h_code_hash_v2(cfg.task_choices)}
     capacity = int(len(slots) * cfg.max_steps_per_episode * 1.1) + 16
     # one writer per shard for this process's lifetime (review O1): a second process (a duplicated claim)
     # waits out a crashed writer's lock, then leaves the shard to the live one (exit 75: resumable)
@@ -487,10 +630,10 @@ def cmd_shard(args, kind: str) -> int:
             print(f"[collect] {out} is complete")
             return 0
         old = json.loads((out / "shard.json").read_text())
-        diff = sorted(k for k in meta if old.get(k) != meta[k])
+        diff = shard_meta_diff(old, meta, out)
         if diff:
             raise SystemExit(f"{out}: shard.json differs from this command in {diff}"
-                             + (" (written under another h definition)" if "h_code" in diff else "")
+                             + (" (written under another h definition)" if {"h_code", "h_code_v2"} & set(diff) else "")
                              + "; refusing to resume")
         from main.item_envs.item_buffer import ItemSidecarBuffer
         from main.train.buffer import StepBuffer

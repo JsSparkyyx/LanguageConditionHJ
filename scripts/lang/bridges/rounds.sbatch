@@ -3,6 +3,7 @@
 #
 #   cd <repo>
 #   export RUN=runs/lang/<name> HOLOBRAIN_CKPT=<dir> PY=<python> SBATCH_FLAGS="-A <account> --gpus=<type>:1"
+#   (relative RUN / DATA / VAL resolve against the submit directory; with LANG_REPO they must be absolute)
 #   sbatch $SBATCH_FLAGS scripts/lang/bridges/rounds.sbatch
 #
 # Site flags go in SBATCH_FLAGS (or edit the #SBATCH lines below): the resubmissions reuse them, while
@@ -33,7 +34,20 @@ source scripts/lang/bridges/_env.sh
 if [[ -n "${WANDB_KEY_FILE:-}" ]]; then source scripts/lang/wandb_env.sh; fi
 RUN="${RUN:?set RUN=runs/lang/<name>}"
 ROUNDS=${ROUNDS:-100}; EPISODES=${EPISODES:-4}; STEPS=${STEPS:-2048}; PROBE=${PROBE:-10}; GAMMA=${GAMMA:-0.9}
-DATA=${DATA:-data/lang/warmup}; VAL=${VAL:-data/lang/val}   # absolute when the code runs from another checkout
+DATA=${DATA:-data/lang/warmup}; VAL=${VAL:-data/lang/val}
+# RUN / DATA / VAL become absolute here (review round 3, C4): the trainer runs with cwd = the code checkout
+# (LANG_REPO when set), so a relative path would point into that checkout, while state_mtime below reads
+# $RUN from this one. With LANG_REPO set a relative path is refused: say which checkout it means.
+for v in RUN DATA VAL; do
+  if [[ "${!v}" != /* ]]; then
+    if [[ -n "${LANG_REPO:-}" ]]; then
+      echo "[rounds.sbatch] $v=${!v} is relative while the code runs from LANG_REPO=$LANG_REPO: give an absolute path"
+      exit 2
+    fi
+    printf -v "$v" '%s' "$(realpath -m "$SLURM_SUBMIT_DIR/${!v}")"
+  fi
+done
+export RUN DATA VAL
 # the run's config is fixed by its first start (lang_config.json); a resumed run keeps it
 # more LangConfig overrides go in SET="key=value ...", never in EXTRA_ARGS: a second --set would replace
 # this one (argparse keeps the last)

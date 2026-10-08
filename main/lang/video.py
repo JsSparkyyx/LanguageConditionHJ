@@ -51,7 +51,8 @@ class LangPanelVideoWriter(PanelVideoWriter):
                  fps: float = 25.0):
         stem_path = Path(stem_path)
         self.final_stem = stem_path
-        self.tmp = stem_path.with_name(stem_path.name + ".partial.mp4")
+        # unique per process: a stale writer and the new owner record the same seed (review round 3, C8)
+        self.tmp = stem_path.with_name(f"{stem_path.name}.{os.getpid()}.partial.mp4")
         super().__init__(self.tmp, fps=fps, h_scale=1.0)
         self.ro = ro
         self.named = named_rule
@@ -161,6 +162,18 @@ class LangPanelVideoWriter(PanelVideoWriter):
 
             p = np.asarray(panel.resize((int(W_PANEL * ph / H_PANEL), ph)))
         self.writer.append_data(np.hstack([frame, p]))
+
+    def discard(self) -> None:
+        """Close without publishing (a lost writer lock): remove only this process's partial file."""
+        try:
+            self.writer.close()
+        except Exception:
+            pass
+        try:
+            self.tmp.unlink()
+        except OSError:
+            pass
+        self.path = None
 
     def close(self, success: bool | None = None):
         try:

@@ -169,8 +169,10 @@ def test_tf32_only_inside_the_training_step(tmp_path, root):
     for on in (True, False):
         tr = trainer(tmp_path / f"run_{on}", root, tf32_train=on)
         real = tr._grad_step
-        tr._grad_step = lambda b=None, log=False: (seen.append(torch.backends.cuda.matmul.allow_tf32), real(b, log))[1]
+        tr._grad_step = lambda b, w, m, log=False: (seen.append(torch.backends.cuda.matmul.allow_tf32), real(b, w, m, log))[1]
+        real_lookup = tr.text.lookup
+        tr.text.lookup = lambda *a, **k: (seen.append(("lookup", torch.backends.cuda.matmul.allow_tf32)), real_lookup(*a, **k))[1]
         torch.backends.cuda.matmul.allow_tf32 = False
         tr.grad_step()
         assert torch.backends.cuda.matmul.allow_tf32 is False       # restored after the step
-    assert seen == [True, False]
+    assert seen == [("lookup", False), True, ("lookup", False), False]   # sentences are looked up in fp32

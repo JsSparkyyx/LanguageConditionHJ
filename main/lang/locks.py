@@ -202,6 +202,7 @@ class WriterLock:
         self.gen, self.token = got
         self._hb = Heartbeat(self.root, self.NAME, self.gen, beat_s, self.token)
         self._released = False
+        self._last_full = time.monotonic()
         atexit.register(self.release)
 
     @property
@@ -212,6 +213,14 @@ class WriterLock:
         if self._released or self._hb.lost or not holds(self.root, self.NAME, self.gen, self.token):
             raise WriterLock.LockLost(f"{self.root}: writer lock {self.NAME}.{self.gen} is no longer held "
                                       "(taken over after a stall?): stopping without writing")
+        self._last_full = time.monotonic()
+
+    def check_fast(self, full_every_s: float = 2.0) -> None:
+        """Before every row write (review round 3, C1): the heartbeat's in-memory flag, plus the file check
+        whenever the last one is older than full_every_s. A takeover needs this process silent for stale_s
+        (180 s), so a writer that wakes from such a stall always runs the file check before its next write."""
+        if self._released or self._hb.lost or time.monotonic() - self._last_full > full_every_s:
+            self.check()
 
     def release(self) -> None:
         if not getattr(self, "_released", True):

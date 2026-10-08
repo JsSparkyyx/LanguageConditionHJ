@@ -70,6 +70,16 @@ def recall_labels(h_rules: np.ndarray, ep: np.ndarray, t: np.ndarray, n: int, ho
     return out
 
 
+def bead_h_of(sources) -> str:
+    """Which bead h the bead-task rows of these sources carry: "count" (n_violating stored, 2026-10-07 on),
+    "old" (soft-min / plain clip, only when drop_stale_bead_rows is off), "mixed", or "none" (no bead rows)."""
+    kinds = set()
+    for s in sources:
+        if s.rows.size and any(CANON_TASKS[int(t)] in BEAD_TASKS for t in np.unique(s.task)):
+            kinds.add("old" if s.stale_bead else "count")
+    return "none" if not kinds else kinds.pop() if len(kinds) == 1 else "mixed"
+
+
 class LangSource:
     """One data root: index of usable non-terminal rows + StepBuffer arrays."""
 
@@ -84,19 +94,19 @@ class LangSource:
         self.recall_horizon = int(recall_horizon)
         self.rs = RelabelSampler(self.root / "item_buffer", split="train", k_prev=self.k)
         self.max_n = max_n
-        if max_n is not None:   # a frozen dataset: rows beyond max_n (collected later) are invisible
-            orig = self.rs.buf.refresh
-
-            def capped():
-                orig()
-                if self.rs.buf.n > max_n:
-                    self.rs.buf.n = int(max_n)
-                    self.rs.buf.head = int(max_n)
-                return self.rs.buf.n
-
-            self.rs.buf.refresh = capped
         self.step: dict[str, np.ndarray] = {}
         self.lines: dict[int, dict] = {}
+        orig = self.rs.buf.refresh
+
+        def capped():   # applied before RelabelSampler indexes the rows
+            orig()
+            cap = self._row_cap()
+            if cap is not None and self.rs.buf.n > cap:
+                self.rs.buf.n = int(cap)
+                self.rs.buf.head = int(cap)
+            return self.rs.buf.n
+
+        self.rs.buf.refresh = capped
         self.first_cache: dict[int, tuple] = {}
         self.refresh()
 
@@ -110,10 +120,23 @@ class LangSource:
             if f not in self.step and p.exists():
                 self.step[f] = np.load(p, mmap_mode="r")
 
+    def _row_cap(self) -> int | None:
+        """The rows this source may use: up to the end of the last recorded episode (review round 3, C2) and
+        max_n (a frozen dataset). Rows past the last episode line are an episode in progress or a stale
+        writer's; a header with FEWER rows than the lines record was rewritten by a stale writer or copied
+        mid-write, and is refused."""
+        ends = [int(d["rows"][1]) for d in self.lines.values() if d.get("rows")]
+        if self.max_n is not None:
+            ends = [e for e in ends if e <= self.max_n]
+        caps = [c for c in ((max(ends) if ends else None), self.max_n) if c is not None]
+        if ends and self.rs.buf.n < max(ends):
+            raise RuntimeError(f"{self.root}: header.json says {self.rs.buf.n} rows, the episode lines end at "
+                               f"{max(ends)} (a stale writer's header or a partial copy): check with "
+                               "scripts/lang/check_shards.py")
+        return min(caps) if caps else None
+
     def refresh(self) -> int:
-        self.rs.refresh()
-        self._open_step()
-        lj = self.root / "lang_episodes.jsonl"
+        lj = self.root / "lang_episodes.jsonl"   # the lines first: they cap the rows RelabelSampler indexes
         if lj.exists():
             for ln in lj.read_text().splitlines():
                 try:
@@ -122,6 +145,8 @@ class LangSource:
                     continue
                 if not d.get("skipped"):
                     self.lines[int(d["episode_id"])] = d
+        self.rs.refresh()
+        self._open_step()
         rs, A = self.rs, self.rs.buf.arrays
         mixed = np.zeros(rs._rows.size, dtype=bool)
         mixed[rs._mixed] = True

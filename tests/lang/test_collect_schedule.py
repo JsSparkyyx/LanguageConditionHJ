@@ -78,7 +78,7 @@ def test_resume_point_rolls_back_partial_episode(tmp_path):
     buf, side = StepBuffer(root / "buffer"), ItemSidecarBuffer(root / "item_buffer")
     assert len(buf) == len(side) == 120
     done, attempt, rows = resume_point(root, buf, side)
-    assert (done, attempt, rows) == (3, 7, 80)
+    assert (done, attempt, rows) == (3, 8, 80)   # rows discarded: the next seed (review round 3, C1)
     assert len(StepBuffer(root / "buffer")) == len(ItemSidecarBuffer(root / "item_buffer")) == 80
     assert len(read_lines(root / "lang_episodes.jsonl")) == 3     # truncated line dropped
 
@@ -127,3 +127,35 @@ def test_resume_point_accepts_an_episode_without_rows(tmp_path):
              {"episode_id": 1001, "rows": [40, 80], "attempt_next": 3, "slot": 2}]
     (root / "lang_episodes.jsonl").write_text("".join(json.dumps(d) + "\n" for d in lines))
     assert resume_point(root, StepBuffer(root / "buffer"), ItemSidecarBuffer(root / "item_buffer")) == (3, 3, 80)
+
+
+def test_h_code_v2_and_collect_hash(tmp_path):
+    """Review round 3, C5 / C6: h_code_v2 covers the h files and the h functions only (an edit elsewhere in
+    runner.py does not change it); collect_hash ignores training-only fields, and an older shard is compared
+    through the collect_hash recomputed from its config.json."""
+    import dataclasses
+
+    from main.lang import collect as C
+    from main.lang.config import LangConfig
+
+    a = C.h_code_hash_v2(["selective_avoid", "gap_place"])
+    assert a == C.h_code_hash_v2(["gap_place", "selective_avoid"]) and a != C.h_code_hash_v2(["push_zone"])
+    from main.lang import REPO
+
+    src = C._source_of(REPO / "envs/main/item_envs/runner.py", ["rule_margins"])
+    assert src.startswith("def rule_margins")
+    cfg = LangConfig()
+    assert C.collect_hash(cfg) == C.collect_hash(dataclasses.replace(cfg, tf32_train=False, lr=1e-3))
+    assert C.collect_hash(cfg) != C.collect_hash(dataclasses.replace(cfg, max_steps_per_episode=10))
+    meta = {"kind": "val", "slots": [], "config_hash": cfg.hash(), "collect_hash": C.collect_hash(cfg),
+            "h_code": "a", "h_code_v2": "b"}
+    out = tmp_path / "shard"
+    out.mkdir()
+    cfg.save(out / "config.json")
+    old = {k: v for k, v in meta.items() if k not in ("collect_hash", "h_code_v2")}
+    old["config_hash"] = "an old full hash"
+    assert C.shard_meta_diff(old, meta, out) == []                       # recomputed from config.json
+    assert C.shard_meta_diff({**old, "h_code": "x"}, meta, out) == ["h_code"]
+    assert C.shard_meta_diff({**meta, "h_code_v2": "x"}, meta, out) == ["h_code_v2"]
+    dataclasses.replace(cfg, max_steps_per_episode=10).save(out / "config.json")
+    assert C.shard_meta_diff(old, meta, out) == ["collect_hash"]

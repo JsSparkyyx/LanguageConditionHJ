@@ -171,8 +171,34 @@ def test_resume_refuses_another_h_definition(tmp_path, rounds_root):
     with pytest.raises(RuntimeError):   # (1, 0) is FakeCollect's skipped slot: kill at (1, 1)
         _rounds(run, rounds_root, FakeCollect(kill_at=(1, 1)), resume=False)
     st = torch.load(run / "state.pt", weights_only=False)
-    assert st.get("h_code") and "git_head" in st
-    st["h_code"] = "0" * 12
+    assert st.get("h_code") and st.get("h_code_v2") and "git_head" in st and st["data_roots"]
+    good = dict(st)
+    st["h_code_v2"] = "0" * 12
     torch.save(st, run / "state.pt")
     with pytest.raises(SystemExit, match="h definition changed"):
         _rounds(run, rounds_root, FakeCollect(), resume=True)
+    # a state saved before h_code_v2 existed is compared on the first hash
+    old = {k: v for k, v in good.items() if k not in ("h_code_v2", "data_roots")}
+    old["h_code"] = "0" * 12
+    torch.save(old, run / "state.pt")
+    with pytest.raises(SystemExit, match="h definition changed"):
+        _rounds(run, rounds_root, FakeCollect(), resume=True)
+
+
+def test_resume_refuses_other_data_or_code(tmp_path, rounds_root):
+    """Review round 3, C4: state.pt records the resolved data roots and the git commit; a resume with other
+    data refuses, and one at another commit refuses unless --accept-code-change."""
+    from main.lang.train import check_resume_identity
+
+    run = tmp_path / "r"
+    with pytest.raises(RuntimeError):
+        _rounds(run, rounds_root, FakeCollect(kill_at=(1, 1)), resume=False)
+    st = torch.load(run / "state.pt", weights_only=False)
+    assert st["data_roots"] == [str(Path(rounds_root).resolve())]
+    ident = {k: st.get(k) for k in ("h_code", "h_code_v2", "git_head", "data_roots")}
+    check_resume_identity(st, ident, run)                                  # the same: no refusal
+    with pytest.raises(SystemExit, match="data roots changed"):
+        check_resume_identity(st, {**ident, "data_roots": ["/elsewhere"]}, run)
+    with pytest.raises(SystemExit, match="another git commit|--accept-code-change"):
+        check_resume_identity({**st, "git_head": "f" * 40}, {**ident, "git_head": "e" * 40}, run)
+    check_resume_identity({**st, "git_head": "f" * 40}, {**ident, "git_head": "e" * 40}, run, accept_code_change=True)

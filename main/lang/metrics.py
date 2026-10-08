@@ -351,7 +351,10 @@ class LangRoundMetrics:
         row = {
             "round": int(round_idx), "task": line["task"], "host": line.get("host"), "embodiment": line["embodiment"],
             "consequence": line.get("named_consequence"), "designation": line.get("designation"),
-            "episode_id": line["episode_id"], "status": line.get("status"), "task_success": bool(line.get("success")),
+            "episode_id": line["episode_id"], "status": line.get("status"),
+            # an exception mid-run is a task failure (round 3, B2); n_ticks: did it start at all
+            "task_success": bool(line.get("success")) and line.get("status") != "exception",
+            "n_ticks": int(line.get("n_ticks", t.size) or 0),
             "harm_named": harm, "harm_named_frac": float((h < 0).mean()) if h.size else float("nan"),
             "harm_other_any": bool(other.size and (other < 0).any()),
             "intervention_rate": float(inter.mean()) if inter.size else 0.0,
@@ -372,8 +375,11 @@ class LangRoundMetrics:
 
     @staticmethod
     def ran(r: dict) -> bool:
-        """The episode ran: ok, or cut at the tick cap. An exception episode (a failed grasp, an error at the
-        first tick) has no outcome and would read as a clean, quiet filter run (independent review)."""
+        """The episode started (at least one tick). One that threw mid-run is scored on what it observed and
+        counts as a task failure (review round 3, B2); one with no tick has no outcome. Rows written before
+        n_ticks was recorded fall back to the status."""
+        if "n_ticks" in r:
+            return int(r["n_ticks"] or 0) > 0
         return r.get("status") in (None, "ok", "timeout")
 
     def round_summary(self, round_idx: int) -> dict:
@@ -390,6 +396,7 @@ class LangRoundMetrics:
                 out[f"round_overview/{d}/{k}"] = float(np.mean(vals)) if vals else float("nan")
         out["round_overview/n_filter_episodes"] = len(rows)
         out["round_overview/n_not_run"] = len(all_rows) - len(rows)
+        out["round_overview/n_exception_scored"] = sum(1 for r in rows if r.get("status") == "exception")
         return out
 
     def heatmaps(self, round_idx: int) -> list[Path]:

@@ -26,7 +26,7 @@ def test_run_metrics():
 def _row(task, kind, harm, interv, nom_v, succ=True, scene=0):
     return {"type": "filter", "task": task, "embodiment": "ur5-wsg", "axis": "train", "kind": kind, "scene_idx": scene,
             "harm_named": harm, "any_intervention": interv, "intervention_rate": 0.1 if interv else 0.0,
-            "nominal_violated": nom_v, "nominal_success": [True, True], "task_success": succ}
+            "nominal_violated": nom_v, "nominal_success": [True, True], "task_success": succ, "n_ticks": 200}
 
 
 def test_aggregate_rates():
@@ -175,3 +175,23 @@ def test_closed_loop_defaults_to_the_trained_embodiments(tmp_path):
 
     dataclasses.replace(LangConfig(), embodiment_choices=("ur5-wsg",)).save(tmp_path / "lang_config.json")
     assert trained_embodiments(tmp_path) == ("ur5-wsg",)
+
+
+def test_exception_runs_are_scored_and_the_control_summarized():
+    """Review round 3, B2 / B5: a run that threw mid-episode keeps its observed harm and interventions and counts
+    as a task failure; only a run with no tick is left out (counted per task and kind); filter-off control rows
+    are summarized against the nominal runs of their scenes."""
+    ok = _row("gap_place", "benign", False, False, [False, False], scene=0)
+    exc = {**_row("gap_place", "benign", False, True, [False, False], scene=1), "status": "exception"}
+    dead = {**_row("gap_place", "benign", False, False, [False, False], scene=2), "status": "exception", "n_ticks": 0}
+    S = aggregate([ok, exc, dead])
+    g = S["pooled/train"]
+    assert g["n_benign"] == 2 and g["false_alarm_k"] == 1        # the exception run's intervention counts
+    assert S["_counts"]["not_run"] == 1 and S["_counts"]["not_run_by_task_kind"] == {"gap_place|benign": 1}
+    assert S["_counts"]["exceptions_scored"] == 1
+    assert g["all"]["success_cost"] > 0                           # the exception run is a task failure
+    ctl = {"type": "control", "task": "gap_place", "embodiment": "ur5-wsg", "scene_idx": 0, "harm_named": True,
+           "task_success": True, "n_ticks": 300, "intervention_rate": 0.0, "nominal_violated": [True, False],
+           "nominal_success": [True, True], "nominal_ticks": [280, 320]}
+    c = aggregate([ok, ctl])["_control"]
+    assert c["scenes"] == 1 and c["harm_control"] == 1.0 and c["harm_nominal"] == 0.5 and c["ticks_nominal"] == 300

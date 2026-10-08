@@ -205,11 +205,15 @@ def main(argv=None) -> int:
     groups = {}
     for r in runs:   # one section per task set the offline numbers cover
         d = r.get("data") or {}
-        key = (tuple(d.get("tasks") or ()), d.get("bead_h"))
+        # the TRAINING data's bead h (round 3, B1; the validation's bead_h said nothing about the weights), the
+        # scored embodiments and the evaluation code: runs differing in any of them never share a table
+        key = (tuple(d.get("tasks") or ()), d.get("bead_h_train", "not recorded"), tuple(d.get("embodiments") or ()),
+               d.get("eval_code_hash", "not recorded"))
         groups.setdefault(key, []).append(r)
     parts = ["# Results by research question", f"checkpoint {args.ckpt}; {len(runs)} runs: " + ", ".join(r["name"] for r in runs)]
-    for (tasks, bead_h), rr in groups.items():
-        what = (f"tasks {', '.join(tasks)}; bead h: {bead_h}" if tasks else
+    for (tasks, bead_h, embs, code), rr in groups.items():
+        what = (f"tasks {', '.join(tasks)}; trained on bead h: {bead_h}; embodiments {', '.join(embs) or 'not recorded'}; "
+                f"eval code {code}" if tasks else
                 "task set not recorded (metrics.json from before 2026-10-07: rerun eval_offline)")
         dropped = sum(int((r.get("data") or {}).get("stale_bead_rows_dropped", 0)) for r in rr)
         parts += [f"# Runs scored on {what}" + (f" ({dropped} old-h bead rows left out)" if dropped else ""),
