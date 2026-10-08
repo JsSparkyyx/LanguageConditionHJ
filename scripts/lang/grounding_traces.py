@@ -51,7 +51,8 @@ def select_scenes(roots, tasks, per_task: int) -> list[dict]:
                 if d.get("skipped") or d["task"] != task or d.get("status") not in ("ok", "timeout"):
                     continue
                 rec = json.loads((Path(root) / "item_buffer" / "episodes" / f"{d['episode_id']}.json").read_text())
-                des = d.get("designations") or {}
+                # unclear counts as in the way since 2026-10-08 (Yuxuan, decision 3; older lines say "unclear")
+                des = {k: ("harm" if v == "unclear" else v) for k, v in (d.get("designations") or {}).items()}
                 rules = [r for r in rec["rules"] if r.get("sampleable") and single_object(r)]
                 for cons in CONS:
                     harm = [r for r in rules if r["consequence"] == cons and des.get(r["rule_id"]) == "harm"]
