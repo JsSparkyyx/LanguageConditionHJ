@@ -53,10 +53,11 @@ def fails(state: Path, cid: str) -> int:
     return int(p.read_text() or 0) if p.exists() else 0
 
 
-def try_claim(state: Path, cid: str) -> int | None:
+def try_claim(state: Path, cid: str, seen: dict | None = None) -> int | None:
     """The claim generation held (<cid>.lock.<g>, main.lang.locks), or None. Taking over a dead job's stale
-    claim creates the next generation: one winner among racing workers (review O1: the earlier stat + utime
-    takeover let two workers run one shard). A fresh claim of the older code (<cid>.lock) still counts."""
+    claim creates the next generation: one winner among racing workers (review O1). A claim is stale once
+    its heartbeat counter stood still for STALE_S on THIS worker's clock (``seen`` remembers what it saw;
+    round 2 B1). A fresh claim of the older code (<cid>.lock) still counts."""
     from .locks import try_take
 
     legacy = state / f"{cid}.lock"
@@ -65,7 +66,7 @@ def try_claim(state: Path, cid: str) -> int | None:
             return None
     except FileNotFoundError:
         pass
-    return try_take(state, f"{cid}.lock", STALE_S)
+    return try_take(state, f"{cid}.lock", STALE_S, seen)
 
 
 def main(argv=None) -> int:
@@ -86,15 +87,20 @@ def main(argv=None) -> int:
     weights: dict[str, int] = {}
     reserved = None   # (cid, cmd, weight): a heavy command claimed, waiting for enough free slots
     held: dict[str, int] = {}   # cid -> claim generation
+    seen: dict = {}             # heartbeat counters observed on other workers' claims (locks.try_take)
     stop = threading.Event()
 
     def heartbeat():
+        from .locks import beat
+
+        n = 0
         while not stop.is_set():
+            n += 1
             for cid, g in list(held.items()):
-                try:
-                    os.utime(state / f"{cid}.lock.{g}")
-                except FileNotFoundError:
-                    pass
+                if not beat(state, f"{cid}.lock", g, n):
+                    # the claim vanished (taken over after a stall?): the command's own writer lock still
+                    # keeps its data root single-writer; report it
+                    print(f"[workqueue] {host} claim {cid}.lock.{g} disappeared", flush=True)
             stop.wait(30)
 
     def unclaim(cid):
@@ -153,7 +159,7 @@ def main(argv=None) -> int:
                     break
                 if cid in running:
                     continue
-                g = try_claim(state, cid)
+                g = try_claim(state, cid, seen)
                 if g is None:            # generation 0 is a valid claim: test for None
                     continue
                 held[cid] = g

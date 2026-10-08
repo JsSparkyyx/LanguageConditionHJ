@@ -109,12 +109,16 @@ def run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, col
     except WriterLock.LockHeld as exc:
         raise SystemExit(f"[rounds] {exc}: is another job running this run?")
     try:
-        return _run_rounds(cfg, args, roots, vals, caches, tasks, embs, trainer=trainer, collect_fn=collect_fn)
+        return _run_rounds(cfg, args, roots, vals, caches, tasks, embs, trainer=trainer, collect_fn=collect_fn,
+                           writer=writer)
+    except WriterLock.LockLost as exc:   # another process owns the run now: write nothing more
+        print(f"[rounds] {exc} (exit 75)", flush=True)
+        return EXIT_RESUME
     finally:
         writer.release()
 
 
-def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, collect_fn=None) -> int:
+def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, collect_fn=None, writer=None) -> int:
     from .metrics import LangRoundMetrics
 
     run = Path(args.run).resolve()
@@ -183,12 +187,18 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
     kins = {}
     inits = {"n": 0}
 
+    def check():   # before every write (round 2 B1)
+        if writer is not None:
+            writer.check()
+
     def save(r_pos):
+        check()
         save_round_state(tr, sched, rng_policy, ring_buf, r_pos)
 
     def stop(r_pos, why):
         tr.pause_prefetch()
         save(r_pos)
+        check()
         tr.save_ckpt()
         (run / "resume_check_pre.json").write_text(json.dumps(resume_fingerprint(tr, sched, rng_policy, ring_buf)))
         print(f"[rounds] {why}: state saved in round {tr.round} ({r_pos['phase']}), step {tr.step}; exit 75",
@@ -234,7 +244,7 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                                       attempt0=r_pos["attempt"], inits=inits,
                                       video_every=1 if (args.video_every and r % args.video_every == 0) else 0,
                                       text_store=tr.text, log_prefix=f"[round {r}] ", slot_offset=k,
-                                      extra_line={"round": r}, round_metrics=(metrics, r))
+                                      extra_line={"round": r}, round_metrics=(metrics, r), writer=writer)
                 except InitLimit:
                     return stop(r_pos, f"init limit inside round ({inits['n']} inits)")
                 walls.append(time.time() - t_ep)
@@ -272,6 +282,7 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                 tr.pause_prefetch()
                 save(r_pos)
         tr.log({"round/train_s": time.time() - t0})
+        check()
         tr.save_ckpt()
         if r % 10 == 0 and r > 0:
             tr.save_ckpt(f"checkpoint_round{r}.pt")
@@ -283,6 +294,7 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
     tr.round = n_rounds + 1
     tr.pause_prefetch()
     save({"phase": None, "slots": [], "done": 0, "attempt": 0, "steps_target": None})
+    check()
     tr.save_ckpt("checkpoint_final.pt")
     if tr.prefetch is not None:
         tr.prefetch.stop()

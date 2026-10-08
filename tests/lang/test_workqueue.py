@@ -38,35 +38,84 @@ def test_stale_lock_taken_over(tmp_path, monkeypatch):
 
 
 def test_claims_have_one_winner(tmp_path):
-    """O1: a stale claim is taken over as the next generation by exactly one taker; a claim taken a moment
-    ago is never taken again (no rename race)."""
-    from main.lang.locks import holds, release, try_take
+    """O1 / B1: a claim is stale only after its heartbeat counter stood still for stale_s on the taker's own
+    clock; it is taken over as the next generation by exactly one taker; a claim taken a moment ago is never
+    taken again."""
+    from main.lang.locks import beat, holds, release, try_take
 
-    assert try_take(tmp_path, "c.lock", 90) == 0
-    assert try_take(tmp_path, "c.lock", 90) is None              # live
-    old = time.time() - 600
-    os.utime(tmp_path / "c.lock.0", (old, old))                   # its job died
-    assert try_take(tmp_path, "c.lock", 90) == 1                  # the first taker wins ...
-    assert try_take(tmp_path, "c.lock", 90) is None               # ... a second one sees generation 1 live
+    assert try_take(tmp_path, "c.lock", 0.3) == 0
+    seen_a, seen_b = {}, {}
+    assert try_take(tmp_path, "c.lock", 0.3, seen_a) is None         # first look: remember the counter
+    beat(tmp_path, "c.lock", 0, 1)                                    # the holder is alive
+    time.sleep(0.35)
+    assert try_take(tmp_path, "c.lock", 0.3, seen_a) is None         # counter changed: not stale
+    assert try_take(tmp_path, "c.lock", 0.3, seen_b) is None
+    time.sleep(0.35)                                                  # no beat for a full window
+    assert try_take(tmp_path, "c.lock", 0.3, seen_a) == 1             # the first taker wins ...
+    assert try_take(tmp_path, "c.lock", 0.3, seen_b) is None          # ... the second sees generation 1
     assert holds(tmp_path, "c.lock", 1) and not holds(tmp_path, "c.lock", 0)
     release(tmp_path, "c.lock", 1)
-    assert try_take(tmp_path, "c.lock", 90) == 1                  # gen 0 is stale: next is 1 again
+    assert not holds(tmp_path, "c.lock", 1)
 
 
-def test_writer_lock(tmp_path):
-    """O1: one writer per data root; a second process refuses; a dead writer's lock is taken over."""
+def test_legacy_claims_by_mtime(tmp_path):
+    """Claims of the earlier code (no beat file) keep the mtime rule."""
+    from main.lang.locks import try_take
+
+    (tmp_path / "c.lock.0").mkdir()
+    assert try_take(tmp_path, "c.lock", 90) is None
+    old = time.time() - 600
+    os.utime(tmp_path / "c.lock.0", (old, old))
+    assert try_take(tmp_path, "c.lock", 90) == 1
+
+
+def test_writer_lock_lost_after_a_stall(tmp_path):
+    """B1: a writer whose heartbeat stalls past the window loses its lock to the next generation, and its
+    check() raises LockLost (a BaseException: the rollout's except Exception does not swallow it)."""
     import pytest
 
     from main.lang.locks import WriterLock
 
-    a = WriterLock(tmp_path / "shard")
+    a = WriterLock(tmp_path / "shard", stale_s=0.3, beat_s=60)       # beats only every 60 s: a "stall"
+    a.check()
     with pytest.raises(WriterLock.LockHeld):
-        WriterLock(tmp_path / "shard")
-    a.release()
-    b = WriterLock(tmp_path / "shard")
-    old = time.time() - 600
-    b._stop.set()                                                 # b's process died: no more heartbeats
-    os.utime(b.path, (old, old))
-    c = WriterLock(tmp_path / "shard")
-    assert c.gen == b.gen + 1
-    c.release()
+        WriterLock(tmp_path / "shard", stale_s=0.3, beat_s=60, wait_s=0.0)
+    b = WriterLock(tmp_path / "shard", stale_s=0.3, beat_s=60, wait_s=1.5)   # waits out the stalled counter
+    assert b.gen == a.gen + 1
+    with pytest.raises(WriterLock.LockLost):
+        a.check()
+    assert not isinstance(WriterLock.LockLost("x"), Exception)
+    a.release()                                                       # never removes b's claim
+    b.check()
+    b.release()
+
+
+def test_heartbeat_reports_a_missing_claim(tmp_path):
+    from main.lang.locks import WriterLock, release
+
+    w = WriterLock(tmp_path / "shard", beat_s=0.05)
+    release(w.root, w.NAME, w.gen)                                    # someone removed the claim
+    time.sleep(0.3)
+    assert w._hb.lost
+    import pytest
+
+    with pytest.raises(WriterLock.LockLost):
+        w.check()
+
+
+def test_workqueue_takes_over_a_dead_claim(tmp_path, monkeypatch):
+    """B2: the g -> g + 1 takeover through workqueue.main (a dead job's claim with a beat counter)."""
+    import main.lang.workqueue as wq
+    from main.lang.locks import beat
+
+    monkeypatch.setattr(wq, "STALE_S", 1.0)
+    (tmp_path / "cmds").write_text("exit 0\n")
+    st = tmp_path / "st"
+    st.mkdir()
+    cid = cmd_id("exit 0")
+    (st / f"{cid}.lock.0").mkdir()
+    beat(st, f"{cid}.lock", 0, 7)                                     # its holder died at count 7
+    monkeypatch.setenv("STAGE_DEADLINE", str(time.time() + 900))
+    assert main(["--cmds", str(tmp_path / "cmds"), "--state", str(st), "--slots", "1", "--margin", "60"]) == 0
+    assert (st / f"{cid}.done").exists()
+    assert "=== " in (st / "logs" / f"{cid}.log").read_text()

@@ -166,6 +166,11 @@ class LangRolloutController(RolloutController):
     # --------------------------------------------------------------- capture --
     def _capture_tick(self):
         t0 = time.perf_counter()
+        writer = getattr(self, "writer", None)   # main.lang.locks.WriterLock of the data root (collection)
+        if writer is not None:
+            self._n_lock_check = getattr(self, "_n_lock_check", 0) + 1
+            if self._n_lock_check % 25 == 1:     # ~1 s: a stalled writer stops before it overwrites rows
+                writer.check()
         self._in_capture = True
         try:
             return super()._capture_tick()

@@ -158,7 +158,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                  inits: dict | None = None, video_every: int = 0, text_store=None,
                  max_retries: int = 5, log_prefix: str = "", slot_offset: int = 0,
                  with_masks: bool = True, deadline: float | None = None, extra_line: dict | None = None,
-                 round_metrics=None) -> dict:
+                 round_metrics=None, writer=None) -> dict:
     """Run one episode per slot (task, emb, host) into (buf, sidecar).
 
     Episode i of the stream has seed = episode_id = episode_offset + attempt
@@ -166,7 +166,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     dict; appends one line per slot to out_root/lang_episodes.jsonl.
     models: (policy_enc, actor, critics) for filter episodes (Phase 4),
     None = nominal only. slot_offset: index of slots[0] in the full schedule
-    (resume). with_masks=False skips the per-tick segmentation masks (zeros in
+    (resume). writer: the data root's WriterLock, checked about once a second during an episode and before
+    every flush and line (round 2 B1). with_masks=False skips the per-tick segmentation masks (zeros in
     the sidecar; only validation data feeds ref_mask). deadline (unix time):
     no new slot starts when the mean episode wall time would pass it
     (summary["stopped"] = True; the caller exits 75 and resumes later).
@@ -241,6 +242,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             break
         if ro is None:
             summary["skipped"] += 1
+            if writer is not None:
+                writer.check()
             with open(jsonl, "a") as f:
                 f.write(json.dumps({"skipped": True, "task": task, "embodiment": emb, "host": host,
                                     "errors": errors, "slot": slot_offset + slot_i,
@@ -273,6 +276,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                     cf_sentence = language.sample_sentence(cands[int(rng_ep.integers(len(cands)))], record, rng_ep, "train")
                 ro.set_instruction(sentence, cf_sentence, rule_id=named["rule_id"])
         n_before = len(buf)
+        ro.writer = writer
         wire_item_episode(ro, sidecar)
         if not with_masks:
             ro.h_fn.with_masks = False
@@ -294,6 +298,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                 ctx.__exit__(None, None, None)
             if ro.video is not None:
                 ro.video.close()
+        if writer is not None:
+            writer.check()
         ro.buf.end_episode()  # lockstep teardown: raises on a pairing bug (stops the process)
         buf.flush()
         sidecar.flush()
@@ -326,6 +332,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
 
             rm, r_idx = round_metrics
             rm.add(LangRoundMetrics.episode_row(r_idx, line, trace))
+        if writer is not None:
+            writer.check()
         with open(jsonl, "a") as f:
             f.write(json.dumps(_jsonable(line)) + "\n")
         summary["episodes"] += 1
@@ -463,9 +471,14 @@ def cmd_shard(args, kind: str) -> int:
         done, attempt = 0, 0
     deadline = stage_deadline(args.time_budget)
     t0 = time.time()
-    summary = run_episodes(cfg, out, slots[done:], offset, buf, sidecar, video_every=args.video_every,
-                           log_prefix=f"[g{g}] ", slot_offset=done, attempt0=attempt,
-                           with_masks=not args.no_masks, deadline=deadline)
+    try:
+        summary = run_episodes(cfg, out, slots[done:], offset, buf, sidecar, video_every=args.video_every,
+                               log_prefix=f"[g{g}] ", slot_offset=done, attempt0=attempt,
+                               with_masks=not args.no_masks, deadline=deadline, writer=writer)
+        writer.check()
+    except WriterLock.LockLost as exc:
+        print(f"[collect] {exc} (exit 75)", flush=True)
+        return 75
     summary["wall_total"] = time.time() - t0
     lines = read_lines(out / "lang_episodes.jsonl")
     summary["complete"] = len(lines) >= len(slots)
