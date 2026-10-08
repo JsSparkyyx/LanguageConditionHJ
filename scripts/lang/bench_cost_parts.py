@@ -72,7 +72,7 @@ def main() -> int:
     batch = None
     for label, frames, kw in VARIANTS:
         network.N_FRAMES = frames
-        cfg = dataclasses.replace(LangConfig(), embodiment_choices=("ur5-wsg",), **kw)
+        cfg = dataclasses.replace(LangConfig(), embodiment_choices=("ur5-wsg",), tf32_train=False, **kw)
         tr = LangTrainer(cfg, scratch / f"lang_{len(res['rows'])}", [shard], (), caches, embodiments=("ur5-wsg",),
                          use_wandb=False, prefetch=False, seed=0)
         if batch is None:

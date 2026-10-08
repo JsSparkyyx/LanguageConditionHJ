@@ -264,7 +264,9 @@ def bench_lang(shard: Path, caches, scratch: Path, args, res: dict):
     from main.lang.config import LangConfig
     from main.lang.train import LangTrainer, _t
 
-    cfg = dataclasses.replace(LangConfig(), embodiment_choices=("ur5-wsg",))
+    # the trainer's own TF32 switch (cfg.tf32_train) follows --tf32, so the fp32 timing stays fp32
+    cfg = dataclasses.replace(LangConfig(), embodiment_choices=("ur5-wsg",),
+                              tf32_train=bool(torch.backends.cuda.matmul.allow_tf32))
     tr = LangTrainer(cfg, scratch / "lang_run", [shard], (), caches, embodiments=("ur5-wsg",), use_wandb=False,
                      prefetch=False, seed=0)
     b = tr.sampler.sample(cfg.batch_size)
