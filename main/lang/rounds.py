@@ -225,6 +225,7 @@ def run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, col
             tr.log({"round/collect_s": time.time() - t0, "round/episodes": len(slots), "round/index": r,
                     **metrics.round_summary(r)})
             log_round_media(tr, r, lj, metrics.heatmaps(r))
+            tr.reset_perf()
             r_pos = {**r_pos, "phase": "train", "steps_target": None}
         if r_pos["steps_target"] is None:
             r_pos["steps_target"] = tr.step + n_steps
@@ -251,6 +252,7 @@ def run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, col
             pr = tr.run_probe()
             if pr:
                 tr.log(pr)
+            tr.reset_perf()
     tr.round = n_rounds + 1
     tr.pause_prefetch()
     save({"phase": None, "slots": [], "done": 0, "attempt": 0, "steps_target": None})

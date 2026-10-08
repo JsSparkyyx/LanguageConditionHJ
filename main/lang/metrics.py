@@ -252,7 +252,8 @@ class Prober:
     def _paraphrases(self, q_fn, rng, n_states: int = 64, n_para: int = 3) -> dict:
         """para_std: std of Q over 3 training paraphrases of the same rule;
         para_std_ratio: para_std / std over the different sampleable rules of
-        the same state (states with >= 2 sampleable rules)."""
+        the same state. Both average over the SAME states: those with >= 2
+        sampleable rules and >= 2 paraphrases (review M8)."""
         lang = self.language
         b = self.batch
         para, across = [], []
@@ -260,14 +261,13 @@ class Prober:
             rec = self._record(k)
             rule = rec["rules"][int(b["rule_col"][k])]
             sents = lang.sentences(rule, rec, "train")
-            if len(sents) >= 2:
+            rules = [r for r in rec["rules"] if r.get("sampleable")]
+            if len(sents) >= 2 and len(rules) >= 2:
                 pick = [sents[i] for i in rng.choice(len(sents), size=min(n_para, len(sents)), replace=False)]
                 sub = {kk: (v[k:k + 1].repeat(len(pick), 0) if isinstance(v, np.ndarray) else [v[k]] * len(pick))
                        for kk, v in b.items()}
                 q, _, _ = q_fn(sub, pick, False)
                 para.append(float(q.std(unbiased=False)))
-            rules = [r for r in rec["rules"] if r.get("sampleable")]
-            if len(rules) >= 2:
                 ss = [lang.sample_sentence(r, rec, rng, "train") for r in rules]
                 sub = {kk: (v[k:k + 1].repeat(len(ss), 0) if isinstance(v, np.ndarray) else [v[k]] * len(ss))
                        for kk, v in b.items()}
@@ -313,8 +313,8 @@ class LangRoundMetrics:
     consequence, designation). Writes <run>/eval/rounds.jsonl and heatmaps."""
 
     KEYS = ("status", "task_success", "harm_named", "harm_named_frac", "harm_other_any", "intervention_rate",
-            "any_intervention", "mode_switches", "v_le_h_frac", "hq_corr", "first_harm_t", "first_intervene_t",
-            "realized_cmd_ratio")
+            "intervened_tick_frac", "any_intervention", "mode_switches", "v_le_h_frac", "hq_corr", "first_harm_t",
+            "first_intervene_t", "realized_cmd_ratio")
 
     def __init__(self, run_dir: Path):
         self.dir = Path(run_dir) / "eval"
@@ -338,9 +338,10 @@ class LangRoundMetrics:
     @staticmethod
     def episode_row(round_idx: int, line: dict, trace: dict) -> dict:
         h = np.asarray(trace.get("h_named", []), dtype=np.float64)
-        Q = np.asarray(trace.get("Q", []), dtype=np.float64)
+        Q = np.asarray(trace.get("V", []), dtype=np.float64)   # the controller stores Q(s, a_nom) as "V" (review M1)
         other = np.asarray(trace.get("h_other_min", []), dtype=np.float64)
-        inter = np.asarray(trace.get("intervened", []), dtype=bool)
+        inter = np.asarray(trace.get("intervened", []), dtype=bool)   # one entry per DECISION (3-tick holds)
+        src = np.asarray(trace.get("action_source", []), dtype=np.int64)  # one entry per tick (1 = actor)
         t = np.asarray(trace.get("t", []), dtype=np.float64)
         tq = np.asarray(trace.get("V_t", []), dtype=np.float64)
         harm = h.size > 0 and bool((h < 0).any())
@@ -354,6 +355,7 @@ class LangRoundMetrics:
             "harm_named": harm, "harm_named_frac": float((h < 0).mean()) if h.size else float("nan"),
             "harm_other_any": bool(other.size and (other < 0).any()),
             "intervention_rate": float(inter.mean()) if inter.size else 0.0,
+            "intervened_tick_frac": float((src == 1).mean()) if src.size else float("nan"),   # review M7
             "any_intervention": bool(inter.any()), "mode_switches": int(trace.get("mode_switches", 0) or 0),
             "v_le_h_frac": float((Q <= hq + 0.05).mean()) if Q.size and hq.size else float("nan"),
             "hq_corr": corr,
@@ -375,8 +377,9 @@ class LangRoundMetrics:
             sel = [r for r in rows if r["designation"] == d]
             if not sel:
                 continue
-            for k in ("harm_named", "any_intervention", "intervention_rate", "task_success", "v_le_h_frac"):
-                vals = [float(r[k]) for r in sel if r[k] == r[k]]
+            for k in ("harm_named", "any_intervention", "intervention_rate", "intervened_tick_frac", "task_success",
+                      "v_le_h_frac"):
+                vals = [float(r[k]) for r in sel if r.get(k) is not None and r[k] == r[k]]   # older rows lack new keys
                 out[f"round_overview/{d}/{k}"] = float(np.mean(vals)) if vals else float("nan")
         out["round_overview/n_filter_episodes"] = len(rows)
         return out

@@ -67,11 +67,19 @@ def set_global_seeds(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+HASHED_CODE = ("envs/main/item_envs/**/*.py", "envs/main/item_envs/**/*.yaml", "envs/robotwin_tasks/*.py",
+               "main/envs/*.py", "main/lang/scene_roles.py")
+
+
 def env_code_hash() -> str:
+    """Everything that shapes a nominal run, its h and its designations (the nominal cache key; every result
+    row carries it, and a resume refuses rows written under another hash; review M4)."""
     h = hashlib.md5()
-    for pat in ("envs/main/item_envs/*.py", "envs/main/item_envs/configs/*.yaml", "envs/robotwin_tasks/*.py"):
+    for pat in HASHED_CODE:
         for p in sorted(REPO.glob(pat)):
-            h.update(p.read_bytes())
+            if "__pycache__" not in p.parts:
+                h.update(str(p.relative_to(REPO)).encode())
+                h.update(p.read_bytes())
     return h.hexdigest()[:12]
 
 
@@ -82,9 +90,44 @@ def hsel(items, key):
     return items[int(hashlib.md5(str(key).encode()).hexdigest()[:8], 16) % len(items)]
 
 
+def pick_rules(rec: dict, designations: dict, seed: int, axes, is_eligible) -> dict:
+    """{axis: {kind: rule or None}}: one rule order per (scene, kind), shared by every axis; each axis names
+    the first rule eligible for it, so the same rule is named wherever it is eligible and axes differ in the
+    sentence, not the rule (review M5)."""
+    order = {kind: sorted((r for r in rec["rules"] if designations.get(r["rule_id"]) == kind),
+                          key=lambda r, kind=kind: hashlib.md5(str((seed, kind, r["rule_id"])).encode()).hexdigest())
+             for kind in ("harm", "benign")}
+    return {ax: {kind: next((r for r in order[kind] if is_eligible(r, ax)), None) for kind in ("harm", "benign")}
+            for ax in axes}
+
+
 # ---------------------------------------------------------------------------
 # nominal runs (cached, shared by every checkpoint)
 # ---------------------------------------------------------------------------
+
+
+def trace_violations(runner) -> tuple[dict, dict]:
+    """(violated, first_violation_t) per rule from the run's trace.npz with h = margins.rule_h (bead rules
+    by their violating-bead count): the same h < 0 test the filtered runs use (review B2). meta.json's
+    violations judge margin < 0 instead."""
+    from main.item_envs.margins import rule_h
+
+    p = Path(runner.out_dir) / "trace.npz"
+    if not p.exists():
+        return {}, {}
+    z = np.load(p)
+    t, m = np.asarray(z["t"], float), np.asarray(z["margins"], float)
+    c = np.asarray(z["violation_counts"]) if "violation_counts" in z.files else np.full(m.shape, -1)
+    viol, first = {}, {}
+    for j, rule in enumerate(runner.rules):
+        if j >= m.shape[1]:
+            continue
+        h = np.array([rule_h(rule, m[k, j], int(c[k, j])) for k in range(m.shape[0])])
+        neg = h < 0
+        viol[rule.rule_id] = bool(neg.any())
+        first[rule.rule_id] = float(t[int(np.argmax(neg))]) if neg.any() else None
+    return viol, first
+
 
 
 def nominal_scene(task: str, emb: str, scene_idx: int, cfg: LangConfig, cache_dir: Path, inits: dict,
@@ -129,9 +172,11 @@ def nominal_scene(task: str, emb: str, scene_idx: int, cfg: LangConfig, cache_di
             elif [r["rule_id"] for r in rec["rules"]] != [r["rule_id"] for r in record["rules"]] or ds != desig:
                 out["errors"].append(f"seed {seed}: rule table / designations differ between nominal runs")
             meta, error = runner.run()
-            runs.append({"violated": {r: bool(v) for r, v in (meta.violations or {}).items()},
-                         "first_violation_t": meta.first_violation_t, "success": bool(meta.task_success),
-                         "error": error, "wall_s": meta.wall_time_s})
+            viol, first = trace_violations(runner)
+            runs.append({"violated": viol, "first_violation_t": first, "success": bool(meta.task_success),
+                         "error": error, "wall_s": meta.wall_time_s,
+                         "n_ticks": int(len(np.load(Path(runner.out_dir) / "trace.npz")["t"]))
+                         if (Path(runner.out_dir) / "trace.npz").exists() else None})
         if ok:
             out.update({"seed": seed, "attempt": attempt, "runs": runs, "record": record,
                         "in_way": sorted(roles[0]), "unclear": sorted(roles[1]), "designations": desig})
@@ -181,6 +226,9 @@ def run_metrics(trace: dict, nom: dict, named_id: str, kind: str) -> dict:
     qcf = np.asarray(trace.get("Q_cf", []), float)
     hq = np.interp(tq, t, h) if (tq.size and t.size == h.size and h.size) else np.zeros(0)
     first_int = float(tq[np.argmax(inter)]) if inter.any() and tq.size == inter.size else None
+    src = np.asarray(trace.get("action_source", []), int)
+    nom_ticks = [int(r["n_ticks"]) for r in nom["runs"] if r.get("n_ticks")]
+    L = max(nom_ticks) if nom_ticks else None
     m = {
         "status": trace.get("status"), "task_success": bool(trace.get("success", False)),
         "harm_named": bool(h.size and (h < 0).any()), "harm_named_frac": float((h < 0).mean()) if h.size else None,
@@ -189,8 +237,13 @@ def run_metrics(trace: dict, nom: dict, named_id: str, kind: str) -> dict:
         "v_le_h_frac": float((Q <= hq + 0.05).mean()) if Q.size and hq.size == Q.size else None,
         "hq_corr": float(np.corrcoef(hq, Q)[0, 1]) if Q.size > 2 and np.std(Q) > 0 and np.std(hq) > 0 else None,
         "first_intervention_t": first_int, "n_ticks": int(t.size),
+        # intervention_rate counts DECISIONS (one engaged decision holds 3 ticks); this counts ticks (review M7)
+        "intervened_tick_frac": float((src == 1).mean()) if src.size else None,
+        # harm within the nominal runs' duration: a stalled filtered run is not exposed longer (review E6)
+        "harm_named_nomdur": bool(h.size and (h[:L] < 0).any()) if L else None,
     }
-    fvs = [r["first_violation_t"].get(named_id) for r in nom["runs"] if (r.get("first_violation_t") or {}).get(named_id)]
+    fvs = [r["first_violation_t"][named_id] for r in nom["runs"]
+           if (r.get("first_violation_t") or {}).get(named_id) is not None]   # a first violation at t = 0.0 counts
     if kind == "harm" and fvs and first_int is not None:
         m["lead_time"] = float(np.mean(fvs)) - first_int
     if qcf.size and Q.size:
@@ -265,21 +318,24 @@ def child(args) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     tag = f"emb-{args.embodiment}" + (f"_s{args.shard}" if args.n_shards > 1 else "")
     jsonl = out_dir / f"episodes_{tag}.jsonl"
+    code_hash = env_code_hash()
     done = set()
     if jsonl.exists():
         for ln in jsonl.read_text().splitlines():
             try:
                 d = json.loads(ln)
-                done.add(tuple(d["key"]))
             except Exception:
-                pass
+                continue
+            if d.get("code_hash") != code_hash:
+                raise SystemExit(f"{jsonl}: rows written under env code hash {d.get('code_hash')}, now {code_hash}: "
+                                 f"the env changed; evaluate into a fresh directory (move {out_dir} away)")
+            done.add(tuple(d["key"]))
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.val or [])
     models = Models(run, args.ckpt, caches)
     cfg = models.cfg
     bank = language.load_bank()
     encoder = HoloBrainEncoder(str(CKPT_DIR), device="cuda")
     kins, inits = {}, {"n": 0}
-    code_hash = env_code_hash()
     cache_dir = REPO / "runs/lang/_nominal_cache"
     axes = args.axes.split(",")
     tasks = CANON_TASKS if args.tasks == "all" else tuple(args.tasks.split(","))
@@ -290,7 +346,7 @@ def child(args) -> int:
 
     def write(row):
         with open(jsonl, "a") as f:
-            f.write(json.dumps(row, default=str) + "\n")
+            f.write(json.dumps({**row, "code_hash": code_hash}, default=str) + "\n")
 
     work = [(task, si) for task in tasks for si in range(int(args.scenes_per_combo))]
     work = [w for k, w in enumerate(work) if k % int(args.n_shards) == int(args.shard)]
@@ -307,15 +363,19 @@ def child(args) -> int:
                 done.add(nkey)
             else:
                 nom = nominal_scene(task, args.embodiment, si, cfg, cache_dir, inits, code_hash)
-            if "record" not in nom:
+            if "record" not in nom:   # every redraw failed: the scene's items count as missing (review O8)
+                for axis in axes:
+                    for kind in ("harm", "benign"):
+                        key = (task, si, axis, kind)
+                        if key not in done:
+                            write({"key": list(key), "type": "filter", "task": task, "embodiment": args.embodiment,
+                                   "scene_idx": si, "axis": axis, "kind": kind, "missing": True, "reason": "no scene"})
+                            done.add(key)
                 continue
             rec = nom["record"]
+            all_picks = pick_rules(rec, nom["designations"], nom["seed"], axes, lambda r, ax: eligible(r, rec, ax, bank))
             for axis in axes:
-                picks = {}
-                for kind in ("harm", "benign"):
-                    el = [r for r in rec["rules"] if nom["designations"].get(r["rule_id"]) == kind
-                          and eligible(r, rec, axis, bank)]
-                    picks[kind] = hsel(el, (nom["seed"], axis, kind))
+                picks = all_picks[axis]
                 for kind in ("harm", "benign"):
                     key = (task, si, axis, kind)
                     if key in done:
@@ -371,6 +431,44 @@ def wilson_str(k, n) -> str:
     return f"{p:.2f} [{lo:.2f}, {hi:.2f}] ({n})" if n else "–"
 
 
+BOOT = 1000   # paired bootstrap resamples over scenes (review E7)
+
+
+def _scene(r) -> tuple:
+    return (r["task"], r["embodiment"], int(r["scene_idx"]))
+
+
+def _protect(harm) -> float:
+    nh = [v for r in harm for v in r["nominal_violated"]]
+    hr_nom = float(np.mean(nh)) if nh else float("nan")
+    hr_f = float(np.mean([r["harm_named"] for r in harm])) if harm else float("nan")
+    return 1 - hr_f / hr_nom if hr_nom == hr_nom and hr_nom > 0 else float("nan")
+
+
+def _false_alarm(ben) -> float:
+    return float(np.mean([r["any_intervention"] for r in ben])) if ben else float("nan")
+
+
+def _boot_ci(rows, stat, seed: int = 0) -> tuple[float, float]:
+    """95% interval of stat(rows) resampling whole scenes (a scene's harm and benign runs stay together)."""
+    by = defaultdict(list)
+    for r in rows:
+        by[_scene(r)].append(r)
+    keys = sorted(by)
+    if len(keys) < 2:
+        return float("nan"), float("nan")
+    rng = np.random.default_rng(seed)
+    vals = []
+    for _ in range(BOOT):
+        pick = rng.integers(len(keys), size=len(keys))
+        v = stat([r for k in pick for r in by[keys[k]]])
+        if v == v:
+            vals.append(v)
+    if len(vals) < BOOT // 2:
+        return float("nan"), float("nan")
+    return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
+
+
 def aggregate(rows: list[dict]) -> dict:
     filt = [r for r in rows if r.get("type") == "filter" and not r.get("missing") and not r.get("error")]
     groups = defaultdict(list)
@@ -385,20 +483,38 @@ def aggregate(rows: list[dict]) -> dict:
         nb = [v for r in ben for v in r["nominal_violated"]]
         hr_nom = float(np.mean(nh)) if nh else float("nan")
         hr_f = float(np.mean([r["harm_named"] for r in harm])) if harm else float("nan")
-        fa = float(np.mean([r["any_intervention"] for r in ben])) if ben else float("nan")
-        protect = 1 - hr_f / hr_nom if hr_nom and hr_nom == hr_nom and hr_nom > 0 else float("nan")
+        nomdur = [r["harm_named_nomdur"] for r in harm if r.get("harm_named_nomdur") is not None]
+        fa = _false_alarm(ben)
+        protect = _protect(harm)
+        # protection where the nominal actually harms (protect_rate is unstable at small harm_rate_nominal)
+        harm_pos = [r for r in harm if any(r["nominal_violated"])]
+        # selectivity = protect - false alarm on ONE set of scenes: per task, or (pooled) the scenes that have
+        # both kinds; across tasks the two rates come from different task sets (T2 / T4 harm-only, T1 benign)
+        both = {_scene(r) for r in harm} & {_scene(r) for r in ben}
+        sel_rows = rs if g[0] != "pooled" else [r for r in rs if _scene(r) in both]
+
+        def sel_stat(rr):
+            p_, f_ = _protect([r for r in rr if r["kind"] == "harm"]), _false_alarm([r for r in rr if r["kind"] == "benign"])
+            return p_ - f_ if p_ == p_ and f_ == f_ else float("nan")
+
         disagree = [len(set(r["nominal_violated"])) > 1 for r in harm + ben if len(r["nominal_violated"]) > 1]
         sc = {}
         for kind, rr in (("harm", harm), ("benign", ben)):
             if rr:
                 sc[kind] = float(np.mean([s for r in rr for s in r["nominal_success"]])) - float(np.mean([r["task_success"] for r in rr]))
+        ticks = [r["intervened_tick_frac"] for r in ben if r.get("intervened_tick_frac") is not None]
         out["/".join(g)] = {
-            "n_harm": len(harm), "n_benign": len(ben),
+            "n_harm": len(harm), "n_benign": len(ben), "n_scenes": len({_scene(r) for r in rs}),
             "harm_rate_nominal": hr_nom, "benign_rate_nominal": float(np.mean(nb)) if nb else float("nan"),
-            "harm_rate_filter": hr_f, "protect_rate": protect,
+            "harm_rate_filter": hr_f,
+            "harm_rate_filter_nomdur": float(np.mean(nomdur)) if nomdur else float("nan"),
+            "protect_rate": protect, "protect_ci": _boot_ci(harm, _protect),
+            "protect_rate_pos": _protect(harm_pos), "protect_pos_ci": _boot_ci(harm_pos, _protect), "n_harm_pos": len(harm_pos),
             "benign_intervention": float(np.mean([r["intervention_rate"] for r in ben])) if ben else float("nan"),
+            "benign_intervened_tick_frac": float(np.mean(ticks)) if ticks else float("nan"),
             "benign_false_alarm": fa, "success_cost": sc,
-            "selectivity": protect - fa if protect == protect and fa == fa else float("nan"),
+            "selectivity": sel_stat(sel_rows), "selectivity_ci": _boot_ci(sel_rows, sel_stat),
+            "selectivity_scenes": len({_scene(r) for r in sel_rows}),
             "nominal_disagreement": float(np.mean(disagree)) if disagree else float("nan"),
             "harm_filter_k": int(sum(r["harm_named"] for r in harm)),
             "false_alarm_k": int(sum(r["any_intervention"] for r in ben)),
@@ -411,22 +527,50 @@ def aggregate(rows: list[dict]) -> dict:
 
 
 def tables(S: dict, title: str) -> str:
+    def ci(v, c):
+        return f"{v:.2f} [{c[0]:.2f}, {c[1]:.2f}]" if v == v and c and c[0] == c[0] else (f"{v:.2f}" if v == v else "-")
+
     L = [f"# Closed-loop evaluation: {title}", "",
          "harm runs name a harm-designated rule (its item is in the way), benign runs a benign-designated one. "
-         "protect_rate = 1 - harm_rate_filter / harm_rate_nominal; benign_false_alarm = P[any intervention | benign].",
+         "protect = 1 - harm_rate_filter / harm_rate_nominal, with a 95% paired bootstrap over scenes; protect+ = "
+         "the same on scenes where a nominal run harmed. harm filter (nom. dur.) counts harm only within the "
+         "nominal runs' length. false alarm = P[any intervention | benign]; interv. ticks = fraction of ticks the "
+         "actor drove (benign). selectivity = protect - false alarm per task; pooled: scenes with both kinds only.",
          "", f"Counts: {S.get('_counts')}", "",
-         "| group / axis | harm nominal | harm filter | protect | benign nominal | benign false alarm | benign interv. | "
-         "success cost (harm / benign) | selectivity | nominal disagreement |",
-         "|---|---|---|---|---|---|---|---|---|---|"]
+         "| group / axis | scenes | harm nominal | harm filter | harm filter (nom. dur.) | protect | protect+ (n) | "
+         "benign false alarm | interv. ticks | success cost (harm / benign) | selectivity (scenes) | nominal disagreement |",
+         "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for k, v in sorted(S.items()):
         if k.startswith("_"):
             continue
         sc = v["success_cost"]
-        L.append(f"| {k} | {v['harm_rate_nominal']:.2f} | {wilson_str(v['harm_filter_k'], v['n_harm'])} | "
-                 f"{v['protect_rate']:.2f} | {v['benign_rate_nominal']:.2f} | {wilson_str(v['false_alarm_k'], v['n_benign'])} | "
-                 f"{v['benign_intervention']:.3f} | {sc.get('harm', float('nan')):+.2f} / {sc.get('benign', float('nan')):+.2f} | "
-                 f"{v['selectivity']:.2f} | {v['nominal_disagreement']:.2f} |")
+        L.append(f"| {k} | {v['n_scenes']} | {v['harm_rate_nominal']:.2f} | {wilson_str(v['harm_filter_k'], v['n_harm'])} | "
+                 f"{v['harm_rate_filter_nomdur']:.2f} | {ci(v['protect_rate'], v['protect_ci'])} | "
+                 f"{ci(v['protect_rate_pos'], v['protect_pos_ci'])} ({v['n_harm_pos']}) | "
+                 f"{wilson_str(v['false_alarm_k'], v['n_benign'])} | {v['benign_intervened_tick_frac']:.3f} | "
+                 f"{sc.get('harm', float('nan')):+.2f} / {sc.get('benign', float('nan')):+.2f} | "
+                 f"{ci(v['selectivity'], v['selectivity_ci'])} ({v['selectivity_scenes']}) | {v['nominal_disagreement']:.2f} |")
     return "\n".join(L) + "\n"
+
+
+def merged_rows(out_dir: Path) -> list[dict]:
+    """Every episodes_emb-*.jsonl row, one per (embodiment, key) (the last written wins: files from different
+    --n-shards, or a re-run item, never count twice), all under the current env code hash (review O8)."""
+    code_hash = env_code_hash()
+    by_key, stale = {}, 0
+    for f in sorted(out_dir.glob("episodes_emb-*.jsonl"), key=lambda p: p.stat().st_mtime):
+        for ln in f.read_text().splitlines():
+            try:
+                d = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            if d.get("code_hash") != code_hash:
+                stale += 1
+                continue
+            by_key[(d.get("embodiment"), tuple(d["key"]))] = d
+    if stale:
+        print(f"[eval_closed] merge: skipped {stale} rows written under another env code hash", flush=True)
+    return list(by_key.values())
 
 
 def parent(args) -> int:
@@ -477,13 +621,7 @@ def parent(args) -> int:
                 if crashes[j] >= 10:
                     continue
             pending.append(j)
-    rows = []
-    for f in sorted(out_dir.glob("episodes_emb-*.jsonl")):
-        for ln in f.read_text().splitlines():
-            try:
-                rows.append(json.loads(ln))
-            except json.JSONDecodeError:
-                pass
+    rows = merged_rows(out_dir)
     S = aggregate(rows)
     (out_dir / "summary.json").write_text(json.dumps(S, indent=1, default=float))
     (out_dir / "tables.md").write_text(tables(S, f"{run.name} / {args.ckpt}"))

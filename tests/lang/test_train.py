@@ -92,3 +92,23 @@ def test_target_rank_acc():
     y = np.array([0.0, 0.6, 0.5, 0.1, 0.4, 0.42])
     pair = np.array([0, 0, 1, 1, 2, 2])
     assert target_rank_acc(q, y, pair) == 1.0   # pair 2 below the 0.05 threshold
+
+
+def test_probe_sentences_ignore_the_run_text_control(tmp_path, root):
+    """M3: in a --shuffle-text / --relabel fixed run the probes still pair each state with its own rule's
+    sentence and draw rules at random."""
+    from main.item_envs import language
+
+    cfg = dataclasses.replace(LangConfig(), batch_size=8, shuffle_text=True, relabel="fixed")
+    tr = LangTrainer(cfg, tmp_path / "run", [root], [root], (), use_wandb=False, prefetch=False, device="cpu",
+                     text_encoder=StubText(), seed=0)
+    assert tr.sampler.cfg.shuffle_text and not tr.val_sampler.cfg.shuffle_text
+    assert tr.val_sampler.cfg.relabel == "random"
+    b = tr.val_sampler.sample(32)
+    bank = language.load_bank()
+    for k in range(32):
+        src = tr.val_sampler.sources[b["source"][k]] if isinstance(b["source"][k], (int, np.integer)) else \
+            next(s for s in tr.val_sampler.sources if s.name == b["source"][k])
+        rec = src.rs.records[int(b["episode_id"][k])]
+        rule = next(r for r in rec["rules"] if r["rule_id"] == b["rule_id"][k])
+        assert b["sentence"][k] in language.sentences(rule, rec, "train", bank)

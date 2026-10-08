@@ -25,8 +25,21 @@ steps. The scripts here are plain bash plus one Slurm file. They never need Delt
 
 ```bash
 rsync -a --exclude '.git' --exclude 'core.*' delta:/work/nvme/bifq/project/RoboTwin/ ../RoboTwin/
-rsync -a delta:/work/nvme/bifq/project/LanguageConditionHJ/data/lang/ data/lang/
 ```
+
+Data: copy with `--sparse` (the buffer files are created at full capacity; without it rsync writes the
+unused part too, ~365 GB instead of ~160 GB). Copy only FINISHED shards while Delta is still collecting:
+rsync copies the arrays before `header.json`, so a shard that gets a new episode mid-copy arrives with a
+header that claims rows its arrays lack (resuming such a shard now refuses, but the copy is wasted).
+
+```bash
+# list the finished shards on Delta (summary.json says complete), then copy them and the text caches
+ssh delta 'cd /work/nvme/bifq/project/LanguageConditionHJ/data/lang && for d in */shard_g*; do
+  grep -q "\"complete\": true" $d/summary.json 2>/dev/null && echo $d; done; ls */text_cache.pt' > shards.txt
+rsync -a -r --sparse --files-from=shards.txt delta:/work/nvme/bifq/project/LanguageConditionHJ/data/lang/ data/lang/
+```
+
+Rerun both commands until `check.sh` reports every bead shard complete (finished shards are skipped).
 
 The RoboTwin directory on Delta also holds ~100 GB of `core.python.*` crash dumps: the `--exclude`
 skips them. The scripts here turn core dumps off (`ulimit -c 0`).

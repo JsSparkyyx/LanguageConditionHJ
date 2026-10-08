@@ -31,7 +31,16 @@ ensure_item_path()
 
 from main.train.rollout import RolloutController, RolloutTimeout  # noqa: E402
 
-__all__ = ["LangRolloutController", "LangPolicyShim", "wire_item_eval"]
+__all__ = ["LangRolloutController", "LangPolicyShim", "wire_item_eval", "single_rule"]
+
+
+def single_rule(rule) -> bool:
+    """A rule that can be named alone, as language.episode_record decides: not a set rule (several items, or a
+    zone inside / outside rule over several regions) and not ambiguous. A bead rule over two containers (T2 /
+    T6's spill rule, bowl_src_interior + target_interior) is single (review M2)."""
+    cons = rule.consequence.value if hasattr(rule.consequence, "value") else str(rule.consequence)
+    is_set = len(rule.item_ids) > 1 or (cons in ("inside", "outside") and len(rule.region_ids) > 1)
+    return not is_set and not getattr(rule, "ambiguous", False)
 
 
 class _Timer:
@@ -174,8 +183,7 @@ class LangRolloutController(RolloutController):
         ids = [r.rule_id for r in rules]
         j = ids.index(nid) if nid in ids else None
         tr["h_named"].append(h_all[j] if j is not None else float("nan"))
-        single = [k for k, r in enumerate(rules) if len(r.item_ids) <= 1 and len(r.region_ids) <= 1
-                  and not getattr(r, "ambiguous", False) and k != j]
+        single = [k for k, r in enumerate(rules) if single_rule(r) and k != j]
         tr["h_other_min"].append(min((h_all[k] for k in single), default=float("nan")))
         tr["action_source"].append(int(self._tick_source))
         dist = float("nan")

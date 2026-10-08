@@ -129,7 +129,10 @@ class LangTrainer:
         self.text = TextStore(text_caches, cfg.text_backend, device, extra_path=self.run / "text_cache_extra.pt",
                               backend_paths=cfg.backend_paths, encoder=text_encoder)
         self.prefetch = PrefetchSampler(self.sampler, cfg.batch_size, seed=seed + 1) if prefetch else None
-        self.val_sampler = LangSampler(val_roots, cfg, tasks=tasks, embodiments=embodiments, seed=seed + 2,
+        # probes measure the Section 8.2 quantities whatever the run's own sentence control is: real sentences
+        # (no --shuffle-text) and a random rule per sample (no --relabel fixed) (review M3)
+        probe_cfg = dataclasses.replace(cfg, shuffle_text=False, relabel="random")
+        self.val_sampler = LangSampler(val_roots, probe_cfg, tasks=tasks, embodiments=embodiments, seed=seed + 2,
                                        probe=True) if val_roots else None
         self.prober = None
         self.probe_n = int(probe_n)
@@ -179,7 +182,7 @@ class LangTrainer:
         if b is None:
             b = self.prefetch.next() if self.prefetch is not None else self.sampler.sample(cfg.batch_size)
             self._last_rng_after = b.get("_rng_after")
-        words, wmask = self.text.lookup(b["sentence"])
+        words, wmask = self.text.lookup(b["sentence"], splits=["train"] * len(b["sentence"]))
         enc, Jlin, Jang, ji = self.encode(b, words, wmask)
         d = self.dev
         h = _t(b["h"], dev=d)
@@ -247,7 +250,9 @@ class LangTrainer:
         sens = (self.critics.qmin(enc_d, r1, Jlin, Jang, ji) - self.critics.qmin(enc_d, r2, Jlin, Jang, ji)).abs().mean()
         out["critic/action_sens_rel"] = float(sens / torch.minimum(q1, q2).abs().mean().clamp_min(1e-9))
         out.update(self.sampler.health())
-        out["data/text_miss_frac"] = self.text.miss_frac().get("all", 0.0)
+        miss = self.text.miss_frac()
+        out["data/text_miss_frac"] = miss.get("all", 0.0)
+        out.update({f"data/text_miss_frac/{sp}": v for sp, v in miss.items() if sp != "all"})
         now = time.perf_counter()
         dt = now - self.t_last
         wait = self.prefetch.wait_s if self.prefetch is not None else 0.0
@@ -256,6 +261,13 @@ class LangTrainer:
         out["perf/gpu_mem_gb"] = torch.cuda.max_memory_allocated() / 2**30 if self.dev.startswith("cuda") else 0.0
         self.t_last, self.wait_last = now, wait
         return out
+
+    def reset_perf(self) -> None:
+        """Restart the throughput timer and the text-miss counts after non-training work (probes, rounds
+        collection), so perf/* and data/text_miss_frac describe training steps only (review M9)."""
+        self.t_last = time.perf_counter()
+        self.wait_last = self.prefetch.wait_s if self.prefetch is not None else 0.0
+        self.text.stats.clear()
 
     def pause_prefetch(self) -> None:
         """Stop the prefetch thread and rewind its RNG to the last consumed batch."""
@@ -270,7 +282,7 @@ class LangTrainer:
 
         was = self.policy_enc.training
         self.policy_enc.eval(), self.critics.eval()
-        words, wmask = self.text.lookup(sentences)
+        words, wmask = self.text.lookup(sentences, splits=["probe"] * len(sentences))
         stores = set_probe(self.policy_enc, True) if probe else []
         enc, Jlin, Jang, ji = self.encode(sub, words, wmask)
         if probe and stores:
@@ -404,6 +416,7 @@ class LangTrainer:
                     self.log(pr)
                     print(f"[lang-train] probe step {self.step}: " + " ".join(f"{k}={v:.3f}" for k, v in pr.items()
                                                                               if isinstance(v, float)), flush=True)
+                self.reset_perf()
             if ckpt_every and self.step % ckpt_every == 0:
                 self.save_ckpt()
                 self.save_ckpt(f"checkpoint_step{self.step}.pt")

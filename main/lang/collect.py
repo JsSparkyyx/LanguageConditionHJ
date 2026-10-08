@@ -393,6 +393,20 @@ def resume_point(out: Path, buf, sidecar) -> tuple[int, int, int]:
             rows = int(d["rows"][1])
     if len(buf) < rows or len(sidecar) < rows:
         raise RuntimeError(f"{out}: rings ({len(buf)}, {len(sidecar)}) shorter than the recorded rows {rows}")
+    # every recorded episode's rows must hold that episode (both buffers) with ticks 0..n-1: a shard copied
+    # mid-write (rsync copies the arrays before header.json) or written by two processes fails this, and
+    # resuming on top of it would mix episodes silently (review B4)
+    eb, es, ts = buf.arrays.get("episode_id"), sidecar.arrays["episode_id"], sidecar.arrays["t_in_ep"]
+    for d in lines:
+        if d.get("skipped"):
+            continue
+        r0, r1 = (int(x) for x in d["rows"])
+        eid = int(d["episode_id"])
+        ends_ok = (r1 > r0 and int(es[r0]) == eid and int(es[r1 - 1]) == eid and int(ts[r0]) == 0
+                   and int(ts[r1 - 1]) == r1 - r0 - 1 and (eb is None or (int(eb[r0]) == eid and int(eb[r1 - 1]) == eid)))
+        if not ends_ok:
+            raise RuntimeError(f"{out}: episode {eid} rows [{r0}, {r1}) do not hold that episode (a partial copy or "
+                               f"two writers?); refusing to resume: check with scripts/lang/check_shards.py")
     if (len(buf), len(sidecar)) != (rows, rows):
         print(f"[collect] resume: discarding rows {rows}..{max(len(buf), len(sidecar))} of an interrupted episode")
         buf.discard_to(rows)

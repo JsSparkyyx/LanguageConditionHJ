@@ -81,3 +81,23 @@ def test_resume_point_rolls_back_partial_episode(tmp_path):
     assert (done, attempt, rows) == (3, 7, 80)
     assert len(StepBuffer(root / "buffer")) == len(ItemSidecarBuffer(root / "item_buffer")) == 80
     assert len(read_lines(root / "lang_episodes.jsonl")) == 3     # truncated line dropped
+
+
+def test_resume_point_refuses_rows_of_another_episode(tmp_path):
+    """B4: lines whose rows hold another episode (a mid-write copy, two writers) stop the resume."""
+    import json
+
+    import pytest
+
+    from main.item_envs.item_buffer import ItemSidecarBuffer
+    from main.lang.collect import resume_point
+    from main.train.buffer import StepBuffer
+
+    from .fake_data import make_root
+
+    root = make_root(tmp_path / "s", episodes=3, capacity=400)   # episodes 1000..1002, 40 rows each
+    lines = [{"episode_id": 1000, "rows": [0, 40], "attempt_next": 1, "slot": 0},
+             {"episode_id": 1002, "rows": [40, 80], "attempt_next": 2, "slot": 1}]   # rows 40..79 are 1001's
+    (root / "lang_episodes.jsonl").write_text("".join(json.dumps(d) + "\n" for d in lines))
+    with pytest.raises(RuntimeError, match="do not hold that episode"):
+        resume_point(root, StepBuffer(root / "buffer"), ItemSidecarBuffer(root / "item_buffer"))

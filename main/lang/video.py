@@ -61,8 +61,9 @@ class LangPanelVideoWriter(PanelVideoWriter):
         self.harmed = False
         self.path = None
         runner = ro.env._item_runner
-        self.single = {r.rule_id for r in runner.rules
-                       if len(r.item_ids) <= 1 and len(r.region_ids) <= 1 and not getattr(r, "ambiguous", False)}
+        from .rollout import single_rule
+
+        self.single = {r.rule_id for r in runner.rules if single_rule(r)}
 
     def _panel_lang(self, t, step, control, ratio, extras):
         from PIL import Image, ImageDraw

@@ -47,15 +47,29 @@ def _shards(root: Path) -> list[Path]:
     return sorted(p for p in root.iterdir() if p.is_dir() and (p / "item_buffer").is_dir())
 
 
-def _lines(shard: Path) -> list[dict]:
+def _stale_bead(shard: Path, d: dict) -> bool:
+    """A bead-task episode of a shard written before the bead-count h (no n_violating.npy): its labels hold
+    the old bead h. Skipped like data.LangSource does (review B3)."""
+    from .data import BEAD_TASKS
+
+    return d.get("task") in BEAD_TASKS and not (shard / "item_buffer" / "n_violating.npy").exists()
+
+
+def _lines(shard: Path, stale: list | None = None) -> list[dict]:
+    """The shard's episode lines without stale bead episodes (counted into `stale` when given)."""
     p = shard / "lang_episodes.jsonl"
     out = []
     if p.exists():
         for ln in p.read_text().splitlines():
             try:
-                out.append(json.loads(ln))
+                d = json.loads(ln)
             except json.JSONDecodeError:
-                pass
+                continue
+            if _stale_bead(shard, d):
+                if stale is not None:
+                    stale.append(d.get("episode_id"))
+                continue
+            out.append(d)
     return out
 
 
@@ -124,10 +138,14 @@ def build(root: Path, delay_runs: Path | None = None, text_cache: Path | None = 
 
     cfg = LangConfig()
     shards = _shards(root)
-    lines = [(s, d) for s in shards for d in _lines(s)]
+    stale = []
+    lines = [(s, d) for s in shards for d in _lines(s, stale)]
     eps = [(s, d) for s, d in lines if not d.get("skipped")]
     R = {"root": str(root), "shards": len(shards), "episodes": len(eps),
-         "skipped_slots": sum(1 for _, d in lines if d.get("skipped"))}
+         "skipped_slots": sum(1 for _, d in lines if d.get("skipped")),
+         "stale_bead_episodes_skipped": len(stale)}
+    if stale:
+        print(f"[collect_report] skipped {len(stale)} bead-task episodes of shards without n_violating.npy (old bead h)")
     combo = Counter((d["task"], d["embodiment"]) for _, d in eps)
     hosts = Counter((d.get("host"), d["embodiment"]) for _, d in eps if d["task"] == "selective_avoid")
     status = Counter(d.get("status") for _, d in eps)
@@ -265,6 +283,7 @@ def sentence_examples(shards, per_task: int = 20, seed: int = 0) -> dict:
 def to_markdown(R: dict) -> str:
     L = [f"# Collection report: `{R['root']}`", "",
          f"{R['episodes']} episodes in {R['shards']} shards, {R['skipped_slots']} skipped slots, "
+         f"{R.get('stale_bead_episodes_skipped', 0)} bead-task episodes with the old bead h left out, "
          f"status {R['status']}, disk {R['disk_gb']:.1f} GB.", ""]
     if R["flags"]:
         L += ["**Flags**", ""] + [f"- {f}" for f in R["flags"]] + [""]
