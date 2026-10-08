@@ -33,7 +33,7 @@ ensure_item_path()
 
 from .config import (  # noqa: E402
     CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, LangConfig, check_stream, shard_g,
-    val_offset, warmup_offset,
+    val_offset, valg_offset, warmup_offset,
 )
 
 
@@ -607,7 +607,8 @@ def cmd_shard(args, kind: str) -> int:
         cfg = dataclasses.replace(cfg, task_choices=tuple(args.tasks.split(",")))
     out = Path(args.out).resolve()
     g = shard_g(args.embodiment, args.shard, args.n_shards)
-    offset = warmup_offset(g) if kind == "warmup" else val_offset(g)
+    stream = getattr(args, "stream", "default")
+    offset = warmup_offset(g) if kind == "warmup" else valg_offset(g) if stream == "grounding" else val_offset(g)
     slots = shard_schedule(cfg.task_choices, args.embodiment, args.shard, args.n_shards, args.episodes_per_task, g)
     meta = {"kind": kind, "embodiment": args.embodiment, "shard": args.shard, "n_shards": args.n_shards,
             "g": g, "episode_offset": offset, "episodes_per_task": args.episodes_per_task,
@@ -710,6 +711,9 @@ def main(argv=None) -> int:
         p.add_argument("--video-every", type=int, default=0)
         p.add_argument("--no-masks", action="store_true", help="skip per-tick segmentation masks (warmup)")
         p.add_argument("--time-budget", type=float, default=None, help="seconds; then pause (exit 75)")
+        if kind == "validation":
+            p.add_argument("--stream", choices=("default", "grounding"), default="default",
+                           help="grounding: the T1 / T7 grounding validation ids (config.valg_offset, round 3 E1)")
     p = sub.add_parser("recon")
     p.add_argument("--out", required=True)
     p.add_argument("--embodiment", required=True, choices=CANON_EMBODIMENTS)

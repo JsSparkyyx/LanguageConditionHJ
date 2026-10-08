@@ -54,6 +54,16 @@ def val_offset(g: int) -> int:
     return (60 + g) * STREAM_SPAN
 
 
+VALG_G_MAX = 9
+
+
+def valg_offset(g: int) -> int:
+    """episode_offset of grounding-validation shard g: (91 + g) * 1e6 (ids 91M ... 100M; the T1 / T7 ur5-wsg
+    validation of review round 3, Part II E1), between the validation and the rounds streams."""
+    assert 0 <= g < VALG_G_MAX, f"grounding-validation shard g={g} outside [0, {VALG_G_MAX})"
+    return (91 + g) * STREAM_SPAN
+
+
 def round_offset(r: int) -> int:
     """episode_offset of round r: (100 + r) * 1e6 (>= 100M; disjoint from eval below 1400 rounds)."""
     assert 0 <= r < 1400, f"round {r} would collide with the evaluation seeds"

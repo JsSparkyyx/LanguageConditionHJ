@@ -12,6 +12,7 @@ def _ranges():
     out = {
         "warmup": (C.warmup_offset(0), C.warmup_offset(C.WARMUP_G_MAX - 1) + C.STREAM_SPAN),
         "validation": (C.val_offset(0), C.val_offset(C.VAL_G_MAX - 1) + C.STREAM_SPAN),
+        "grounding validation": (C.valg_offset(0), C.valg_offset(C.VALG_G_MAX - 1) + C.STREAM_SPAN),
         "rounds": (C.round_offset(0), C.round_offset(1399) + C.STREAM_SPAN),
     }
     seeds = [C.eval_seed(t, e, s, a, h)
@@ -34,6 +35,8 @@ def test_bounds_asserted():
         C.warmup_offset(C.WARMUP_G_MAX)
     with pytest.raises(AssertionError):
         C.val_offset(C.VAL_G_MAX)
+    with pytest.raises(AssertionError):
+        C.valg_offset(C.VALG_G_MAX)
     with pytest.raises(AssertionError):
         C.round_offset(1400)
     with pytest.raises(AssertionError):
