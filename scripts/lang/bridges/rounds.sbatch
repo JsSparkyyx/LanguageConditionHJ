@@ -21,6 +21,7 @@
 #   Bridges-2:  SBATCH_FLAGS="-A <account> -p GPU-shared --gpus=<rtx type>:1"
 #   Delta:      SBATCH_FLAGS="-A bifq-delta-gpu -p gpuA40x4 --gpus-per-node=1 --mem=64g"
 #               PY="bash scripts/lang/in_container.sh python"   (the container wrapper)
+#               CHAIN_PIPE=<pipe dir>   when an interactive chain also runs this RUN (see below)
 #SBATCH --job-name=lang-rounds
 #SBATCH --cpus-per-task=16
 #SBATCH --time=48:00:00
@@ -43,6 +44,26 @@ end=$(date -d "$(squeue -h -j "$SLURM_JOB_ID" -o %e)" +%s 2>/dev/null || echo 0)
 export STAGE_DEADLINE=$(( end - 600 ))
 echo "[rounds.sbatch] job $SLURM_JOB_ID on $(hostname), run $RUN, stop at $(date -d @"$STAGE_DEADLINE")"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+# Delta: an interactive chain (scripts/lang/chain5.sh) may run this same run between these jobs. CHAIN_PIPE
+# names its pipe directory: this job pauses the chain (its hold file), cancels the chain's pending jobs and
+# waits (up to 75 min) for its running one to save and stop at its own time limit, instead of failing on
+# the run's writer lock; on exit it lifts the pause, so the chain goes on while the resubmission queues.
+if [[ -n "${CHAIN_PIPE:-}" ]]; then
+  touch "$CHAIN_PIPE/state/hold"
+  trap 'rm -f "$CHAIN_PIPE/state/hold"' EXIT
+  echo "[rounds.sbatch] paused the chain in $CHAIN_PIPE; waiting for its jobs to end"
+  # the chain's latest job (its log's last "JOB <stage> -> <id>" line; other chains' jobs are left alone)
+  chain_job() { awk '/ JOB /{j=$NF} END{print j}' "$CHAIN_PIPE/chain.log" 2>/dev/null; }
+  quiet=0
+  for _ in $(seq 1 75); do
+    jid=$(chain_job); st=$([[ -n "$jid" ]] && squeue -h -j "$jid" -o %T 2>/dev/null)
+    [[ "$st" == PENDING ]] && scancel "$jid"
+    if [[ -n "$st" ]]; then quiet=0; else quiet=$((quiet + 1)); fi
+    (( quiet >= 3 )) && break   # three empty checks in a row: the chain is not about to submit one
+    sleep 60
+  done
+  echo "[rounds.sbatch] the chain's job ${jid:-none}: ${st:-ended}"
+fi
 state_mtime() { stat -c %Y "$RUN/state.pt" 2>/dev/null || echo 0; }
 crashes=0; no_progress_retries=0
 while true; do
