@@ -62,8 +62,7 @@ def main() -> int:
     from main.train.config import FrozenConfig
     from main.train.train import Trainer
 
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_tf32 = False   # PyTorch's default, as the trainers run
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     scratch = out.parent / f"_{out.stem}_scratch"

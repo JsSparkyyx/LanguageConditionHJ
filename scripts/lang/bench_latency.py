@@ -18,7 +18,7 @@ sentence.
   phase breakdown from a replica of the step, CUDA-synchronized between phases.
 
 Median milliseconds over --iters after --warmup, torch.cuda.synchronize() around every call. --tf32 times
-the same with TF32 matmuls and convolutions (the trainers run fp32).
+the same with TF32 matmuls (the trainers keep PyTorch's defaults: fp32 matmuls, TF32 convolutions).
 """
 
 from __future__ import annotations
@@ -369,17 +369,18 @@ def main() -> int:
     ap.add_argument("--iters", type=int, default=200)
     ap.add_argument("--iters-train", type=int, default=20)
     ap.add_argument("--warmup", type=int, default=5)
-    ap.add_argument("--tf32", action="store_true", help="TF32 matmuls / convolutions for everything timed")
+    ap.add_argument("--tf32", action="store_true", help="TF32 matmuls for everything timed")
     args = ap.parse_args()
     import main.lang  # noqa: F401  (main.item_envs on the path)
 
-    torch.backends.cuda.matmul.allow_tf32 = bool(args.tf32)   # default fp32, as both trainers run
-    torch.backends.cudnn.allow_tf32 = bool(args.tf32)
+    # default: PyTorch's settings, which both trainers keep (fp32 matmuls, TF32 convolutions); --tf32: TF32 matmuls
+    torch.backends.cuda.matmul.allow_tf32 = bool(args.tf32)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     scratch = out.parent / f"_{out.stem}_scratch"
     shard = Path(args.data).resolve()
-    res = {"gpu": torch.cuda.get_device_name(0), "precision": "tf32" if args.tf32 else "fp32",
+    res = {"gpu": torch.cuda.get_device_name(0), "precision": "TF32 matmuls" if args.tf32 else "fp32 matmuls",
+           "matmul_tf32": torch.backends.cuda.matmul.allow_tf32, "cudnn_tf32": torch.backends.cudnn.allow_tf32,
            "iters": args.iters, "iters_train": args.iters_train,
            "data": str(shard), "holobrain": {}}
     bench_crosssafe(shard, scratch, args, res, res["holobrain"])
