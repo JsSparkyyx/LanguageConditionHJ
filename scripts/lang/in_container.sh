@@ -8,7 +8,8 @@
 # <repo>/envs/main for main.item_envs). `python` is the RoboTwin conda env.
 # Arguments are passed through unchanged (quoting preserved).
 set -u
-REPO=/work/nvme/bifq/project/LanguageConditionHJ
+# LANG_REPO: run another checkout of the code (e.g. a frozen git worktree for a long run)
+REPO="${LANG_REPO:-/work/nvme/bifq/project/LanguageConditionHJ}"
 PYENV=/work/nvme/bifq/conda/envs/RoboTwin
 exec apptainer exec --nv --bind /work/hdd/bifq,/work/nvme/bifq,/projects/bifq \
   /work/nvme/bifq/robot-sim_cu128.sif env \

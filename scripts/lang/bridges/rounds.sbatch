@@ -32,6 +32,7 @@ source scripts/lang/bridges/_env.sh
 if [[ -n "${WANDB_KEY_FILE:-}" ]]; then source scripts/lang/wandb_env.sh; fi
 RUN="${RUN:?set RUN=runs/lang/<name>}"
 ROUNDS=${ROUNDS:-100}; EPISODES=${EPISODES:-4}; STEPS=${STEPS:-2048}; PROBE=${PROBE:-10}; GAMMA=${GAMMA:-0.9}
+DATA=${DATA:-data/lang/warmup}; VAL=${VAL:-data/lang/val}   # absolute when the code runs from another checkout
 # the run's config is fixed by its first start (lang_config.json); a resumed run keeps it
 # more LangConfig overrides go in SET="key=value ...", never in EXTRA_ARGS: a second --set would replace
 # this one (argparse keeps the last)
@@ -47,7 +48,7 @@ crashes=0; no_progress_retries=0
 while true; do
   before=$(state_mtime)
   # shellcheck disable=SC2086
-  $PY -m main.lang.train rounds --data data/lang/warmup --val data/lang/val --run "$RUN" \
+  $PY -m main.lang.train rounds --data "$DATA" --val "$VAL" --run "$RUN" \
       --collect-rounds "$ROUNDS" --episodes-per-round "$EPISODES" --grad-steps-per-round "$STEPS" \
       --probe-every-rounds "$PROBE" "${GAMMA_ARGS[@]}" --resume ${EXTRA_ARGS:-}
   rc=$?
