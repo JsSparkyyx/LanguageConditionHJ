@@ -401,9 +401,9 @@ def resume_point(out: Path, buf, sidecar) -> tuple[int, int, int]:
             rows = int(d["rows"][1])
     if len(buf) < rows or len(sidecar) < rows:
         raise RuntimeError(f"{out}: rings ({len(buf)}, {len(sidecar)}) shorter than the recorded rows {rows}")
-    # every recorded episode's rows must hold that episode (both buffers) with ticks 0..n-1: a shard copied
-    # mid-write (rsync copies the arrays before header.json) or written by two processes fails this, and
-    # resuming on top of it would mix episodes silently (review B4)
+    # every recorded episode's END rows must hold that episode (both buffers) with ticks 0 and n-1: this
+    # catches two writers and most copies made mid-write (review B4), but not every torn array (only the end
+    # rows are read). The real guard is copying finished shards only (scripts/lang/bridges/README.md)
     eb, es, ts = buf.arrays.get("episode_id"), sidecar.arrays["episode_id"], sidecar.arrays["t_in_ep"]
     for d in lines:
         if d.get("skipped"):
@@ -424,6 +424,25 @@ def resume_point(out: Path, buf, sidecar) -> tuple[int, int, int]:
     return done, attempt, rows
 
 
+def h_code_hash(tasks) -> str:
+    """Hash of what defines h for these tasks: margins.py, rules.py and the tasks' yaml files. Recorded in
+    shard.json: a shard written under another h definition (e.g. the 1 mm soft-min bead margin of
+    2026-10-07) refuses to resume (round 2 B2)."""
+    import hashlib
+
+    from . import REPO
+
+    root = REPO / "envs/main/item_envs"
+    files = [root / "margins.py", root / "rules.py"]
+    for t in sorted(tasks):
+        files += sorted((root / "configs/tasks").glob(f"*_{t}.yaml"))
+    h = hashlib.md5()
+    for f in files:
+        h.update(f.name.encode())
+        h.update(f.read_bytes())
+    return h.hexdigest()[:12]
+
+
 def cmd_shard(args, kind: str) -> int:
     cfg = LangConfig()
     if args.tasks != "all":
@@ -435,7 +454,7 @@ def cmd_shard(args, kind: str) -> int:
     meta = {"kind": kind, "embodiment": args.embodiment, "shard": args.shard, "n_shards": args.n_shards,
             "g": g, "episode_offset": offset, "episodes_per_task": args.episodes_per_task,
             "slots": [list(x) for x in slots], "config_hash": cfg.hash(), "bank_hash": cfg.bank_hash,
-            "masks": not args.no_masks}
+            "masks": not args.no_masks, "h_code": h_code_hash(cfg.task_choices)}
     capacity = int(len(slots) * cfg.max_steps_per_episode * 1.1) + 16
     # one writer per shard for this process's lifetime (review O1): a second process (a duplicated claim)
     # waits out a crashed writer's lock, then leaves the shard to the live one (exit 75: resumable)
@@ -447,12 +466,16 @@ def cmd_shard(args, kind: str) -> int:
         print(f"[collect] {exc}: leaving this shard to that process (exit 75)", flush=True)
         return 75
     if (out / "shard.json").exists():
-        old = json.loads((out / "shard.json").read_text())
-        if {k: old.get(k) for k in meta} != meta:
-            raise SystemExit(f"{out}: shard.json differs from this command; refusing to resume")
+        # a finished shard is done whatever code wrote it (checked first: older shard.json lack h_code)
         if (out / "summary.json").exists() and json.loads((out / "summary.json").read_text()).get("complete"):
             print(f"[collect] {out} is complete")
             return 0
+        old = json.loads((out / "shard.json").read_text())
+        diff = sorted(k for k in meta if old.get(k) != meta[k])
+        if diff:
+            raise SystemExit(f"{out}: shard.json differs from this command in {diff}"
+                             + (" (written under another h definition)" if "h_code" in diff else "")
+                             + "; refusing to resume")
         from main.item_envs.item_buffer import ItemSidecarBuffer
         from main.train.buffer import StepBuffer
 

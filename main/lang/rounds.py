@@ -83,7 +83,11 @@ def make_ring(run: Path, cfg, rounds: int, episodes_per_round: int):
         # opened directly: for_step_buffer refuses a pair whose n differ, which a kill between the two
         # flushes leaves, before the resume can roll both back (review O2)
         buf = StepBuffer(ring / "buffer")
-        side = ItemSidecarBuffer(ring / "item_buffer")
+        if not (ring / "item_buffer" / "header.json").exists() and len(buf) == 0:
+            # the first launch died between the two creations (round 2 B2): pair a fresh sidecar
+            side = ItemSidecarBuffer.for_step_buffer(buf, n_tok=token_grid()[1])
+        else:
+            side = ItemSidecarBuffer(ring / "item_buffer")
         if side.capacity != buf.capacity:
             raise SystemExit(f"{ring}: buffer capacity {buf.capacity} != sidecar capacity {side.capacity}")
         if buf.capacity < cap:   # the ring never wraps: it must hold every round asked for (review O3)

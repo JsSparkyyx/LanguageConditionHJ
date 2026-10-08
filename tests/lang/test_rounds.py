@@ -150,3 +150,16 @@ def test_make_ring_reopens_out_of_lockstep_and_checks_capacity(tmp_path):
     assert (len(buf2), len(side2)) == (0, 5)
     with pytest.raises(SystemExit, match="capacity"):
         make_ring(tmp_path, cfg, 30, 2)
+
+
+def test_make_ring_pairs_a_missing_sidecar(tmp_path):
+    """B2: the first launch died after the StepBuffer header and before the sidecar existed."""
+    import shutil
+
+    from main.lang.rounds import make_ring
+
+    cfg = dataclasses.replace(LangConfig(), max_steps_per_episode=10)
+    make_ring(tmp_path, cfg, 3, 2)
+    shutil.rmtree(tmp_path / "ring" / "item_buffer")
+    buf, side = make_ring(tmp_path, cfg, 3, 2)
+    assert side.capacity == buf.capacity and len(side) == len(buf) == 0

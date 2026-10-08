@@ -101,3 +101,11 @@ def test_resume_point_refuses_rows_of_another_episode(tmp_path):
     (root / "lang_episodes.jsonl").write_text("".join(json.dumps(d) + "\n" for d in lines))
     with pytest.raises(RuntimeError, match="do not hold that episode"):
         resume_point(root, StepBuffer(root / "buffer"), ItemSidecarBuffer(root / "item_buffer"))
+
+
+def test_h_code_hash_depends_on_the_tasks():
+    """B2: shard.json's h_code covers margins.py, rules.py and the shard's task yaml files."""
+    from main.lang.collect import h_code_hash
+
+    a = h_code_hash(["granular_pour", "clean_pour"])
+    assert a == h_code_hash(["clean_pour", "granular_pour"]) and a != h_code_hash(["gap_place"])

@@ -28,6 +28,7 @@ import glob
 import importlib.util
 import json
 import os
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -244,6 +245,34 @@ class TextStore:
 
         if self.extra_path is None or self._extra_since_save == 0:
             return
+        self.extra_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = Path(f"{self.extra_path}.lock")   # merge + replace under a short lock (round 2 B2)
+        held = False
+        for _ in range(60):
+            try:
+                lock.mkdir()
+                held = True
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > 120:   # a saver that died mid-save
+                        lock.rmdir()
+                        continue
+                except OSError:
+                    pass
+                time.sleep(0.5)
+        try:
+            self._save_extra_locked()
+        finally:
+            if held:
+                try:
+                    lock.rmdir()
+                except OSError:
+                    pass
+
+    def _save_extra_locked(self) -> None:
+        import torch
+
         keys = list(range(self.n_cached, len(self.split)))
         inv = {i: s for s, i in self.index.items() if i >= self.n_cached}
         index = {inv[i]: j for j, i in enumerate(keys)}
@@ -264,7 +293,6 @@ class TextStore:
                 print(f"[text] {self.extra_path} unreadable ({exc}); writing this process's extras only")
         out = {"index": index, "split": split, "emb": torch.cat(emb), "mask": torch.cat(mask),
                "max_len": self.max_len, "backend": self.backend}
-        self.extra_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = f"{self.extra_path}.{os.getpid()}.tmp"
         torch.save(out, tmp)
         os.replace(tmp, self.extra_path)

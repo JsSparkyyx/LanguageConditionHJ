@@ -18,5 +18,5 @@ exec apptainer exec --nv --bind /work/hdd/bifq,/work/nvme/bifq,/projects/bifq \
   HF_HOME=/work/nvme/bifq/project/tmp/hf-cache XDG_CACHE_HOME=/work/nvme/bifq/project/tmp/xdg-cache \
   TRITON_CACHE_DIR=/work/nvme/bifq/project/tmp/triton-cache \
   TORCH_EXTENSIONS_DIR=/work/nvme/bifq/project/tmp/torch-ext \
-  WANDB_MODE=offline PYTHONUNBUFFERED=1 \
+  WANDB_MODE="${WANDB_MODE:-offline}" PYTHONUNBUFFERED=1 \
   bash -c 'cd "$0" && exec "$@"' "$REPO" "$@"

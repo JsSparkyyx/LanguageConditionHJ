@@ -18,9 +18,10 @@
 # (gamma and gamma_final); EXTRA_ARGS goes to `train rounds` unchanged (e.g. "--no-wandb"). Keep the same
 # values on every resubmission of one run. Two gamma runs = two RUN directories, e.g.
 #   RUN=runs/lang/rounds_g090 sbatch ...   and   RUN=runs/lang/rounds_g095 GAMMA=0.95 sbatch ...
+#   Bridges-2:  SBATCH_FLAGS="-A <account> -p GPU-shared --gpus=<rtx type>:1"
+#   Delta:      SBATCH_FLAGS="-A bifq-delta-gpu -p gpuA40x4 --gpus-per-node=1 --mem=64g"
+#               PY="bash scripts/lang/in_container.sh python"   (the container wrapper)
 #SBATCH --job-name=lang-rounds
-#SBATCH --partition=GPU-shared
-#SBATCH --gpus=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=48:00:00
 #SBATCH --output=runs/bridges_logs/lang-rounds_%j.out
@@ -51,12 +52,19 @@ while true; do
   echo "[rounds.sbatch] train rounds exit $rc at $(date)"
   if [[ $rc -ne 0 && $rc -ne 75 ]]; then
     # a crash: resume from the last saved point if the run got further since the last launch (up to 3
-    # times); a crash that repeats without progress stops the chain for a human to look at
-    if (( $(state_mtime) > before && crashes < 3 )) && (( $(date +%s) < STAGE_DEADLINE - 1800 )); then
-      crashes=$((crashes + 1)); echo "[rounds.sbatch] crash $crashes after progress: resuming"; continue
+    # times per job; near the job's end, by resubmitting); a crash that repeats without progress stops the
+    # chain for a human to look at
+    if (( $(state_mtime) > before && crashes < 3 )); then
+      crashes=$((crashes + 1))
+      if (( $(date +%s) < STAGE_DEADLINE - 1800 )); then
+        echo "[rounds.sbatch] crash $crashes after progress: resuming"; continue
+      fi
+      echo "[rounds.sbatch] crash $crashes after progress near the job's end: resubmitting"
+      rc=75
+    else
+      echo "[rounds.sbatch] crash without progress (or 3 already): stopping; see the log above"
+      exit $rc
     fi
-    echo "[rounds.sbatch] crash without progress (or 3 already): stopping; see the log above"
-    exit $rc
   fi
   [[ $rc -eq 75 ]] || break
   if (( $(date +%s) > STAGE_DEADLINE - 1800 )); then   # out of job time (not the init limit)
