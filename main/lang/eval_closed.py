@@ -384,7 +384,7 @@ def child(args) -> int:
     encoder = HoloBrainEncoder(str(CKPT_DIR), device="cuda")
     kins, inits = {}, {"n": 0}
     cache_dir = REPO / "runs/lang/_nominal_cache"
-    axes = args.axes.split(",")
+    axes = [] if args.axes in ("", "none") else args.axes.split(",")   # none: nominal + control runs only
     tasks = CANON_TASKS if args.tasks == "all" else tuple(args.tasks.split(","))
     crashes = defaultdict(int)
     cr_path = out_dir / f"crashes_{tag}.json"
@@ -421,7 +421,8 @@ def child(args) -> int:
                             done.add(key)
                 continue
             rec = nom["record"]
-            all_picks = pick_rules(rec, nom["designations"], nom["seed"], axes, lambda r, ax: eligible(r, rec, ax, bank))
+            all_picks = pick_rules(rec, nom["designations"], nom["seed"], axes or ["train"],
+                                   lambda r, ax: eligible(r, rec, ax, bank))
             for axis in axes:
                 picks = all_picks[axis]
                 for kind in ("harm", "benign"):
@@ -467,7 +468,8 @@ def child(args) -> int:
             # control (round 3, B5): the language controller with the filter off on the first scenes; it should
             # reproduce the standalone runner's nominal outcomes up to cuRobo's run-to-run variation
             ckey = (task, si, "control", "harm")
-            rule = all_picks[axes[0]]["harm"] or all_picks[axes[0]]["benign"]
+            ax0 = axes[0] if axes else "train"
+            rule = all_picks[ax0]["harm"] or all_picks[ax0]["benign"]
             if si < int(args.control_scenes) and ckey not in done and rule is not None:
                 if inits["n"] + 1 > cfg.max_inits_per_process:
                     return EXIT_INIT

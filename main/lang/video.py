@@ -48,7 +48,7 @@ def _rule_hs(ro) -> tuple[list, list]:
 
 class LangPanelVideoWriter(PanelVideoWriter):
     def __init__(self, stem_path, ro, named_rule: dict | None = None, sentence: str | None = None,
-                 fps: float = 25.0):
+                 fps: float = 25.0, cf_rule: dict | None = None, cf_sentence: str | None = None):
         stem_path = Path(stem_path)
         self.final_stem = stem_path
         # unique per process: a stale writer and the new owner record the same seed (review round 3, C8)
@@ -59,6 +59,10 @@ class LangPanelVideoWriter(PanelVideoWriter):
         self.named_id = named_rule["rule_id"] if named_rule else None
         self.sentence = sentence
         self.hist_named, self.hist_q, self.hist_other = [], [], []
+        # grounding panel (review round 3, E0a): a second sentence B on the same frames, Q(B) and h(B) plotted too
+        self.cf_id = cf_rule["rule_id"] if cf_rule else None
+        self.cf_sentence = cf_sentence
+        self.hist_hcf, self.hist_qcf = [], []
         self.harmed = False
         self.path = None
         runner = ro.env._item_runner
@@ -77,6 +81,8 @@ class LangPanelVideoWriter(PanelVideoWriter):
         y = 10
         d.text((10, y), f"t = {t:5.2f} s   tick {step}", fill=black)
         y += 20
+        if self.named_id is not None and self.cf_id is not None:
+            return self._panel_pair(img, d, y, ids, hs, trace, control, extras)
         if self.named_id is not None:
             j = ids.index(self.named_id) if self.named_id in ids else None
             h_named = hs[j] if j is not None else float("nan")
@@ -148,6 +154,52 @@ class LangPanelVideoWriter(PanelVideoWriter):
         d.text((x0 + 4, y0 + 4), "h_named", fill=(30, 100, 200))
         d.text((x0 + 60, y0 + 4), "Q", fill=(220, 60, 50))
         d.text((x0 + 74, y0 + 4), "unnamed min", fill=(230, 150, 30))
+        return img, harm_now
+
+    def _panel_pair(self, img, d, y, ids, hs, trace, control, extras):
+        """Two sentences on the same frames: A (the named rule) and B (the counterfactual). Q(A) solid red, Q(B)
+        dashed purple, h(A) thin blue, h(B) thin dashed light blue; a red border while A's item is harmed."""
+        red, grey, black = (200, 60, 40), (90, 90, 90), (0, 0, 0)
+        ca, cb, cha, chb = (220, 60, 50), (130, 60, 170), (30, 100, 200), (110, 170, 230)
+
+        def val(rid):
+            return hs[ids.index(rid)] if rid in ids else float("nan")
+
+        h_a, h_b = val(self.named_id), val(self.cf_id)
+        q_a = trace["V"][-1] if trace.get("V") else float("nan")
+        q_b = trace["Q_cf"][-1] if trace.get("Q_cf") else float("nan")
+        for tag, sent, col, h_, q_ in (("A", self.sentence, ca, h_a, q_a), ("B", self.cf_sentence, cb, h_b, q_b)):
+            for k, ln in enumerate(textwrap.wrap(f'{tag}: "{sent}"', 44)[:2]):
+                d.text((10, y), ln, fill=col)
+                y += 16
+            d.text((10, y), f"   Q = {q_:+.3f}    h = {h_:+.3f}", fill=red if h_ < 0 else black)
+            y += 20
+        d.text((10, y), f"{control}  (filter off: nominal motion)" if control != "FILTER" else control, fill=grey)
+        y += 22
+        self.hist_named.append(h_a), self.hist_q.append(q_a), self.hist_hcf.append(h_b), self.hist_qcf.append(q_b)
+        harm_now = h_a < 0
+        x0, y0, pw, ph = 10, y, W_PANEL - 20, H_PANEL - y - 12
+        d.rectangle([x0, y0, x0 + pw, y0 + ph], outline=(200, 200, 200))
+        lo, hi = -1.05, 1.05
+
+        def sy(v):
+            return y0 + ph - (np.clip(v, lo, hi) - lo) / (hi - lo) * ph
+
+        d.line([x0, sy(0.0), x0 + pw, sy(0.0)], fill=black)
+        for hist, col, width, dashed in ((self.hist_hcf, chb, 1, True), (self.hist_named, cha, 1, False),
+                                         (self.hist_qcf, cb, 2, True), (self.hist_q, ca, 2, False)):
+            h = hist[-150:]
+            n = len(h)
+            pts = [(x0 + (i / max(n - 1, 1)) * pw, sy(v)) if v == v else None for i, v in enumerate(h)]
+            for i in range(len(pts) - 1):
+                if pts[i] is None or pts[i + 1] is None or (dashed and (i // 3) % 2):
+                    continue
+                d.line([pts[i], pts[i + 1]], fill=col, width=width)
+        d.text((x0 + 4, y0 + 4), "Q(A)", fill=ca)
+        d.text((x0 + 40, y0 + 4), "Q(B) - -", fill=cb)
+        d.text((x0 + 100, y0 + 4), "h(A)", fill=cha)
+        d.text((x0 + 136, y0 + 4), "h(B) - -", fill=chb)
+        self.harmed |= bool(harm_now)
         return img, harm_now
 
     def add(self, frame_rgb, t, step, n_steps, h, V, control, ratio, extras=None):

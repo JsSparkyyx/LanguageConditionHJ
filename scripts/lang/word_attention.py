@@ -140,6 +140,7 @@ def main(argv=None) -> int:
     ap.add_argument("--ckpt", default="checkpoint_final.pt")
     ap.add_argument("--val", nargs="+", required=True)
     ap.add_argument("--tasks", default="all")
+    ap.add_argument("--embodiments", default="trained", help="'trained' (the run's), 'all', or a comma list")
     ap.add_argument("--states-per-task", type=int, default=200)
     ap.add_argument("--batch", type=int, default=48)
     ap.add_argument("--device", default="cuda")
@@ -148,7 +149,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     roots = roots_of(args.val)
     ev = Evaluator(Path(args.run), args.ckpt, roots, device=args.device, text_caches=caches_of(args.val),
-                   batch=args.batch, text_encoder=_TEXT_ENCODER, tasks=None if args.tasks == "all" else args.tasks.split(","))
+                   batch=args.batch, text_encoder=_TEXT_ENCODER, tasks=None if args.tasks == "all" else args.tasks.split(","),
+                   embodiments=args.embodiments if args.embodiments in ("trained", "all") else args.embodiments.split(","))
     L = int(ev.cfg.max_text_tokens)
     tok = AutoTokenizer.from_pretrained("bert-base-uncased")
     bank = language.load_bank()

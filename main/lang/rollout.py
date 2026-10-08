@@ -71,6 +71,8 @@ class LangPolicyShim:
         self.ro, self.pe, self.k = ro, policy_enc, int(k)
         self.hist = deque(maxlen=self.k + 1)
         self.frame0 = None
+        self.cent_hist = deque(maxlen=self.k + 1)   # V3 monitor: {rule_id: centre or None} per captured frame
+        self.cent0 = None
         self.enc_cf = None
         self.n_pushed = 0
         self.n_calls = 0
@@ -80,6 +82,42 @@ class LangPolicyShim:
         # [1, n_cam, 400, 256] -> [1, 1200, 256] (cameras flattened within the frame)
         return tokens.flatten(1, 2), pos.flatten(1, 2)
 
+    def _centres_now(self) -> dict:
+        """V3 monitor: world centre of each named rule's object at this capture (the tick's item poses, from the
+        diag the capture computed before encoding, + the item spec's OBB centre offset)."""
+        from .data import _quat_rotate
+
+        ro = self.ro
+        runner = ro.env._item_runner
+        pose = (ro._last_diag or {}).get("item_pose")
+        items = [sp.item_id for sp in runner.items]
+        out = {}
+        for rid in (ro.named_rule_id, ro.cf_rule_id):
+            rule = next((r for r in runner.rules if r.rule_id == rid), None)
+            out[rid] = None
+            if rule is None or pose is None or len(rule.item_ids) != 1 or rule.item_ids[0] not in items:
+                continue
+            if rule.consequence.value not in ("avoid", "upright", "stay"):
+                continue
+            k = items.index(rule.item_ids[0])
+            pk = np.asarray(pose[k], np.float64)
+            out[rid] = pk[:3] + _quat_rotate(pk[3:7], np.asarray(runner.items[k].obb_center_local, np.float64))
+        return out
+
+    def centres(self, rid):
+        """[1, 3, 3] centres and [1, 3] validity of rule rid's object in frames [t, t-k, 0] (V3 monitor)."""
+        import torch
+
+        cur = self.cent_hist[-1] if self.cent_hist else {}
+        prev = self.cent_hist[0] if len(self.cent_hist) == self.k + 1 else (self.cent0 or cur)
+        f0 = self.cent0 or cur
+        c, v = np.zeros((1, 3, 3), np.float32), np.zeros((1, 3), bool)
+        for f, fr in enumerate((cur, prev, f0)):
+            x = fr.get(rid) if fr else None
+            if x is not None:
+                c[0, f], v[0, f] = x, True
+        return torch.from_numpy(c).cuda(), torch.from_numpy(v).cuda()
+
     def frames(self, tok, pos):
         if self.ro._in_capture:
             if self.frame0 is None:
@@ -87,6 +125,11 @@ class LangPolicyShim:
             self.hist.append((tok, pos))
             self.n_pushed += 1
             cur = self.hist[-1]
+            if hasattr(self.pe, "e_tag"):
+                cn = self._centres_now()
+                if self.cent0 is None:
+                    self.cent0 = cn
+                self.cent_hist.append(cn)
         else:
             cur = (tok, pos)
         prev = self.hist[0] if len(self.hist) == self.k + 1 else self.frame0
@@ -106,19 +149,26 @@ class LangPolicyShim:
         tok, pos = self._flat(tokens, pos_mean)
         st, sp = self.frames(tok, pos)
         ro = self.ro
+        tag = hasattr(self.pe, "e_tag")   # V3 (monitor only): each sentence's tag follows its own named object
+        kw_a = dict(zip(("ref_center", "ref_valid"), self.centres(ro.named_rule_id))) if tag else {}
+        kw_b = dict(zip(("ref_center", "ref_valid"), self.centres(ro.cf_rule_id))) if tag else {}
         with torch.no_grad():
-            enc = self.pe(state, body_tokens, link_pos, body_mask, joint_index, st, sp, text_out=ro.text_out)
+            enc = self.pe(state, body_tokens, link_pos, body_mask, joint_index, st, sp, text_out=ro.text_out, **kw_a)
             self.enc_cf = (self.pe(state, body_tokens, link_pos, body_mask, joint_index, st, sp,
-                                   text_out=ro.cf_text_out) if ro.cf_text_out is not None else None)
+                                   text_out=ro.cf_text_out, **kw_b) if ro.cf_text_out is not None else None)
         return enc
 
 
 class LangRolloutController(RolloutController):
-    def __init__(self, *args, text_store=None, **kwargs):
+    def __init__(self, *args, text_store=None, monitor_only: bool = False, **kwargs):
         cfg0 = args[0] if args else kwargs.get("cfg")
-        if getattr(cfg0, "oracle_ref_tag", False):
+        if getattr(cfg0, "oracle_ref_tag", False) and not monitor_only:
             raise SystemExit("oracle_ref_tag reads the named object's position from the simulator: an offline "
-                             "measuring tool (review round 3, E2), never run in closed loop")
+                             "measuring tool (review round 3, E2), never run in closed loop (monitor_only: Q is "
+                             "recorded, the filter can never engage)")
+        # monitor_only (round 3, E0a / E3): Q of both sentences every tick, the filter never engages (nominal motion)
+        self.monitor_only = bool(monitor_only)
+        self.cf_rule_id = None
         t0 = time.perf_counter()
         self._in_capture = False
         self.text_out = self.cf_text_out = None
@@ -148,9 +198,12 @@ class LangRolloutController(RolloutController):
         if flt is not None:
             flt.margin = float(getattr(self.cfg, "filter_margin", 0.0))
             flt.release_margin = float(getattr(self.cfg, "filter_release_margin", 0.0))
+            if getattr(self, "monitor_only", False):   # no Q engages: the motion stays nominal
+                flt.margin = flt.release_margin = -1e9
 
     # ------------------------------------------------------------------ text --
-    def set_instruction(self, sentence: str, cf_sentence: str | None = None, rule_id: str | None = None) -> None:
+    def set_instruction(self, sentence: str, cf_sentence: str | None = None, rule_id: str | None = None,
+                        cf_rule_id: str | None = None) -> None:
         """Text store lookup + text adapter, once per episode (no grad)."""
         import torch
 
@@ -166,6 +219,7 @@ class LangRolloutController(RolloutController):
         self.sentence, self.cf_sentence = sentence, cf_sentence
         if rule_id is not None:
             self.named_rule_id = rule_id
+        self.cf_rule_id = cf_rule_id   # the counterfactual sentence's rule (the V3 tag follows its object)
 
     # --------------------------------------------------------------- capture --
     def _capture_tick(self):
