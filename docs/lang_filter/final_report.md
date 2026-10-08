@@ -203,8 +203,36 @@ ticks) is what a gamma = 0.9 critic should rank by. A violation k ticks ahead is
 pair (review E1). The offline probe now reports, on the same pairs, the ranking by current h (no model),
 the agreement with the discounted HJ return of the recorded h, a scene-free text prior, strata by time to
 the violation, and episode-bootstrap intervals (validation has 10 episodes per task, so the official vs
-preview swings above, T1 0.51 vs 0.64 and T3 0.88 vs 0.59, fit episode-level noise). Until those numbers
-are in, referent grounding is a possible bottleneck on T1 and T7, not a shown one.
+preview swings above, T1 0.51 vs 0.64 and T3 0.88 vs 0.59, fit episode-level noise).
+
+**Re-scored with those checks (2026-10-07 evening; official step-20000 checkpoint; T1 / T3 / T5 / T7
+only, 11,415 old-h bead rows left out; 31 validation episodes; [ ] = 95% episode-bootstrap interval;
+`eval_offline/checkpoint_final/tables.md`, the earlier file kept as `checkpoint_final_pre_review/`):**
+
+| training templates | model rank_acc | current h, no model | agrees with HJ return | text prior, no scene |
+|---|---|---|---|---|
+| pooled | 0.62 [0.53, 0.70] | 0.88 | 0.62 | 0.68 [0.57, 0.78] |
+| T1 selective_avoid | 0.61 [0.53, 0.69] | 0.89 | 0.61 | 0.67 |
+| T3 push_zone | 0.77 [0.63, 0.89] | 0.60 | 0.83 | 0.75 |
+| T5 tray_transport | 0.92 [0.84, 0.99] | 0.90 | 0.92 | 0.89 |
+| T7 gap_place | 0.54 [0.36, 0.75] | 0.91 | 0.54 | 0.62 |
+
+- The label is not the problem: the order by the discounted HJ return agrees with the `fails_soon` order on
+  all but 14 of 3160 pairs, so the score against it equals rank_acc.
+- 2079 of the 3160 pairs have the harmful rule ALREADY broken at that tick. The model ranks those 0.67
+  [0.54, 0.78], violations 1-7 ticks ahead 0.57, 8-25 ticks ahead 0.51: little foresight on T1 / T7.
+- T3 is the exception: the model (0.77) beats the current-h reader (0.60) and agrees with the HJ return
+  even more (0.83), the zone_include case the caveat describes.
+- A scene-free prior on the rule's words (consequence + referent category / colour / size, fit on the
+  warmup) beats the model on T1 and T7: the model does not yet use the sentence as well as word statistics
+  there.
+- T5 is partly a shortcut: 0.94 [0.88, 1.00] when a sentence has "tall" / "short", 0.77 [0.44, 0.93] (26
+  pairs) when not.
+- Within the tasks that have both kinds: T1 referent 0.51 [0.44, 0.59] vs consequence 0.73 [0.54, 0.90];
+  T7 0.53 vs 0.57 (intervals overlap); T3 0.88 (32 pairs) vs 0.59 (17).
+- AUROC of -Q for imminent harm: 0.747 [0.683, 0.802] vs 0.622 with another rule's sentence of the same
+  state (was 0.856 vs 0.742 with T2 / T6 included and other-episode base sentences).
+- Held-out items: 3 episodes, no conclusion.
 
 **Bead rules: h now counts beads** (user request, `margins.particle_h`). Once n >= 1 beads break a bead
 rule, h = -(0.5 + 0.5 (min(n, 20) - 1) / 19): one bead -0.5, 2 beads -0.53, 10 beads -0.74, 20 or more
