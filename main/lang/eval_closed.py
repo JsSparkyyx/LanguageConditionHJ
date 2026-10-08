@@ -657,6 +657,13 @@ def merged_rows(out_dir: Path) -> list[dict]:
     return list(by_key.values())
 
 
+def trained_embodiments(run: Path) -> tuple:
+    """The embodiments a run trained on (its lang_config.json); all when the run has no config file."""
+    p = Path(run) / "lang_config.json"
+    embs = json.loads(p.read_text()).get("embodiment_choices") if p.exists() else None
+    return tuple(embs) if embs else CANON_EMBODIMENTS
+
+
 def parent(args) -> int:
     """Children per (embodiment, shard), at most --parallel at once, pinned round-robin to --gpus GPUs;
     a child exiting 75 (init limit) is restarted at once, a crashed one up to 10 times (per-item
@@ -666,7 +673,8 @@ def parent(args) -> int:
     run = Path(args.run).resolve()
     out_dir = run / "eval_closed" / Path(args.ckpt).stem
     out_dir.mkdir(parents=True, exist_ok=True)
-    embs = CANON_EMBODIMENTS if args.embodiments == "all" else tuple(args.embodiments.split(","))
+    embs = (trained_embodiments(run) if args.embodiments == "trained" else
+            CANON_EMBODIMENTS if args.embodiments == "all" else tuple(args.embodiments.split(",")))
     jobs = [] if args.merge_only else [(e, i) for e in embs for i in range(int(args.n_shards))]
     crashes = {j: 0 for j in jobs}
     pending, running = list(jobs), {}
@@ -723,7 +731,8 @@ def main(argv=None) -> int:
     ap.add_argument("--scenes-per-combo", type=int, default=20)
     ap.add_argument("--axes", default="train,heldout_template")
     ap.add_argument("--tasks", default="all")
-    ap.add_argument("--embodiments", default="all")
+    ap.add_argument("--embodiments", default="trained",
+                    help="'trained' (the run's lang_config.json, default), 'all', or a comma list")
     ap.add_argument("--embodiment", default=None)
     ap.add_argument("--val", nargs="*", default=[])
     ap.add_argument("--text-cache", nargs="*", default=None)

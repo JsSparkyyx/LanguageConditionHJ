@@ -114,3 +114,24 @@ def test_evaluator_prior_and_same_state_base(tmp_path):
         if others:
             base = r["sentences"]["base"]
             assert any(base in language.sentences(o, rec, "train", bank) for o in rec["rules"] if o["rule_id"] in others)
+
+
+def test_evaluator_scores_the_trained_embodiments(tmp_path):
+    """By default the probe scores the validation episodes of the embodiments the run trained on."""
+    import torch
+
+    from main.lang.config import CANON_EMBODIMENTS
+
+    torch.set_num_threads(4)
+    root = make_root(tmp_path / "val", episodes=2, capacity=200)
+    emb = None
+    for embs in (("ur5-wsg",), ("franka-panda",)):
+        run = tmp_path / f"run_{embs[0]}"
+        tr = trainer(run, root, embodiment_choices=embs)
+        tr.save_ckpt()
+        ev = Evaluator(run, "checkpoint.pt", [root], device="cpu", batch=16, text_encoder=StubText())
+        assert ev.embodiments == embs
+        emb = ev.sources[0].emb[0]
+        assert bool(ev.states(per_task=50)) == (emb in embs)
+    ev_all = Evaluator(run, "checkpoint.pt", [root], device="cpu", batch=16, text_encoder=StubText(), embodiments="all")
+    assert ev_all.embodiments is None and ev_all.states(per_task=50) and emb in CANON_EMBODIMENTS

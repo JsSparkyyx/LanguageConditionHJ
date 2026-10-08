@@ -403,7 +403,9 @@ class LangRoundMetrics:
             return []
         from .config import CANON_EMBODIMENTS, CANON_TASKS
 
-        cols = [(e, d) for e in CANON_EMBODIMENTS for d in ("harm", "benign", "all")]
+        # columns for the embodiments the run collects on (a one-embodiment run has no empty columns)
+        embs = [e for e in CANON_EMBODIMENTS if any(r.get("embodiment") == e for r in self.rows)] or list(CANON_EMBODIMENTS)
+        cols = [(e, d) for e in embs for d in ("harm", "benign", "all")]
         paths = []
         for metric in ("harm_named", "any_intervention", "intervention_rate", "task_success"):
             M = np.full((len(CANON_TASKS), len(cols)), np.nan)

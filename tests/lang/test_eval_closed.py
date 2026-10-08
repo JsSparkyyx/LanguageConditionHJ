@@ -164,3 +164,14 @@ def test_pick_rules_prefers_a_rule_eligible_everywhere():
     des = {f"r{k}": "harm" for k in range(6)}
     picks = pick_rules(rec, des, 3, ["train", "heldout_word"], lambda r, ax: ax == "train" or r["rule_id"] == "r4")
     assert picks["train"]["harm"]["rule_id"] == picks["heldout_word"]["harm"]["rule_id"] == "r4"
+
+
+def test_closed_loop_defaults_to_the_trained_embodiments(tmp_path):
+    from main.lang.config import CANON_EMBODIMENTS, LangConfig
+    from main.lang.eval_closed import trained_embodiments
+
+    assert trained_embodiments(tmp_path) == CANON_EMBODIMENTS          # no config: every embodiment
+    import dataclasses
+
+    dataclasses.replace(LangConfig(), embodiment_choices=("ur5-wsg",)).save(tmp_path / "lang_config.json")
+    assert trained_embodiments(tmp_path) == ("ur5-wsg",)

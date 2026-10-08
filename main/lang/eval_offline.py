@@ -211,7 +211,7 @@ class TextPrior:
 
 class Evaluator:
     def __init__(self, run: Path, ckpt: str, val_roots, device="cuda", text_caches=(), batch: int = 96,
-                 text_encoder=None):
+                 text_encoder=None, embodiments="trained"):
         from .network import LangPolicyEncoder, LangTwinCritic
         from .text import TextStore
         from .train import load_policy
@@ -220,6 +220,9 @@ class Evaluator:
         ck = torch.load(self.run / ckpt if not Path(ckpt).is_absolute() else ckpt, map_location=device,
                         weights_only=False)
         self.cfg = LangConfig.from_dict(ck["lang_config"])
+        # validation episodes scored: of the embodiments the run trained on ("trained"), all ("all"), or a list
+        self.embodiments = (tuple(self.cfg.embodiment_choices) if embodiments == "trained"
+                            else None if embodiments in (None, "all") else tuple(embodiments))
         self.dev = device
         self.sources = [LangSource(r, self.cfg.k_prev, self.cfg.recall_horizon_ticks,
                                    drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True)) for r in val_roots]
@@ -245,7 +248,10 @@ class Evaluator:
         rng = np.random.default_rng(seed)
         by_task = defaultdict(list)
         for j, s in enumerate(self.sources):
-            for i in np.flatnonzero(s.t % every == 0):
+            sel = s.t % every == 0
+            if self.embodiments is not None:
+                sel &= np.isin(s.emb, list(self.embodiments))
+            for i in np.flatnonzero(sel):
                 by_task[int(s.task[i])].append((j, int(i)))
         out = []
         for t, lst in sorted(by_task.items()):
@@ -791,7 +797,8 @@ def data_info(ev, rows, roots) -> dict:
     bead_srcs = [s for s in ev.sources if s.rows.size and any(CANON_TASKS[int(t)] in BEAD_TASKS for t in np.unique(s.task))]
     bead_h = ("none" if not bead_srcs else
               "count" if all((s.root / "item_buffer" / "n_violating.npy").exists() for s in bead_srcs) else "old")
-    return {"tasks": sorted({r["task"] for r in rows}), "stale_bead_rows_dropped": int(sum(s.n_stale_dropped for s in ev.sources)),
+    return {"tasks": sorted({r["task"] for r in rows}), "embodiments": sorted({r["emb"] for r in rows}),
+            "stale_bead_rows_dropped": int(sum(s.n_stale_dropped for s in ev.sources)),
             "bead_h": bead_h, "val_roots": [str(r) for r in roots],
             "prior_roots": list(ev.prior.roots) if ev.prior is not None else None,
             "prior_docs": int(ev.prior.n_docs) if ev.prior is not None else None}
@@ -808,12 +815,15 @@ def main(argv=None) -> int:
     ap.add_argument("--states-per-task", type=int, default=2000)
     ap.add_argument("--paraphrases", type=int, default=3)
     ap.add_argument("--batch", type=int, default=96)
+    ap.add_argument("--embodiments", default="trained",
+                    help="validation embodiments scored: 'trained' (the run's, default), 'all', or a comma list")
     ap.add_argument("--prior-data", nargs="*", default=None,
                     help="training data roots for the scene-free text prior (rank_acc_text), e.g. data/lang/warmup")
     args = ap.parse_args(argv)
     roots = roots_of(args.val)
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.val)
-    ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch)
+    embs = args.embodiments if args.embodiments in ("trained", "all") else tuple(args.embodiments.split(","))
+    ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch, embodiments=embs)
     if args.prior_data:
         prior_roots = roots_of(args.prior_data)
         overlap = {str(Path(r).resolve()) for r in prior_roots} & {str(Path(r).resolve()) for r in roots}

@@ -43,7 +43,7 @@ ensure_item_path()
 
 from main.network.heads import TokenActor  # noqa: E402
 
-from .config import CANON_TASKS, LangConfig  # noqa: E402
+from .config import CANON_EMBODIMENTS, CANON_TASKS, LangConfig  # noqa: E402
 from .network import LangPolicyEncoder, LangTwinCritic, n_params, param_groups, set_probe  # noqa: E402
 
 EXIT_RESUME = 75
@@ -581,7 +581,8 @@ def add_common(p):
     p.add_argument("--val", nargs="*", default=[])
     p.add_argument("--run", required=True)
     p.add_argument("--tasks", default="all")
-    p.add_argument("--embodiments", default="all")
+    p.add_argument("--embodiments", default="ur5-wsg",
+                   help="comma list or 'all' (default ur5-wsg: one embodiment); a resumed run keeps the saved choice")
     p.add_argument("--relabel", choices=("paired", "random", "fixed"), default=None)
     p.add_argument("--shuffle-text", action="store_true")
     p.add_argument("--text-backend", choices=("holobrain_bert", "bert_raw", "sentence_generic"), default=None)
@@ -613,6 +614,13 @@ def config_from_args(args) -> LangConfig:
         if diff:
             print(f"[lang-train] {saved} has no state.pt yet: using these flags, not the saved ones {diff}")
     return cfg
+
+
+def trained_subsets(cfg) -> tuple:
+    """(tasks, embodiments) a run trains and collects on, from its config (fixed at the first start, in
+    lang_config.json), not from this launch's flags, so a resume cannot drift; None = all."""
+    tasks, embs = tuple(cfg.task_choices), tuple(cfg.embodiment_choices)
+    return (None if tasks == CANON_TASKS else tasks), (None if embs == CANON_EMBODIMENTS else embs)
 
 
 def _config_from_flags(args) -> LangConfig:
@@ -664,8 +672,7 @@ def main(argv=None) -> int:
     if args.mode == "sanity":
         return run_sanity(args)
     cfg = config_from_args(args)
-    tasks = None if args.tasks == "all" else tuple(args.tasks.split(","))
-    embs = None if args.embodiments == "all" else tuple(args.embodiments.split(","))
+    tasks, embs = trained_subsets(cfg)
     roots = roots_of(args.data)
     vals = roots_of(args.val) if args.val else []
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.data) + caches_of(args.val)

@@ -709,7 +709,10 @@ python -m main.lang.train rounds --data data/lang/warmup --val data/lang/val --r
   rounds × episodes per round × `max_steps_per_episode` × 1.1.
 - The sampler's sources are the warmup shards plus the ring. Rounds runs always start from scratch,
   never from an offline checkpoint.
-- Common flags: `--tasks all|<task,...>`, `--embodiments`, the switches of Section 5.9, `--no-wandb`.
+- Common flags: `--tasks all|<task,...>`, `--embodiments` (default `ur5-wsg`: training and rounds
+  collection use one embodiment; `all` for both; a resumed run keeps the choice in its `lang_config.json`),
+  the switches of Section 5.9, `--no-wandb`. The evaluators score the run's trained embodiments by
+  default (`--embodiments trained`; `all` adds the other one as a cross-embodiment test).
 - `--resume <run_dir>` restores everything: weights, targets, optimizers, step, round index, schedule
   cursors, sampler and env RNG states, and the ring position (Section 7.4).
 - `--init-weights <ckpt>` (offline mode only) loads weights only and re-syncs targets.

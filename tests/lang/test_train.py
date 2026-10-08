@@ -129,3 +129,30 @@ def test_resume_without_state_uses_the_flags(tmp_path):
     assert config_from_args(SimpleNamespace(**flags)).lang_film is True     # no state.pt: the flags win
     (run / "state.pt").write_bytes(b"x")
     assert config_from_args(SimpleNamespace(**flags)).lang_film is False    # a started run keeps its config
+
+
+def test_training_defaults_to_one_embodiment_and_resume_keeps_the_saved_one(tmp_path):
+    """Training uses ur5-wsg only unless --embodiments says otherwise; the trained subset comes from the
+    run's config, so a resumed run keeps what it started with whatever this launch's flags say."""
+    import argparse
+    from types import SimpleNamespace
+
+    from main.lang.config import CANON_EMBODIMENTS
+    from main.lang.train import add_common, config_from_args, trained_subsets
+
+    p = argparse.ArgumentParser()
+    add_common(p)
+    args = p.parse_args(["--data", "d", "--run", str(tmp_path / "run")])
+    assert args.embodiments == "ur5-wsg"
+    cfg = config_from_args(args)
+    assert cfg.embodiment_choices == ("ur5-wsg",)
+    assert trained_subsets(cfg) == (None, ("ur5-wsg",))
+    cfg_all = config_from_args(p.parse_args(["--data", "d", "--run", str(tmp_path / "run"), "--embodiments", "all"]))
+    assert cfg_all.embodiment_choices == CANON_EMBODIMENTS and trained_subsets(cfg_all) == (None, None)
+    # a run started on both embodiments resumes on both, though the default flag is now ur5-wsg
+    run = tmp_path / "old"
+    run.mkdir()
+    LangConfig().save(run / "lang_config.json")
+    (run / "state.pt").write_bytes(b"x")
+    old = config_from_args(SimpleNamespace(**{**vars(args), "run": str(run), "resume": True}))
+    assert trained_subsets(old) == (None, None)
