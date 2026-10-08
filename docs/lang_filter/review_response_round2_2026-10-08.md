@@ -1,5 +1,10 @@
 # Response to the code review, round 2 (at commit 8b48be6)
 
+> Superseded in part by `review_response_round3_2026-10-08.md`: "T3 and T5 show foresight", "most misranked
+> pairs are already broken" (true for T7, not T1) and "the text prior does not beat the model" are corrected
+> there (review round 3, A1-A3). The T6 and pooled rows of the table below come from a checkpoint trained on
+> the OLD bead h, scored against bead-count labels (round 3, B6).
+
 Every item was checked against the code before changing anything; all held. Commits: 7d8c57e (A, revert),
 b60008d (B1), 0c5a875 (ungrouped stats, user request), 45787e5 (a bug of round 1's B1, below), aa4341d
 (B2), f052cbb (C1-C8, D1 probe), 82956d0 (launch scripts), then the independent-review fixes and this
@@ -47,6 +52,9 @@ full tables in `runs/lang/lang_full_paired_off_1007/eval_offline/checkpoint_fina
 | T5 | 0.92 | 0.90 | 0.82 | +0.10 [-0.02, 0.22] | 0.91 / 1.00 | 0.94 / 0.61 |
 | T6 | 0.78 | 0.93 | 0.85 | -0.08 [-0.18, 0.03] | 0.80 / 1.00 | 0.64 / 0.53 |
 | T7 | 0.54 | 0.91 | 0.68 | -0.14 [-0.36, 0.16] | 0.54 / 1.00 | 0.55 / 0.59 |
+
+(T6 and the pooled row: the checkpoint was trained on the old bead h; the labels and the prior use the bead
+count.)
 
 Corrections to the round-1 response and the report (the reviewer was right on each):
 - "Little foresight on T1 / T7" is withdrawn: the T1 / T7 errors sit mostly in already-broken pairs, which

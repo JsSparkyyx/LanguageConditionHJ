@@ -178,8 +178,10 @@ next to the preview run (36% of the warmup) at step 16000:
 Per task (training templates): T5 0.92, T3 0.77, T6 0.72, T1 0.61, T7 0.54.
 
 All T2 / T4 / T6 numbers in this section (including T6's 0.72 and its referent 0.25 below) were computed
-with the OLD bead h (before the bead-count h). The offline probe now leaves those rows out until the bead
-data is recollected, so current tables have no T2 / T4 / T6 columns.
+with the OLD bead h (before the bead-count h). Since round 2 the validation includes the 30 bead-count
+episodes, so the tables score T2 / T4 / T6 again (the re-scored tables below); the official checkpoint was
+still TRAINED on the old bead h, so its T2 / T4 / T6 cells compare a model of the old h with labels of the
+new one (its metrics.json says bead_h_train: not recorded; review round 3, B1 / B6).
 
 The pooled referent score (0.507) is a mix that differs by task (pairs: same consequence, other item):
 
@@ -206,7 +208,7 @@ the agreement with the discounted HJ return of the recorded h, a scene-free text
 the violation, and episode-bootstrap intervals (validation has 10 episodes per task, so the official vs
 preview swings above, T1 0.51 vs 0.64 and T3 0.88 vs 0.59, fit episode-level noise).
 
-**Re-scored (round-2 review, 2026-10-08; official step-20000 checkpoint, which was trained on the OLD bead h;
+**Re-scored (round-2 review, 2026-10-08; the same numbers in the round-3 tables; official step-20000 checkpoint, which was trained on the OLD bead h;
 validation now includes the 30 new bead-count episodes, so T6 is back; 41 episodes for the pair cells; [ ] =
 95% episode bootstrap, optimistic with 7-10 episodes per task; `eval_offline/checkpoint_final/tables.md`;
 earlier versions in `checkpoint_final_pre_review/` and `checkpoint_final_round1/`):**
@@ -230,28 +232,40 @@ The harmful rule already broken at that tick, or not yet (model / current h):
 | T6 | 0.80 / 1.00 (898) | 0.64 / 0.53 (147) |
 | T7 | 0.54 / 1.00 (602) | 0.55 / 0.59 (183) |
 
-What this does and does not show (corrected after review round 2, C1 / C2 / C4):
-- **T1 and T7: the model misreads the named item's PRESENT state.** Where the harmful rule is already broken,
-  the current h ranks every pair right by construction, and the model gets 0.69 (T1) and 0.54 (T7). Most
-  of the misranked pairs are of this kind. (The earlier "little foresight" reading was wrong: those pairs
-  need no foresight.)
-- **T3 and T5 show foresight:** on not-yet-broken pairs the model beats the current h (T3 0.68 vs 0.23, T5
-  0.94 vs 0.61).
+What this does and does not show (corrected after review rounds 2 and 3; round-3 tables with the prior per
+stratum and the referent / consequence split per stratum: `eval_offline/checkpoint_final_round3/tables.md`):
+- **Present state, T1 and T7.** Where the named rule is already broken, the model ranks 0.69 (T1) and 0.54
+  (T7) against 1.0 for the current h. That covers half of T1's errors (about 394 of 795 misranked pairs) and
+  three quarters of T7's (about 277 of 359). On T1 not-yet pairs it ranks 0.48 [0.38, 0.61] against 0.71 for
+  the current h, which for an avoid rule is essentially the arm's distance to the named object. "Misreads the
+  present state" mixes two failures, which item (grounding) and what state it is in (perception): per
+  stratum, T1's referent pairs (same consequence, other object) rank 0.56 already broken and 0.44 not yet,
+  its consequence pairs 0.78 and 0.60.
+- **Foresight is not established.** On not-yet-broken pairs the model ranks 0.68 (T3) and 0.94 (T5). The
+  current h is no reference there, and a sentence prior may give the same order: on T5 the prior ranks 0.81
+  (model - prior +0.12 [0.02, 0.25]; with a size word in a sentence 0.86, +0.09 [0.00, 0.21]; 4 not-yet pairs
+  without one), and within the tall-block rules -Q ranks harm not yet happening worse than the current h
+  (AUROC 0.68 vs 0.77; all rows 0.84 [0.77, 0.91] vs 0.94). On T3 the order does not come from the
+  zone_include shortcut: on not-yet pairs whose benign rule is zone_include (keep the box on the table, h near
+  0.19 all episode) the model ranks 0.34, the same as the prior; its 0.68 comes from the stay (1.00, 15
+  pairs), upright (0.90, 20) and zone_exclude (0.73, 15) pairs, where the model beats the prior by +0.20 to
+  +0.35 (wide intervals, 5 episodes).
+- **Pooled, the model is not yet distinguishable from a sentence-only reader:** -0.04 [-0.14, 0.07], and
+  indistinguishable on T1 (-0.02 [-0.17, 0.17]), T6 (-0.08 [-0.18, 0.03]; the prior learned bead-count
+  labels, the model the old h) and T7 (-0.14 [-0.36, 0.16]). Better on T3 (+0.21 [0.12, 0.33]). This is the
+  number to beat before any language claim.
+- **Referent vs consequence (T1 + T3 + T7):** referent 0.53 [0.45, 0.61] against 0.67 for the sentence prior
+  on the same pairs (-0.14 [-0.27, 0.05]); consequence 0.70 [0.54, 0.83] against 0.55 (+0.15 [-0.04, 0.33]).
+  On T7 the consequence order equals the prior's (0.57 / 0.57), so it may follow the size word (a slim pillar
+  tips, a wide block gets shoved).
 - **The label check is uninformative here:** the return of the NOMINAL continuation ranks 99% of the pairs
-  the same way as `fails_soon`, so agreeing with it says nothing new; and the critic learns the value of its
-  ACTOR's continuation, not the nominal's, so neither the earlier "the label is not the cause" nor any
-  foresight claim follows from it. Foresight proper is judged in closed loop.
-- **The text prior does not beat the model:** keyed on the words of the actual sentences (it used to key on
-  the record's category / colour / size, more than a sentence may say), the paired difference is not
-  significant on T1 or T7 and favours the model on T3. (The earlier "the prior beats the model on T1 / T7"
-  is withdrawn.)
-- Referent vs consequence over T1 + T3 + T7 only: 0.53 [0.45, 0.61] vs 0.70 [0.54, 0.83].
-- AUROC of -Q for harm within 25 ticks: 0.86 [0.83, 0.90]; for harm not yet happening only: 0.69 [0.64, 0.74].
-- T5 is partly a shortcut: 0.94 with "tall" / "short" in a sentence, 0.77 [0.44, 0.93] (26 pairs) without.
-- Word attention (review D1, `word_attention.md`): the first body block puts 45% of its word attention on
-  [CLS] / [SEP] (2.1x their share); every layer prefers the named item's words 1.1-1.7x; entropy 1.5-1.8
-  nats vs 2.24 uniform. Consistent with the unnormalized-keys hypothesis for that block, not decisive. A
-  final RMSNorm on the adapter outputs is a model change, left to the human.
+  the same way as `fails_soon`, so agreeing with it says nothing new, and the critic learns the value of its
+  ACTOR's continuation, not the nominal's.
+- **AUROC per task** (-Q / current h / prior, for harm within 25 ticks): T1 0.64 / 0.88 / 0.60, T3 0.83 /
+  0.68 / 0.58, T5 0.84 / 0.95 / 0.72, T7 0.83 / 0.91 / 0.63; pooled without the bead tasks 0.75 / 0.89 /
+  0.58. (The pooled 0.86 quoted before included the old-h bead rows and rewards differences in base rates
+  between tasks.)
+- Word attention: superseded by the round-3 probe (Part II E0c, `docs/lang_filter/grounding_1008.md`).
 
 **Bead rules: h now counts beads** (user request, `margins.particle_h`). Once n >= 1 beads break a bead
 rule, h = -(0.5 + 0.5 (min(n, 20) - 1) / 19): one bead -0.5, 2 beads -0.53, 10 beads -0.74, 20 or more

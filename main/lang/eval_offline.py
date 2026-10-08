@@ -1055,7 +1055,8 @@ def main(argv=None) -> int:
     (out / "metrics.json").write_text(json.dumps({"ckpt": args.ckpt, "step": ev.ckpt_step, "data": data, "metrics": M},
                                                  indent=1))
     (out / "tables.md").write_text(tables_md(M, f"{Path(args.run).name} / {args.ckpt} (step {ev.ckpt_step})")
-                                   + f"\nData: {json.dumps(data)}\n")
+                                   + "\nData: " + json.dumps({k: (f"{len(v)} roots" if isinstance(v, list) and k.endswith("roots")
+                                                               else v) for k, v in data.items()}) + "\n")
     figures(M, rows, out)
     examples_md(ev, rows, out / "examples.md")
     ev.text.save_extra()
