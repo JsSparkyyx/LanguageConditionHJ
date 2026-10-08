@@ -65,6 +65,9 @@ def cmd_report(args) -> int:
     by_host = defaultdict(list)
     eps = n_avoid_eps = 0
     status = defaultdict(int)
+    # episode level, by whether the scene has an avoided object: RoboTwin picks grasps by test-planning with
+    # cuRobo, so a box in its world can also make grasps fail (status exception at tick 1)
+    ep_by = defaultdict(list)
     for f in sorted(root.glob("*/lang_episodes.jsonl")):
         for ln in f.read_text().splitlines():
             d = json.loads(ln)
@@ -74,7 +77,13 @@ def cmd_report(args) -> int:
             status[d.get("status")] += 1
             pl = (d.get("scene_meta") or {}).get("placements") or []
             viol = d.get("violated") or {}
-            n_avoid_eps += any(p.get("planner_avoids") for p in pl)
+            has_avoid = any(p.get("planner_avoids") for p in pl)
+            n_avoid_eps += has_avoid
+            kind = "with an avoided object" if has_avoid else "without"
+            for key in ((kind,), (d.get("host"), kind)):
+                ep_by[key].append((d.get("status") == "ok", bool(d.get("success"))))
+            if d.get("status") != "ok":   # an episode that stopped early (failed grasp) says nothing about
+                continue                   # its objects' safety: it must not pull the avoided rate to 0
             for p in pl:
                 grp = ("avoided" if p.get("planner_avoids") else
                        "on/near, not avoided" if p.get("cls") in ("on_path", "near_path") else "off_path")
@@ -89,7 +98,8 @@ def cmd_report(args) -> int:
                     by[(grp, cons)].append(v)
                     by_host[(d.get("host"), grp, cons)].append(v)
     L = [f"# R2 check: {eps} T1 nominal episodes ({n_avoid_eps} with an avoided object), status {dict(status)}", "",
-         "Rule violated (h < 0 at any tick) per candidate object; [95% Wilson interval] (objects).", "",
+         "Rule violated (h < 0 at any tick) per candidate object, episodes that ran (status ok) only; "
+         "[95% Wilson interval] (objects).", "",
          "| group | avoid | stay | either |", "|---|---|---|---|"]
     fmt = lambda xs: (lambda p, lo, hi: f"{p:.2f} [{lo:.2f}, {hi:.2f}] ({len(xs)})")(*wilson(sum(xs), len(xs))) if xs else "–"  # noqa: E731
     for grp in ("avoided", "on/near, not avoided", "off_path"):
@@ -98,6 +108,15 @@ def cmd_report(args) -> int:
     for h in sorted({k[0] for k in by_host}):
         L.append(f"| {h} | " + " | ".join(fmt(by_host[(h, g, 'either')]) for g in
                                          ("avoided", "on/near, not avoided", "off_path")) + " |")
+    L += ["", "Episodes by whether the scene has an avoided object (ran = status ok, i.e. no exception such as a "
+          "failed grasp; success = task done):", "", "| scenes | ran | success |", "|---|---|---|"]
+    for kind in ("with an avoided object", "without"):
+        e = ep_by[(kind,)]
+        L.append(f"| {kind} | {fmt([a for a, _ in e])} | {fmt([b for _, b in e])} |")
+    L += ["", "| host | ran, with avoided | ran, without |", "|---|---|---|"]
+    for h in sorted({k[0] for k in ep_by if len(k) == 2}):
+        L.append(f"| {h} | {fmt([a for a, _ in ep_by[(h, 'with an avoided object')]])} | "
+                 f"{fmt([a for a, _ in ep_by[(h, 'without')]])} |")
     av = by[("avoided", "either")]
     rate = sum(av) / len(av) if av else float("nan")
     verdict = ("NO DATA (no avoided object)" if not av else
