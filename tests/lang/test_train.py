@@ -156,3 +156,21 @@ def test_training_defaults_to_one_embodiment_and_resume_keeps_the_saved_one(tmp_
     (run / "state.pt").write_bytes(b"x")
     old = config_from_args(SimpleNamespace(**{**vars(args), "run": str(run), "resume": True}))
     assert trained_subsets(old) == (None, None)
+
+
+def test_tf32_only_inside_the_training_step(tmp_path, root):
+    """cfg.tf32_train turns TF32 matmuls on for the grad step and restores the process default after it;
+    a config saved before the field existed loads with it off."""
+    assert LangConfig().tf32_train is True
+    old = {k: v for k, v in LangConfig().to_dict().items() if k != "tf32_train"}
+    assert LangConfig.from_dict(old).tf32_train is False
+    assert LangConfig.from_dict(LangConfig().to_dict()).tf32_train is True
+    seen = []
+    for on in (True, False):
+        tr = trainer(tmp_path / f"run_{on}", root, tf32_train=on)
+        real = tr._grad_step
+        tr._grad_step = lambda b=None, log=False: (seen.append(torch.backends.cuda.matmul.allow_tf32), real(b, log))[1]
+        torch.backends.cuda.matmul.allow_tf32 = False
+        tr.grad_step()
+        assert torch.backends.cuda.matmul.allow_tf32 is False       # restored after the step
+    assert seen == [True, False]

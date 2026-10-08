@@ -23,6 +23,7 @@ job's walltime; SIGTERM does the same.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import dataclasses
 import glob
@@ -60,6 +61,18 @@ def _safe_wandb_log(run, logs: dict, step: int) -> None:
         run.log(logs, step=step)
     except Exception as exc:
         print(f"[lang-train] wandb log failed at step {step} ({exc}); continuing")
+
+
+@contextlib.contextmanager
+def matmul_tf32(on: bool):
+    """TF32 matmuls inside the block only (cfg.tf32_train): the flag is process-wide, and the rest of the
+    process (rounds collection, cuRobo, probes, evaluation) keeps PyTorch's fp32 default."""
+    prev = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = bool(on)
+    try:
+        yield
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = prev
 
 
 def _t(x, dtype=torch.float32, dev="cuda"):
@@ -178,6 +191,10 @@ class LangTrainer:
 
     # --------------------------------------------------------------- update --
     def grad_step(self, b: dict | None = None, log: bool = False) -> dict:
+        with matmul_tf32(getattr(self.cfg, "tf32_train", False)):
+            return self._grad_step(b, log)
+
+    def _grad_step(self, b: dict | None = None, log: bool = False) -> dict:
         cfg = self.cfg
         if b is None:
             b = self.prefetch.next() if self.prefetch is not None else self.sampler.sample(cfg.batch_size)

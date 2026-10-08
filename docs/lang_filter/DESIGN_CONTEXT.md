@@ -194,7 +194,8 @@ Hardware: SO-101 or the UR5 setup, to be decided.
 
 ## 8. Defaults and open decisions
 
-- k = 2 ticks for the past frame. T = 0.05. Batch 64, lr 3e-4.
+- k = 2 ticks for the past frame. T = 0.05. Batch 64, lr 3e-4. TF32 matmuls in the training step only
+  (user, 2026-10-08; `tf32_train`), fp32 everywhere else.
 - γ = 0.9, to be revisited if the delay audit shows consequences arriving more than about 10 ticks
   after their cause (T5 tipping, beads in flight).
 - Novelty check needed against:

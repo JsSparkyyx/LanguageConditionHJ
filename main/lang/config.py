@@ -130,6 +130,10 @@ class LangConfig(FrozenConfig):
     film_zero_init: bool = True
     softmin_T_h: float = 0.05                      # h units, NOT scaled by h_scale
     activation_checkpointing: bool = False
+    # TF32 tensor-core matmuls (inputs rounded to 10 mantissa bits, fp32 accumulation) inside the training
+    # step only; collection, probes and evaluation keep fp32 matmuls. A config saved before this field
+    # (2026-10-08) loads as False, so older runs resume as they trained
+    tf32_train: bool = True
 
     # --- sampling / relabeling ---
     shuffle_text: bool = False
@@ -182,6 +186,8 @@ class LangConfig(FrozenConfig):
             if isinstance(v, list) and (isinstance(default, tuple) or k in ("feature_level", "eval_seeds")):
                 v = tuple(v)
             kw[k] = v
+        if "tf32_train" not in d:   # saved before the field existed: those runs trained in fp32
+            kw["tf32_train"] = False
         return cls(**kw)
 
     @classmethod

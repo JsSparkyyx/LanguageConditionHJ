@@ -107,8 +107,9 @@ Each item names the evidence and a recommendation; nothing below was decided for
 4. **Text feature scale.** HoloBrain word features have RMS 9 (outliers to 150) and pass the identity
    `in_proj` unnormalized into keys / values (`phase2.md`). Training is stable so far; a fixed scale or an
    RMSNorm on `w'` would be a one-line change, to try only if probes show the text attention saturating.
-5. **Batch size / precision.** Unchanged (B = 64, fp32). TF32 would cut the step 15% on H200, 29% on
-   A100: small enough to leave as is.
+5. **Batch size / precision.** B = 64 unchanged. TF32 would cut the step 15% on H200, 29% on A100.
+   Decided 2026-10-08 (user): TF32 matmuls inside the training step (`tf32_train`, on for new runs; older
+   configs load it off), fp32 matmuls for collection, probes and evaluation.
 6. **Evaluation scene counts.** The full grid (20 scenes, 2 axes) is ~90 h of simulation per checkpoint
    (~4.5 h on a 4-GPU node). Recommendation: 10 scenes per combo on `train` + `heldout_template` for the
    first comparison.

@@ -651,7 +651,8 @@ With all five path switches off, the sentence cannot affect Q (required test).
     about 3× CrossSafe.
   - If memory does not fit, wrap trunk and critic blocks in `torch.utils.checkpoint` (a wrapper, no edit
     to `trunk.py`).
-  - Do not change B or precision without human approval.
+  - Do not change B or precision without human approval. Approved 2026-10-08: TF32 matmuls inside the
+    training step (`LangConfig.tf32_train`, saved with the run's config; fp32 matmuls everywhere else).
 
 ---
 
