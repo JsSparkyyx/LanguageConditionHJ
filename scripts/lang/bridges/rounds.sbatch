@@ -28,6 +28,8 @@
 set -u
 cd "${SLURM_SUBMIT_DIR:?submit from the repo root}"
 source scripts/lang/bridges/_env.sh
+# online wandb: WANDB_KEY_FILE names a file with an `export WANDB_API_KEY=...` line (read here, never printed)
+if [[ -n "${WANDB_KEY_FILE:-}" ]]; then source scripts/lang/wandb_env.sh; fi
 RUN="${RUN:?set RUN=runs/lang/<name>}"
 ROUNDS=${ROUNDS:-100}; EPISODES=${EPISODES:-4}; STEPS=${STEPS:-2048}; PROBE=${PROBE:-10}; GAMMA=${GAMMA:-0.9}
 # the run's config is fixed by its first start (lang_config.json); a resumed run keeps it
