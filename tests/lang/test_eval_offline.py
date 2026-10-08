@@ -28,3 +28,71 @@ def test_evaluator_end_to_end(tmp_path):
     assert "shuffled/state/pooled" in M
     md = tables_md(M, "test")
     assert "| train |" in md
+
+
+def test_hj_return_matches_the_closed_form():
+    """E1 / D1: h = 1 until a violation k ticks ahead, then -1: V_k = (1 - g^k) + g^k (-1)."""
+    from main.lang.eval_offline import hj_return, next_violation
+
+    g, k = 0.9, 10
+    h = np.array([1.0] * k + [-1.0] * 5)[:, None]
+    y = hj_return(h, g)
+    assert abs(y[0, 0] - (1 - 2 * g ** k)) < 1e-9 and y[k, 0] == -1.0
+    nv = next_violation(np.array([[0.5], [0.2], [-0.1], [0.3]]))
+    assert nv[:, 0].tolist() == [2, 1, 0, -1]
+
+
+def _r(state, ep, task, cons, ref, fs, q, h, y=None, ttv=None, prior=None, sent="keep the block still"):
+    el = {ax: ax == "train" for ax in AXES}
+    return {"src": 0, "i": state, "episode_id": ep, "task": task, "consequence": cons, "referent": ref,
+            "fails_soon": fs, "q": {"train": q, "base": q}, "h": h, "y": y, "ttv": ttv, "prior": prior,
+            "eligible": el, "recall": fs, "sentences": {"train": sent}}
+
+
+def test_summarize_label_checks_strata_and_intervals():
+    """E1 / E2 / E4: rank by current h, agreement with the HJ return, text prior, time-to-violation and T5
+    size-word strata, episode-bootstrap intervals."""
+    rows = []
+    for ep in range(6):
+        for st in range(4):
+            sid = ep * 10 + st
+            rows.append(_r(sid, ep, "tray_transport", "upright", "tall", True, -0.2, 0.1, y=-0.3, ttv=st,
+                           prior=0.6, sent="don't tip the tall block"))
+            rows.append(_r(sid, ep, "tray_transport", "upright", "short", False, 0.4 if st else -0.5, 0.9, y=0.8,
+                           prior=0.2, sent="don't tip the red block"))
+    M = summarize(rows)
+    p = M["train/symmetric/pooled"]
+    assert p["n_pairs"] == 24 and p["n_episodes"] == 6
+    assert abs(p["rank_acc"] - 18 / 24) < 1e-9 and p["rank_acc_ci"][0] <= p["rank_acc"] <= p["rank_acc_ci"][1]
+    assert p["rank_acc_h"] == 1.0 and p["rank_acc_text"] == 1.0
+    assert abs(p["rank_acc_mc"] - 18 / 24) < 1e-9          # Q agrees with y's order where Q ranks right
+    assert M["train/symmetric/ttv/violated"]["rank_acc"] == 0.0    # st = 0: the benign Q was lower
+    assert M["train/symmetric/ttv/1-7"]["rank_acc"] == 1.0
+    assert M["train/symmetric/t5/size_word"]["n_pairs"] == 24
+    assert M["train/state/pooled"]["auroc_ci"][0] <= M["train/state/pooled"]["auroc"]
+    assert "Label checks" in tables_md(M, "t")
+
+
+def test_evaluator_prior_and_same_state_base(tmp_path):
+    """E2: the text prior fits on training roots; E3: the base sentence names another rule of the same state."""
+    import torch
+
+    from main.item_envs import language
+    from main.lang.eval_offline import TextPrior
+
+    torch.set_num_threads(4)
+    root = make_root(tmp_path / "val", episodes=4, capacity=400)
+    tr = trainer(tmp_path / "run", root)
+    tr.grad_step()
+    tr.save_ckpt()
+    ev = Evaluator(tmp_path / "run", "checkpoint.pt", [root], device="cpu", batch=16, text_encoder=StubText())
+    ev.prior = TextPrior([root])
+    M, rows = ev.evaluate(per_task=12, n_para=3, chunk_states=8)
+    assert all(r.get("prior") is not None and r.get("y") is not None for r in rows)
+    bank = language.load_bank()
+    for r in rows[:20]:
+        rec = ev.sources[r["src"]].rs.records[r["episode_id"]]
+        others = {o["rule_id"] for o in rec["rules"] if o.get("sampleable") and o["rule_id"] != r["rule"]}
+        if others:
+            base = r["sentences"]["base"]
+            assert any(base in language.sentences(o, rec, "train", bank) for o in rec["rules"] if o["rule_id"] in others)

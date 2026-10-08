@@ -317,7 +317,7 @@ metadata, which is deterministic per seed:
 | T2, T4 | the bead set (one rule. The nominal spills with some probability) |
 | T3 | elements with `on_path == True` in `env.task.layout_info["elements"]` (roles A and B) |
 | T5 | the tall block (`size == "tall"` in the record) |
-| T6 | the hit container (`env.task.episode_info["hit"]`) and the bead set (beads that reach a neighbour are also outside the target, so the spill rule is at risk too). Unclear: containers less than 90° in azimuth from the hit one (`episode_info["neighbors"][k]["az_deg"]`, in practice the diagonal `far_across` slot, which splashes reach). The task's own benign referent sits 90° away |
+| T6 | the hit container (`env.task.episode_info["hit"]`) and the bead set (beads that reach a neighbour are also outside the target, so the spill rule is at risk too). Unclear: the container in the diagonal `far_across` slot (`episode_info["neighbors"][k]["slot"]`, 45° from both outer slots, which splashes reach). The other outer slot is the task's own benign referent, 90° ± 20° away (each slot is jittered ±10°). Changed 2026-10-07 (review R1): the earlier cut at 90° of azimuth marked that benign container unclear in half the scenes. Records without slot names use a 67.5° cut |
 | T7 | the hit flanker (`env.task.episode_info["hit"]`) |
 
 The **referent** of a rule, for this purpose:

@@ -24,7 +24,12 @@ import numpy as np
 __all__ = ["referent", "in_way", "designation", "ref_rows", "mask_region_rows", "all_designations"]
 
 T1_OFF_PATH_MIN_DIST = 0.10  # m: spawn.py objects.off_path_min_dist (T1 yaml)
-T6_UNCLEAR_AZ_DEG = 90.0     # containers closer than this (azimuth) to the hit one
+# T6: the aim error points at an OUTER slot ("far" / "across", 90 deg apart, each jittered +-10 deg); the
+# diagonal "far_across" slot (45 deg from both) catches the splash in some runs: it is the unclear one, the
+# other outer slot is the env's benign referent (review R1: a 90 deg cut marked that one unclear in half the
+# scenes). Records without slot names fall back to this azimuth cut (45 +- 20 vs 90 +- 20 deg).
+T6_UNCLEAR_SLOT = "far_across"
+T6_UNCLEAR_AZ_DEG = 67.5
 
 
 def referent(rule: dict, record: dict) -> str | None:
@@ -93,14 +98,17 @@ def in_way(env, record) -> tuple[set, set]:
         return {o["item_id"] for o in record["objects"] if o.get("size") == "tall" and o.get("role") == "candidate"}, set()
     if task == "clean_pour":
         hit = info.get("hit")
-        nbs = info.get("neighbors") or []
-        az = {nb["region_id"]: float(nb.get("az_deg", 0.0)) for nb in nbs if "region_id" in nb}
+        nbs = [nb for nb in (info.get("neighbors") or []) if "region_id" in nb]
         unclear = set()
-        if hit in az:
-            for rid, a in az.items():
-                d = abs((a - az[hit] + 180.0) % 360.0 - 180.0)
-                if rid != hit and d < T6_UNCLEAR_AZ_DEG:
-                    unclear.add(rid)
+        if nbs and all("slot" in nb for nb in nbs):
+            unclear = {nb["region_id"] for nb in nbs if nb["slot"] == T6_UNCLEAR_SLOT and nb["region_id"] != hit}
+        else:
+            az = {nb["region_id"]: float(nb.get("az_deg", 0.0)) for nb in nbs}
+            if hit in az:
+                for rid, a in az.items():
+                    d = abs((a - az[hit] + 180.0) % 360.0 - 180.0)
+                    if rid != hit and d < T6_UNCLEAR_AZ_DEG:
+                        unclear.add(rid)
         return ({hit} if hit else set()) | _beads(record), unclear
     if task == "gap_place":
         hit = info.get("hit")

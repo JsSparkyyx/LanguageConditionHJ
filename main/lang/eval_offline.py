@@ -70,25 +70,99 @@ def axis_sentence(rule, rec, axis, key, bank) -> str | None:
     return ss[stable_hash((key, axis)) % len(ss)] if ss else None
 
 
+def _avg_ranks(x: np.ndarray) -> np.ndarray:
+    """1-based ranks, ties averaged (vectorized)."""
+    x = np.asarray(x, dtype=np.float64)
+    order = np.argsort(x, kind="mergesort")
+    xs = x[order]
+    _, start, counts = np.unique(xs, return_index=True, return_counts=True)
+    r = np.empty(len(x))
+    r[order] = np.repeat(start + (counts - 1) / 2.0 + 1, counts)
+    return r
+
+
 def auroc(score: np.ndarray, label: np.ndarray) -> float:
     """AUROC of score for label (rank-based, ties averaged)."""
     label = np.asarray(label, bool)
     n1, n0 = int(label.sum()), int((~label).sum())
     if n1 == 0 or n0 == 0:
         return float("nan")
-    order = np.argsort(score, kind="mergesort")
-    s = np.asarray(score)[order]
-    ranks = np.empty(len(s))
-    i = 0
-    while i < len(s):
-        j = i
-        while j + 1 < len(s) and s[j + 1] == s[i]:
-            j += 1
-        ranks[i:j + 1] = (i + j) / 2.0 + 1
-        i = j + 1
-    r = np.empty_like(ranks)
-    r[order] = ranks
+    r = _avg_ranks(score)
     return float((r[label].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
+
+
+def spearman(a, b) -> float:
+    a, b = _avg_ranks(a), _avg_ranks(b)
+    if a.std() == 0 or b.std() == 0:
+        return float("nan")
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def hj_return(h: np.ndarray, gamma: float) -> np.ndarray:
+    """[L, R] discounted HJ return of every rule's recorded h along one episode, the value a gamma critic
+    learns (review E1): y_{L-1} = h_{L-1}, y_t = (1 - gamma) h_t + gamma min(h_t, y_{t+1})."""
+    y = np.array(h, dtype=np.float64, copy=True)
+    for t in range(len(y) - 2, -1, -1):
+        y[t] = (1 - gamma) * h[t] + gamma * np.minimum(h[t], y[t + 1])
+    return y
+
+
+def next_violation(h: np.ndarray) -> np.ndarray:
+    """[L, R] ticks from t to the first h < 0 at or after t (0 = already violated), -1 = none in the episode."""
+    nv = np.full(h.shape, -1, dtype=np.int64)
+    if not len(h):
+        return nv
+    nv[-1] = np.where(h[-1] < 0, 0, -1)
+    for t in range(len(h) - 2, -1, -1):
+        nv[t] = np.where(h[t] < 0, 0, np.where(nv[t + 1] >= 0, nv[t + 1] + 1, -1))
+    return nv
+
+
+def rule_words(rule: dict, rec: dict) -> tuple:
+    """What a sentence can say about a rule without the scene: the consequence and the referent's words
+    (object category / colour / size, or the region kind / colour a bead rule refers to). The key of the
+    scene-free text prior (review E2); it is at least as informative as any one sentence."""
+    subj, ref = rule.get("subject") or {}, rule.get("reference") or {}
+    words = []
+    if "object" in subj:
+        o = rec["objects"][subj["object"]]
+        words += [o.get("category"), o.get("color"), o.get("size")]
+    elif "particles" in subj:
+        words.append("beads")
+    regs = [ref["region"]] if "region" in ref else list(ref.get("regions") or [])
+    for k in regs:
+        g = rec["regions"][k]
+        words += [g.get("kind"), g.get("color")]
+    return (rule["consequence"],) + tuple(str(w) for w in words if w)
+
+
+class TextPrior:
+    """P(fails_soon | rule words) from training data, Laplace-smoothed, backing off to the consequence: a
+    reader of the sentence that never looks at the scene (review E2)."""
+
+    def __init__(self, roots, k_prev: int = 2):
+        from collections import Counter
+
+        self.k, self.n = Counter(), Counter()
+        for r in roots:
+            src = LangSource(r, k_prev, 7)
+            if not src.rows.size:
+                continue
+            fs_all = src.rs.buf.arrays["fails_soon"]
+            for e in np.unique(src.eid):
+                idx = src.rows[src.eid == e]
+                rec = src.rs.records[int(e)]
+                for rule in rec["rules"]:
+                    if not rule.get("sampleable"):
+                        continue
+                    fs = np.asarray(fs_all[idx, int(rule["idx"])], dtype=bool)
+                    for key in (rule_words(rule, rec), (rule["consequence"],)):
+                        self.k[key] += int(fs.sum())
+                        self.n[key] += int(fs.size)
+
+    def __call__(self, words: tuple) -> float:
+        key = words if self.n[words] else (words[0],)
+        return (self.k[key] + 1.0) / (self.n[key] + 2.0)
 
 
 class Evaluator:
@@ -110,12 +184,17 @@ class Evaluator:
         load_policy(self.pe, ck)
         self.critics = LangTwinCritic(self.cfg).to(device).eval()
         self.critics.load_state_dict(ck["critics"])
-        self.text = TextStore(text_caches, self.cfg.text_backend, device,
-                              extra_path=self.run / "text_cache_extra.pt", backend_paths=self.cfg.backend_paths,
+        # the trainer's extras are read only; the evaluator writes its own file (review O7)
+        train_extra = [self.run / "text_cache_extra.pt"] if (self.run / "text_cache_extra.pt").exists() else []
+        self.text = TextStore(list(text_caches) + train_extra, self.cfg.text_backend, device,
+                              extra_path=self.run / "text_cache_extra_eval.pt", backend_paths=self.cfg.backend_paths,
                               encoder=text_encoder)
         self.bank = language.load_bank()
         self.batch = int(batch)
         self.ckpt_step = int(ck.get("step", 0))
+        self.gamma = float(self.cfg.gamma)
+        self._ep = {}
+        self.prior = None   # TextPrior, set by main when --prior-data is given
 
     # ------------------------------------------------------------- states --
     def states(self, per_task: int, every: int = 5, seed: int = 0):
@@ -130,6 +209,26 @@ class Evaluator:
                 lst = [lst[k] for k in sorted(rng.choice(len(lst), size=per_task, replace=False))]
             out += lst
         return out
+
+    def _episode(self, j: int, eid: int):
+        """(t_in_ep -> episode row, HJ return y [L, R], ticks to the next violation [L, R]) of one episode."""
+        key = (j, eid)
+        if key not in self._ep:
+            A, n = self.sources[j].rs.buf.arrays, self.sources[j].rs.buf.n
+            rows = np.flatnonzero(np.asarray(A["episode_id"][:n]) == eid)
+            t_in = np.asarray(A["t_in_ep"])[rows]
+            rows, t_in = rows[np.argsort(t_in, kind="stable")], np.sort(t_in, kind="stable")
+            h = np.asarray(A["h_rules"][rows], dtype=np.float64)
+            self._ep[key] = ({int(t): k for k, t in enumerate(t_in)}, hj_return(h, self.gamma), next_violation(h))
+        return self._ep[key]
+
+    def _base_sentence(self, rule, rec, j, eid, rng) -> str:
+        """The base for auroc_base / rank_acc_base: a sentence naming ANOTHER sampleable rule of the same
+        state (same task and scene; review E3); another episode's only when the state has no other rule."""
+        others = [r for r in rec["rules"] if r.get("sampleable") and r["rule_id"] != rule["rule_id"]]
+        if others:
+            return language.sample_sentence(others[int(rng.integers(len(others)))], rec, rng, "train", self.bank)
+        return self._other_sentence(j, eid, rng)
 
     def _other_sentence(self, j, eid, rng) -> str:
         eps = [(jj, int(e)) for jj, s in enumerate(self.sources) for e in np.unique(s.eid)]
@@ -187,6 +286,8 @@ class Evaluator:
                 eid, slot = int(s.eid[i]), int(s.rows[i])
                 rec = s.rs.records[eid]
                 A = s.rs.buf.arrays
+                tmap, y_ep, nv_ep = self._episode(j, eid)
+                k_ep = tmap.get(int(s.t[i]))
                 for rule in rec["rules"]:
                     el = {ax: eligible(rule, rec, ax, self.bank) for ax in AXES}
                     if not any(el.values()):
@@ -196,7 +297,12 @@ class Evaluator:
                             "t": int(s.t[i]), "rule": rule["rule_id"], "col": col, "consequence": rule["consequence"],
                             "referent": referent(rule, rec), "split": rule.get("split"),
                             "fails_soon": bool(A["fails_soon"][slot, col]), "recall": bool(s.recall[slot, col]),
-                            "h": float(A["h_rules"][slot, col]), "eligible": el, "q": {}}
+                            "h": float(A["h_rules"][slot, col]), "eligible": el, "q": {},
+                            "y": float(y_ep[k_ep, col]) if k_ep is not None else None,
+                            "ttv": int(nv_ep[k_ep, col]) if k_ep is not None and nv_ep[k_ep, col] >= 0 else None,
+                            "words": list(rule_words(rule, rec)), "sentences": {}}
+                    if self.prior is not None:
+                        base["prior"] = float(self.prior(tuple(base["words"])))
                     r_idx = len(rows)
                     rows.append(base)
                     for ax in AXES:
@@ -204,10 +310,12 @@ class Evaluator:
                             continue
                         sent = (self._other_sentence(j, eid, rng) if ax == "shuffled"
                                 else axis_sentence(rule, rec, ax, (eid, int(s.t[i]), col), self.bank))
+                        base["sentences"][ax] = sent
                         items.append((k, sent))
                         meta.append((r_idx, ax))
-                    # base sentence for auroc_base / rank_acc_base (another episode's)
-                    items.append((k, self._other_sentence(j, eid, rng)))
+                    # base sentence for auroc_base / rank_acc_base: another rule of the same state (E3)
+                    base["sentences"]["base"] = self._base_sentence(rule, rec, j, eid, rng)
+                    items.append((k, base["sentences"]["base"]))
                     meta.append((r_idx, "base"))
                     if rule.get("sampleable") and len(para_rows) < para_states * len(CANON_TASKS) and \
                             stable_hash((eid, int(s.t[i]), col, "para")) % 4 == 0:
@@ -244,9 +352,90 @@ def _pairs(rows: list[dict]):
                     yield (rs[a], rs[b]) if rs[a]["fails_soon"] else (rs[b], rs[a])   # (harmful, benign)
 
 
-def summarize(rows: list[dict]) -> dict:
+BOOT = 1000          # episode-cluster bootstrap resamples for rank cells (review E4)
+BOOT_AUROC = 200     # ... for AUROC cells
+MC_EPS = 0.05        # rank_acc_mc counts pairs whose HJ returns differ by more than this
+TTV_BINS = (("violated", 0, 0), ("1-7", 1, 7), ("8-25", 8, 25))
+SIZE_WORDS = ("tall", "short")
+
+
+def _ttv_bin(k):
+    for name, lo, hi in TTV_BINS:
+        if k is not None and lo <= k <= hi:
+            return name
+    return None
+
+
+def boot_mean_ci(obs, B: int = BOOT, seed: int = 0) -> tuple[float, float]:
+    """95% interval of the mean of (cluster, value) observations, resampling whole clusters (episodes: the
+    pairs of one episode, every 5th tick, are correlated)."""
+    if not obs:
+        return float("nan"), float("nan")
+    keys = {}
+    sums, cnts = defaultdict(float), defaultdict(int)
+    for c, v in obs:
+        keys.setdefault(c, len(keys))
+        sums[c] += v
+        cnts[c] += 1
+    if len(keys) < 2:
+        return float("nan"), float("nan")
+    S = np.array([sums[c] for c in keys])
+    N = np.array([cnts[c] for c in keys], dtype=np.float64)
+    idx = np.random.default_rng(seed).integers(len(keys), size=(B, len(keys)))
+    vals = S[idx].sum(1) / N[idx].sum(1)
+    return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
+
+
+def boot_auroc_ci(score, label, clusters, B: int = BOOT_AUROC, seed: int = 0) -> tuple[float, float]:
+    score, label, clusters = np.asarray(score), np.asarray(label, bool), np.asarray(clusters)
+    uniq, inv = np.unique(clusters, return_inverse=True)
+    if len(uniq) < 2:
+        return float("nan"), float("nan")
+    members = [np.flatnonzero(inv == k) for k in range(len(uniq))]
+    rng = np.random.default_rng(seed)
+    vals = []
+    for _ in range(B):
+        sel = np.concatenate([members[k] for k in rng.integers(len(uniq), size=len(uniq))])
+        a = auroc(score[sel], label[sel])
+        if a == a:
+            vals.append(a)
+    if len(vals) < B // 2:
+        return float("nan"), float("nan")
+    return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
+
+
+def _ep(r) -> str:
+    return f"{r['src']}:{r['episode_id']}"
+
+
+def summarize(rows: list[dict], seed: int = 0) -> dict:
+    """Pair metrics per axis and group, each with an episode-bootstrap 95% interval (`<metric>_ci`) and the
+    number of episodes behind it:
+
+    - rank_acc: P[Q(harmful) < Q(benign)] (labels: fails_soon); rank_acc_base: the harmful rule's sentence
+      replaced by another rule's of the same state (mixed pairs); rank_acc_referent / _consequence;
+    - label checks (review E1): rank_acc_h ranks by the rules' CURRENT h (no model: a perfect reader with
+      no foresight); rank_acc_mc = agreement of Q's order with the order of the discounted HJ return y
+      (what a gamma critic learns), over pairs with |y1 - y2| > MC_EPS; rank_acc_text ranks by a scene-free
+      text prior P(fails_soon | rule words) fit on training data (review E2; with --prior-data);
+    - groups: pooled, task, consequence, the harmful rule's time to its first violation (violated / 1-7 /
+      8-25 ticks, review E1c), and T5 pairs split by whether either sentence has a size word (review E2).
+    Per (state, rule): AUROC of -Q for fails_soon with intervals, and the per-state Spearman correlation of
+    Q with y across the state's rules (states with >= 3 rules).
+    """
     out = {}
-    groups = lambda r: [("pooled",), ("task", r["task"]), ("cons", r["consequence"])]  # noqa: E731
+
+    def groups(hr, bn, ax):
+        g = [("pooled",), ("task", hr["task"]), ("cons", hr["consequence"])]
+        b = _ttv_bin(hr.get("ttv"))
+        if b:
+            g.append(("ttv", b))
+        if hr["task"] == "tray_transport":
+            sents = [(x.get("sentences") or {}).get(ax) or "" for x in (hr, bn)]
+            sw = any(w in sent.lower().split() for sent in sents for w in SIZE_WORDS)
+            g.append(("t5", "size_word" if sw else "no_size_word"))
+        return g
+
     for ax in AXES:
         acc = defaultdict(lambda: defaultdict(list))
         for hr, bn in _pairs(rows):
@@ -270,27 +459,42 @@ def summarize(rows: list[dict]) -> dict:
                 continue
             same_cons = hr["consequence"] == bn["consequence"]
             same_ref = hr["referent"] == bn["referent"] and hr["referent"] is not None
-            for g in groups(hr):
+            ep = _ep(hr)
+            ok = float(qh < qb)
+            for g in groups(hr, bn, ax):
                 d = acc[(kind,) + g]
-                d["rank"].append(qh < qb)
+                d["rank"].append((ep, ok))
                 if qh0 is not None:
-                    d["rank_base"].append(qh0 < qb0)
+                    d["rank_base"].append((ep, float(qh0 < qb0)))
                 if same_cons and not same_ref:
-                    d["rank_ref"].append(qh < qb)
+                    d["rank_ref"].append((ep, ok))
                 if same_ref and not same_cons:
-                    d["rank_cons"].append(qh < qb)
+                    d["rank_cons"].append((ep, ok))
+                d["rank_h"].append((ep, 0.5 if hr["h"] == bn["h"] else float(hr["h"] < bn["h"])))
+                if hr.get("y") is not None and bn.get("y") is not None and abs(hr["y"] - bn["y"]) > MC_EPS:
+                    d["rank_mc"].append((ep, float(ok == float(hr["y"] < bn["y"]))))
+                if hr.get("prior") is not None and bn.get("prior") is not None:
+                    d["rank_text"].append((ep, 0.5 if hr["prior"] == bn["prior"] else float(hr["prior"] > bn["prior"])))
         for key, d in acc.items():
             name = "/".join([ax] + list(key))
-            m = {"n_pairs": len(d["rank"]), "rank_acc": float(np.mean(d["rank"]))}
-            if d["rank_base"]:
-                m["rank_acc_base"] = float(np.mean(d["rank_base"]))
+            m = {"n_pairs": len(d["rank"]), "n_episodes": len({c for c, _ in d["rank"]}),
+                 "rank_acc": float(np.mean([v for _, v in d["rank"]])), "rank_acc_ci": boot_mean_ci(d["rank"], seed=seed)}
+            for src, dst, n_key in (("rank_base", "rank_acc_base", None), ("rank_ref", "rank_acc_referent", "n_referent"),
+                                    ("rank_cons", "rank_acc_consequence", "n_consequence"), ("rank_h", "rank_acc_h", None),
+                                    ("rank_mc", "rank_acc_mc", "n_mc"), ("rank_text", "rank_acc_text", None)):
+                if d[src]:
+                    m[dst] = float(np.mean([v for _, v in d[src]]))
+                    m[dst + "_ci"] = boot_mean_ci(d[src], seed=seed)
+                    if n_key:
+                        m[n_key] = len(d[src])
+            if "rank_acc_base" in m:
                 m["rank_acc_minus_base"] = m["rank_acc"] - m["rank_acc_base"]
-            if d["rank_ref"]:
-                m["rank_acc_referent"], m["n_referent"] = float(np.mean(d["rank_ref"])), len(d["rank_ref"])
-            if d["rank_cons"]:
-                m["rank_acc_consequence"], m["n_consequence"] = float(np.mean(d["rank_cons"])), len(d["rank_cons"])
             out[name] = m
-        # per (state, rule) metrics
+        for kind in ("symmetric", "mixed"):   # task-macro mean (every task weighs the same; review E4)
+            tm = [out[f"{ax}/{kind}/task/{t}"]["rank_acc"] for t in CANON_TASKS if f"{ax}/{kind}/task/{t}" in out]
+            if tm and f"{ax}/{kind}/pooled" in out:
+                out[f"{ax}/{kind}/pooled"]["rank_acc_task_macro"] = float(np.mean(tm))
+        # per (state, rule)
         sel = [r for r in rows if r["eligible"][ax] and ax in r["q"]]
         for gname, f in (("pooled", lambda r: True),) + tuple(
                 ((f"task/{t}"), (lambda r, t=t: r["task"] == t)) for t in CANON_TASKS) + tuple(
@@ -304,65 +508,126 @@ def summarize(rows: list[dict]) -> dict:
             fs = np.array([r["fails_soon"] for r in rr])
             rec = np.array([r["recall"] for r in rr])
             h = np.array([r["h"] for r in rr])
+            cl = np.array([_ep(r) for r in rr])
             pred = q < 0
             tp = float((pred & rec).sum())
             m = out.setdefault(f"{ax}/state/{gname}", {})
-            m.update({"n": len(rr), "auroc": auroc(-q, fs), "auroc_base": auroc(-qb, fs),
+            m.update({"n": len(rr), "n_episodes": int(len(set(cl))), "auroc": auroc(-q, fs),
+                      "auroc_ci": boot_auroc_ci(-q, fs, cl, seed=seed), "auroc_base": auroc(-qb, fs),
+                      "auroc_base_ci": boot_auroc_ci(-qb, fs, cl, seed=seed),
                       "prec_at_0": tp / max(float(pred.sum()), 1e-9), "rec_at_0": tp / max(float(rec.sum()), 1e-9),
                       "v_le_h": float((q <= h + V_LE_H_EPS).mean()), "q_mean": float(q.mean()), "h_mean": float(h.mean())})
-            if ax == "train":
-                para = [np.std(r["q"]["para"]) for r in rr if len(r["q"].get("para", [])) >= 2]
+            by_state = defaultdict(list)
+            for r in rr:
+                if r.get("y") is not None:
+                    by_state[(r["src"], r["i"])].append((r["q"][ax], r["y"]))
+            rho = [spearman([a for a, _ in v], [b for _, b in v]) for v in by_state.values() if len(v) >= 3]
+            rho = [x for x in rho if x == x]
+            if rho:
+                m["spearman_q_y"], m["n_spearman_states"] = float(np.mean(rho)), len(rho)
+            if ax == "train":   # paraphrase vs rule spread over the SAME states (review M8)
+                by_state = defaultdict(list)
+                for r in rr:
+                    by_state[(r["src"], r["i"])].append(r)
+                para, across = [], []
+                for v in by_state.values():
+                    p_ = [np.std(r["q"]["para"]) for r in v if len(r["q"].get("para", [])) >= 2]
+                    if p_ and len(v) >= 2:
+                        para += p_
+                        across.append(np.std([r["q"]["train"] for r in v]))
                 if para:
-                    m["para_std"] = float(np.mean(para))
-                    across = []
-                    by_state = defaultdict(list)
-                    for r in rr:
-                        by_state[(r["src"], r["i"])].append(r["q"]["train"])
-                    across = [np.std(v) for v in by_state.values() if len(v) >= 2]
-                    if across:
-                        m["rule_std"] = float(np.mean(across))
-                        m["para_std_ratio"] = m["para_std"] / max(m["rule_std"], 1e-9)
+                    m["para_std"], m["rule_std"] = float(np.mean(para)), float(np.mean(across))
+                    m["para_std_ratio"] = m["para_std"] / max(m["rule_std"], 1e-9)
     return out
 
 
+def _ci(m: dict, key: str, nd: int = 2) -> str:
+    v, c = m.get(key), m.get(key + "_ci")
+    if v is None or v != v:
+        return "–"
+    return f"{v:.{nd}f} [{c[0]:.{nd}f}, {c[1]:.{nd}f}]" if c and c[0] == c[0] else f"{v:.{nd}f}"
+
+
 def tables_md(M: dict, title: str) -> str:
+    sym = lambda ax, g: M.get(f"{ax}/symmetric/{g}", {})  # noqa: E731
     L = [f"# Offline language probe: {title}", "",
-         "rank_acc = P[Q(harmful rule) < Q(benign rule)] over symmetric pairs at the same state (chance 0.5).", "",
-         "| axis | pooled | " + " | ".join(f"T{i + 1}" for i in range(len(CANON_TASKS))) + " | referent | consequence |",
-         "|---|---|" + "---|" * len(CANON_TASKS) + "---|---|"]
+         "rank_acc = P[Q(harmful rule) < Q(benign rule)] over symmetric pairs at the same state (chance 0.5), "
+         "labels from fails_soon (h < 0 within 25 ticks). [ ] = episode-bootstrap 95% interval; cells give "
+         "(pairs / episodes). The shuffled axis is 0.5 by construction (both members get other-episode "
+         "sentences): a code check, not a result.", "",
+         "| axis | pooled | task macro | " + " | ".join(f"T{i + 1}" for i in range(len(CANON_TASKS))) + " | referent | consequence |",
+         "|---|---|---|" + "---|" * len(CANON_TASKS) + "---|---|"]
     for ax in AXES:
-        p = M.get(f"{ax}/symmetric/pooled", {})
-        cells = [f"{p['rank_acc']:.3f} ({p['n_pairs']})" if p else "–"]
+        p = sym(ax, "pooled")
+        cells = [f"{_ci(p, 'rank_acc', 3)} ({p['n_pairs']} / {p['n_episodes']})" if p else "–",
+                 f"{p['rank_acc_task_macro']:.3f}" if p.get("rank_acc_task_macro") is not None else "–"]
         for t in CANON_TASKS:
-            m = M.get(f"{ax}/symmetric/task/{t}", {})
+            m = sym(ax, f"task/{t}")
             cells.append(f"{m['rank_acc']:.2f} ({m['n_pairs']})" if m else "–")
-        cells.append(f"{p['rank_acc_referent']:.3f} ({p['n_referent']})" if p.get("rank_acc_referent") is not None else "–")
-        cells.append(f"{p['rank_acc_consequence']:.3f} ({p['n_consequence']})" if p.get("rank_acc_consequence") is not None else "–")
+        cells.append(f"{_ci(p, 'rank_acc_referent')} ({p['n_referent']})" if p.get("rank_acc_referent") is not None else "–")
+        cells.append(f"{_ci(p, 'rank_acc_consequence')} ({p['n_consequence']})" if p.get("rank_acc_consequence") is not None else "–")
         L.append(f"| {ax} | " + " | ".join(cells) + " |")
-    L += ["", "Mixed pairs (only one member axis-eligible): rank_acc - rank_acc_base (r1's sentence from another episode).", "",
+    L += ["", "**Label checks (review E1, E2), training templates.** h now: rank by each rule's current h, no model "
+          "(a perfect reader with no foresight). vs HJ return: agreement of Q's order with the discounted HJ return "
+          "y_t = (1 - gamma) h_t + gamma min(h_t, y_t+1) of the recorded h (what the critic learns), pairs with "
+          "|y1 - y2| > 0.05. text prior: rank by P(fails_soon | consequence + referent words) from training data, "
+          "never looking at the scene. Spearman: per state, Q vs y across its rules (>= 3 rules).", "",
+          "| group | rank_acc (pairs) | h now | vs HJ return (pairs) | text prior | Spearman Q, y (states) |",
+          "|---|---|---|---|---|---|"]
+    for g in ["pooled"] + [f"task/{t}" for t in CANON_TASKS]:
+        m = sym("train", g)
+        st = M.get(f"train/state/{g}", {})
+        if not m:
+            continue
+        L.append(f"| {g} | {_ci(m, 'rank_acc')} ({m['n_pairs']}) | {_ci(m, 'rank_acc_h')} | "
+                 f"{_ci(m, 'rank_acc_mc')} ({m.get('n_mc', 0)}) | {_ci(m, 'rank_acc_text')} | "
+                 f"{st.get('spearman_q_y', float('nan')):.2f} ({st.get('n_spearman_states', 0)}) |")
+    L += ["", "**By the harmful rule's time to its first violation (review E1c)**, training templates. A gamma = 0.9 "
+          "critic with h = 1 before and -1 after a violation k ticks ahead values it 1 - 2 * 0.9^k (0.30 at k = 10).", "",
+          "| harmful rule | rank_acc (pairs / episodes) | h now | vs HJ return |", "|---|---|---|---|"]
+    for name, _, _ in TTV_BINS:
+        m = sym("train", f"ttv/{name}")
+        if m:
+            L.append(f"| {name} | {_ci(m, 'rank_acc')} ({m['n_pairs']} / {m['n_episodes']}) | {_ci(m, 'rank_acc_h')} | "
+                     f"{_ci(m, 'rank_acc_mc')} |")
+    L += ["", "**T5 pairs by size words (review E2):** the at-risk block is always the tall one.", "",
+          "| T5 pairs | rank_acc (pairs) |", "|---|---|"]
+    for k in ("size_word", "no_size_word"):
+        m = sym("train", f"t5/{k}")
+        if m:
+            L.append(f"| {k.replace('_', ' ')} | {_ci(m, 'rank_acc')} ({m['n_pairs']}) |")
+    L += ["", "**Referent vs consequence within the tasks that have both (review E5)**, training templates.", "",
+          "| task | referent (pairs) | consequence (pairs) |", "|---|---|---|"]
+    for t in ("selective_avoid", "push_zone", "gap_place"):
+        m = sym("train", f"task/{t}")
+        if m:
+            L.append(f"| {t} | {_ci(m, 'rank_acc_referent')} ({m.get('n_referent', 0)}) | "
+                     f"{_ci(m, 'rank_acc_consequence')} ({m.get('n_consequence', 0)}) |")
+    L += ["", "Mixed pairs (only one member axis-eligible): rank_acc - rank_acc_base (r1's sentence replaced by "
+          "another rule's of the same state).", "",
           "| axis | n pairs | rank_acc | rank_acc_base | difference |", "|---|---|---|---|---|"]
     for ax in ("heldout_word", "heldout_item"):
         m = M.get(f"{ax}/mixed/pooled")
         if m:
-            L.append(f"| {ax} | {m['n_pairs']} | {m['rank_acc']:.3f} | {m.get('rank_acc_base', float('nan')):.3f} | "
+            L.append(f"| {ax} | {m['n_pairs']} | {_ci(m, 'rank_acc', 3)} | {_ci(m, 'rank_acc_base', 3)} | "
                      f"{m.get('rank_acc_minus_base', float('nan')):+.3f} |")
-    L += ["", "Per (state, rule): AUROC of -Q for fails_soon (base: other-episode sentences), precision / recall of Q < 0 "
-          "against fails_soon_recall (7 ticks), v_le_h = P[Q <= h + 0.05].", "",
-          "| axis | n | auroc | auroc_base | prec@0 | rec@0 | v_le_h | para_std | para_std_ratio |",
+    L += ["", "Per (state, rule): AUROC of -Q for fails_soon (base: another rule's sentence of the same state), "
+          "precision / recall of Q < 0 against fails_soon_recall (7 ticks), v_le_h = P[Q <= h + 0.05].", "",
+          "| axis | n (episodes) | auroc | auroc_base | prec@0 | rec@0 | v_le_h | para_std | para_std_ratio |",
           "|---|---|---|---|---|---|---|---|---|"]
     for ax in AXES:
         m = M.get(f"{ax}/state/pooled")
         if m:
-            L.append(f"| {ax} | {m['n']} | {m['auroc']:.3f} | {m['auroc_base']:.3f} | {m['prec_at_0']:.3f} | "
-                     f"{m['rec_at_0']:.3f} | {m['v_le_h']:.3f} | {m.get('para_std', float('nan')):.3f} | "
+            L.append(f"| {ax} | {m['n']} ({m.get('n_episodes', '?')}) | {_ci(m, 'auroc', 3)} | {_ci(m, 'auroc_base', 3)} | "
+                     f"{m['prec_at_0']:.3f} | {m['rec_at_0']:.3f} | {m['v_le_h']:.3f} | {m.get('para_std', float('nan')):.3f} | "
                      f"{m.get('para_std_ratio', float('nan')):.3f} |")
     L += ["", "Per task (train axis):", "", "| task | n | auroc | auroc_base | rank_acc | v_le_h |", "|---|---|---|---|---|---|"]
     for t in CANON_TASKS:
         m = M.get(f"train/state/task/{t}")
-        p = M.get(f"train/symmetric/task/{t}", {})
+        p = sym("train", f"task/{t}")
         if m:
-            L.append(f"| {t} | {m['n']} | {m['auroc']:.3f} | {m['auroc_base']:.3f} | "
-                     f"{p.get('rank_acc', float('nan')):.3f} | {m['v_le_h']:.3f} |")
+            L.append(f"| {t} | {m['n']} | {_ci(m, 'auroc', 3)} | {_ci(m, 'auroc_base', 3)} | "
+                     f"{_ci(p, 'rank_acc', 3)} | {m['v_le_h']:.3f} |")
     return "\n".join(L) + "\n"
 
 
@@ -420,6 +685,18 @@ def examples_md(ev: Evaluator, rows: list[dict], path: Path, n: int = 8) -> None
     path.write_text("\n".join(L))
 
 
+def data_info(ev, rows, roots) -> dict:
+    """What the numbers cover (review M6): tasks scored, bead-task rows left out for their old bead h, and
+    which bead h the scored bead rows carry ("count" = n_violating stored, "old", or "none" scored)."""
+    from .data import BEAD_TASKS
+
+    bead_srcs = [s for s in ev.sources if s.rows.size and any(CANON_TASKS[int(t)] in BEAD_TASKS for t in np.unique(s.task))]
+    bead_h = ("none" if not bead_srcs else
+              "count" if all((s.root / "item_buffer" / "n_violating.npy").exists() for s in bead_srcs) else "old")
+    return {"tasks": sorted({r["task"] for r in rows}), "stale_bead_rows_dropped": int(sum(s.n_stale_dropped for s in ev.sources)),
+            "bead_h": bead_h, "val_roots": [str(r) for r in roots]}
+
+
 def main(argv=None) -> int:
     from .train import caches_of, roots_of
 
@@ -431,15 +708,22 @@ def main(argv=None) -> int:
     ap.add_argument("--states-per-task", type=int, default=2000)
     ap.add_argument("--paraphrases", type=int, default=3)
     ap.add_argument("--batch", type=int, default=96)
+    ap.add_argument("--prior-data", nargs="*", default=None,
+                    help="training data roots for the scene-free text prior (rank_acc_text), e.g. data/lang/warmup")
     args = ap.parse_args(argv)
     roots = roots_of(args.val)
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.val)
     ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch)
+    if args.prior_data:
+        ev.prior = TextPrior(roots_of(args.prior_data), ev.cfg.k_prev)
     M, rows = ev.evaluate(args.states_per_task, args.paraphrases)
     out = Path(args.run) / "eval_offline" / Path(args.ckpt).stem
     out.mkdir(parents=True, exist_ok=True)
-    (out / "metrics.json").write_text(json.dumps({"ckpt": args.ckpt, "step": ev.ckpt_step, "metrics": M}, indent=1))
-    (out / "tables.md").write_text(tables_md(M, f"{Path(args.run).name} / {args.ckpt} (step {ev.ckpt_step})"))
+    data = data_info(ev, rows, roots)
+    (out / "metrics.json").write_text(json.dumps({"ckpt": args.ckpt, "step": ev.ckpt_step, "data": data, "metrics": M},
+                                                 indent=1))
+    (out / "tables.md").write_text(tables_md(M, f"{Path(args.run).name} / {args.ckpt} (step {ev.ckpt_step})")
+                                   + f"\nData: {json.dumps(data)}\n")
     figures(M, rows, out)
     examples_md(ev, rows, out / "examples.md")
     ev.text.save_extra()

@@ -211,8 +211,10 @@ class Models:
         self.actor.load_state_dict(ck["actor"])
         self.critics = LangTwinCritic(self.cfg).cuda().eval()
         self.critics.load_state_dict(ck["critics"])
-        self.text = TextStore(caches, self.cfg.text_backend, "cuda", extra_path=run / "text_cache_extra.pt",
-                              backend_paths=self.cfg.backend_paths)
+        # the trainer's extras are read only; the evaluator writes its own file (review O7)
+        train_extra = [run / "text_cache_extra.pt"] if (run / "text_cache_extra.pt").exists() else []
+        self.text = TextStore(list(caches) + train_extra, self.cfg.text_backend, "cuda",
+                              extra_path=run / "text_cache_extra_eval.pt", backend_paths=self.cfg.backend_paths)
         self.step = int(ck.get("step", 0))
 
 

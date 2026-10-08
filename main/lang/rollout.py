@@ -134,6 +134,16 @@ class LangRolloutController(RolloutController):
 
             if isinstance(self.policy_enc, LangPolicyEncoder):
                 self.policy_enc = LangPolicyShim(self, self.policy_enc, int(getattr(self.cfg, "k_prev", 2)))
+        self._h_unit_margins()
+
+    def _h_unit_margins(self) -> None:
+        """The base class scales filter_margin / filter_release_margin by h_scale (CrossSafe's metres -> h x 20
+        units). This critic's Q is in h units, as are LangConfig's margins: undo the scale (review O5; at the
+        default 0 it made no difference, at 0.05 the filter compared Q with 1.0 and never released)."""
+        flt = getattr(self, "flt", None)
+        if flt is not None:
+            flt.margin = float(getattr(self.cfg, "filter_margin", 0.0))
+            flt.release_margin = float(getattr(self.cfg, "filter_release_margin", 0.0))
 
     # ------------------------------------------------------------------ text --
     def set_instruction(self, sentence: str, cf_sentence: str | None = None, rule_id: str | None = None) -> None:

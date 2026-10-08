@@ -78,18 +78,43 @@ def make_ring(run: Path, cfg, rounds: int, episodes_per_round: int):
     from main.train.buffer import StepBuffer
 
     ring = run / "ring"
-    if (ring / "buffer" / "header.json").exists():
-        buf = StepBuffer(ring / "buffer")
-        side = ItemSidecarBuffer.for_step_buffer(buf)
-        return buf, side
     cap = int(rounds * episodes_per_round * cfg.max_steps_per_episode * 1.1) + 16
+    if (ring / "buffer" / "header.json").exists():
+        # opened directly: for_step_buffer refuses a pair whose n differ, which a kill between the two
+        # flushes leaves, before the resume can roll both back (review O2)
+        buf = StepBuffer(ring / "buffer")
+        side = ItemSidecarBuffer(ring / "item_buffer")
+        if side.capacity != buf.capacity:
+            raise SystemExit(f"{ring}: buffer capacity {buf.capacity} != sidecar capacity {side.capacity}")
+        if buf.capacity < cap:   # the ring never wraps: it must hold every round asked for (review O3)
+            raise SystemExit(f"{ring}: capacity {buf.capacity} rows < {cap} needed for {rounds} rounds x "
+                             f"{episodes_per_round} episodes; resume with the values of the first launch "
+                             f"(lang_config.json) or start a new run")
+        return buf, side
     buf = StepBuffer(ring / "buffer", capacity=cap, header=cfg.to_dict())
     side = ItemSidecarBuffer.for_step_buffer(buf, n_tok=token_grid()[1])
     return buf, side
 
 
 def run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, collect_fn=None) -> int:
-    """trainer / collect_fn: injected by the CPU tests (default: a LangTrainer and run_episodes)."""
+    """trainer / collect_fn: injected by the CPU tests (default: a LangTrainer and run_episodes).
+
+    One process per run (review O1): the ring's writer lock is held for the whole call; a second process
+    refuses (after waiting out a crashed one's lock)."""
+    from .locks import WriterLock
+
+    run = Path(args.run).resolve()
+    try:
+        writer = WriterLock(run / "ring", wait_s=200.0)
+    except WriterLock.LockHeld as exc:
+        raise SystemExit(f"[rounds] {exc}: is another job running this run?")
+    try:
+        return _run_rounds(cfg, args, roots, vals, caches, tasks, embs, trainer=trainer, collect_fn=collect_fn)
+    finally:
+        writer.release()
+
+
+def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, collect_fn=None) -> int:
     from .metrics import LangRoundMetrics
 
     run = Path(args.run).resolve()
@@ -124,6 +149,8 @@ def run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, col
             ring_buf.discard_to(n)
             ring_side.discard_to(n)
             ring_buf.flush(), ring_side.flush()
+        if (len(ring_buf), len(ring_side)) != (n, n):
+            raise SystemExit(f"{run}: ring at ({len(ring_buf)}, {len(ring_side)}) rows after the roll-back to {n}")
 
         def kept(d):   # episodes the restored state already contains
             rd = int(d.get("round", -1))

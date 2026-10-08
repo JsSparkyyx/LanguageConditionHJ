@@ -2,9 +2,11 @@
 
     python -m main.lang.report --runs runs/lang/* --out docs/lang_filter/results/
 
-Reads each run's ``lang_config.json``, the latest ``eval_offline/<ckpt>/metrics.json`` and, when present,
-``eval_closed/<ckpt>/summary.json``. A run's variant is read from its config (relabel mode, shuffled
-text, path switches, text backend, task filter), never from its name.
+Reads each run's ``lang_config.json``, ``eval_offline/<ckpt>/metrics.json`` and, when present,
+``eval_closed/<ckpt>/summary.json`` for the checkpoint named by ``--ckpt`` (review M6: not the newest file,
+which mixed checkpoints). A run's variant is read from its config (relabel mode, shuffled text, path
+switches, text backend, task filter), never from its name. Runs whose offline numbers cover different task
+sets (e.g. bead tasks left out for their old bead h) are never put in one table: each task set gets its own.
 
 - Q1 (does relabeling teach the filter to read?): paired vs random vs fixed vs shuffled, rank_acc on the
   train and held-out-template axes, AUROC vs its other-episode baseline;
@@ -43,19 +45,21 @@ def variant(cfg: dict) -> str:
     return "+".join(parts) or "full"
 
 
-def load_run(d: Path) -> dict | None:
+def load_run(d: Path, ckpt: str = "checkpoint_final") -> dict | None:
     cfgp = d / "lang_config.json"
     if not cfgp.exists():
         return None
     cfg = json.loads(cfgp.read_text())
-    off = sorted((d / "eval_offline").glob("*/metrics.json"), key=lambda p: p.stat().st_mtime)
-    clo = sorted((d / "eval_closed").glob("*/summary.json"), key=lambda p: p.stat().st_mtime)
+    stem = Path(ckpt).stem
+    off = [p for p in [d / "eval_offline" / stem / "metrics.json"] if p.exists()]
+    clo = [p for p in [d / "eval_closed" / stem / "summary.json"] if p.exists()]
     if not off and not clo:
         return None
     r = {"name": d.name, "cfg": cfg, "variant": variant(cfg), "mode": "rounds" if (d / "ring").exists() else "offline"}
     if off:
         m = json.loads(off[-1].read_text())
         r["offline"], r["offline_ckpt"], r["step"] = m["metrics"], m.get("ckpt"), m.get("step")
+        r["data"] = m.get("data")
     if clo:
         r["closed"] = json.loads(clo[-1].read_text())
     return r
@@ -172,13 +176,25 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--runs", nargs="+", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--ckpt", default="checkpoint_final", help="the checkpoint whose evaluations every run reports")
     args = ap.parse_args(argv)
     dirs = sorted({Path(p) for s in args.runs for p in glob.glob(s) if Path(p).is_dir()})
-    runs = [r for r in (load_run(d) for d in dirs) if r]
+    runs = [r for r in (load_run(d, args.ckpt) for d in dirs) if r]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    md = "\n\n".join(["# Results by research question", f"{len(runs)} runs: " + ", ".join(r["name"] for r in runs),
-                      q1(runs), q2(runs), q3(runs), q4(runs), closed(runs)]) + "\n"
+    groups = {}
+    for r in runs:   # one section per task set the offline numbers cover
+        d = r.get("data") or {}
+        key = (tuple(d.get("tasks") or ()), d.get("bead_h"))
+        groups.setdefault(key, []).append(r)
+    parts = ["# Results by research question", f"checkpoint {args.ckpt}; {len(runs)} runs: " + ", ".join(r["name"] for r in runs)]
+    for (tasks, bead_h), rr in groups.items():
+        what = (f"tasks {', '.join(tasks)}; bead h: {bead_h}" if tasks else
+                "task set not recorded (metrics.json from before 2026-10-07: rerun eval_offline)")
+        dropped = sum(int((r.get("data") or {}).get("stale_bead_rows_dropped", 0)) for r in rr)
+        parts += [f"# Runs scored on {what}" + (f" ({dropped} old-h bead rows left out)" if dropped else ""),
+                  q1(rr), q2(rr), q3(rr), q4(rr), closed(rr)]
+    md = "\n\n".join(parts) + "\n"
     (out / "results.md").write_text(md)
     figure(runs, out)
     print(md)

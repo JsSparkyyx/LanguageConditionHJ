@@ -359,7 +359,7 @@ def stage_deadline(budget: float | None) -> float | None:
 
 
 def _check_fresh(out: Path) -> None:
-    if out.exists() and any(out.iterdir()):
+    if out.exists() and any(p for p in out.iterdir() if not p.name.startswith(".writer.")):
         raise SystemExit(f"{out} is not empty: shards are collected into fresh directories only")
 
 
@@ -429,6 +429,15 @@ def cmd_shard(args, kind: str) -> int:
             "slots": [list(x) for x in slots], "config_hash": cfg.hash(), "bank_hash": cfg.bank_hash,
             "masks": not args.no_masks}
     capacity = int(len(slots) * cfg.max_steps_per_episode * 1.1) + 16
+    # one writer per shard for this process's lifetime (review O1): a second process (a duplicated claim)
+    # waits out a crashed writer's lock, then leaves the shard to the live one (exit 75: resumable)
+    from .locks import WriterLock
+
+    try:
+        writer = WriterLock(out, wait_s=200.0)
+    except WriterLock.LockHeld as exc:
+        print(f"[collect] {exc}: leaving this shard to that process (exit 75)", flush=True)
+        return 75
     if (out / "shard.json").exists():
         old = json.loads((out / "shard.json").read_text())
         if {k: old.get(k) for k in meta} != meta:

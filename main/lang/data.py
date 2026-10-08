@@ -78,6 +78,7 @@ class LangSource:
         self.root = Path(root).resolve()
         # written before the bead-count h: its bead-task rows hold the old bead h, never train on them
         self.stale_bead = bool(drop_stale_bead) and not (self.root / "item_buffer" / "n_violating.npy").exists()
+        self.n_stale_dropped = 0
         self.name = name or self.root.name
         self.k = int(k_prev)
         self.recall_horizon = int(recall_horizon)
@@ -144,6 +145,7 @@ class LangSource:
         self.emb = np.array(embs, dtype=object)
         if self.stale_bead:
             fresh = ~np.isin(self.task, [CANON_TASKS.index(x) for x in BEAD_TASKS])
+            self.n_stale_dropped = int((~fresh).sum())
             for f in ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb"):
                 setattr(self, f, getattr(self, f)[fresh])
         self.recall = recall_labels(np.asarray(A["h_rules"]), np.asarray(A["episode_id"]),

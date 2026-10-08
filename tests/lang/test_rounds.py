@@ -133,3 +133,20 @@ def test_rounds_stop_and_resume_inside_a_round(tmp_path, rounds_root):
     assert (run / "eval" / "trend.png").exists()
     for x, y in zip(ref.critics.state_dict().values(), tr.critics.state_dict().values()):
         assert torch.allclose(x, y, atol=1e-6)         # the interrupted run trained exactly like the reference
+
+
+def test_make_ring_reopens_out_of_lockstep_and_checks_capacity(tmp_path):
+    """O2: a pair whose headers differ (a kill between the two flushes) reopens, for the resume to roll
+    back; O3: resuming with more rounds than the ring was sized for refuses."""
+    from main.lang.rounds import make_ring
+
+    cfg = dataclasses.replace(LangConfig(), max_steps_per_episode=10)
+    buf, side = make_ring(tmp_path, cfg, 3, 2)
+    hp = tmp_path / "ring" / "item_buffer" / "header.json"
+    h = json.loads(hp.read_text())
+    h["n"] = h["head"] = 5                                   # sidecar flushed, StepBuffer not
+    hp.write_text(json.dumps(h))
+    buf2, side2 = make_ring(tmp_path, cfg, 3, 2)
+    assert (len(buf2), len(side2)) == (0, 5)
+    with pytest.raises(SystemExit, match="capacity"):
+        make_ring(tmp_path, cfg, 30, 2)

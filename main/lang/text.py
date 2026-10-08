@@ -141,7 +141,10 @@ class TextStore:
         paths = [Path(p) for p in cache_paths]
         if self.extra_path is not None and self.extra_path.exists():
             paths.append(self.extra_path)
+        n_base = None
         for p in paths:
+            if self.extra_path is not None and p == self.extra_path:
+                n_base = len(self.split)    # entries from here on are extras: save_extra keeps them (review O7)
             c = torch.load(p, map_location="cpu", weights_only=False)
             cb = c.get("backend", "holobrain_bert")
             if cb != backend:
@@ -164,7 +167,7 @@ class TextStore:
         self.emb = torch.cat(embs) if embs else torch.zeros(0, self.max_len, self.d, dtype=torch.float16)
         self.mask = torch.cat(masks) if masks else torch.zeros(0, self.max_len, dtype=torch.bool)
         self.emb_dev, self.mask_dev = self.emb.to(device), self.mask.to(device)
-        self.n_cached = len(self.split)
+        self.n_cached = len(self.split) if n_base is None else n_base   # base caches only; extras follow
         self._extra_since_save = 0
         self.stats = Counter()      # lookups / misses by split
 
@@ -234,18 +237,35 @@ class TextStore:
         return out
 
     def save_extra(self) -> None:
-        """Persist every sentence added since loading (atomic)."""
+        """Persist every extra sentence (the ones loaded from extra_path and the ones added since), merged
+        with entries another process wrote to the same file meanwhile; atomic (review O7: the file used to be
+        overwritten with only the sentences added since the last load)."""
         import torch
 
-        if self.extra_path is None or len(self.split) == self.n_cached:
+        if self.extra_path is None or self._extra_since_save == 0:
             return
-        keys = sorted(range(self.n_cached, len(self.split)))
+        keys = list(range(self.n_cached, len(self.split)))
         inv = {i: s for s, i in self.index.items() if i >= self.n_cached}
-        out = {"index": {inv[i]: j for j, i in enumerate(keys)}, "split": [self.split[i] for i in keys],
-               "emb": self.emb_dev[self.n_cached:].cpu(), "mask": self.mask_dev[self.n_cached:].cpu(),
+        index = {inv[i]: j for j, i in enumerate(keys)}
+        split = [self.split[i] for i in keys]
+        emb, mask = [self.emb_dev[self.n_cached:].cpu()], [self.mask_dev[self.n_cached:].cpu()]
+        if self.extra_path.exists():   # entries only the file has (another process): carry them over
+            try:
+                c = torch.load(self.extra_path, map_location="cpu", weights_only=False)
+                theirs = [k for k in sorted(c["index"], key=c["index"].get) if k not in self.index]
+                if theirs and c.get("backend", self.backend) == self.backend:
+                    rows = torch.tensor([c["index"][k] for k in theirs], dtype=torch.long)
+                    for k in theirs:
+                        index[k] = len(split)
+                        split.append((c.get("split") or ["?"] * len(c["index"]))[c["index"][k]])
+                    emb.append(c["emb"][rows].half())
+                    mask.append(c["mask"][rows].bool())
+            except Exception as exc:
+                print(f"[text] {self.extra_path} unreadable ({exc}); writing this process's extras only")
+        out = {"index": index, "split": split, "emb": torch.cat(emb), "mask": torch.cat(mask),
                "max_len": self.max_len, "backend": self.backend}
         self.extra_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = str(self.extra_path) + ".tmp"
+        tmp = f"{self.extra_path}.{os.getpid()}.tmp"
         torch.save(out, tmp)
         os.replace(tmp, self.extra_path)
         self._extra_since_save = 0

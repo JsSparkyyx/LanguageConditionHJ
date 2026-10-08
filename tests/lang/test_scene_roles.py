@@ -80,11 +80,17 @@ def test_in_way_other_tasks():
     rec5 = {"task": "tray_transport", "objects": [_obj(0, "tray", role="task_object"), _obj(1, "block_0", size="tall"),
                                                   _obj(2, "block_1", size="short")]}
     assert SR.in_way(_env(), rec5) == ({"block_0"}, set())
-    nbs = [{"region_id": "bin_0", "az_deg": 0.0}, {"region_id": "bin_1", "az_deg": 45.0},
-           {"region_id": "plate_2", "az_deg": 90.0}]
     rec6 = {"task": "clean_pour", "objects": [beads]}
+    # R1: the diagonal slot is unclear, the other outer slot is benign even when jitter puts it < 90 deg away
+    nbs = [{"region_id": "bin_0", "az_deg": 90.0, "slot": "far"}, {"region_id": "bin_1", "az_deg": 128.0, "slot": "far_across"},
+           {"region_id": "plate_2", "az_deg": 171.0, "slot": "across"}]
     inway, unclear = SR.in_way(_env({"episode_info": {"hit": "bin_0", "neighbors": nbs}}), rec6)
-    assert inway == {"bin_0", "beads"} and unclear == {"bin_1"}  # 90 deg away is the benign referent
+    assert inway == {"bin_0", "beads"} and unclear == {"bin_1"}
+    # records without slot names: the 67.5 deg azimuth cut (45 +- 20 vs 90 +- 20)
+    nbs = [{"region_id": "bin_0", "az_deg": 0.0}, {"region_id": "bin_1", "az_deg": 45.0},
+           {"region_id": "plate_2", "az_deg": 81.0}]
+    inway, unclear = SR.in_way(_env({"episode_info": {"hit": "bin_0", "neighbors": nbs}}), rec6)
+    assert inway == {"bin_0", "beads"} and unclear == {"bin_1"}
     assert SR.in_way(_env({"episode_info": {"hit": "block_1"}}), {"task": "gap_place", "objects": []}) == ({"block_1"}, set())
     with pytest.raises(KeyError):
         SR.in_way(_env(), {"task": "nope", "objects": []})

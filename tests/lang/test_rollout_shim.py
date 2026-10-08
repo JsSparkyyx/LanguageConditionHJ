@@ -80,3 +80,15 @@ def test_counterfactual_encoding():
         ro.cf_text_out = pe.encode_text(w, m)
     call(ro, shim, 0, capture=True)
     assert shim.enc_cf is not None
+
+
+def test_filter_margins_in_h_units():
+    """O5: the language filter compares Q with the margins as LangConfig states them (h units), not x h_scale."""
+    from types import SimpleNamespace
+
+    from main.lang.rollout import LangRolloutController
+
+    fake = SimpleNamespace(cfg=SimpleNamespace(filter_margin=0.02, filter_release_margin=0.05, h_scale=20.0),
+                           flt=SimpleNamespace(margin=0.4, release_margin=1.0))     # what the base class set
+    LangRolloutController._h_unit_margins(fake)
+    assert (fake.flt.margin, fake.flt.release_margin) == (0.02, 0.05)

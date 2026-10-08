@@ -4,8 +4,10 @@
 
 Every line of <file> is a shell command (quoting kept). Each worker (one per GPU, any number of jobs and
 nodes over time) runs up to --slots commands at once, each claimed with an atomic ``mkdir`` of
-``<state>/<id>.lock`` (heartbeat-touched every 30 s; a lock older than 90 s belongs to a dead job and
-is taken over). A command that exits 0 is done (``<id>.done``); 75 (paused, resumable) releases the
+``<state>/<id>.lock.<g>`` (main.lang.locks: heartbeat-touched every 30 s; a claim older than 90 s belongs
+to a dead job and is taken over as generation g + 1, which one worker alone can create). The command
+itself also takes its data root's writer lock (collect.py, rounds.py), so even a duplicated claim never
+gives a shard two writers. A command that exits 0 is done (``<id>.done``); 75 (paused, resumable) releases the
 lock for a later job; any other exit counts a failure (``<id>.fail``), and a command with 3 failures is
 skipped. No new command starts within --margin seconds of $STAGE_DEADLINE. Exit 0 when every command
 is done (or failed out), else 75.
@@ -51,19 +53,19 @@ def fails(state: Path, cid: str) -> int:
     return int(p.read_text() or 0) if p.exists() else 0
 
 
-def try_claim(state: Path, cid: str) -> bool:
-    lock = state / f"{cid}.lock"
+def try_claim(state: Path, cid: str) -> int | None:
+    """The claim generation held (<cid>.lock.<g>, main.lang.locks), or None. Taking over a dead job's stale
+    claim creates the next generation: one winner among racing workers (review O1: the earlier stat + utime
+    takeover let two workers run one shard). A fresh claim of the older code (<cid>.lock) still counts."""
+    from .locks import try_take
+
+    legacy = state / f"{cid}.lock"
     try:
-        lock.mkdir()
-        return True
-    except FileExistsError:
-        try:
-            if time.time() - lock.stat().st_mtime > STALE_S:   # dead job's claim: take it over
-                os.utime(lock)
-                return True
-        except FileNotFoundError:
-            return try_claim(state, cid)
-        return False
+        if time.time() - legacy.stat().st_mtime <= STALE_S:
+            return None
+    except FileNotFoundError:
+        pass
+    return try_take(state, f"{cid}.lock", STALE_S)
 
 
 def main(argv=None) -> int:
@@ -83,17 +85,24 @@ def main(argv=None) -> int:
     running: dict[str, subprocess.Popen] = {}
     weights: dict[str, int] = {}
     reserved = None   # (cid, cmd, weight): a heavy command claimed, waiting for enough free slots
-    held: set[str] = set()
+    held: dict[str, int] = {}   # cid -> claim generation
     stop = threading.Event()
 
     def heartbeat():
         while not stop.is_set():
-            for cid in list(held):
+            for cid, g in list(held.items()):
                 try:
-                    os.utime(state / f"{cid}.lock")
+                    os.utime(state / f"{cid}.lock.{g}")
                 except FileNotFoundError:
                     pass
             stop.wait(30)
+
+    def unclaim(cid):
+        from .locks import release
+
+        g = held.pop(cid, None)
+        if g is not None:
+            release(state, f"{cid}.lock", g)
 
     threading.Thread(target=heartbeat, daemon=True).start()
     paused: set[str] = set()   # exited 75 in this worker: left to a later job
@@ -111,11 +120,7 @@ def main(argv=None) -> int:
                 paused.add(cid)
             else:
                 (state / f"{cid}.fail").write_text(str(fails(state, cid) + 1))
-            held.discard(cid)
-            try:
-                (state / f"{cid}.lock").rmdir()
-            except OSError:
-                pass
+            unclaim(cid)
             print(f"[workqueue] {host} {cid} rc={rc}", flush=True)
         cmds = read_cmds(Path(args.cmds))       # re-read: commands can be appended while running
         todo = [(cmd_id(c), c) for c in cmds
@@ -137,11 +142,7 @@ def main(argv=None) -> int:
 
         if reserved is not None:
             if late:   # too late to start it: release the claim for a later job
-                held.discard(reserved[0])
-                try:
-                    (state / f"{reserved[0]}.lock").rmdir()
-                except OSError:
-                    pass
+                unclaim(reserved[0])
                 reserved = None
             elif open_slots >= reserved[2]:
                 launch(*reserved)
@@ -150,9 +151,12 @@ def main(argv=None) -> int:
             for cid, c in claimable:
                 if open_slots <= 0:
                     break
-                if cid in running or not try_claim(state, cid):
+                if cid in running:
                     continue
-                held.add(cid)
+                g = try_claim(state, cid)
+                if g is None:            # generation 0 is a valid claim: test for None
+                    continue
+                held[cid] = g
                 w, _ = weight_of(c, int(args.slots))
                 if w <= open_slots:
                     launch(cid, c, w)

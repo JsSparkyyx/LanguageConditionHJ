@@ -598,9 +598,24 @@ def add_common(p):
 
 
 def config_from_args(args) -> LangConfig:
+    """--resume continues with the run's saved config only once the run has state (state.pt). Before that
+    nothing was trained, and the trainer writes lang_config.json at start: a first job that died early must
+    not pin its flags on a corrected relaunch (review O4)."""
     run = Path(args.run)
-    if getattr(args, "resume", False) and (run / "lang_config.json").exists():
-        return LangConfig.load(run / "lang_config.json")
+    saved = run / "lang_config.json"
+    if getattr(args, "resume", False) and saved.exists() and (run / "state.pt").exists():
+        return LangConfig.load(saved)
+    cfg = _config_from_flags(args)
+    if getattr(args, "resume", False) and saved.exists():
+        old = LangConfig.load(saved).to_dict()
+        diff = {k: (old.get(k), v) for k, v in cfg.to_dict().items()
+                if k not in ("collect_rounds", "episodes_per_round", "grad_steps_per_round") and old.get(k) != v}
+        if diff:
+            print(f"[lang-train] {saved} has no state.pt yet: using these flags, not the saved ones {diff}")
+    return cfg
+
+
+def _config_from_flags(args) -> LangConfig:
     kw = {}
     if args.relabel:
         kw["relabel"] = args.relabel

@@ -112,3 +112,20 @@ def test_probe_sentences_ignore_the_run_text_control(tmp_path, root):
         rec = src.rs.records[int(b["episode_id"][k])]
         rule = next(r for r in rec["rules"] if r["rule_id"] == b["rule_id"][k])
         assert b["sentence"][k] in language.sentences(rule, rec, "train", bank)
+
+
+def test_resume_without_state_uses_the_flags(tmp_path):
+    """O4: a lang_config.json from a start that never saved state does not override corrected flags."""
+    from types import SimpleNamespace
+
+    from main.lang.train import config_from_args
+
+    run = tmp_path / "run"
+    run.mkdir()
+    dataclasses.replace(LangConfig(), lang_film=False).save(run / "lang_config.json")
+    flags = dict(run=str(run), resume=True, relabel=None, shuffle_text=False, text_backend=None,
+                 activation_checkpointing=False, tasks="all", embodiments="all", set=[],
+                 **{f"no_{k}": False for k in ("scene", "body", "film", "queries", "rtoken")})
+    assert config_from_args(SimpleNamespace(**flags)).lang_film is True     # no state.pt: the flags win
+    (run / "state.pt").write_bytes(b"x")
+    assert config_from_args(SimpleNamespace(**flags)).lang_film is False    # a started run keeps its config
