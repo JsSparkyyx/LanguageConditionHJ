@@ -17,7 +17,8 @@ sentence.
   excluded; the language trainer computes its diagnostics every 20th step, CrossSafe every step), and a
   phase breakdown from a replica of the step, CUDA-synchronized between phases.
 
-Median milliseconds over --iters after --warmup, torch.cuda.synchronize() around every call.
+Median milliseconds over --iters after --warmup, torch.cuda.synchronize() around every call. --tf32 times
+the same with TF32 matmuls and convolutions (the trainers run fp32).
 """
 
 from __future__ import annotations
@@ -322,7 +323,7 @@ def tables(res: dict) -> str:
     cs, ln, holo = res["crosssafe"], res["lang"], res["holobrain"]
     f = lambda v: f"{v:.2f}"  # noqa: E731
     rat = lambda a, b: f"{b / a:.2f}x" if a > 0 else "-"  # noqa: E731
-    L = [f"# Latency: language filter vs CrossSafe ({res['gpu']}, fp32)", "",
+    L = [f"# Latency: language filter vs CrossSafe ({res['gpu']}, {res.get('precision', 'fp32')})", "",
          f"Scene tokens per sample: CrossSafe {cs['scene_tokens']}, language {ln['scene_tokens']} "
          f"(frames t, t-2, 0). Median ms over {res['iters']} calls (training {res['iters_train']} steps).", "",
          "## Inference, one deployment tick (B = 1)", "",
@@ -368,16 +369,18 @@ def main() -> int:
     ap.add_argument("--iters", type=int, default=200)
     ap.add_argument("--iters-train", type=int, default=20)
     ap.add_argument("--warmup", type=int, default=5)
+    ap.add_argument("--tf32", action="store_true", help="TF32 matmuls / convolutions for everything timed")
     args = ap.parse_args()
     import main.lang  # noqa: F401  (main.item_envs on the path)
 
-    torch.backends.cuda.matmul.allow_tf32 = False   # fp32 as both trainers run
-    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_tf32 = bool(args.tf32)   # default fp32, as both trainers run
+    torch.backends.cudnn.allow_tf32 = bool(args.tf32)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     scratch = out.parent / f"_{out.stem}_scratch"
     shard = Path(args.data).resolve()
-    res = {"gpu": torch.cuda.get_device_name(0), "iters": args.iters, "iters_train": args.iters_train,
+    res = {"gpu": torch.cuda.get_device_name(0), "precision": "tf32" if args.tf32 else "fp32",
+           "iters": args.iters, "iters_train": args.iters_train,
            "data": str(shard), "holobrain": {}}
     bench_crosssafe(shard, scratch, args, res, res["holobrain"])
     bench_lang(shard, [Path(c) for c in args.text_cache], scratch, args, res)
