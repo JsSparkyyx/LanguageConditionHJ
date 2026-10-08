@@ -25,7 +25,8 @@ while [[ $rc2 -eq 75 && $tries -lt 5 ]]; do
 done
 echo "[smoke] resumed part exit $rc2 (want 0)"
 grep -q "CuRobo init failed" "$LOG" && echo "[smoke] WARNING: cuRobo fell back to mplib (TMPDIR? GPU?): see $LOG"
-grep -m3 -E "Traceback|Error" "$LOG" | head -3
+TB=$(grep -c "Traceback" "$LOG")
+[[ $TB -gt 0 ]] && { echo "[smoke] $TB Traceback(s) in $LOG:"; grep -m1 -A12 "Traceback" "$LOG" | tail -4; }
 $PY - "$RUN" "$rc1" "$rc2" "$EPS" "$STEPS" <<'EOF'
 import json, sys
 from pathlib import Path
@@ -40,7 +41,10 @@ if rc1 != 75: bad.append(f"first part exit {rc1}, not 75")
 if rc2 != 0: bad.append(f"resumed part exit {rc2}")
 if len(eps) != 2 * n_eps: bad.append(f"{len(eps)} episodes, not {2 * n_eps}")
 if len({d['episode_id'] for d in eps}) != len(eps): bad.append("duplicate episode ids")
-if any(d["status"] != "ok" for d in eps): bad.append("an episode did not finish ok")
+if any(d["status"] == "exception" for d in eps):
+    bad.append("an episode raised: " + "; ".join(str(d.get("exception"))[:200] for d in eps if d["status"] == "exception"))
+if any(d["status"] == "timeout" for d in eps):   # not a failure: an untrained filter may hold the arm until the cap
+    print("[smoke] note: an episode hit the episode time cap (expected while the filter is untrained)")
 for f in ("checkpoint_final.pt", "eval/trend.png", "eval/rounds.jsonl", "train_log.jsonl"):
     if not (run / f).exists(): bad.append(f"missing {f}")
 vids = sorted((run / "ring" / "videos").glob("*.mp4")) if (run / "ring" / "videos").exists() else []

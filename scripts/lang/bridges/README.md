@@ -116,5 +116,12 @@ Files (all under `$RUN`):
 | `probes/` | offline language probe every 10 rounds |
 | `checkpoint.pt`, `checkpoint_round<N>.pt`, `checkpoint_final.pt` | weights |
 
+**What the first rounds look like.** The critic starts pessimistic: in the offline run, mean Q stayed
+below 0 (the filter's trigger) until about step 4000-8000, while the true h averaged +0.3 to +0.4. So
+rounds 1-3 will probably show the filter stepping in on most ticks, benign runs flagged as false
+alarms, and filter episodes running to the 30 s cap (`_fail` videos, `status: timeout`). That is
+expected; it should fall once Q rises above 0 for safe moments. The smoke test on Delta showed the
+same thing after 64 steps (intervention rate 1.0, timeout).
+
 With `WANDB_API_KEY` set, the same numbers, the heatmaps, the trend plot and each round's videos also go
 to wandb (`round_videos`).
