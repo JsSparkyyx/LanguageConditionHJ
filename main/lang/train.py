@@ -221,16 +221,39 @@ class LangTrainer:
         loss_q = F.mse_loss(q1, y) + F.mse_loss(q2, y)
         loss = loss_q
         aux_out = {}
-        if getattr(cfg, "aux_target_loss", False):   # V4 (decision 5b): trains the encoder and the head
+        use_aux, use_att = getattr(cfg, "aux_target_loss", False), getattr(cfg, "aux_attention_loss", False)
+        if use_aux or use_att:
+            tgt, val = _t(b["aux_target"], dev=d), _t(b["aux_valid"], torch.bool, d)   # [B, 2, 3]: frames t, 0
+            unit = float(getattr(cfg, "aux_unit", 0.05))
+            lq = float(loss_q.detach().clamp_min(1e-12))
+        if use_aux and bool(val.any()):
+            # V4 (decision 5b; round 4, item 3): in units of aux_unit, Huber delta in those units
             pred = self.policy_enc.aux_predict(enc)
-            tgt, val = _t(b["aux_target"], dev=d), _t(b["aux_valid"], torch.bool, d)
-            if bool(val.any()):
-                loss_aux = F.huber_loss(pred[val], tgt[val], delta=float(cfg.aux_huber_delta))
-                loss = loss_q + float(cfg.aux_loss_weight) * loss_aux
-                err = (pred - tgt).norm(dim=-1).detach()
-                aux_out = {"aux/loss": float(loss_aux),
-                           "aux/center_err_cm_t": 100.0 * float(err[:, 0][val[:, 0]].mean()) if val[:, 0].any() else float("nan"),
-                           "aux/center_err_cm_0": 100.0 * float(err[:, 1][val[:, 1]].mean()) if val[:, 1].any() else float("nan")}
+            loss_aux = F.huber_loss(pred[val] / unit, tgt[val] / unit, delta=float(cfg.aux_huber_delta))
+            loss = loss + float(cfg.aux_loss_weight) * loss_aux
+            err = (pred - tgt).norm(dim=-1).detach()
+            aux_out.update({"aux/loss": float(loss_aux), "aux/ratio": float(cfg.aux_loss_weight) * float(loss_aux) / lq,
+                            "aux/center_err_cm_t": 100.0 * float(err[:, 0][val[:, 0]].mean()) if val[:, 0].any() else float("nan"),
+                            "aux/center_err_cm_0": 100.0 * float(err[:, 1][val[:, 1]].mean()) if val[:, 1].any() else float("nan")})
+        if use_att and bool(val.any()):
+            # V4b: q1's head-averaged scene attention of the last encoder block, renormalized within frame f in
+            # {t, 0} (scene frames 0 and 2), times the squared distance of each token to the named item's centre
+            att = self.policy_enc.blocks[-1].q_attn[:, 0]                              # [B, 3 * n_tok]
+            Bn = att.shape[0]
+            att = att.reshape(Bn, 3, -1)
+            pos = _t(b["scene_pos"], dev=d).reshape(Bn, 3, att.shape[-1], 3)
+            terms = []
+            for k_f, f in ((0, 0), (1, 2)):
+                a_f = att[:, f] / att[:, f].sum(-1, keepdim=True).clamp_min(1e-12)
+                d2 = ((pos[:, f] - tgt[:, k_f, None, :]) ** 2).sum(-1) / unit ** 2       # [B, n_tok]
+                terms.append(torch.where(val[:, k_f], (a_f * d2).sum(-1), torch.zeros_like(d2[:, 0])))
+            loss_att = (terms[0] + terms[1]).sum() / val.sum().clamp_min(1)
+            loss = loss + float(cfg.aux_attention_weight) * loss_att
+            aux_out.update({"aux/att_loss": float(loss_att),
+                            "aux/att_ratio": float(cfg.aux_attention_weight) * float(loss_att) / lq,
+                            # attention-weighted distance of q1's look to the named item (cm), frame t
+                            "aux/att_dist_cm_t": 100.0 * unit * float(torch.sqrt(terms[0][val[:, 0]].clamp_min(0)).mean())
+                            if val[:, 0].any() else float("nan")})
         self.opt_e.zero_grad(set_to_none=True)
         self.opt_c.zero_grad(set_to_none=True)
         loss.backward()

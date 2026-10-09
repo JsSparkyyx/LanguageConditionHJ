@@ -76,13 +76,17 @@ def _quat_rotate(q, v) -> np.ndarray:
     return v + 2.0 * np.cross(u, np.cross(u, v) + w * v)
 
 
+ZONE_RULES = ("zone_exclude", "zone_include")
+
+
 def ref_centers(A, rec: dict, rule: dict, slots) -> tuple[np.ndarray, np.ndarray]:
     """World centre of the rule's subject object at each of the frame rows `slots` (V3 oracle tag, review round 3
     E2): item_pose position + the rotated item_obb centre offset. valid is False for rules without a subject
-    object (zones, beads) and for rows where the item is not valid."""
+    object (beads), for zone rules (their subject is the pushed box, but the sentence names the zone: audit
+    2026-10-08), and for rows where the item is not valid."""
     c, v = np.zeros((len(slots), 3), np.float32), np.zeros(len(slots), bool)
     subj = rule.get("subject") or {}
-    if "object" not in subj:
+    if "object" not in subj or rule.get("consequence") in ZONE_RULES:
         return c, v
     k = int(rec["objects"][subj["object"]]["id"])   # record object id = sidecar item row (checked on the data)
     for f, slot in enumerate(slots):
@@ -96,12 +100,13 @@ def named_centers(A, rec: dict, rule: dict, slots) -> tuple[np.ndarray, np.ndarr
     """V4 targets (decision 5b): the named item's world centre at each frame row: the subject object's centre
     (ref_centers), or for a rule on ONE region (zone_exclude / zone_include / exclude_particles) the region's
     centre, the translation of its region_T (region rows follow the record's regions list). Invalid for bead-set
-    and multi-region rules."""
+    and multi-region rules, and for zone_include: its region is the table, whose frame sits at z = 0 (the top is
+    at 0.74 m), and the whole table is no place to localise (audit 2026-10-08)."""
     c, v = ref_centers(A, rec, rule, slots)
-    if v.any() or "object" in (rule.get("subject") or {}):
+    if rule.get("consequence") not in ZONE_RULES and (v.any() or "object" in (rule.get("subject") or {})):
         return c, v
     ref = rule.get("reference") or {}
-    if rule["consequence"] in ("zone_exclude", "zone_include", "exclude_particles") and "region" in ref:
+    if rule["consequence"] in ("zone_exclude", "exclude_particles") and "region" in ref:
         k = int(ref["region"])
         for f, slot in enumerate(slots):
             T = np.asarray(A["region_T"][slot, k], np.float64)
@@ -116,7 +121,7 @@ def bead_h_of(sources) -> str:
     kinds = set()
     for s in sources:
         if s.rows.size and any(CANON_TASKS[int(t)] in BEAD_TASKS for t in np.unique(s.task)):
-            kinds.add("old" if s.stale_bead else "count")
+            kinds.add("old" if s.old_bead_h else "count")
     return "none" if not kinds else kinds.pop() if len(kinds) == 1 else "mixed"
 
 
@@ -127,7 +132,8 @@ class LangSource:
                  max_n: int | None = None, drop_stale_bead: bool = True):
         self.root = Path(root).resolve()
         # written before the bead-count h: its bead-task rows hold the old bead h, never train on them
-        self.stale_bead = bool(drop_stale_bead) and not (self.root / "item_buffer" / "n_violating.npy").exists()
+        self.old_bead_h = not (self.root / "item_buffer" / "n_violating.npy").exists()
+        self.stale_bead = bool(drop_stale_bead) and self.old_bead_h
         self.n_stale_dropped = 0
         self.name = name or self.root.name
         self.k = int(k_prev)
@@ -307,7 +313,7 @@ class LangSampler:
         for r in roots:   # shards still being collected may have no rows (or no arrays) yet
             if self.max_rows and str(Path(r).resolve()) not in self.max_rows:
                 continue   # frozen dataset: shards started after the freeze are not part of it
-            src = LangSource(r, self.k, int(cfg.recall_horizon_ticks),
+            src = LangSource(r, self.k, int(cfg.recall_ticks),
                              max_n=self.max_rows.get(str(Path(r).resolve())),
                              drop_stale_bead=getattr(cfg, "drop_stale_bead_rows", True))
             if src.rows.size and "scene_tokens" in src.step:
@@ -325,7 +331,7 @@ class LangSampler:
         self.refresh()
 
     def add_source(self, root) -> None:
-        src = LangSource(root, self.k, int(self.cfg.recall_horizon_ticks),
+        src = LangSource(root, self.k, int(self.cfg.recall_ticks),
                          drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True))
         if src.rows.size and "scene_tokens" in src.step:
             self.sources.append(src)
@@ -449,7 +455,8 @@ class LangSampler:
         h, hn, fs, fsr, pair = [], [], [], [], []
         tag = {k: [] for k in ("ref_center", "ref_center_valid", "ref_center_next", "ref_center_valid_next")} \
             if getattr(self.cfg, "oracle_ref_tag", False) else None
-        aux = {"aux_target": [], "aux_valid": []} if getattr(self.cfg, "aux_target_loss", False) else None
+        aux = ({"aux_target": [], "aux_valid": []} if (getattr(self.cfg, "aux_target_loss", False)
+                                                       or getattr(self.cfg, "aux_attention_loss", False)) else None)
         ref = np.zeros((len(picks), 3, out["scene_tokens"].shape[2]), dtype=np.float16) if self.probe else None
         for b, (gi, col, p) in enumerate(picks):
             j, i = int(self.sid[gi]), int(self.loc[gi])

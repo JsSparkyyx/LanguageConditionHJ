@@ -248,7 +248,15 @@ class LangTrunkBlock(nn.Module):
         b = b + self.geo(y, x, s, p, smask)
         if self.lang_body:
             b = b + _attend(self.attn_bw, self.norm_b(b), w, ~wm, P, "body_word_attn")
-        if self.K:
+        if self.K and getattr(self, "keep_q_attn", False):
+            # V4b (round 4, item 3): the head-averaged weights, with their graph, for the attention loss
+            q_out, wq = self.attn_qs(self.norm_c(q), s, s, key_padding_mask=~smask, need_weights=True,
+                                     average_attn_weights=True)
+            self.q_attn = wq                                           # [B, K, N_scene]
+            if P is not None:
+                P["query_scene_attn"] = wq.detach()
+            q = q + q_out
+        elif self.K:
             q = q + _attend(self.attn_qs, self.norm_c(q), s, ~smask, P, "query_scene_attn")
         nb, B = b.shape[1], b.shape[0]
         z = torch.cat([b, r, q], 1)
@@ -326,6 +334,12 @@ class LangPolicyEncoder(nn.Module):
         self.use_ckpt = bool(getattr(cfg, "activation_checkpointing", False))
         if getattr(cfg, "oracle_ref_tag", False):   # V3: one learned tag vector, zero-init
             self.e_tag = nn.Parameter(torch.zeros(DIM))
+        if getattr(cfg, "aux_attention_loss", False):   # V4b: the last block keeps q1's scene attention
+            if not self.K:
+                raise ValueError("aux_attention_loss needs the readout queries (lang_queries)")
+            if self.use_ckpt:
+                raise ValueError("aux_attention_loss keeps attention weights with their graph: no activation checkpointing")
+            self.blocks[-1].keep_q_attn = True
         if getattr(cfg, "aux_target_loss", False):  # V4: q1 -> the named item's centre at frames t and 0
             if not self.K:
                 raise ValueError("aux_target_loss needs the readout queries (lang_queries)")

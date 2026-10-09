@@ -154,10 +154,8 @@ def test_grounding_summary_averages_seeds_and_decides(tmp_path):
 
     for v, good in (("v0", 0.5), ("v1", 1.0)):
         for seed in (0, 1):
-            d = tmp_path / f"g1008_{v}_s{seed}" / "eval_offline" / "grounding"
-            d.mkdir(parents=True)
-            with gzip.open(d / "rows.json.gz", "wt") as f:
-                json.dump(rows_for(good, seed), f)
+            _fake_run(tmp_path / f"g1008_{v}_s{seed}", rows_for(good, seed),
+                      cfg={"text_out_norm": True} if v == "v1" else None)
     assert gs.main(["--runs", str(tmp_path / "g1008_v*"), "--md", str(tmp_path / "s.md")]) == 0
     res = json.loads((tmp_path / "s.json").read_text())
     assert res["v1"]["referent/already_harmed/T1 + T7"]["mean"][0] == 1.0
@@ -199,3 +197,194 @@ def test_v3_and_v4_parts_are_checkpointed(tmp_path, root):
     del ck["e_tag"]
     with pytest.raises(ValueError, match="re-export"):
         load_policy(LangPolicyEncoder(tr.cfg), ck)
+
+
+def test_v4_loss_in_units_and_logged_ratio(tmp_path, root):
+    """Round 4, item 3: the V4 loss is a Huber on (prediction, target) / aux_unit with delta 1 in those units, and
+    aux/ratio = lambda * L_aux / L_critic. A 5 cm error on one axis is one unit: 0.5 per element, so 1/6 per
+    (frame, xyz) mean."""
+    tr = trainer(tmp_path / "run", root, aux_target_loss=True, aux_loss_weight=0.5)
+    b = tr.sampler.sample(8)
+    assert np.asarray(b["aux_valid"]).any()
+    off = torch.tensor([0.05, 0.0, 0.0])
+    tr.policy_enc.aux_predict = lambda enc: torch.as_tensor(b["aux_target"]) + off
+    out = tr.grad_step(b, log=True)
+    assert out["aux/loss"] == pytest.approx(0.5 / 3, rel=1e-4)
+    assert out["aux/ratio"] == pytest.approx(0.5 * out["aux/loss"] / out["loss/q"], rel=1e-4)
+    assert out["aux/center_err_cm_t"] == pytest.approx(5.0, rel=1e-4)
+
+
+def test_v4b_attention_loss_reaches_the_query_attention(tmp_path, root):
+    """V4b (round 4, item 3): q1's last-block scene attention, renormalized per frame (t and 0), weighted by the
+    squared distance to the named item's centre in aux_unit; it trains the query attention and is logged."""
+    tr = trainer(tmp_path / "run", root, aux_attention_loss=True, aux_attention_weight=0.3)
+    assert LangConfig().aux_attention_loss is False
+    assert tr.policy_enc.blocks[-1].keep_q_attn and not getattr(tr.policy_enc.blocks[0], "keep_q_attn", False)
+    b = tr.sampler.sample(8)
+    w0 = tr.policy_enc.blocks[-1].attn_qs.in_proj_weight.detach().clone()
+    out = tr.grad_step(b, log=True)
+    assert np.isfinite(out["aux/att_loss"]) and out["aux/att_loss"] >= 0
+    assert out["aux/att_ratio"] == pytest.approx(0.3 * out["aux/att_loss"] / out["loss/q"], rel=1e-4)
+    att = tr.policy_enc.blocks[-1].q_attn
+    assert att.shape[-1] == np.asarray(b["scene_pos"]).shape[1] * np.asarray(b["scene_pos"]).shape[2]
+    # the loss alone has a gradient on the query attention of the last block
+    enc, *_ = tr.encode(b, *tr.text.lookup(b["sentence"], splits=["train"] * 8))
+    a = tr.policy_enc.blocks[-1].q_attn[:, 0].reshape(8, 3, -1)
+    a = a[:, 0] / a[:, 0].sum(-1, keepdim=True)
+    d2 = (torch.as_tensor(np.asarray(b["scene_pos"]))[:, 0] ** 2).sum(-1)
+    (a * d2).sum().backward()
+    g = tr.policy_enc.blocks[-1].attn_qs.in_proj_weight.grad
+    assert g is not None and float(g.abs().sum()) > 0
+    assert not torch.equal(w0, tr.policy_enc.blocks[-1].attn_qs.in_proj_weight.detach())
+
+
+def test_v4b_refuses_without_queries_or_with_checkpointing():
+    from main.lang.network import LangPolicyEncoder
+
+    with pytest.raises(ValueError, match="readout queries"):
+        LangPolicyEncoder(dataclasses.replace(LangConfig(), aux_attention_loss=True, lang_queries=False))
+
+
+def _summary_module():
+    import importlib.util
+
+    from main.lang import REPO
+
+    spec = importlib.util.spec_from_file_location("gs", REPO / "scripts/lang/grounding_summary.py")
+    gs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gs)
+    return gs
+
+
+def _fake_run(d, rows, cfg=None, ckpt_keys=("blocks",), step=6000, log=None):
+    import gzip
+    import json
+
+    e = d / "eval_offline" / "grounding"
+    e.mkdir(parents=True)
+    with gzip.open(e / "rows.json.gz", "wt") as f:
+        json.dump(rows, f)
+    (e / "metrics.json").write_text(json.dumps({"step": step, "data": {}}))
+    base = {"gamma": 0.95, "tf32_train": True, "task_choices": ["selective_avoid", "gap_place"],
+            "embodiment_choices": ["ur5-wsg"]}
+    (d / "lang_config.json").write_text(json.dumps({**base, **(cfg or {})}))
+    torch.save({k: {} for k in ckpt_keys} | {"identity": {"git_head": "abc1234def"}}, d / "checkpoint_final.pt")
+    if log:
+        (d / "train_log.jsonl").write_text("\n".join(json.dumps(x) for x in log) + "\n")
+
+
+def test_grounding_summary_refuses_incomparable_runs_and_untagged_v3(tmp_path):
+    """Round 4, items 1-3: a run whose gamma / actor head / steps differ from V0's is left out, a V3 checkpoint
+    without its tag is left out, the settings table is written, and a V4 whose aux ratio was below 0.05 does not
+    count as tried."""
+    import json
+
+    gs = _summary_module()
+    rows = [{"src": 0, "i": st, "episode_id": st % 4, "task": "selective_avoid", "rule": f"avoid|{o}",
+             "consequence": "avoid", "referent": o, "fails_soon": o == "a", "ttv": 0 if o == "a" else None,
+             "censored": False, "eligible": {"train": True}, "q": {"train": -0.5 if o == "a" else 0.5},
+             "prior": {"train": 0.5}} for st in range(12) for o in ("a", "b")]
+    _fake_run(tmp_path / "g_v0_s0", rows)
+    _fake_run(tmp_path / "g_v1_s0", rows, cfg={"gamma": 0.9, "gamma_final": 0.9})
+    _fake_run(tmp_path / "g_v2_s0", rows, cfg={"actor_hidden": 256})
+    _fake_run(tmp_path / "g_v3_s0", rows, cfg={"oracle_ref_tag": True})                    # no e_tag
+    _fake_run(tmp_path / "g_v4_s0", [dict(r, q={"train": 0.0}) for r in rows], cfg={"aux_target_loss": True},
+              ckpt_keys=("blocks", "aux_head"), log=[{"step": 480, "aux/ratio": 0.01}, {"step": 6000, "aux/ratio": 0.02}])
+    _fake_run(tmp_path / "g_v4b_s0", rows, cfg={"aux_attention_loss": True}, step=3000)
+    assert gs.main(["--runs", str(tmp_path / "g_v*"), "--md", str(tmp_path / "s.md")]) == 0
+    res = json.loads((tmp_path / "s.json").read_text())
+    assert set(res["_refused"]) == {"g_v1_s0", "g_v2_s0", "g_v3_s0", "g_v4b_s0"}
+    assert "e_tag" in " ".join(res["_refused"]["g_v3_s0"]) and "gamma" in " ".join(res["_refused"]["g_v1_s0"])
+    assert "v1" not in res and "v3" not in res and "v0" in res and "v4" in res
+    assert res["_settings"]["g_v4_s0"]["aux_ratio_500"] == pytest.approx(0.01)
+    assert res["_e4"]["weak_aux"]["v4"] and "does not count" in res["_e4"]["outcome"]
+    md = (tmp_path / "s.md").read_text()
+    assert "## Run settings" in md and "abc1234def" in md
+
+
+def test_eval_offline_records_parts_and_model_settings(tmp_path):
+    """Round 4, items 1 and 7: the scored metrics name the checkpoint's parts and the model settings."""
+    from main.lang.eval_offline import Evaluator, model_info, model_line
+
+    root = make_root(tmp_path / "val", episodes=2, capacity=200)
+    tr = trainer(tmp_path / "run", root, oracle_ref_tag=True)
+    tr.save_ckpt()
+    ev = Evaluator(tmp_path / "run", "checkpoint.pt", [root], device="cpu", batch=16, text_encoder=StubText())
+    assert "e_tag" in ev.ckpt_parts
+    mi = model_info(ev.cfg)
+    assert mi["actor_hidden"] == LangConfig().actor_hidden and mi["gamma"] == pytest.approx(0.95)
+    assert mi["recall_ticks"] == 14 and "actor_hidden" in model_line(ev.cfg)
+
+
+def test_grounding_summary_flags_an_unused_oracle_and_the_train_gap(tmp_path):
+    """Audit 2026-10-08: V3 whose zeroed tag changes no primary outcome is no ceiling (status inconclusive_oracle,
+    not 'the bottleneck is not grounding'); training-episode scores and the in-batch accuracy are tabulated."""
+    import gzip
+    import json
+
+    gs = _summary_module()
+
+    def rows(right: float, seed: int):
+        rng = np.random.default_rng(seed)
+        out = []
+        for st in range(40):
+            ok_ = rng.random() < right
+            for o in ("a", "b"):
+                q = (-0.5 if o == "a" else 0.5) * (1 if ok_ else -1)
+                out.append({"src": 0, "i": st, "episode_id": st % 5, "task": "gap_place", "rule": f"stay|{o}",
+                            "consequence": "stay", "referent": o, "fails_soon": o == "a", "ttv": 0 if o == "a" else None,
+                            "censored": False, "eligible": {"train": True}, "q": {"train": q}, "prior": {"train": 0.5}})
+        return out
+
+    log = [{"step": 500, "aux/ratio": 0.2, "lang/pair_rank_acc": 0.95}, {"step": 6000, "lang/pair_rank_acc": 0.96}]
+    _fake_run(tmp_path / "g_v0_s0", rows(0.55, 0), log=log)
+    _fake_run(tmp_path / "g_v4_s0", rows(0.6, 1), cfg={"aux_target_loss": True}, ckpt_keys=("blocks", "aux_head"), log=log)
+    _fake_run(tmp_path / "g_v3_s0", rows(0.6, 2), cfg={"oracle_ref_tag": True}, ckpt_keys=("blocks", "e_tag"))
+    for name, src in (("g_v3_s0/eval_offline/grounding_notag", rows(0.6, 2)),
+                      ("g_v0_s0/eval_offline/grounding_train", rows(1.0, 3))):
+        (tmp_path / name).mkdir(parents=True)
+        with gzip.open(tmp_path / name / "rows.json.gz", "wt") as f:
+            json.dump(src, f)
+    assert gs.main(["--runs", str(tmp_path / "g_v*"), "--md", str(tmp_path / "s.md")]) == 0
+    res = json.loads((tmp_path / "s.json").read_text())
+    assert res["_extra"]["g_v3_s0"]["tag_use"]["flip_frac"] == 0.0
+    assert res["_e4"]["status"] == "inconclusive_oracle", res["_e4"]
+    assert res["_extra"]["g_v0_s0"]["train"][0] == 1.0 and res["_settings"]["g_v0_s0"]["train_pair_acc"] == pytest.approx(0.96)
+    md = (tmp_path / "s.md").read_text()
+    assert "Training versus validation" in md and "Does V3 read its tag" in md
+
+
+def test_zone_rules_target_the_zone_not_the_pushed_box():
+    """Audit 2026-10-08: a zone rule's subject is the pushed box but the sentence names the zone: V3 / V4 centres
+    are the mat's (zone_exclude) or none (zone_include: the table frame sits at z = 0)."""
+    from main.lang.data import named_centers, ref_centers
+
+    T = np.tile(np.eye(4, dtype=np.float32), (1, 2, 1, 1))
+    T[0, 1, :3, 3] = [0.3, 0.1, 0.75]
+    A = {"item_valid": np.ones((1, 1), bool), "item_pose": np.array([[[0.1, 0, 0.8, 1, 0, 0, 0]]], np.float32),
+         "item_obb": np.zeros((1, 1, 9), np.float32), "region_T": T}
+    rec = {"objects": [{"id": 0}]}
+    ex = {"consequence": "zone_exclude", "subject": {"object": 0}, "reference": {"region": 1}}
+    inc = {"consequence": "zone_include", "subject": {"object": 0}, "reference": {"region": 0}}
+    stay = {"consequence": "stay", "subject": {"object": 0}}
+    c, v = named_centers(A, rec, ex, [0])
+    assert v[0] and np.allclose(c[0], [0.3, 0.1, 0.75])
+    assert not named_centers(A, rec, inc, [0])[1].any() and not ref_centers(A, rec, ex, [0])[1].any()
+    c, v = named_centers(A, rec, stay, [0])
+    assert v[0] and np.allclose(c[0], [0.1, 0, 0.8])
+
+
+def test_eval_zero_tag(tmp_path):
+    from main.lang.eval_offline import Evaluator
+
+    root = make_root(tmp_path / "val", episodes=2, capacity=200)
+    tr = trainer(tmp_path / "run", root, oracle_ref_tag=True)
+    with torch.no_grad():
+        tr.policy_enc.e_tag.fill_(0.3)
+    tr.save_ckpt()
+    ev = Evaluator(tmp_path / "run", "checkpoint.pt", [root], device="cpu", batch=16, text_encoder=StubText(), zero_tag=True)
+    assert float(ev.pe.e_tag.abs().sum()) == 0.0
+    tr2 = trainer(tmp_path / "run2", root)
+    tr2.save_ckpt()
+    with pytest.raises(ValueError, match="zero-tag"):
+        Evaluator(tmp_path / "run2", "checkpoint.pt", [root], device="cpu", batch=16, text_encoder=StubText(), zero_tag=True)

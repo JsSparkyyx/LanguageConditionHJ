@@ -37,24 +37,33 @@ named or not). [ ] = episode-cluster bootstrap 95% interval; "any - named" is th
 | T7 | already harmed | 827 (18) | 0.18 [-0.11, 0.51] | 0.20 [0.00, 0.41] | +0.02 [-0.27, 0.39] |
 | T7 | not yet | 282 (18) | 0.11 [-0.02, 0.29] | 0.01 [-0.14, 0.18] | -0.10 [-0.23, 0.05] |
 
-Reading: Q follows the scene's most endangered object somewhat better than the named one on T1 (paired
-+0.12 [0.02, 0.20], from the not-yet moments, +0.17 [0.03, 0.29]) and slightly on T7 (+0.07). But every
-correlation is weak (at most 0.33), and the two rho intervals overlap, so the reviewer's reading rule
-("non-overlapping intervals") is not met: the model sees the danger only weakly, and ties it to the named
-object even less.
+Reading (review round 4, item 4: judged by the state-paired difference any - named and its interval, not by
+whether the two rho intervals overlap):
+- T1: Q follows the scene's most endangered object more closely than the named one, +0.12 [0.02, 0.20]
+  overall, +0.17 [0.03, 0.29] before contact (not yet) and +0.13 [0.04, 0.21] when no harm is near (4344 of
+  the 7202 rows); at already-harmed moments -0.15 [-0.34, 0.02], inconclusive.
+- T7: +0.07 [0.02, 0.14] overall; inconclusive in each stratum (+0.02 [-0.27, 0.39] already harmed, -0.10
+  [-0.23, 0.05] not yet).
+- Every correlation is weak (at most 0.33): the model sees the danger only weakly, and ties it to the named
+  object even less.
 
 ### E0c. Word attention, cleaned up
 
 `scripts/lang/word_attention.py` (300 states per task; `grounding_e0/word_attention.md`):
 - **The HoloBrain text encoder uses its sub-sentence mask** (`use_sub_sentence_represent: true` in the
   checkpoint config). Measured on 400 training sentences, the frozen [CLS] feature is the same vector for
-  every sentence (cosine to the mean 1.0000, relative spread 0.0000); [SEP] nearly so (0.994); a first real
-  word 0.87. The adapter's own self-attention mixes the sentence into every position, so the adapted [CLS]
-  (w') can still carry sentence content; only its input is constant.
+  every sentence (cosine to the mean 1.0000, relative spread 0.0000). [SEP] is NOT constant (relative spread
+  0.28, cosine 0.994; a first real word 0.71 / 0.87): the sub-sentence mask isolates only the token at column
+  0, and [SEP] attends to the whole sentence, so it is a sentence summary that can carry the name (audit
+  2026-10-08; RoboOrchardLab bip3d/bert.py:78-90). V2 therefore hides one content-free token and one summary
+  token. The adapter's own self-attention mixes the sentence into every position, so the adapted [CLS] (w')
+  can still carry sentence content; only its input is constant.
 - **Attention per head is sharp, not diffuse:** entropy per (head, query) 0.03-0.11 nats against 1.3-1.8 for
   the head- and query-averaged attention and 2.2 for uniform. Each head reads essentially one word.
-- **[CLS] / [SEP] draw attention through larger keys:** their keys have RMS 11 vs 6 for words, w' RMS 7.0 vs
-  3.8. [CLS] gets 24% of encoder block 1 (2.2x its share) and 48% of the second critic's last block (4.3x).
+- **[CLS] / [SEP] have larger keys** (RMS 11 vs 6 for words; w' RMS 7.0 vs 3.8), and [CLS] gets 24% of encoder
+  block 1 (2.2x its share), 17% of the first critic's last block (1.5x) and 48% of the second critic's (4.3x).
+  Large keys do not always mean more attention: [SEP] gets exactly its share in encoder block 1 (1.0x), and
+  where the scene reads the words [CLS] has its largest key but gets 0.9x its share.
 - **The named item's words are preferred where the body first reads words:** encoder block 1 2.1x (T1 2.5x),
   the critics' first blocks 1.4-1.8x; scene-reads-words 1.5x.
 

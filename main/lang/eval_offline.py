@@ -211,7 +211,7 @@ class TextPrior:
 
 class Evaluator:
     def __init__(self, run: Path, ckpt: str, val_roots, device="cuda", text_caches=(), batch: int = 96,
-                 text_encoder=None, embodiments="trained", tasks=None):
+                 text_encoder=None, embodiments="trained", tasks=None, zero_tag: bool = False):
         from .network import LangPolicyEncoder, LangTwinCritic
         from .text import TextStore
         from .train import load_policy
@@ -222,17 +222,28 @@ class Evaluator:
         self.cfg = LangConfig.from_dict(ck["lang_config"])
         # provenance (review round 3, B1): what the weights were trained on, and which file they are
         self.bead_h_train = ck.get("bead_h_train") or "not recorded"
+        from .train import CKPT_PARTS   # which model parts the checkpoint holds (round 4, item 1: V3 needs e_tag)
+        self.ckpt_parts = sorted(("trunk" if k == "blocks" else k) for k in CKPT_PARTS
+                                 if ("trunk" if k == "blocks" else k) in ck)
         self.ckpt_sha = file_sha(self.run / ckpt if not Path(ckpt).is_absolute() else Path(ckpt))
         # validation episodes scored: of the embodiments the run trained on ("trained"), all ("all"), or a list
         self.embodiments = (tuple(self.cfg.embodiment_choices) if embodiments == "trained"
                             else None if embodiments in (None, "all") else tuple(embodiments))
         self.dev = device
         self.tasks = None if tasks in (None, "all") else tuple(tasks)
-        self.sources = [LangSource(r, self.cfg.k_prev, self.cfg.recall_horizon_ticks,
+        self.sources = [LangSource(r, self.cfg.k_prev, self.cfg.recall_ticks,
                                    drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True)) for r in val_roots]
         n_tok = self.sources[0].step["scene_tokens"].shape[1]
         self.pe = LangPolicyEncoder(self.cfg, n_tok=n_tok).to(device).eval()
         load_policy(self.pe, ck)
+        # V3 tag-use check (audit 2026-10-08): the same checkpoint scored with its learned tag zeroed; if Q barely
+        # moves, the model does not read the oracle and V3 is no ceiling
+        self.zero_tag = bool(zero_tag)
+        if self.zero_tag:
+            if not hasattr(self.pe, "e_tag"):
+                raise ValueError("--zero-tag needs a V3 (oracle_ref_tag) checkpoint")
+            with torch.no_grad():
+                self.pe.e_tag.zero_()
         self.critics = LangTwinCritic(self.cfg).to(device).eval()
         self.critics.load_state_dict(ck["critics"])
         # the trainer's extras are read only; the evaluator writes its own file (review O7)
@@ -373,7 +384,6 @@ class Evaluator:
         rng = np.random.default_rng(seed)
         states = self.states(per_task, seed=seed)
         rows = []          # one per (state, rule)
-        para_rows = []
         t0 = time.time()
         for c0 in range(0, len(states), chunk_states):
             chunk = states[c0:c0 + chunk_states]
@@ -426,8 +436,9 @@ class Evaluator:
                     base["sentences"]["base"], base_col = self._base_sentence(rule, rec, j, eid, rng)
                     items.append((k, base["sentences"]["base"], base_col))
                     meta.append((r_idx, "base"))
-                    if rule.get("sampleable") and len(para_rows) < para_states * len(CANON_TASKS) and \
-                            stable_hash((eid, int(s.t[i]), col, "para")) % 4 == 0:
+                    # paraphrases on 1 in 4 sampleable (state, rule) rows (the old para_states cap never bound:
+                    # nothing was appended to its list; kept as is so all runs score the same rows)
+                    if rule.get("sampleable") and stable_hash((eid, int(s.t[i]), col, "para")) % 4 == 0:
                         ss = language.sentences(rule, rec, "train", self.bank)
                         if len(ss) >= 2:
                             pick = [ss[q] for q in rng.choice(len(ss), size=min(n_para, len(ss)), replace=False)]
@@ -798,7 +809,7 @@ def _ci(m: dict, key: str, nd: int = 2) -> str:
     return f"{v:.{nd}f} [{c[0]:.{nd}f}, {c[1]:.{nd}f}]" if c and c[0] == c[0] else f"{v:.{nd}f}"
 
 
-def tables_md(M: dict, title: str) -> str:
+def tables_md(M: dict, title: str, gamma: float = 0.95, recall_ticks: int = 14) -> str:
     sym = lambda ax, g: M.get(f"{ax}/symmetric/{g}", {})  # noqa: E731
     L = [f"# Offline language probe: {title}", "",
          "rank_acc = P[Q(harmful rule) < Q(benign rule)] over symmetric pairs at the same state (chance 0.5), "
@@ -877,7 +888,7 @@ def tables_md(M: dict, title: str) -> str:
                  f"{st.get('spearman_q_y', float('nan')):.2f} ({st.get('n_spearman_states', 0)}) |")
     L += ["", "**By the harmful rule's time to its first violation (review E1c)**, training templates. 1-7 ticks is "
           "the closest offline test of foresight; the nominal-continuation value of a violation k ticks ahead is "
-          "1 - 2 * 0.9^k (0.30 at k = 10), but the critic values its actor's continuation, so a violation the "
+          f"1 - 2 * {gamma:g}^k ({1 - 2 * gamma ** 10:.2f} at k = 10), but the critic values its actor's continuation, so a violation the "
           "actor can still avoid may rightly stay a near-tie.", "",
           "| harmful rule | rank_acc (pairs / episodes) | h now | vs HJ return |", "|---|---|---|---|"]
     for name, _, _ in TTV_BINS:
@@ -904,7 +915,7 @@ def tables_md(M: dict, title: str) -> str:
             L.append(f"| {ax} | {m['n_pairs']} | {_ci(m, 'rank_acc', 3)} | {_ci(m, 'rank_acc_base', 3)} | "
                      f"{m.get('rank_acc_minus_base', float('nan')):+.3f} |")
     L += ["", "Per (state, rule): AUROC of -Q for fails_soon (base: another rule's sentence of the same state), "
-          "precision / recall of Q < 0 against fails_soon_recall (7 ticks), v_le_h = P[Q <= h + 0.05].", "",
+          f"precision / recall of Q < 0 against fails_soon_recall ({recall_ticks} ticks), v_le_h = P[Q <= h + 0.05].", "",
           "| axis | n (episodes) | auroc | auroc, harm not yet happening | auroc_base | prec@0 | rec@0 | v_le_h | "
           "para_std | para_std_ratio |",
           "|---|---|---|---|---|---|---|---|---|---|"]
@@ -1037,7 +1048,25 @@ def data_info(ev, rows, roots) -> dict:
             "prior_roots": list(ev.prior.roots) if ev.prior is not None else None,
             "prior_docs": int(ev.prior.n_docs) if ev.prior is not None else None,
             "bead_h_train": ev.bead_h_train, "ckpt_sha": ev.ckpt_sha, "ckpt_step": ev.ckpt_step,
-            "eval_code_hash": eval_code_hash()}
+            "eval_code_hash": eval_code_hash(), "ckpt_parts": ev.ckpt_parts, "zero_tag": ev.zero_tag,
+            **model_info(ev.cfg)}
+
+
+def model_info(cfg) -> dict:
+    """The model / training settings a comparison must hold fixed (round 4, items 2 and 7)."""
+    return {"actor_hidden": int(getattr(cfg, "actor_hidden", 0) or 0), "gamma": float(cfg.gamma),
+            "tf32_train": bool(getattr(cfg, "tf32_train", False)), "recall_ticks": int(cfg.recall_ticks),
+            "switches": {k: bool(getattr(cfg, k, False)) for k in ("text_out_norm", "mask_special_tokens", "oracle_ref_tag",
+                                                                  "aux_target_loss", "aux_attention_loss")},
+            "aux": {k: getattr(cfg, k, None) for k in ("aux_loss_weight", "aux_unit", "aux_huber_delta",
+                                                       "aux_attention_weight")}}
+
+
+def model_line(cfg) -> str:
+    m = model_info(cfg)
+    on = [k for k, v in m["switches"].items() if v]
+    return (f"actor_hidden {m['actor_hidden']} ({'MLP' if m['actor_hidden'] else 'linear'} actor head), gamma {m['gamma']}, "
+            f"tf32_train {m['tf32_train']}, switches: {', '.join(on) or 'none'}")
 
 
 def main(argv=None) -> int:
@@ -1057,6 +1086,7 @@ def main(argv=None) -> int:
     ap.add_argument("--seeing-vs-selecting", action="store_true",
                     help="also write seeing_vs_selecting.{json,md} (review round 3, Part II E0b)")
     ap.add_argument("--out-name", default=None, help="output directory name under eval_offline/ (default: ckpt)")
+    ap.add_argument("--zero-tag", action="store_true", help="V3 only: score with the learned tag zeroed (tag-use check)")
     ap.add_argument("--prior-data", nargs="*", default=None,
                     help="training data roots for the scene-free text prior (rank_acc_text), e.g. data/lang/warmup")
     args = ap.parse_args(argv)
@@ -1064,7 +1094,7 @@ def main(argv=None) -> int:
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.val)
     embs = args.embodiments if args.embodiments in ("trained", "all") else tuple(args.embodiments.split(","))
     ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch, embodiments=embs,
-                   tasks=None if args.tasks == "all" else args.tasks.split(","))
+                   tasks=None if args.tasks == "all" else args.tasks.split(","), zero_tag=args.zero_tag)
     if args.prior_data:
         prior_roots = roots_of(args.prior_data)
         if not prior_roots:   # else the prior is a constant 0.5 without a word (round 3, B6)
@@ -1089,7 +1119,9 @@ def main(argv=None) -> int:
     data = data_info(ev, rows, roots)
     (out / "metrics.json").write_text(json.dumps({"ckpt": args.ckpt, "step": ev.ckpt_step, "data": data, "metrics": M},
                                                  indent=1))
-    (out / "tables.md").write_text(tables_md(M, f"{Path(args.run).name} / {args.ckpt} (step {ev.ckpt_step})")
+    (out / "tables.md").write_text(tables_md(M, f"{Path(args.run).name} / {args.ckpt} (step {ev.ckpt_step}; "
+                                                f"{model_line(ev.cfg)})", gamma=float(ev.cfg.gamma),
+                                             recall_ticks=int(ev.cfg.recall_ticks))
                                    + "\nData: " + json.dumps({k: (f"{len(v)} roots" if isinstance(v, list) and k.endswith("roots")
                                                                else v) for k, v in data.items()}) + "\n")
     figures(M, rows, out)

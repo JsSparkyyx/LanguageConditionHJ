@@ -138,6 +138,11 @@ def q4(runs) -> str:
     return "\n".join(L)
 
 
+def _actor_hidden(r) -> int:
+    """The actor head width from the run's saved config (a config without the field is the linear head, 0)."""
+    return int((r.get("cfg") or {}).get("actor_hidden") or 0)
+
+
 def closed(runs) -> str:
     """One table per (task set, env code hash, filter code hash) of the closed-loop summaries (round 2 C6)."""
     groups = {}
@@ -146,11 +151,14 @@ def closed(runs) -> str:
         if not S:
             continue
         meta = S.get("_meta") or {}
-        groups.setdefault((tuple(meta.get("tasks") or ()), meta.get("code_hash"), meta.get("filter_hash")), []).append(r)
+        ah = meta.get("actor_hidden", _actor_hidden(r))
+        groups.setdefault((tuple(meta.get("tasks") or ()), meta.get("code_hash"), meta.get("filter_hash"), ah),
+                          []).append(r)
     L = ["## Closed loop (compare runs trained the same way)"]
-    for (tasks, ch, fh), rr in groups.items():
-        what = (f"tasks {', '.join(tasks)}; env code {ch}, filter code {fh}" if tasks else
-                "task set / code hashes not recorded (summary.json from before 2026-10-08: rerun the merge)")
+    for (tasks, ch, fh, ah), rr in groups.items():
+        head = f"actor_hidden {ah} ({'MLP' if ah else 'linear'} actor head)"
+        what = (f"tasks {', '.join(tasks)}; env code {ch}, filter code {fh}; {head}" if tasks else
+                f"task set / code hashes not recorded (summary.json from before 2026-10-08: rerun the merge); {head}")
         L += ["", f"### {what}", "",
               "| run | mode | axis | harm nominal | harm filter | protect | protect+ (cross-fit) | benign false alarm | "
               "selectivity | all runs: broken nominal / filter |",
@@ -208,12 +216,12 @@ def main(argv=None) -> int:
         # the TRAINING data's bead h (round 3, B1; the validation's bead_h said nothing about the weights), the
         # scored embodiments and the evaluation code: runs differing in any of them never share a table
         key = (tuple(d.get("tasks") or ()), d.get("bead_h_train", "not recorded"), tuple(d.get("embodiments") or ()),
-               d.get("eval_code_hash", "not recorded"))
+               d.get("eval_code_hash", "not recorded"), d.get("actor_hidden", _actor_hidden(r)))
         groups.setdefault(key, []).append(r)
     parts = ["# Results by research question", f"checkpoint {args.ckpt}; {len(runs)} runs: " + ", ".join(r["name"] for r in runs)]
-    for (tasks, bead_h, embs, code), rr in groups.items():
+    for (tasks, bead_h, embs, code, ah), rr in groups.items():
         what = (f"tasks {', '.join(tasks)}; trained on bead h: {bead_h}; embodiments {', '.join(embs) or 'not recorded'}; "
-                f"eval code {code}" if tasks else
+                f"eval code {code}; actor_hidden {ah}" if tasks else
                 "task set not recorded (metrics.json from before 2026-10-07: rerun eval_offline)")
         dropped = sum(int((r.get("data") or {}).get("stale_bead_rows_dropped", 0)) for r in rr)
         parts += [f"# Runs scored on {what}" + (f" ({dropped} old-h bead rows left out)" if dropped else ""),

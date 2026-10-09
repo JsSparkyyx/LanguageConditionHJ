@@ -422,7 +422,8 @@ Additions over `RelabelSampler`:
 7. **Rows returned**: `row` (t), `next_row` (t+1), `prev_row` (t−k), `first_row`, and
    `next_prev_row = next_row − min(k, t_in_ep + 1)`. All ring-aware (modulo capacity, as
    `RelabelSampler` does).
-8. **`fails_soon_recall`** (7 ticks, matched to γ = 0.9), computed at refresh from `h_rules` per
+8. **`fails_soon_recall`** (the half-life of γ, round(ln 0.5 / ln γ): 7 ticks at γ = 0.9, 14 at 0.95; review round 4,
+   item 6), computed at refresh from `h_rules` per
    episode with a reverse sliding minimum. Used only for recall metrics.
 9. **Loading**: StepBuffer fields at `row` and `next_row` (robot fields, `dtheta`, Jacobians,
    `dtheta_max`), scene tokens and positions at [row, prev_row, first_row] and [next_row,
@@ -950,7 +951,7 @@ injecting small objects, rather than copying its long methods.
 | `loss/q`, `loss/pi`, `alpha`, `gamma` | as CrossSafe |
 | `q/mean`, `h/mean`, `h/min`, `gap/mean` | batch means. gap = h − min(Q1, Q2) |
 | `q/precision`, `q/recall` | predicted unsafe = Q < 0, true unsafe = `h_next < 0` |
-| `q/precision_soon`, `q/recall_soon` | true unsafe = `fails_soon_recall` (7 ticks). With γ = 0.9 the ideal V crosses 0 only about 7 ticks before an abrupt violation, so recall against the 25-tick label would be capped near 7/25 |
+| `q/precision_soon`, `q/recall_soon` | true unsafe = `fails_soon_recall` (the γ half-life: 7 ticks at γ = 0.9, 14 at 0.95). With γ = 0.9 the ideal V crosses 0 only about 7 ticks before an abrupt violation, so recall against the 25-tick label would be capped near 7/25 |
 | `lang/pair_rank_acc` | over in-batch pairs: fraction where Q(harmful rule) < Q(benign rule) |
 | `lang/pair_target_rank_acc` | over in-batch pairs with \|y₁ − y₂\| > 0.05: fraction where sign(Q₁ − Q₂) = sign(y₁ − y₂) |
 | `lang/pair_q_gap` | mean Q(benign) − Q(harmful) over pairs |
@@ -1231,7 +1232,7 @@ question and the figures.
 | `shuffle_text`, `relabel` | false, `paired` | |
 | `softmin_T_h` | 0.05 | h units, not scaled by `h_scale` |
 | `harmful_frac`, `pair_frac`, `task_balance` | 0.5, 0.5, true | |
-| `recall_horizon_ticks` | 7 | `fails_soon` itself is the env's 25 ticks |
+| `recall_horizon_ticks` | None = round(ln 0.5 / ln γ) (7 at 0.9, 14 at 0.95; a saved config keeps its value) | `fails_soon` itself is the env's 25 ticks |
 | `gamma`, `gamma_final` | 0.95, 0.95 | decided 2026-10-08 (Yuxuan; 0.9 before). Must be equal; a run keeps its saved value |
 | `batch_size`, `lr`, `tau` | 64, 3e-4, 0.005 | B fixed unless the human approves |
 | `alpha_start`, `alpha_final`, `alpha_anneal_steps` | 0.2, 0.02, 20000 | |

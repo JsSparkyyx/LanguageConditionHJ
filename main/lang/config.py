@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import math
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -162,7 +163,14 @@ class LangConfig(FrozenConfig):
     # aux_loss_weight relative to the critic loss; it trains the encoder and the head
     aux_target_loss: bool = False
     aux_loss_weight: float = 0.1
-    aux_huber_delta: float = 1.0          # metres (PyTorch's default Huber delta)
+    # review round 4, item 3: prediction and target in units of aux_unit (0.05 m, the h unit of distances) and the
+    # Huber delta in those units (in metres a 10 cm miss cost ~0.005: a few % of the critic loss)
+    aux_unit: float = 0.05
+    aux_huber_delta: float = 1.0
+    # V4b (round 4, item 3, optional): q1's scene attention (last encoder block, head-averaged, renormalized
+    # within frames t and 0) pulled to the named item's centre: sum_j a_f,j |p_j - c_f|^2 / aux_unit^2
+    aux_attention_loss: bool = False
+    aux_attention_weight: float = 0.1
 
     # --- sampling / relabeling ---
     shuffle_text: bool = False
@@ -170,7 +178,9 @@ class LangConfig(FrozenConfig):
     harmful_frac: float = 0.5
     pair_frac: float = 0.5
     task_balance: bool = True
-    recall_horizon_ticks: int = 7
+    # None: derived from gamma, round(ln 0.5 / ln gamma) = 7 at 0.9, 14 at 0.95 (review round 4, item 6); configs
+    # saved with an explicit value keep it (7 before 2026-10-08)
+    recall_horizon_ticks: int | None = None
     # bead-task rows (T2 / T4 / T6) of shards written before the bead-count h (2026-10-07, no
     # item_buffer/n_violating.npy) carry the old bead h: skip them (other tasks' rows are unchanged)
     drop_stale_bead_rows: bool = True
@@ -196,6 +206,13 @@ class LangConfig(FrozenConfig):
         assert self.item_out_root, "item_out_root must never be None/empty"
         if not self.bank_hash:
             self.bank_hash = bank_hash()
+
+    @property
+    def recall_ticks(self) -> int:
+        """The fails_soon_recall horizon in ticks: recall_horizon_ticks, or derived from gamma when unset."""
+        if self.recall_horizon_ticks is not None:
+            return int(self.recall_horizon_ticks)
+        return int(round(math.log(0.5) / math.log(float(self.gamma))))
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)

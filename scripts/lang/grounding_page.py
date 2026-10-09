@@ -262,6 +262,184 @@ def video_fig(src: str, d: dict, label: str) -> str:
 
 
 # ---------------------------------------------------------------------------- page
+E0_DIR = REPO / "runs/lang/lang_full_paired_off_1007/eval_offline"
+OTHER_SETS = ("val20_e0", "checkpoint_final_round3")   # T3 / T5 scores: the ur5 20-per-task set if scored, else the older one
+TASK_NAMES = {"selective_avoid": "1 · Don't touch it", "gap_place": "7 · Don't disturb it",
+              "push_zone": "3 · Push carefully", "tray_transport": "5 · Don't drop the block"}
+
+
+def _metrics(name: str) -> tuple[dict, dict] | None:
+    f = E0_DIR / name / "metrics.json"
+    if not f.exists():
+        return None
+    d = json.loads(f.read_text())
+    return d.get("metrics", {}), d.get("data", {})
+
+
+def _g(M: dict, key: str) -> dict:
+    return M.get(f"train/symmetric/{key}") or {}
+
+
+def _t(m: dict, k: str) -> tuple:
+    """(value, lo, hi) of metric k in group m (nan when absent)."""
+    v = m.get(k)
+    lo, hi = (m.get(k + "_ci") or (float("nan"), float("nan")))
+    return (float("nan") if v is None else float(v), float(lo), float(hi))
+
+
+def found_numbers() -> dict:
+    """Section 2 and the header, from the official checkpoint's offline scores: T1 / T7 on the grounding set
+    (eval_offline/grounding_e0), T3 / T5 on val20_e0 if scored, else on the older round-3 set (stated)."""
+    M, D = _metrics("grounding_e0")
+    rc = _g(M, "rc_pool")
+    out = {"sets": [], "rows": [], "cons": _t(rc, "rank_acc_consequence"), "ref": _t(rc, "rank_acc_referent"),
+           "ref_prior": _t(rc, "rank_acc_referent_text"), "pool_minus_prior": _t(_g(M, "pooled"), "model_minus_text"),
+           "M": M}
+    out["sets"].append(("tasks 1 and 7", "grounding_e0", D.get("embodiments"),
+                        {t: _g(M, f"task/{t}").get("n_episodes") for t in ("selective_avoid", "gap_place")}))
+    for t in ("selective_avoid", "gap_place"):
+        out["rows"].append((t, _g(M, f"task_state/{t}/violated"), _g(M, f"task_state/{t}/not_yet"), _g(M, f"task/{t}")))
+    for name in OTHER_SETS:
+        r = _metrics(name)
+        if r and _g(r[0], "task/push_zone"):
+            M2, D2 = r
+            out["sets"].append(("tasks 3 and 5", name, D2.get("embodiments"),
+                                {t: _g(M2, f"task/{t}").get("n_episodes") for t in ("push_zone", "tray_transport")}))
+            for t in ("push_zone", "tray_transport"):
+                out["rows"].append((t, _g(M2, f"task_state/{t}/violated"), _g(M2, f"task_state/{t}/not_yet"),
+                                    _g(M2, f"task/{t}")))
+            out["M2"] = M2
+            break
+    return out
+
+
+def lede(f: dict) -> str:
+    c, r = f["cons"], f["ref"]
+    if c[1] > 0.5 and not r[1] > f["ref_prior"][2]:
+        return ("It reads which kind of rule a sentence gives better than which object the sentence names: on the "
+                "object question it is not distinguishable from reading the words alone.")
+    if r[1] > f["ref_prior"][2]:
+        return "It tells apart both the kind of rule and the named object better than the words alone."
+    return "Neither the kind of rule nor the named object is read clearly better than chance."
+
+
+def section2(f: dict) -> str:
+    def cell(m, k="rank_acc", ref="rank_acc_h"):
+        if not m:
+            return "–"
+        return f"{m[k]:.2f} / {m.get(ref, float('nan')):.2f} ({m.get('n_pairs', 0)})"
+    rows = "\n".join(f'<tr><td>{e(TASK_NAMES[t])}</td><td class="num">{cell(v)}</td><td class="num">{cell(n)}</td>'
+                     f'<td class="num">{ci(_t(a, "rank_acc_text"))}</td></tr>' for t, v, n, a in f["rows"])
+    def one_set(what, name, embs, eps):
+        robots = ", ".join(e(x) for x in (embs or ["all embodiments"]))
+        counts = ", ".join(f"task {TASK_NAMES[t].split(' ')[0]}: {n}" for t, n in eps.items())
+        return f"{what}: {robots} validation episodes ({counts} with pairs), <code>{e(name)}</code>"
+    sets = "; ".join(one_set(*x) for x in f["sets"])
+    M = f["M"]
+    t1v, t1n = _g(M, "task_state/selective_avoid/violated"), _g(M, "task_state/selective_avoid/not_yet")
+    t7v, t7n = _g(M, "task_state/gap_place/violated"), _g(M, "task_state/gap_place/not_yet")
+    L = ['<section aria-labelledby="found-h">', '<h2 id="found-h">2. What we found</h2>',
+         "<p>The official model (20,000 steps on 420 recorded episodes of the careless controller) on separate "
+         "validation episodes. Cells: model / simulator reference (pairs). Brackets are 95% intervals from "
+         "resampling whole episodes; they are optimistic with this few episodes.</p>",
+         '<div class="tablebox"><table>',
+         "<thead><tr><th>Task</th><th>Already harmed (model / simulator)</th><th>Not yet (model / simulator)</th>"
+         "<th>Sentence only (all moments)</th></tr></thead>", f"<tbody>\n{rows}\n</tbody></table></div>",
+         f'<p class="muted">Sets: {sets}.</p>', "<ul>",
+         f"<li><b>Same object, different rule:</b> {ci(f['cons'])}. <b>Different objects, same rule:</b> "
+         f"{ci(f['ref'])}; the sentence-only reference on the same pairs {ci(f['ref_prior'])} (tasks 1 and 7).</li>"]
+    if t1n:
+        gap = t1n["rank_acc_h"] - t1n["rank_acc"]
+        L.append(f"<li><b>Task 1, not yet harmed.</b> For \"don't touch\", the simulator's number is essentially the "
+                 f"arm's distance to the named object, and ranking by it scores {t1n['rank_acc_h']:.2f}. The model "
+                 f"scores {ci(_t(t1n, 'rank_acc'))}" + (", so it does not use the distance to the object the sentence "
+                 "names as well as that number does.</li>" if gap > 0.05 else ".</li>"))
+    if t1v:
+        r = _t(t1v, "rank_acc_referent")
+        L.append(f"<li><b>Task 1, already harmed, different objects with the same rule.</b> {ci(r)} against 1.00 for the "
+                 f"simulator ({t1v.get('n_referent', 0)} pairs): in {1 - r[0]:.0%} of them the model rates the sentence "
+                 "naming the object just hit as the safer one.</li>")
+    if t7v and t7n:
+        coin = all(_t(m, "rank_acc")[1] <= 0.5 for m in (t7v, t7n))
+        L.append(f"<li><b>Task 7:</b> {ci(_t(t7v, 'rank_acc'))} already harmed, {ci(_t(t7n, 'rank_acc'))} not yet"
+                 + (", not distinguishable from a coin flip on either kind of moment.</li>" if coin else ".</li>"))
+    M2 = f.get("M2")
+    if M2:
+        sw, nsw = _g(M2, "t5/size_word"), _g(M2, "t5/no_size_word")
+        zi = [(k, v) for k, v in M2.items() if k.startswith("train/symmetric/t3_benign/")]
+        n_zi = sum(v.get("n_pairs", 0) for k, v in zi if k.endswith("/zone_include"))
+        n_t3 = sum(v.get("n_pairs", 0) for k, v in zi)
+        if sw and nsw:
+            L.append(f"<li><b>Tasks 3 and 5 each have a shortcut.</b> In task 5 the block at risk is almost always "
+                     f"the tall one: {ci(_t(sw, 'rank_acc'))} when a sentence contains \"tall\" or \"short\", "
+                     f"{ci(_t(nsw, 'rank_acc'))} when it does not. In task 3 the safe rule is \"keep the box on the "
+                     f"table\" in {n_zi} of {n_t3} pairs, a rule that never breaks.</li>")
+    L.append(f"<li><b>Model minus the sentence-only reference</b> (tasks 1 and 7, all pairs, paired): "
+             f"{ci(f['pool_minus_prior'])}.</li>")
+    L += ["</ul>", "</section>"]
+    return "\n".join(L)
+
+
+def seeing_reading(svs: dict) -> str:
+    """The E0b reading, from the state-paired difference (any - named) and its interval (round 4, item 4)."""
+    parts = []
+    for t, name in (("selective_avoid", "task 1"), ("gap_place", "task 7")):
+        a = svs[f"{t}/all"]
+        d, (lo, hi) = a["any_minus_named"], a["any_minus_named_ci"]
+        strata = []
+        for st, sname in (("already_harmed", "already harmed"), ("not_yet", "harm coming"),
+                          ("neither", "no harm near")):
+            b = svs.get(f"{t}/{st}")
+            if b and b.get("any_minus_named_ci"):
+                blo, bhi = b["any_minus_named_ci"]
+                if blo > 0 or bhi < 0:
+                    strata.append(f"{sname} {b['any_minus_named']:+.2f} [{blo:+.2f}, {bhi:+.2f}]")
+        tail = ("; by kind of moment: " + ", ".join(strata)) if strata else "; inconclusive per kind of moment"
+        if lo > 0:
+            parts.append(f"on {name} Q follows the most endangered object more closely than the named one "
+                         f"(paired difference {d:+.2f} [{lo:+.2f}, {hi:+.2f}]{tail})")
+        elif hi < 0:
+            parts.append(f"on {name} Q follows the named object more closely than the most endangered one "
+                         f"({d:+.2f} [{lo:+.2f}, {hi:+.2f}]{tail})")
+        else:
+            parts.append(f"on {name} there is no clear difference ({d:+.2f} [{lo:+.2f}, {hi:+.2f}])")
+    rmax = max(max(abs(svs[f"{t}/all"]["rho_named"]), abs(svs[f"{t}/all"]["rho_any"]))
+               for t in ("selective_avoid", "gap_place"))
+    s = "Judged by the paired difference: " + "; ".join(parts) + ". "
+    s += (f"Every correlation is weak (at most {rmax:.2f}): the model sees the danger only weakly, and ties it to the "
+          "named object even less." if rmax < 0.4 else f"The correlations reach {rmax:.2f}.")
+    return s
+
+
+def special_reading(wa: dict) -> str:
+    """Reason 2 from the E0c numbers (word_attention.json), stating only what was measured (audit 2026-10-08):
+    the start token's attention mass and its multiple of its share per word-reading layer, both critics' last
+    blocks, the key sizes with the counterexample, and the per-head entropies."""
+    L = wa["layers"]["pooled"]
+    names = list(L)
+    first = next(n for n in names if "encoder block 1" in n)
+    crit_last = {}
+    for n in names:
+        if "critic" in n:
+            crit_last[n.split(" block")[0]] = n          # the last block of each critic, in list order
+    f = L[first]
+    ent = [L[n]["entropy_head_query"] for n in names]
+    uni = f["entropy_uniform"]
+    words_k = float(np.mean([f[k]["key_rms"] for k in ("referent", "other")]))
+    crit = "; ".join(f"{n.split(', ')[-1]}: [CLS] {L[n]['cls']['mass']:.0%} ({L[n]['cls']['enrichment']:.1f}x), "
+                     f"[SEP] {L[n]['sep']['mass']:.0%} ({L[n]['sep']['enrichment']:.1f}x)" for n in crit_last.values())
+    srw = L.get("scene reads words")
+    counter = (f" Large keys do not always mean more attention: where the scene reads the words, [CLS] has its largest "
+               f"key ({srw['cls']['key_rms']:.0f}) but gets {srw['cls']['enrichment']:.1f}x its share." if srw else "")
+    return (f"In the body's first word-reading layer, the start token [CLS] gets {f['cls']['mass']:.0%} of the attention "
+            f"on the sentence, {f['cls']['enrichment']:.1f}x its share of the tokens, and the end token [SEP] "
+            f"{f['sep']['mass']:.0%} ({f['sep']['enrichment']:.1f}x). In the two critics' last blocks: {crit}. Their keys "
+            f"are larger than the words' (RMS {f['cls']['key_rms']:.0f} and {f['sep']['key_rms']:.0f} vs {words_k:.0f}).{counter} "
+            f"Each attention head is sharp: entropy {min(ent):.2f}-{max(ent):.2f} nats per head and query, against "
+            f"{uni:.1f} for uniform, so each head reads essentially one token.")
+
+
+
 def build(out: Path) -> str:
     svs = json.loads((E0 / "seeing_vs_selecting.json").read_text())
     wa = json.loads((E0 / "word_attention.json").read_text())
@@ -282,14 +460,15 @@ def build(out: Path) -> str:
     rho = lambda task, k: svs[f"{task}/all"][k]  # noqa: E731
     rhoc = lambda task, k: ci((svs[f"{task}/all"][k], *svs[f"{task}/all"][k + "_ci"]))  # noqa: E731
     sp = wa.get("special_tokens", {})
+    found = found_numbers()
     P = []
     P.append(f"""<header>
 <span class="eyebrow">Language-conditioned safety filter · first results</span>
 <h1>Which object does the sentence name?</h1>
-<p class="lede">We trained the first version of the language-conditioned safety filter. It learned to read what kind of rule a sentence gives ("don't touch" vs "don't move"). But on the tasks with several similar objects, it barely tells which object the sentence names. This page shows the evidence, a few small experiments that test why, and the design change we propose.</p>
+<p class="lede">We trained the first version of the language-conditioned safety filter and tested whether it reads the sentence. {lede(found)} This page shows the evidence, a few small experiments that test why, and what they point to.</p>
 <ul class="points">
-<li><b>What it reads</b>The kind of rule: 0.70 when two sentences name the same object with different rules.</li>
-<li><b>What it misses</b>The object: 0.53 when two sentences name different objects with the same rule (0.5 is a coin flip).</li>
+<li><b>The kind of rule</b>{ci(found["cons"])} when two sentences name the same object with different rules (tasks 1 and 7; 0.5 is a coin flip).</li>
+<li><b>The object</b>{ci(found["ref"])} when two sentences name different objects with the same rule; words alone give {ci(found["ref_prior"])}.</li>
 <li><b>What we propose</b>{{PROPOSE}}</li>
 </ul>
 <p class="muted">The tasks, the careless controller and the safety numbers are described on the <a href="{TASK_PAGE}">Named-Object Safety Tasks</a> page.</p>
@@ -303,26 +482,7 @@ def build(out: Path) -> str:
 <li><b>Two references:</b> the <i>simulator reference</i> ranks the pair by the true safety number h of each named object at that moment. It knows which object each sentence names and sees its present state, but it cannot see the future. On "already harmed" moments it is right by construction (1.0). The <i>sentence-only reference</i> is a small classifier that guesses from the words alone, with no images, trained on the training data.</li>
 </ul>
 </section>""")
-    P.append("""<section aria-labelledby="found-h">
-<h2 id="found-h">2. What we found</h2>
-<p>The model was trained for 20,000 steps on 420 recorded episodes of the careless controller, then scored on 41 separate validation episodes. Brackets are 95% intervals from resampling whole episodes. They are optimistic with 7 to 10 episodes per task.</p>
-<div class="tablebox"><table>
-<thead><tr><th>Task</th><th>Already harmed (model / simulator)</th><th>Not yet (model / simulator)</th><th>Sentence only (all moments)</th></tr></thead>
-<tbody>
-<tr><td>1 · Don't touch it</td><td class="num">0.69 / 1.00 (1272 pairs)</td><td class="num">0.48 / 0.71 (771)</td><td class="num">0.64</td></tr>
-<tr><td>7 · Don't disturb it</td><td class="num">0.54 / 1.00 (602)</td><td class="num">0.55 / 0.59 (183)</td><td class="num">0.68</td></tr>
-<tr><td>3 · Push carefully</td><td class="num">0.87 / 1.00 (75)</td><td class="num">0.68 / 0.23 (79)</td><td class="num">0.56</td></tr>
-<tr><td>5 · Don't drop the block</td><td class="num">0.91 / 1.00 (130)</td><td class="num">0.94 / 0.61 (48)</td><td class="num">0.82</td></tr>
-</tbody></table></div>
-<ul>
-<li><b>Same object, different rule:</b> 0.70 [0.54, 0.83] over tasks 1, 3 and 7. <b>Different objects, same rule:</b> 0.53 [0.45, 0.61].</li>
-<li><b>Task 1, not yet harmed.</b> For "don't touch", the simulator's number is essentially the arm's distance to the named object, and ranking by it scores 0.71. The model scores 0.48. It does not use the distance to the object the sentence names.</li>
-<li><b>Task 1, already harmed.</b> 0.69 against 1.00. In a third of these pairs the model rates "don't touch the red mug" as safer than "don't touch the blue box", even though the mug has just been hit.</li>
-<li><b>Task 7:</b> a coin flip on both kinds of moments.</li>
-<li><b>Tasks 3 and 5 look better, but each has a shortcut.</b> In task 5 the block at risk is always the tall one: 0.94 when a sentence contains "tall" or "short", 0.77 [0.44, 0.93] when it does not. In task 3 the safe rule is often "keep the box on the table", which never breaks.</li>
-<li><b>Overall, the model is not yet distinguishable from the sentence-only reference:</b> −0.04 [−0.14, 0.07].</li>
-</ul>
-</section>""")
+    P.append(section2(found))
     # section 3
     t1 = [k for k in traces if "selective_avoid" in k]
     t7 = [k for k in traces if "gap_place" in k]
@@ -332,16 +492,12 @@ def build(out: Path) -> str:
         return s[0], s[-1]
     fig_t1, fig_t7 = best(t1)[0], best(t7)[0]
     n_sep = sum(1 for k in traces if separation(traces[k])[1] < -0.1)
-    reading = (f"Q follows the most endangered object more closely than the named one on both tasks "
-               f"(task 1: +{rho('selective_avoid', 'any_minus_named'):.2f} {rhoc('selective_avoid', 'any_minus_named').split(' ', 1)[1]}, "
-               f"task 7: +{rho('gap_place', 'any_minus_named'):.2f} {rhoc('gap_place', 'any_minus_named').split(' ', 1)[1]} as paired differences), "
-               f"but every correlation is weak (at most {max(rho(t, 'rho_any') for t in ('selective_avoid', 'gap_place')):.2f}) and the two intervals overlap: "
-               f"the model sees the danger only weakly, and ties it to the named object even less.")
+    reading = seeing_reading(svs)
     P.append(f"""<section aria-labelledby="see-h">
 <h2 id="see-h">3. Seeing versus selecting</h2>
 <p>The model's backbone is CrossSafe, built to measure the distance between the arm and everything around it. So the question is whether it sees the danger but ties it to the wrong object.</p>
 <p class="tests"><b>Example:</b> the arm carries a plate past a red mug, 3 cm from its path, and a blue box 25 cm away. A filter that reads the sentence gives "don't touch the red mug" a low Q and "don't touch the blue box" a high one. A filter that sees danger but not the name gives both the same low Q.</p>
-<p>Over task 1 and task 7 moments (23 and 25 ur5 validation episodes), how well Q follows the named object's safety number: {rhoc('selective_avoid', 'rho_named')} (task 1), {rhoc('gap_place', 'rho_named')} (task 7); and the most endangered object's number, whichever is named: {rhoc('selective_avoid', 'rho_any')}, {rhoc('gap_place', 'rho_any')}. (Rank correlations, from −1 to 1.)</p>
+<p>Over task 1 and task 7 moments ({svs['selective_avoid/all']['n_episodes']} and {svs['gap_place/all']['n_episodes']} ur5 validation episodes), how well Q follows the named object's safety number: {rhoc('selective_avoid', 'rho_named')} (task 1), {rhoc('gap_place', 'rho_named')} (task 7); and the most endangered object's number, whichever is named: {rhoc('selective_avoid', 'rho_any')}, {rhoc('gap_place', 'rho_any')}. (Rank correlations, from −1 to 1.)</p>
 <p>{e(reading)}</p>
 <h3>One episode per task, filter off</h3>
 <p class="muted">Q for the sentence naming the object at risk (A), and for the sentence naming a safe object (B), on the same nominal run; thin lines are the two objects' safety numbers. Hover for values. Over the six recorded scenes, Q(A) drops clearly below Q(B) in the second before the harm in {n_sep} of 6.</p>
@@ -349,32 +505,37 @@ def build(out: Path) -> str:
 {trace_svg(traces[fig_t7], "trace-t7")}
 <div class="videos">{"".join(video_fig(vid(traces[k]["video"]), traces[k], ("Task 1" if "selective" in k else "Task 7") + " · UR5 robot") for k in (best(t1) + best(t7)))}</div>
 </section>""")
-    tok = (f" Measured: the frozen start token's feature is the same vector for every sentence (cosine to the mean "
-           f"{sp.get('cls', {}).get('mean_cos_to_mean', float('nan')):.4f} over {sp.get('n_sentences', 0)} sentences)."
+    tok = (f" The frozen text encoder computes the start token from itself alone: its feature is the same vector for "
+           f"every sentence (cosine to the mean {sp.get('cls', {}).get('mean_cos_to_mean', float('nan')):.4f} over "
+           f"{sp.get('n_sentences', 0)} sentences), so it carries no name. The end token is computed from the whole "
+           f"sentence (relative spread {sp.get('sep', {}).get('rel_std', float('nan')):.2f}, against "
+           f"{sp.get('cls', {}).get('rel_std', float('nan')):.4f} for the start token), so it can carry the name."
            if sp else "")
     P.append(f"""<section aria-labelledby="why-h">
 <h2 id="why-h">4. Three possible reasons</h2>
 <div class="measure"><b>1. The word features enter too large.</b><p>The frozen text encoder's word features are about 9 times larger than everything else, with a few channels up to 150. They enter the model's word attention unnormalized, so attention can lock onto whichever words are large rather than the object's name.</p></div>
-<div class="measure"><b>2. Attention lands on padding-like tokens.</b><p>In the first block, 45% of the attention on the sentence goes to the two special tokens that start and end every sentence, about twice their share. If the encoder computes the start token from itself alone, it is the same for every sentence and carries no name.{e(tok)}</p></div>
+<div class="measure"><b>2. Attention lands on the sentence's start token.</b><p>{e(special_reading(wa))}{e(tok)}</p></div>
 <div class="measure"><b>3. Nothing ties a phrase to one object.</b><p>The images are 3,600 small patches, and an object is spread over dozens of them. The model has to learn, from the safety loss alone, which patches "the red mug" refers to. Its only teacher is pairs of sentences on the same moment.</p></div>
 <p>Reasons 1 and 2 are cheap to fix. Reason 3 needs a design change.</p>
 </section>""")
     # section 5
     P.append(section5(summ, e3, vid))
     P.append(section6(summ))
-    P.append("""<section aria-labelledby="cav-h">
+    P.append(f"""<section aria-labelledby="cav-h">
 <h2 id="cav-h">7. Caveats</h2>
 <ul>
 <li>One checkpoint, and short runs for the experiments.</li>
-<li>Validation episodes are few: 23 for task 1 and 25 for task 7 in the experiments (20 new per task; two task-1 episodes failed at their first tick when the host task found no grasp).</li>
+<li>Validation episodes are few: {svs['selective_avoid/all']['n_episodes']} for task 1 and {svs['gap_place/all']['n_episodes']} for task 7 in the experiments (20 new per task plus the earlier ur5 ones; two new task-1 episodes failed at their first tick when the host task found no grasp).</li>
 <li>Offline scores, not closed loop. The filter's own corrective moves are not tested here.</li>
 <li>Task 1 "don't touch" is the case where a geometric controller could also work once the object is known. Its value here is as the cleanest test of reading the name.</li>
 </ul>
 </section>""")
     body = "\n".join(P).replace("{PROPOSE}", propose(summ)).replace("{TASK_PAGE}", TASK_PAGE)
     page = (f"<title>Which object does the sentence name?</title>\n{FONTS}\n<style>{STYLE}{EXTRA_STYLE}</style>\n"
-            f'<div class="wrap">\n{body}\n<footer><p>RoboTwin simulation, ur5-wsg robot. Code and numbers: '
-            f'docs/lang_filter/grounding_1008.md in the repository.</p></footer>\n</div>\n{TRACE_JS}')
+            f'<div class="wrap">\n{body}\n<footer><p>RoboTwin simulation. The official model was trained on the '
+            f'ur5-wsg and franka-panda robots; tasks 1 / 7 and the small runs use ur5-wsg; the sets under the section 2 '
+            f'table say which robots each row covers. Code and numbers: docs/lang_filter/grounding_1008.md in the '
+            f'repository.</p></footer>\n</div>\n{TRACE_JS}')
     return page
 
 
@@ -382,30 +543,80 @@ def outcome(summ) -> str:
     return (summ or {}).get("_e4", {}).get("outcome", "")
 
 
+def status(summ) -> str:
+    return (summ or {}).get("_e4", {}).get("status", "")
+
+
 def propose(summ) -> str:
-    o = outcome(summ)
-    if o.startswith("a fixes") or o.startswith("b fixes"):
+    """The header's last bullet, from the summary's decision status (audit 2026-10-08: an interim outcome is shown
+    as pending, never as a conclusion)."""
+    o, st = outcome(summ), status(summ)
+    if st in ("final_a", "final_b"):
         return "Keep the model and adopt the change that fixed it: " + e(o.split(": ", 1)[1]) + "."
-    if "slots plus a pointer" in o:
-        return "Neither cheap fix reaches the bar, but marking the named object does: add an explicit link from the sentence to one object, object slots plus a pointer."
-    if o:
+    if st == "final_slots":
+        return ("Neither the text fixes nor V4 reach the bar, but marking the named object does: add an explicit link "
+                "from the sentence to one object, object slots plus a pointer.")
+    if st == "inconclusive_oracle":
+        return ("No fix reaches the bar, and the model ignores even the oracle mark on the named object, so the agreed "
+                "rule cannot decide yet: see sections 5 and 6.")
+    if st == "final_other":
         return "The small experiments do not point at object reading alone: " + e(o) + "."
-    return "If the small experiments confirm it, add an explicit link from the sentence to one object: object slots plus a pointer."
+    if st == "pending":
+        return "Pending: " + e(o) + "."
+    return "Written once the experiments are in."
 
 
 ROWS = [("v0", "nothing (short-run baseline)"), ("v1", "word features normalized"),
         ("v2", "V1 + the two special tokens hidden from the word attention"),
         ("v4", "an extra training signal: one readout query predicts where the named object is (simulator labels, training only)"),
+        ("v4b", "an extra training signal: one readout query's attention on the image patches is pulled toward the named object"),
         ("v3", "oracle: the named object's patches are marked for the model (simulator only, a ceiling)")]
 
 
+def train_val(summ) -> str:
+    """Training scenes vs new scenes, and whether V3 reads its tag (audit 2026-10-08), from the summary."""
+    st, ex = summ.get("_settings", {}), summ.get("_extra", {})
+    rows = []
+    for n in sorted(st):
+        if n in summ.get("_refused", {}):
+            continue
+        tr, ib = ex.get(n, {}).get("train"), st[n].get("train_pair_acc")
+        rows.append((n, tr, ib))
+    if not any(tr or ib for _, tr, ib in rows):
+        return ""
+    L = ["<h3>Training scenes versus new scenes</h3>",
+         "<p>The same primary score on episodes the model trained on, and the score on its own training batches in the "
+         "last 1,000 steps (all pair kinds). A model that reads the name the general way scores alike on both.</p>",
+         '<div class="tablebox"><table><thead><tr><th>Run</th><th>New scenes (validation)</th>'
+         "<th>Training scenes</th><th>Training batches</th></tr></thead><tbody>"]
+    for n, tr, ib in rows:
+        v, sd = n.rsplit("_", 2)[-2:]
+        val = summ.get(v, {}).get("referent/already_harmed/T1 + T7", {}).get("per_seed", {}).get(sd.lstrip("s"))
+        L.append(f'<tr><td>{e(v.upper())} seed {e(sd.lstrip("s"))}</td><td class="num">{"–" if val is None else f"{val:.2f}"}</td>'
+                 f'<td class="num">{"–" if not tr else f"{tr[0]:.2f} ({tr[1]} pairs)"}</td>'
+                 f'<td class="num">{"–" if ib is None else f"{ib:.2f}"}</td></tr>')
+    L.append("</tbody></table></div>")
+    tags = [(n, x["tag_use"]) for n, x in ex.items() if x.get("tag_use")]
+    if tags:
+        L.append("<p><b>Does V3 read its mark?</b> The same V3 model scored with the mark on the named object removed: " +
+                 "; ".join(f"seed {e(n.rsplit('_s', 1)[1])}: {t['flip_frac']:.0%} of the primary pairs change, "
+                           f"{t['acc_tag']:.2f} with the mark vs {t['acc_no_tag']:.2f} without" for n, t in tags) +
+                 ". The model fits its training scenes without the mark, so nothing pushes it to use it.</p>")
+    return "\n".join(L)
+
+
 def section5(summ, e3, vid) -> str:
-    L = ['<section aria-labelledby="exp-h">', '<h2 id="exp-h">5. Small experiments</h2>',
-         "<p>Short training runs on tasks 1 and 7 only (6,000 steps, two seeds each, the UR5 robot), scored on the same "
-         "48 validation episodes. Cells: the mean of the two seeds [95% interval from resampling episodes], each seed after it.</p>"]
+    L = ['<section aria-labelledby="exp-h">', '<h2 id="exp-h">5. Small experiments</h2>']
     if not summ:
         L.append("<p>Running.</p></section>")
         return "\n".join(L)
+    st0 = next((x for n, x in sorted(summ.get("_settings", {}).items()) if "_v0_" in n), {})
+    p0 = summ.get("v0", {}).get("referent/already_harmed/T1 + T7", {})
+    seeds = ", ".join(f"{v.upper()} {len(summ[v]['seeds'])}" for v, _ in ROWS if summ.get(v))
+    L.append(f"<p>Short training runs on tasks 1 and 7 only ({st0.get('steps', '?')} steps, the UR5 robot), scored "
+             f"on the same validation pairs ({p0.get('n_pairs', '?')} primary pairs in {p0.get('n_episodes', '?')} "
+             f"episodes). Seeds scored: {seeds}. Cells: the mean over the scored seeds [95% interval from resampling "
+             "episodes], each seed after it.</p>")
     L.append('<div class="tablebox"><table><thead><tr><th>Run</th><th>What changes</th>'
              '<th>Different objects, already harmed (T1 + T7 · T1 / T7)</th><th>Not yet (T1 + T7)</th>'
              '<th>Same object, different rule (already harmed)</th></tr></thead><tbody>')
@@ -425,12 +636,27 @@ def section5(summ, e3, vid) -> str:
     if pr:
         L.append(f'<tr><td>–</td><td>sentence-only reference, same pairs</td><td class="num">{ci(pr)}</td><td></td><td></td></tr>')
     L.append("</tbody></table></div>")
-    aux = summ.get("_aux")
-    if aux:
-        L.append(f"<p>V4's prediction of where the named object is: off by {aux}.</p>")
+    L.append(train_val(summ))
+    st = summ.get("_settings", {})
+    v0s = next((x for n, x in sorted(st.items()) if "_v0_" in n), None)
+    if v0s:
+        L.append(f"<p class=\"muted\">Held equal across runs: gamma {v0s['gamma']}, actor head "
+                 f"{'linear' if not v0s['actor_hidden'] else 'MLP ' + str(v0s['actor_hidden'])}, TF32 "
+                 f"{'on' if v0s['tf32_train'] else 'off'}, {v0s['steps']} steps, tasks {', '.join(v0s['tasks'])}, "
+                 f"robot {', '.join(v0s['embodiments'])}.</p>")
+    ratios = [(n, x.get("aux_ratio_500"), x.get("att_ratio_500")) for n, x in sorted(st.items())
+              if x.get("aux_ratio_500") is not None or x.get("att_ratio_500") is not None]
+    if ratios:
+        L.append("<p>Size of the extra training signal, as a fraction of the safety loss at about 500 steps "
+                 "(it counts as tried at 0.05 or more): " + "; ".join(
+                     f"{e(n.split('_', 1)[1])} {r if r is not None else a:.2f}" for n, r, a in ratios) + ".</p>")
+    if summ.get("_refused"):
+        L.append("<p class=\"muted\">Left out (not comparable): " + "; ".join(
+            f"{e(n)} ({e('; '.join(w))})" for n, w in summ["_refused"].items()) + ".</p>")
     L.append(f"<p><b>Decision rule</b> (agreed beforehand): if one of the text fixes (V1, V2) or the extra training signal (V4) "
              f"reaches 0.85 on different-object pairs at already-harmed moments, tasks 1 and 7 pooled, we keep the model "
-             f"with that change; only if neither does but the oracle (V3) does, we propose object slots plus a pointer. "
+             f"with that change; only if neither the text fixes nor V4 do but the oracle (V3) does, we propose object "
+             f"slots plus a pointer. "
              f"<b>Outcome:</b> {e(outcome(summ))}.</p>")
     if e3:
         L.append('<div class="videos">' + "".join(
@@ -465,20 +691,29 @@ DIAGRAM = """<div class="diagram"><svg viewBox="0 0 980 300" role="img" aria-lab
 
 
 def section6(summ) -> str:
-    o = outcome(summ)
-    head = '<section aria-labelledby="prop-h">\n<h2 id="prop-h">6. Proposed change: object slots and a pointer</h2>'
-    if "slots plus a pointer" in o:
-        return (head + DIAGRAM + """
+    o, st = outcome(summ), status(summ)
+    head = '<section aria-labelledby="prop-h">\n<h2 id="prop-h">6. {title}</h2>'
+    if st == "final_slots":
+        return (head.format(title="Proposed change: object slots and a pointer") + DIAGRAM + """
 <ul>
 <li><b>What stays:</b> no rule types or task types anywhere, the kind of rule is still read from the sentence by the safety loss, and the same data and relabeling.</li>
 <li><b>What is new:</b> two training signals that use the simulator's labels during training only: which patches belong to which object (slot grouping), and which slot the sentence names (pointer).</li>
 <li>V3 is the ceiling of this design: it is given the pointer's answer.</li>
 </ul></section>""")
-    if not o:
-        return head + "<p>Written once the experiments are in.</p></section>"
-    return (head.replace("Proposed change: object slots and a pointer", "What the experiments point to") +
-            f"<p>{e(o)}. Slots plus a pointer are not proposed: the decision rule calls for them only when neither cheap "
-            "fix reaches 0.85 and the oracle does.</p></section>")
+    if st in ("final_a", "final_b"):
+        return head.format(title="What the experiments point to") + f"<p>{e(o)}.</p></section>"
+    if st == "final_other":
+        return (head.format(title="What the experiments point to") +
+                f"<p>{e(o)}. Slots plus a pointer are not proposed: the decision rule calls for them only when neither "
+                "the text fixes nor V4 reach 0.85 and the oracle does.</p></section>")
+    if st == "inconclusive_oracle":
+        return (head.format(title="What the experiments point to") + f"<p>{e(o)}.</p>"
+                "<p>An oracle the model does not read sets no ceiling, so it says nothing either way about slots plus a "
+                "pointer. A pointer comes with its own supervised loss, which the model cannot ignore the way it "
+                "ignores an added tag.</p></section>")
+    if st == "pending":
+        return head.format(title="Status") + f"<p>Pending: {e(o)}. The decision follows the agreed rule once the remaining runs are scored.</p></section>"
+    return head.format(title="Status") + "<p>Written once the experiments are in.</p></section>"
 
 
 def main(argv=None) -> int:

@@ -817,15 +817,19 @@ def parent(args) -> int:
             pending.append(j)
     rows = merged_rows(out_dir, set(embs))
     S = aggregate(rows)
+    mcfg = LangConfig.load(run / "lang_config.json") if (run / "lang_config.json").exists() else LangConfig.from_dict({})
     # what the numbers cover (rounds 2 C6, 3 B1): report.py groups runs on this
     fr = [r for r in rows if r.get("type") == "filter"]
     S["_meta"] = {"tasks": sorted({r["task"] for r in fr if r.get("task")}),
                   "embodiments": sorted({r["embodiment"] for r in fr if r.get("embodiment")}),
                   "code_hash": env_code_hash(), "filter_hash": filter_code_hash(), "ckpt": args.ckpt,
                   "ckpt_sha": sorted({r["ckpt_sha"] for r in fr if r.get("ckpt_sha")}),
-                  "ckpt_step": sorted({r["ckpt_step"] for r in fr if r.get("ckpt_step") is not None})}
+                  "ckpt_step": sorted({r["ckpt_step"] for r in fr if r.get("ckpt_step") is not None}),
+                  "actor_hidden": int(getattr(mcfg, "actor_hidden", 0) or 0), "gamma": float(mcfg.gamma)}
     (out_dir / "summary.json").write_text(json.dumps(S, indent=1, default=float))
-    (out_dir / "tables.md").write_text(tables(S, f"{run.name} / {args.ckpt}"))
+    (out_dir / "tables.md").write_text(tables(S, f"{run.name} / {args.ckpt} (actor_hidden {S['_meta']['actor_hidden']}, "
+                                                 f"{'MLP' if S['_meta']['actor_hidden'] else 'linear'} actor head; "
+                                                 f"gamma {S['_meta']['gamma']})"))
     print((out_dir / "tables.md").read_text())
     return 0
 

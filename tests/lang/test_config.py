@@ -85,3 +85,11 @@ def test_langconfig_guards():
         C.LangConfig(item_out_root="")
     with pytest.raises(AssertionError):
         C.LangConfig(relabel="pairs")
+
+
+def test_recall_horizon_follows_gamma():
+    """Round 4, item 6: the recall horizon is the half-life of gamma unless set: 7 ticks at 0.9, 14 at 0.95."""
+    assert C.LangConfig(gamma=0.9, gamma_final=0.9).recall_ticks == 7
+    assert C.LangConfig().recall_ticks == 14
+    assert C.LangConfig(recall_horizon_ticks=5).recall_ticks == 5
+    assert C.LangConfig.from_dict({**C.LangConfig().to_dict(), "recall_horizon_ticks": 7}).recall_ticks == 7
