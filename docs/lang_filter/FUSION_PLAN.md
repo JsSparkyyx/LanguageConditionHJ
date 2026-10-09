@@ -23,6 +23,9 @@ first. Everything in `VANILLA_PLAN.md` stays in force unless this file says othe
    gate (the critic bootstraps through the actor, so they do not cleanly test foresight).
 5. **Run the scene-count curve** (report section 8) in parallel with V5. It is cheap (V0 settings, subsampled
    data) and separates "too few scenes" from "the architecture cannot ground".
+6. **The critic's readout is an MLP, not the softmin** (Yuxuan, 2026-10-09). New runs use it by default
+   (`critic_readout = "mlp"`, section 3.6); a config saved before the field keeps the softmin. E5 isolates the
+   readout's own effect with one extra row.
 
 ## 1. Why this, and why now
 
@@ -194,8 +197,9 @@ existing V0 checkpoints are scored on it as well to link the two sets.
 
 ### 3.4 What the trainable model receives
 
-Unchanged modules. `SceneSet`, `SceneReadsWords`, `LangTrunkBlock`, actor, critics, the loss, the five text
-switches and V1-V4 all stay as they are. Two inputs change:
+Unchanged modules. `SceneSet`, `SceneReadsWords`, `LangTrunkBlock`, actor, the critic blocks, the loss, the
+five text switches and V1-V4 all stay as they are (the critic's readout changes, section 3.6). Two inputs
+change:
 
 - `scene_tokens`, `scene_pos`: the fused tokens (sentence-conditioned) instead of the sentence-free ones.
 - `words`: with `fusion_words = True` (default) the text adapter receives `w_fused` of frame t (the words
@@ -223,9 +227,52 @@ version bump, rebuilt by `build_text_cache.py`), rather than tokenizing at train
 | `scene_fusion` | True for new runs (`lang_version = 2`), False for configs saved before | run the frozen `feature_enhancer` with the sentence before the spatial enhancer |
 | `fusion_words` | True | the text adapter reads `w_fused` instead of the cached words (needs `scene_fusion`) |
 | `fusion_dtype` | "fp32" | "bf16" allowed after the parity test |
+| `critic_readout` | "mlp" for new runs, "softmin" for configs saved before the field | section 3.6; `softmin_T_h` is unused under "mlp" |
 
 A version-1 shard with `scene_fusion = True` is a hard error (no neck features stored). A version-2 shard
 with `scene_fusion = False` is V0 on the same episodes.
+
+### 3.6 Critic readout: an MLP instead of the softmin (decision 6)
+
+Today (`LangCriticHead`). After the two critic blocks, a value head gives one number per body token
+(V_i, 22 of them, padding filled with 10⁴) and one per readout query (V_k, 4), and Q = −T·log Σ exp(−V/T)
+with T = 0.05 in h units, a soft minimum over the 26 values. The intent was CrossSafe's: for a contact
+rule the link closest to the item holds the minimum, for spill, tilt, displacement and zones a query does.
+
+Why replace it. The gradient of Q with respect to V_i is the softmin weight w_i = exp(−V_i/T) / Σ_j
+exp(−V_j/T). With T = 0.05 and values spread over a few tenths, one token takes nearly all of each sample's
+gradient and the other 25 heads learn only on samples where they hold the minimum. The readout is therefore
+a hard routing decision the critic has to get right before anything else, and for the rules whose minimum
+should sit in a query, that query must first undercut all 22 link values. An MLP over a fixed set of pooled
+tokens gives every sample a dense gradient into r, the queries and the body, and makes no assumption about
+which token "owns" the rule. What is lost: the per-link "which part is in danger" readout and the readout's
+parity with CrossSafe. Both become an ablation axis (the switch), not a default.
+
+The readout:
+
+```
+# after the critic's 2 blocks: b [B, 22, 256] with mask m [B, 22], r [B, 1, 256], q [B, K, 256]
+b_mean = (b * m[..., None]).sum(1) / m.sum(1, keepdim=True).clamp_min(1)    # masked mean, [B, 256]
+parts  = [r[:, 0]] + [q[:, k] for k in range(K)] + [b_mean]                 # K + 2 vectors of 256
+z      = cat([RMSNorm(x) for x in parts], -1)                               # [B, (K + 2) * 256], 1536 at K = 4
+Q      = Linear(512, 1)(SiLU(Linear((K + 2) * 256, 512)(z)))               # one scalar
+```
+
+- One RMSNorm(256) shared by the parts, then the concatenation; hidden width 512, SiLU; about 0.8 M
+  parameters per critic head, each twin has its own.
+- `b_mean` is in the set because the action effects are injected into the body tokens (`act_proj` on the
+  8 effect numbers, post-action positions), so it is the most direct route from the action to Q; r and the
+  queries see the action only through the self-attention sub-layer d. Padding tokens are excluded by the
+  mask. With `lang_queries` off (K = 0) the input is 2 × 256; with `lang_rtoken` off, r is the static token
+  after the blocks, still included.
+- `forward` returns `(Q, None)` under "mlp": nothing reads the per-token values (`SafetyFilter` and the
+  trainer call `qmin` only, checked). `LangTwinCritic` is unchanged.
+- Checkpoints: `critic_readout` is saved in `lang_config`; `load_policy` and `Evaluator` build the head
+  the config names, so the running `rounds_ur5_g095_tf32` (softmin) and the E2 checkpoints still load and
+  score. `grounding_summary.FIXED` gains `critic_readout`.
+- Tests: Q is invariant to the order of padded body tokens and to padding count (two embodiments in one
+  batch); K = 0 builds; a saved config without the field loads as "softmin" and reproduces an old
+  checkpoint's Q bit-for-bit.
 
 ## 4. Experiments, in order
 
@@ -264,6 +311,10 @@ is V0', not the report's V0):
 | V5 | `scene_fusion` on, `fusion_words` on |
 | V5w | `scene_fusion` on, `fusion_words` off |
 | V5-d2 | V5 on both robots' T1 / T7 (120 scenes), scored on the same ur5 pairs |
+| V0'-softmin | V0' with `critic_readout = "softmin"`: the readout change on its own (decision 6) |
+
+All other rows use the MLP readout. V0' versus V0'-softmin is the readout's effect, V5 versus V0' is the
+fusion's, each on the same data and pairs.
 
 Also report, for each: rule-kind pairs, not-yet pairs, the training-scene score (`grounding_train`), the
 learning curve at 1,000-step checkpoints, and the in-batch pair accuracy. The training-scene score and the
@@ -296,6 +347,8 @@ no new collection.
    The version-1 path stays as it is (E6 uses it).
 4. `train.py`: fusion before `encode` (no grad, chunked), `fusion_words` routing into `text.lookup` vs
    `w_fused`. `scripts/lang/bench_fusion.py`. Log `perf/fusion_ms` and `perf/step_ms`.
+4b. `network.py`: `critic_readout` in `LangCriticHead` (section 3.6), the config field with its
+   saved-config default, the tests of 3.6. This step is independent of the fusion and can land first.
 5. `rollout.py`: the `_encode_obs` override, fused frame history, counterfactual history, the sidecar
    append after each capture. `collect warmup --stream v2` and `collect validation --stream v2` for T1 /
    T7 ur5 (same seed streams as the existing warmup and `val_grounding`).
@@ -304,7 +357,7 @@ no new collection.
    the comparability check, with V0' as the reference of a version-2 table.
 7. E4 script `scripts/lang/fusion_probe.py` with the overlays. Then E5, E6.
 8. Docs: `DESIGN_CONTEXT.md` section 5.1 (add the fusion stage as part of the frozen path and the two
-   switches), section 8 (γ 0.95 only, decisions 1-5 above), `CLAUDE.md` working rules (γ line), and the
+   switches; the twin-critic paragraph: MLP readout by default, softmin as the ablation), section 8 (γ 0.95 only, decisions 1-5 above), `CLAUDE.md` working rules (γ line), and the
    coauthor page generator (a "V5" section fed from E4 / E5 outputs, no hard-coded numbers).
 
 Do not edit `main/network/encoder.py` or anything under `envs/` for this; compose in `main/lang/`. If
