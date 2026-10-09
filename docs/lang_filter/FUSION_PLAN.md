@@ -135,40 +135,60 @@ def fuse(neck: dict, text_dict) -> (scene_tokens [B, 1200, 256], scene_pos [B, 1
 the raw maps). That is the V0 path, so one stored shard serves both V0 and V5. Test it against
 `encode_visual_tokens` on a recorded frame.
 
-### 3.2 What the buffer stores (new shard format, `lang_version = 2`)
+### 3.2 What the buffer stores (a lockstep sidecar, `lang_version = 2`)
 
 Scene tokens are now sentence-dependent, and relabeling draws a different sentence per sample, so the
-tokens cannot be precomputed. Store the sentence-independent neck features per step instead and fuse
-online:
+tokens cannot be precomputed. Store the sentence-independent neck features per step and fuse online.
+
+Do this as a second sidecar, `neck_buffer/`, next to `item_buffer/`, written in lockstep with the
+`StepBuffer` exactly as `ItemSidecarBuffer` is (same capacity and row indices, rollback and flush mirrored,
+`guard_writes` and `sync_arrays` cover it). The CrossSafe `StepBuffer` is not touched and keeps writing the
+unfused `scene_tokens` / `scene_pos` as today, so a version-2 shard is a version-1 shard plus a sidecar:
+every existing reader (V0, E6, the probes) works on it unchanged, and `fuse(neck, None)` has the stored
+tokens to be tested against.
 
 | field | shape, dtype | bytes |
 |---|---|---|
 | `neck_maps` | 4 maps, 3 cams, 1700 cells × 256, fp16 | 2.6 MB |
 | `neck_3d` | strides 16 / 32, 3 cams, 400 × 128, fp16 | 0.3 MB |
-| `projection_mat`, `image_wh` | [3, 4, 4] fp32, [3, 2] | ~0.2 KB |
-| everything else | as today (robot fields, h, sidecar) | ~0.1 MB |
+| `projection_mat`, `image_wh`, `T_ego2world` | [3, 4, 4] fp32, [3, 2], [4, 4] | ~0.3 KB |
+| StepBuffer and item sidecar | as today | 0.63 MB |
 
-About 2.9 MB per step against 0.63 MB today. The `scene_tokens` / `scene_pos` fields are dropped from
-version-2 shards (they are reproducible from `fuse(neck, None)`). Sampling and the ring work as before.
-`LangSampler` loads the 5 frames a sample needs (t, t−k, 0, t+1, t+1−k) as neck dicts.
+About 3.5 MB per step against 0.63 MB today. `LangSampler` loads the 5 frames a sample needs (t, t−k, 0,
+t+1, t+1−k) as neck dicts when `scene_fusion` is on, and the tokens as today when it is off. Frame 0's
+neck dict is cached per episode in RAM as the tokens are now (2.9 MB per episode).
 
-Budget for the first experiment: T1 + T7 ur5-wsg, 30 + 30 episodes, about 45k steps, about 130 GB on local
-NVMe. The full 7-task two-robot warmup would be about 1 TB and is not collected until V5 passes.
+Budget for the first experiment: T1 + T7 ur5-wsg, 30 + 30 training episodes plus 20 + 20 validation
+episodes, about 75k steps, about 260 GB on local NVMe. The full 7-task two-robot warmup would be about
+1.2 TB and is not collected until V5 passes.
+
+**Validation must be re-collected too.** The existing validation shards hold tokens, not images, so the
+neck features cannot be recovered. Re-collect T1 and T7 (20 each, ur5-wsg, masks on, the same seed stream
+from 91M) in version 2. Same seeds give the same layouts but cuRobo gives different motions, so the pairs
+will not be the report's 1,735 pairs. Every run of E5, V0' included, is scored on the new set, and the
+existing V0 checkpoints are scored on it as well to link the two sets.
 
 ### 3.3 Where fusion runs
 
 - **Training step** (`train.py _grad_step`): before `encode`, for every sample fuse its 5 frames with its
   sentence, under `no_grad`. Paired samples share frames but not sentences, so nothing is shared. 5 × 64 =
-  320 frame-passes per step, each 6 deformable layers over 5100 cells plus the spatial enhancer. Rough
-  estimate 10-15 TFLOP per step, so about 0.2-0.4 s on an A100 in fp32 / TF32. **Bench it first**
-  (`scripts/lang/bench_fusion.py`: ms per frame-pass at batch 320, and the end-to-end step time against the
-  current step time). If it more than doubles the step time, put the fusion in the `PrefetchSampler` thread
-  on the GPU, or switch the frozen stage to bf16 if the parity test passes within 1e-2 on the tokens.
-- **Collection and deployment** (`LangRolloutController`, `LangPolicyShim`): per tick, `neck_features` on
-  the fresh frame, then `fuse` with the episode's sentence. The frame history keeps the *fused* tokens and
-  positions of frames t−k and 0 (the sentence is fixed within an episode), so one fusion pass per tick, two
-  in monitor mode with the counterfactual sentence (the counterfactual history is kept separately). Nominal
-  collection stores `neck_features` only.
+  320 frame-passes per step, each 6 layers over 5100 cells (the FFN, 256 → 2048 → 256, is about 11 GFLOP
+  per layer per frame and dominates) plus the spatial enhancer. About 25 TFLOP per step, so roughly
+  0.3-0.5 s on an A100 in TF32, and more than the current step. Run the passes in chunks of about 64
+  frames (the FFN's hidden activation of 320 frames at once is 13 GB in fp32). **Bench it first**
+  (`scripts/lang/bench_fusion.py`: ms per frame-pass at chunk 64, and the end-to-end step time against the
+  current step time logged as `perf/steps_per_sec`). If the step time more than doubles, overlap the fusion
+  with the backward pass (a second CUDA stream, or fuse the next batch in the prefetch thread on the GPU),
+  or switch the frozen stage to bf16 if the parity test passes within 1e-2 on the tokens. Upload the neck
+  arrays from pinned memory (930 MB per batch in fp16).
+- **Collection and deployment** (`LangRolloutController`, `LangPolicyShim`): override `_encode_obs` in
+  `LangRolloutController` (it is already wrapped there by a timer) to run `neck_features` on the fresh
+  frame, keep the dict on the controller, and return the unfused tokens so the base `_capture_tick` writes
+  the `StepBuffer` row as today. The shim then fuses from the kept dict with the episode's sentence instead
+  of using the tokens it is handed. The frame history keeps the *fused* tokens and positions of frames t−k
+  and 0 (the sentence is fixed within an episode), so one fusion pass per tick, two in monitor mode with
+  the counterfactual sentence (the counterfactual history is kept separately). After the base capture, the
+  controller appends the neck dict to `neck_buffer/` at the same row. Nominal collection fuses nothing.
 - **Offline evaluation** (`eval_offline.py`): pairs fuse each sentence of the pair separately. The 1,735
   main pairs stay the scored set. Cache fused tokens per (state, sentence) within one evaluation run only.
 
@@ -189,7 +209,12 @@ the same frames twice, once per sentence.
 
 Deployment cost note. The text adapter can no longer run once per episode when `fusion_words` is on, because
 `w_fused` depends on the frame. It is 1.6 M parameters on 29 tokens, negligible next to the fusion pass.
-`text_out` is recomputed every tick.
+`text_out` is recomputed every tick (`set_instruction` keeps the sentence, the shim calls `encode_text`).
+
+Text inputs of the fusion. The enhancer needs HoloBrain's full `text_dict`: `embedded` (the cached 24 × 256
+words, exactly what `TextStore` holds), `text_token_mask`, `position_ids` and the sub-sentence attention
+`masks`. Extend the text cache with `position_ids` [N, 24] int16 and `masks` [N, 24, 24] bool (cache
+version bump, rebuilt by `build_text_cache.py`), rather than tokenizing at training time.
 
 ### 3.5 Switches (`LangConfig`)
 
@@ -225,15 +250,17 @@ T1. If the frozen stage does not single out the named object on our scenes, stop
 fallback is the referent phrase alone as the fusion text (an ablation, not the default), then the
 scene-count curve decides.
 
-### E5. V5 short runs (the E2 setup, so the numbers are directly comparable)
+### E5. V5 short runs (the E2 setup, re-collected in version 2)
 
-Collect T1 + T7 ur5-wsg warmup in the version-2 format (same seeds as `data/lang/warmup`, so the same 60
-scenes), then 6,000 steps, batch 64, lr 3e-4, γ 0.95, `actor_hidden 0` (pinned to V0's settings), seeds 0
-and 1, scored on the report's 1,735 main pairs with `grounding_summary.py`:
+Collect T1 + T7 ur5-wsg warmup in version 2 (same seeds as `data/lang/warmup`, so the same 60 layouts)
+and the version-2 validation set of 3.2, then 6,000 steps, batch 64, lr 3e-4, γ 0.95, `actor_hidden 0`
+(pinned to V0's settings), seeds 0 and 1, scored on the new validation pairs with `grounding_summary.py`
+(its `FIXED` settings gain `scene_fusion`, `fusion_words` and `lang_version`; the reference run of a table
+is V0', not the report's V0):
 
 | run | setting |
 |---|---|
-| V0' | `scene_fusion` off on the version-2 shards (must reproduce V0 within seed noise, 0.56-0.61) |
+| V0' | `scene_fusion` off on the version-2 shards (the report's V0 checkpoints scored on the new validation set link the two sets; V0' should land where they do) |
 | V5 | `scene_fusion` on, `fusion_words` on |
 | V5w | `scene_fusion` on, `fusion_words` off |
 | V5-d2 | V5 on both robots' T1 / T7 (120 scenes), scored on the same ur5 pairs |
@@ -256,20 +283,25 @@ no new collection.
 ## 5. Implementation steps for the code agent
 
 1. **Recon** (`recon.md`): checkpoint keys under `feature_enhancer.*` (count, strict load), the
-   `model.config.json` enhancer entry, memory of one fusion pass at batch 320 frames, time per frame-pass.
-2. `main/lang/fusion.py`: `FusedSceneEncoder`, `neck_features`, `fuse`; `HoloBrainText.embed_dict`.
-   Tests: `fuse(neck, None)` equals `encode_visual_tokens` (tokens and positions, atol 1e-5 fp32); a
-   sentence changes the tokens; two sentences give different tokens; batch of 2 equals two batches of 1.
-3. Buffer version 2 (`main/lang/buffer_v2.py` or a version switch in the existing writer): the fields of
-   3.2, `lang_version = 2` in the header, the hard error of 3.5. `LangSampler` loads neck dicts for the 5
-   frames. Keep the version-1 path working (E6 uses it).
-4. `train.py`: fusion before `encode` (no grad), `fusion_words` routing into `text.lookup` vs `w_fused`.
-   `scripts/lang/bench_fusion.py`. Log `time/fusion_ms` and `time/step_ms`.
-5. `rollout.py`: fused frame history, counterfactual history, one `neck_features` per tick. Nominal
-   collection writes neck features. `collect warmup --stream v2` for T1 / T7 ur5 (same seeds as the
-   existing warmup).
-6. `eval_offline.py`: per-sentence fusion with an in-run cache. `grounding_summary.py` accepts version-2
-   runs and records `scene_fusion` / `fusion_words` in the comparability check.
+   `model.config.json` enhancer entry, memory of one fusion pass at a chunk of 64 frames, time per
+   frame-pass. Also the provenance check of section 7, item R2.
+2. `main/lang/fusion.py`: `FusedSceneEncoder`, `neck_features`, `fuse`; `HoloBrainText.embed_dict`; the
+   text cache extension of 3.4. Tests: `fuse(neck, None)` equals `encode_visual_tokens` (tokens and
+   positions, atol 1e-5 fp32); a sentence changes the tokens; two sentences give different tokens; a batch
+   of 2 equals two batches of 1; the enhancer's output on one recorded frame equals the full BIP3D
+   `_forward` path run on the same inputs (the integration check that the order and the inputs match).
+3. `neck_buffer/` sidecar (`main/lang/neck_buffer.py`, modelled on `ItemSidecarBuffer`): the fields of
+   3.2, lockstep with the `StepBuffer`, `lang_version = 2` in `lang_episodes.jsonl` lines and the shard
+   meta, the hard error of 3.5. `LangSampler` loads neck dicts for the 5 frames when `scene_fusion` is on.
+   The version-1 path stays as it is (E6 uses it).
+4. `train.py`: fusion before `encode` (no grad, chunked), `fusion_words` routing into `text.lookup` vs
+   `w_fused`. `scripts/lang/bench_fusion.py`. Log `perf/fusion_ms` and `perf/step_ms`.
+5. `rollout.py`: the `_encode_obs` override, fused frame history, counterfactual history, the sidecar
+   append after each capture. `collect warmup --stream v2` and `collect validation --stream v2` for T1 /
+   T7 ur5 (same seed streams as the existing warmup and `val_grounding`).
+6. `eval_offline.py`: per-sentence fusion with an in-run cache keyed by (state, sentence).
+   `grounding_summary.py` records `scene_fusion`, `fusion_words`, `lang_version` and the validation set in
+   the comparability check, with V0' as the reference of a version-2 table.
 7. E4 script `scripts/lang/fusion_probe.py` with the overlays. Then E5, E6.
 8. Docs: `DESIGN_CONTEXT.md` section 5.1 (add the fusion stage as part of the frozen path and the two
    switches), section 8 (γ 0.95 only, decisions 1-5 above), `CLAUDE.md` working rules (γ line), and the
@@ -281,10 +313,117 @@ existing `embed`.
 
 ## 6. Open points for Yuxuan
 
-1. Storage: 2.9 MB per step is acceptable for T1 / T7 only (130 GB). Before a full warmup (1 TB) we need
+1. Storage: 3.5 MB per step is acceptable for T1 / T7 only (260 GB with validation). Before a full warmup
+   (1.2 TB) we need
    either more disk or the cheaper variant (cache fused tokens per episode, rule and one fixed paraphrase,
    losing paraphrase diversity on the frozen side). Decide after E5.
 2. Fusion text: the whole sentence (decided). The referent phrase alone is the fallback ablation only if E4
    fails on the whole sentence.
 3. Frozen or not: the fusion stage stays frozen. Unfreezing its layer scales `g_v`, `g_l` (a few hundred
    parameters) is a possible later ablation, not part of V5.
+
+## 7. Review of the current code (round 5, at 3e833f8) and what it means for this plan
+
+Read in full: `network.py`, `train.py`, `data.py`, `eval_offline.py` (Evaluator, pairs, strata),
+`rollout.py`, the episode loop of `collect.py`, `config.py`, the round-4 response and the two grounding
+reports. The round-4 items are done as described. Nothing below invalidates the report's numbers. Items are
+"R" (bears on the V5 implementation), "C" (code), "D" (needs a decision from Yuxuan).
+
+**R1. The report's pairs cannot be reused for V5.** Validation shards store tokens, not images, and the
+fusion needs the neck maps. The report's 1,735 pairs are therefore the last numbers on that set. Section
+3.2 now says to re-collect validation in version 2 and to score the old V0 checkpoints on the new set so
+the two sets are linked. The agent must not present a V5 number next to the report's V0 number as if they
+were on the same pairs.
+
+**R2. Provenance of the fusion weights is an assumption until checked.** The plan's argument rests on the
+enhancer having learned phrase-to-region alignment on far more data than ours. `HoloBrain_v0.0_GD` is
+trained from a "pretrain" checkpoint whose origin the code does not state. Check: compare the
+`feature_enhancer.*` tensors of `HoloBrain_v0.0_GD` with those of `hf://HorizonRobotics/BIP3D_Tiny_Det`
+(cosine per tensor). Identical or near-identical means the fusion is BIP3D's grounding-trained stage, kept
+frozen or lightly tuned during HoloBrain training. Far apart means it was retrained on RoboTwin
+instructions only, which name a few objects per task, and the pretrained-alignment argument is weaker (E4
+then carries the whole decision). Record the result in `recon.md`.
+
+**R3. The `StepBuffer` must keep writing unfused tokens.** CrossSafe's `_capture_tick` hands the same
+`encoded` tuple to the buffer write and to the policy encoder. If `_encode_obs` returned fused tokens, the
+buffer would store sentence-dependent tokens on filter episodes and sentence-free ones on nominal episodes,
+and relabeling would silently train on a mix. Section 3.3 now fixes the split: the override returns unfused
+tokens for the buffer, the shim fuses from the kept neck dict.
+
+**R4. The shim's frame history must be per sentence.** `LangPolicyShim.frames` keeps one deque of
+(tokens, positions). With fusion, a deque of fused frames is valid for one sentence only. Monitor mode
+needs two histories (named and counterfactual), and `set_instruction` called mid-episode (it is not today,
+but nothing prevents it) must clear them. Add the assert.
+
+**R5. The target encoder sees the same fused frames.** `encode(..., target=True)` reuses the batch's
+`scene_tokens_next`; with fusion, the t+1 frames are fused once with the sample's sentence and fed to both
+the live and the Polyak encoder. Do not fuse twice (cost) and do not fuse t+1 with a different paraphrase
+(it would change the target's sentence). The V3 `ref_center_next` handling in `encode` is the pattern.
+
+**R6. `fuse(neck, None)` parity is the gate for the sidecar, not only a unit test.** The stored
+`scene_tokens` of every version-2 row must equal `fuse(neck_row, None)` within fp16 rounding. Run it on
+100 random rows of the first shard before training on it (`scripts/lang/check_shards.py --fusion-parity`).
+A mismatch means the sidecar and the StepBuffer rows are misaligned (a rollback mirrored on one side only),
+the exact bug the item sidecar's lockstep guards against.
+
+**R7. Chunk the fusion, and keep it out of the autograd graph.** `_grad_step` must call the frozen stage
+under `torch.no_grad()` in chunks of about 64 frames and keep only the 1200-token outputs (fp32, 5 frames ×
+64 × 1200 × 256 × 4 B = 390 MB). Keeping the 5100-cell maps of all frames alive at once is 13 GB in the FFN
+alone (3.3). Activation checkpointing does not apply to a frozen no-grad stage.
+
+**C1. Memorization has an obvious handle the report does not name.** Frame 0 (and any frame) is an
+episode fingerprint, and each training episode is seen about 6,400 times in a 6,000-step run (report
+conclusion 6). The sampler offers nothing against it: no scene-level augmentation is possible on frozen
+tokens, and the paired batch halves the distinct transitions per batch. The plan's data lever (E6, more
+scenes) is the right one, and the fusion is meant to make the name → object map cheaper to read than the
+fingerprint table. Report the per-episode repeat count (`samples / episodes`) in every E5 table so this
+stays visible.
+
+**C2. V3 was a weak oracle by construction.** A zero-initialized additive vector on the named object's tokens,
+placed before scene-reads-words, is a signal the trunk has to learn to use, under the same memorization
+pressure as everything else. "The model ignores the oracle" (report 4.6) is consistent with "the oracle was
+too easy to ignore". The fusion is a different kind of oracle test because it rewrites the tokens' content.
+If V5 also fails and a true ceiling is still wanted, the hard version is masking: scene tokens outside the
+named item's mask (plus the robot) zeroed, which the model cannot ignore. Not part of V5.
+
+**C3. The referent-phrase uniqueness defect (round-4 audit, open).** `language._answers` lets "the box"
+pass next to a "coffee box" and "the bottle" next to a "pill bottle". 153 of 1,279 T1 already-harmed pairs
+use such a phrase. The audit showed they score like the clean pairs, so the conclusions stand, but a
+re-collected validation set should not carry the defect into V5. **D1: approve the head-noun match in
+`_answers` (a change under `envs/`), then regenerate sampleable flags and the text caches before the
+version-2 collection.** Recommended.
+
+**C4. `recall_horizon_ticks` pinned to 7 in the E2 runs at γ 0.95** (`e2.cmds`, to match V0). It only
+affects `fails_soon_recall` and the `q/recall_soon` metric, not training or the pair score. For E5 use the
+derived value (14 at 0.95) in every run, V0' included, so the diagnostics are read on one horizon.
+
+**C5. Deployment `_capture_tick` ordering.** `run()` captures once before the base run in non-collect
+modes so frame 0 is s₀. With fusion, that first capture must happen after `set_instruction`, or frame 0 is
+fused with no sentence (the V0 path) while later frames are fused with the sentence. Assert in the shim
+that a sentence is set before the first fused push when `scene_fusion` is on.
+
+**C6. The text cache's `extra_path` grows per process** (`text_cache_extra.pt` in the run, the evaluator's
+own `_eval` file). With `position_ids` and `masks` added (3.4), bump the cache version and refuse a mixed
+load rather than filling missing fields with defaults; a wrong sub-sentence mask changes the fusion
+silently.
+
+**C7. `grounding_summary.FIXED` is the only guard against mixed tables.** It compares γ, actor head, TF32,
+steps, tasks, embodiments and the scored set. Add `scene_fusion`, `fusion_words`, `lang_version`, the
+sidecar's `collect_hash` and the validation set's episode ids, and make the reference run explicit
+(`--reference V0'`) instead of "the row named V0".
+
+**C8. `eval_offline` caches state reads per chunk of 192 states, and each state is scored under several
+sentences** (train, held-out axes, base, paraphrases). With fusion each (state, sentence) is one fusion pass
+of 3 frames. The 1,735-pair set has about 2,600 (state, rule) rows and roughly 5 sentences each, so about
+40k frame-passes per run, a few minutes. Fine, but cache by (state, sentence) inside the chunk so the
+"base" sentence of one rule, which is another rule's train sentence, is not fused twice.
+
+**C9. The nominal-run validation labels are one cuRobo draw.** Already in the report's limits. For V5 the
+re-collection makes a second draw of the same layouts, which is an opportunity: scoring the old V0
+checkpoints on the new set measures how much the validation score itself moves between draws of the same
+layouts. Report that number (R1); it is the floor on any difference worth discussing.
+
+**D2. Whether E4 should also test the referent phrase alone.** The decision says the whole sentence. E4 is
+cheap (no training), so measuring both the sentence and the bare referent phrase ("the red mug") in the
+same probe costs one more pass per rule and tells us at once whether the verb frame hurts the frozen
+grounding. Recommended as a reported column, with the whole sentence staying the default for V5.
