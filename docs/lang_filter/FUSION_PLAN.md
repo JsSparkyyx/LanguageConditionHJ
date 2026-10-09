@@ -480,3 +480,50 @@ layouts. Report that number (R1); it is the floor on any difference worth discus
 cheap (no training), so measuring both the sentence and the bare referent phrase ("the red mug") in the
 same probe costs one more pass per rule and tells us at once whether the verb frame hurts the frozen
 grounding. Recommended as a reported column, with the whole sentence staying the default for V5.
+
+## 8. Implementation judgement (code agent, 2026-10-09)
+
+The plan is sound and is implemented as written, with the changes below. The contract the code follows is
+`docs/lang_filter/fusion_impl.md` (facts with anchors, interfaces, data format, tests).
+
+**Order of work.** E4 cannot use the report's validation shards (they hold tokens, R1), so the order is: code
+→ version-2 *validation* collection (T1 / T7, 40 episodes, replaying the recorded seeds) → E4 → only if E4
+passes, the version-2 warmup (the 60 recorded layouts, replayed) → E5. E6 runs now on version-1 data.
+
+**What the code showed that the plan did not know.**
+- HoloBrain's own enhancer forward does not mask padded words (`bool.masked_fill(-9e15)` stays True) and tiles
+  the text mask head-major, so a padded or mixed-length batch differs from HoloBrain's single-sentence
+  inference. The fusion therefore runs **unpadded, grouped by sentence length** (identical masks within a
+  group), using the official forward unchanged.
+- `position_ids` and the sub-sentence `masks` are a closed form of the sentence length: no text-cache change.
+- The deformable attention is the pure-PyTorch fallback (no kernel installed): memory, not the FFN, sets the
+  chunk size; a per-level drop-in (`msda_lowmem`, exact up to summation order) replaces its stacking.
+- The spatial enhancer predicts depth from the fused maps, so **token positions also depend on the sentence**.
+  The trainer, the shim and the probes carry fused positions (V4b included).
+- The fusion layers write `LN(x) + γ·Δ` (not `x += ...`) and then post-norm image layers: they change every
+  cell even for an empty sentence. E4 measures deltas against the **content-free sentence** ("" → [CLS][SEP])
+  and the pair's other sentence; the delta against the unfused tokens is reported alongside.
+- Stored neck maps are fp16, so stored-row parity (R6) uses a measured tolerance plus a CPU alignment check
+  (`episode_id`, `t_in_ep` in the neck rows); the 1e-5 test runs on live fp32 neck dicts.
+- Sizes: T1 + T7 ur5 is ~30k rows (18,611 warmup + 11,664 validation), ~108 GB with the neck sidecar (+67 GB
+  for V5-d2), not 260 GB. `/work/nvme` is the shared Lustre allocation (~1.3 TB headroom).
+- R2: the `feature_enhancer` of `pretrain/` (the file our neck, spatial enhancer and `text_feat_map` come from)
+  has median cosine 0.90 to BIP3D_Tiny_Det (a detection model), 0.88-0.92 to grounding-dino-tiny on the
+  attention matrices, 0.986 to `post_training_robotwin`, none identical: Grounding-DINO-family weights,
+  retrained through HoloBrain's stages, not a frozen copy. E4 carries the decision.
+
+**Decisions taken in the code.**
+1. `scene_fusion` defaults to False (not True) until V5 is adopted: every shard today is version 1, and a True
+   default would make every V0-style command a hard error. V5 runs pass `--set scene_fusion=true`.
+2. `critic_readout` defaults to "mlp" (decision 6); saved configs without it load "softmin".
+3. E6 pins `critic_readout = softmin` and V0's other settings, so its 60- and 120-scene points are the
+   report's V0 and the queued d2 run. New sizes: 8 and 15 episodes per task.
+4. `lang_version` is the shard's data version (2 only with `--lang-version 2`), kept in `collect_hash`.
+5. One `fusion_dtype` for training, evaluation and the rollout (fp32 default; tf32 / bf16 after the bench).
+6. Rounds training refuses `scene_fusion` for now (no neck ring); E5 is offline.
+7. D1 approved (head-noun match in `_answers`): 0 sampleable flags flip on the 840 existing records.
+
+**Decision 1, live runs.** The γ 0.9 run that is live is `rounds_ur5_g090_mlp` (the `_tf32` runs were retired
+on 10-08): chain stage `rounds_mlp_g090` in `runs/lang_pipeline_ur5` and the pending general job for the same
+run. Stopping it is left to Yuxuan (this session may not cancel jobs). `rounds_ur5_g095_mlp` (MLP actor,
+softmin critic) is the official run.

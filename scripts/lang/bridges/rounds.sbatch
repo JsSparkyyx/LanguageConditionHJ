@@ -15,10 +15,10 @@
 # itself again (RESUBMIT=0 to disable); the next job resumes where it stopped. A restart for the
 # per-process environment-init limit (also exit 75) relaunches inside the same job, and so does a crash
 # after progress (state.pt newer than at the launch; at most 3 per job). Defaults are the plan's
-# (ROUNDS=100, EPISODES=4, STEPS=2048, PROBE=10); GAMMA (default 0.95, decided 2026-10-08) sets the HJ discount
-# (gamma and gamma_final); EXTRA_ARGS goes to `train rounds` unchanged (e.g. "--no-wandb"). Keep the same
-# values on every resubmission of one run. Two gamma runs = two RUN directories, e.g.
-#   RUN=runs/lang/rounds_g095 sbatch ...   and   RUN=runs/lang/rounds_g090 GAMMA=0.9 sbatch ...
+# (ROUNDS=100, EPISODES=4, STEPS=2048, PROBE=10). The HJ discount is 0.95 (gamma and gamma_final, passed on
+# every launch; FUSION_PLAN decision 1, 2026-10-09: no gamma 0.9 runs, no GAMMA variable). A resumed run (one
+# with a state.pt) keeps the gamma of its saved lang_config.json whatever this passes. EXTRA_ARGS goes to
+# `train rounds` unchanged (e.g. "--no-wandb"). Keep the same values on every resubmission of one run.
 #   Bridges-2:  SBATCH_FLAGS="-A <account> -p GPU-shared --gpus=<rtx type>:1"
 #   Delta:      SBATCH_FLAGS="-A bifq-delta-gpu -p gpuA40x4 --gpus-per-node=1 --mem=64g"
 #               PY="bash scripts/lang/in_container.sh python"   (the container wrapper)
@@ -33,7 +33,7 @@ source scripts/lang/bridges/_env.sh
 # online wandb: WANDB_KEY_FILE names a file with an `export WANDB_API_KEY=...` line (read here, never printed)
 if [[ -n "${WANDB_KEY_FILE:-}" ]]; then source scripts/lang/wandb_env.sh; fi
 RUN="${RUN:?set RUN=runs/lang/<name>}"
-ROUNDS=${ROUNDS:-100}; EPISODES=${EPISODES:-4}; STEPS=${STEPS:-2048}; PROBE=${PROBE:-10}; GAMMA=${GAMMA:-0.95}
+ROUNDS=${ROUNDS:-100}; EPISODES=${EPISODES:-4}; STEPS=${STEPS:-2048}; PROBE=${PROBE:-10}
 DATA=${DATA:-data/lang/warmup}; VAL=${VAL:-data/lang/val}
 # RUN / DATA / VAL become absolute here (review round 3, C4): the trainer runs with cwd = the code checkout
 # (LANG_REPO when set), so a relative path would point into that checkout, while state_mtime below reads
@@ -52,7 +52,11 @@ export RUN DATA VAL
 # more LangConfig overrides go in SET="key=value ...", never in EXTRA_ARGS: a second --set would replace
 # this one (argparse keeps the last)
 # shellcheck disable=SC2206
-GAMMA_ARGS=(--set "gamma=$GAMMA" "gamma_final=$GAMMA" ${SET:-})
+SET_ARGS=(--set "gamma=0.95" "gamma_final=0.95" ${SET:-})
+# GAMMA is gone (decision 1): a job submitted with it, or its resubmission (--export=ALL), says it is ignored
+if [[ -n "${GAMMA:-}" ]]; then
+  echo "[rounds.sbatch] GAMMA=$GAMMA is ignored: gamma 0.95 (a resumed run keeps its saved gamma)"
+fi
 end=$(date -d "$(squeue -h -j "$SLURM_JOB_ID" -o %e)" +%s 2>/dev/null || echo 0)
 [[ $end -gt 0 ]] || end=$(( $(date +%s) + 47 * 3600 ))
 export STAGE_DEADLINE=$(( end - 600 ))
@@ -88,7 +92,7 @@ while true; do
   # shellcheck disable=SC2086
   $PY -m main.lang.train rounds --data "$DATA" --val "$VAL" --run "$RUN" \
       --collect-rounds "$ROUNDS" --episodes-per-round "$EPISODES" --grad-steps-per-round "$STEPS" \
-      --probe-every-rounds "$PROBE" "${GAMMA_ARGS[@]}" --resume ${EXTRA_ARGS:-}
+      --probe-every-rounds "$PROBE" "${SET_ARGS[@]}" --resume ${EXTRA_ARGS:-}
   rc=$?
   echo "[rounds.sbatch] train rounds exit $rc at $(date)"
   if [[ $rc -ne 0 && $rc -ne 75 ]]; then

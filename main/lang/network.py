@@ -419,19 +419,36 @@ def softmin(V, T: float):
 
 class LangCriticHead(nn.Module):
     """Action injection (Linear(8, 256) on the effects), post-action geometry,
-    critic_depth LangTrunkBlocks (last: update_r=False), value heads on the 22
-    body tokens and the K queries, Q = softmin_T over them (T in h units)."""
+    critic_depth LangTrunkBlocks (last: update_r=False), then the readout
+    cfg.critic_readout names (decision 6, FUSION_PLAN 3.6):
+
+        softmin: value heads on the 22 body tokens and the K queries, Q =
+                 softmin_T over them (T in h units) -> (Q [B], V [B, 22 + K])
+        mlp:     one RMSNorm shared by [r, q_1..q_K, masked mean of the body
+                 tokens], concatenated ((K + 2) x 256), Linear -> SiLU ->
+                 Linear(., 1) -> (Q [B], None); no value heads, no softmin_T_h
+
+    A config saved before the field reads "softmin" (LangConfig.from_dict), so
+    its checkpoint loads into the same parameter names and scores the same Q."""
 
     def __init__(self, cfg):
         super().__init__()
         self.K = n_queries(cfg)
-        self.temperature = float(cfg.softmin_T_h)    # plain attribute, NOT scaled by h_scale
+        self.readout = str(getattr(cfg, "critic_readout", "softmin"))
+        if self.readout not in ("softmin", "mlp"):
+            raise ValueError(f"critic_readout must be softmin or mlp, got {self.readout!r}")
         self.act_proj = nn.Linear(8, DIM)
         depth = int(cfg.critic_depth)
         self.blocks = nn.ModuleList([LangTrunkBlock(cfg, update_r=(i < depth - 1)) for i in range(depth)])
-        self.value_head = mlp_head()
-        if self.K:
-            self.value_head_q = mlp_head()
+        if self.readout == "softmin":
+            self.temperature = float(cfg.softmin_T_h)    # plain attribute, NOT scaled by h_scale
+            self.value_head = mlp_head()
+            if self.K:
+                self.value_head_q = mlp_head()
+        else:
+            hidden = int(getattr(cfg, "critic_mlp_hidden", 512))
+            self.readout_norm = nn.RMSNorm(DIM)
+            self.readout_mlp = nn.Sequential(nn.Linear((self.K + 2) * DIM, hidden), nn.SiLU(), nn.Linear(hidden, 1))
         self.use_ckpt = bool(getattr(cfg, "activation_checkpointing", False))
 
     def forward(self, enc: LangEncoded, dtheta, Jlin, Jang, joint_index):
@@ -442,6 +459,11 @@ class LangCriticHead(nn.Module):
         x = enc.pos + dp
         b, r, q = _run_blocks(self.blocks, self.use_ckpt, b, x, enc.mask, enc.r, enc.queries, enc.scene,
                               enc.scene_pos, enc.scene_mask, enc.words, enc.word_mask, enc.r0)
+        if self.readout == "mlp":
+            m = enc.mask[..., None]                                            # [B, 22, 1]
+            b_mean = b.masked_fill(~m, 0.0).sum(1) / m.sum(1).clamp_min(1).to(b.dtype)   # padding excluded
+            z = self.readout_norm(torch.cat([r, q, b_mean[:, None]], 1)).flatten(1)   # [B, (K + 2) * 256]
+            return self.readout_mlp(z).squeeze(-1), None
         V = self.value_head(b).squeeze(-1).masked_fill(~enc.mask, 1e4)       # padding must lose the min
         if self.K:
             V = torch.cat([V, self.value_head_q(q).squeeze(-1)], dim=-1)
@@ -450,7 +472,8 @@ class LangCriticHead(nn.Module):
 
 class LangTwinCritic(nn.Module):
     """Two LangCriticHeads on the same LangEncoded (TwinCritic's interface:
-    forward -> (q1, q2, v1, v2), qmin) so SafetyFilter is reused unchanged."""
+    forward -> (q1, q2, v1, v2), qmin) so SafetyFilter is reused unchanged.
+    v1, v2 are None under the MLP readout (only qmin / q1, q2 are read)."""
 
     def __init__(self, cfg):
         super().__init__()

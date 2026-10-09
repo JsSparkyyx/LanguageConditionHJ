@@ -97,8 +97,8 @@ export SBATCH_FLAGS="-A <account> -p GPU-shared --gpus=<rtx type>:1"
 sbatch $SBATCH_FLAGS scripts/lang/bridges/rounds.sbatch
 ```
 
-- gamma: the default is 0.9 (the plan's). The 0.95 run is a second run in its own directory:
-  `RUN=runs/lang/rounds_g095 GAMMA=0.95 sbatch $SBATCH_FLAGS scripts/lang/bridges/rounds.sbatch`.
+- gamma: 0.95, fixed in the script (FUSION_PLAN decision 1, 2026-10-09: no gamma 0.9 runs; the `GAMMA`
+  variable is gone and is ignored if set). A resumed run keeps the gamma of its saved config.
   Other config overrides: `SET="key=value ..."` (not inside EXTRA_ARGS). A run keeps the config of its
   first start; resubmissions inherit the variables through `--export=ALL`.
 - 100 rounds take ~85 min each on an A40 (67 min of training at ~0.5 steps/s, 15-20 min of collection):

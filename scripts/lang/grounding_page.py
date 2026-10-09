@@ -7,6 +7,10 @@ word_attention), the E0a / E3 traces (runs/lang/grounding_1008/e0a, e3) and vide
 (runs/lang/grounding_1008/summary.json from grounding_summary.py). Writes <out>/index.html and copies the videos
 it shows into <out>/videos/. The style is the "Named-Object Safety Tasks" page's (artifact PA41QH8buYwXauFEuhPcLR),
 copied verbatim, plus a few rules for the trace figures.
+
+V5 (FUSION_PLAN): a section on HoloBrain's frozen sentence-image fusion, built only from the JSON outputs of E4
+(fusion_probe.py, --e4), E5 (grounding_summary.py on the V5 runs, --e5) and E6 (scene_curve.py, --e6) that exist;
+without any of them the page is exactly the one above.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import argparse
 import html
 import json
 import shutil
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +28,8 @@ REPO = Path(__file__).resolve().parents[2]
 G = REPO / "runs/lang/grounding_1008"
 E0 = REPO / "runs/lang/lang_full_paired_off_1007/eval_offline/grounding_e0"
 TASK_PAGE = "https://claude.ai/artifact/PA41QH8buYwXauFEuhPcLR"
+V5 = REPO / "runs/lang/fusion_1009"   # the V5 outputs (the commands in fusion_probe.py, grounding_summary.py, scene_curve.py)
+V5_INPUTS = {"e4": V5 / "e4/fusion_probe.json", "e5": V5 / "summary.json", "e6": V5 / "e6/scene_curve.json"}
 
 STYLE = """
 /* layout: a catalogue — intro + legend, a summary table, then one section per task with its two videos side by side */
@@ -529,7 +536,7 @@ def section_memorize(summ) -> str:
 
 
 
-def build(out: Path) -> str:
+def build(out: Path, v5_inputs: dict | None = None) -> str:
     svs = json.loads((E0 / "seeing_vs_selecting.json").read_text())
     wa = json.loads((E0 / "word_attention.json").read_text())
     summ = json.loads((G / "summary.json").read_text()) if (G / "summary.json").exists() else None
@@ -612,8 +619,12 @@ def build(out: Path) -> str:
     # section 5
     P.append(section5(summ, e3, vid))
     P.append(section6(summ))
+    v5 = section_v5(*(load_json(v5_inputs[k]) if v5_inputs.get(k) else None for k in ("e4", "e5", "e6")),
+                    n=8) if v5_inputs else ""
+    if v5:
+        P.append(v5)
     P.append(f"""<section aria-labelledby="cav-h">
-<h2 id="cav-h">8. Caveats</h2>
+<h2 id="cav-h">{9 if v5 else 8}. Caveats</h2>
 <ul>
 <li>One checkpoint, and short runs for the experiments.</li>
 <li>Validation episodes are few: {svs['selective_avoid/all']['n_episodes']} for task 1 and {svs['gap_place/all']['n_episodes']} for task 7 in the experiments (20 new per task plus the earlier ur5 ones; two new task-1 episodes failed at their first tick when the host task found no grasp).</li>
@@ -623,7 +634,7 @@ def build(out: Path) -> str:
 </ul>
 </section>""")
     body = "\n".join(P).replace("{PROPOSE}", propose(summ)).replace("{TASK_PAGE}", TASK_PAGE)
-    page = (f"<title>Which object does the sentence name?</title>\n{FONTS}\n<style>{STYLE}{EXTRA_STYLE}</style>\n"
+    page = (f"<title>Which object does the sentence name?</title>\n{FONTS}\n<style>{STYLE}{EXTRA_STYLE}{V5_STYLE if v5 else ''}</style>\n"
             f'<div class="wrap">\n{body}\n<footer><p>RoboTwin simulation. The official model was trained on the '
             f'ur5-wsg and franka-panda robots; tasks 1 / 7 and the small runs use ur5-wsg; the sets under the section 2 '
             f'table say which robots each row covers. Code and numbers: docs/lang_filter/grounding_1008.md in the '
@@ -903,13 +914,230 @@ def section6(summ) -> str:
     return head.format(title="Status") + "<p>Written once the experiments are in.</p></section>"
 
 
+# ---------------------------------------------------------------------------- V5 (FUSION_PLAN)
+V5_STYLE = """
+/* V5 section: the scene-count curve; series colours are the dataviz reference slots 1 and 2 and their dark steps */
+:root { --s1: #2a78d6; --s2: #eb6834; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --s1: #3987e5; --s2: #d95926; } }
+:root[data-theme="dark"] { --s1: #3987e5; --s2: #d95926; }
+.curve { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.curve svg { width: 100%; height: auto; display: block; overflow: visible; }
+.curve .axis text, .curve .lab { fill: var(--muted); font-family: var(--font-mono); font-size: 11px; }
+.curve .grid { stroke: var(--line); stroke-width: 1; }
+.curve .l1 { stroke: var(--s1); stroke-width: 2; fill: none; } .curve .l2 { stroke: var(--s2); stroke-width: 2; fill: none; }
+.curve .w1 { stroke: var(--s1); stroke-width: 1.5; } .curve .w2 { stroke: var(--s2); stroke-width: 1.5; }
+.curve .d1 { fill: var(--s1); stroke: var(--surface); stroke-width: 2; } .curve .d2 { fill: var(--s2); stroke: var(--surface); stroke-width: 2; }
+.curve .h1 { fill: var(--surface); stroke: var(--s1); stroke-width: 2; } .curve .h2 { fill: var(--surface); stroke: var(--s2); stroke-width: 2; }
+.curve .keys { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.86rem; color: var(--muted); margin-bottom: 6px; }
+.curve .keys span { display: inline-flex; align-items: center; gap: 6px; }
+.curve .keys svg { width: 26px; height: 10px; }
+"""
+TASK_SHORT = {"selective_avoid": "Task 1", "gap_place": "Task 7"}
+V5_ROWS = [("v0", "the earlier baseline (section 6), scored on the new recordings"),
+           ("v0p", "no fusion: the baseline of this table"),
+           ("v0ps", "no fusion, with the critic's old minimum readout"),
+           ("v5", "fusion on"),
+           ("v5w", "fusion on the image only; the sentence reader gets the plain word features"),
+           ("v5d2", "fusion on, tasks 1 and 7 from both robots (twice the scenes)")]
+RUN_VARIANT = __import__("re").compile(r"_(v\d[a-z0-9]*)(?:_[a-z0-9]+)?_s(\d+)$")
+
+
+def load_json(p) -> dict | None:
+    p = Path(p)
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def _stat_ci(x: dict | None, nd: int = 2) -> str:
+    """{mean, lo, hi, n} (fusion_probe's cells) -> '2.31 [1.90, 2.80]'."""
+    if not x or not x.get("n"):
+        return "–"
+    return ci((x["mean"], x["lo"], x["hi"]), nd)
+
+
+def v5_e4(e4: dict) -> str:
+    """E4 from fusion_probe.json: the frozen stage alone, no training."""
+    S, g = e4.get("summary") or {}, e4.get("gate") or {}
+    tasks = [t for t in ("selective_avoid", "gap_place") if t in S] + sorted(
+        t for t in S if t not in ("selective_avoid", "gap_place", "pooled"))
+    if not tasks:
+        return ""
+    rows = [("enrich", "Enrichment: how many times more the named object's patches change than the rest of the image "
+                       "(1 = no preference)"),
+            ("enrich_phrase", "The same with only the object's name as the text (\"the red mug\")"),
+            ("contrast", "Contrast: the share of the object's patches that change more under its own sentence than "
+                         "under the same rule about another object (0.5 = no preference)"),
+            ("att_ratio_l1", "First fusion layer: how much the object's words look at the object's part of the image, "
+                             "against looking everywhere evenly (1 = no preference)"),
+            ("att_ratio_l6", "The same in the last fusion layer"),
+            ("pos_shift_named_cm", "How far the sentence moves the 3D positions of the object's patches (cm)")]
+    body = "".join(f'<tr><td>{e(name)}</td>' + "".join(f'<td class="num">{_stat_ci(S[t].get(k))}</td>' for t in tasks)
+                   + "</tr>" for k, name in rows)
+    n = e4.get("n") or {}
+    L = ["<h3>Does the frozen stage pick out the named object? (no training)</h3>",
+         "<p>We pass one camera frame through the stage twice, once with a rule's sentence and once with an empty "
+         "sentence, and measure how much each image patch changes between the two. If the stage reads the name, the "
+         f"named object's patches change most. Every {e((e4.get('config') or {}).get('every', '?'))}th moment of the "
+         f"new validation recordings: {n.get('states', 0)} moments, {n.get('rules', 0)} sentences. Brackets are 95% "
+         "intervals from resampling whole episodes; the number of sentences or pairs is in parentheses.</p>",
+         '<div class="tablebox"><table><thead><tr><th>Measure</th>' + "".join(
+             f"<th>{e(TASK_SHORT.get(t, t))}</th>" for t in tasks) + f"</tr></thead><tbody>{body}</tbody></table></div>"]
+    th = g.get("thresholds") or {}
+    if th:
+        res = {True: "passed", False: "not passed", None: "not measured yet"}[g.get("passed")]
+        L.append(f"<p><b>Agreed test</b> ({e(TASK_SHORT.get(g.get('task'), g.get('task')))}): enrichment at least "
+                 f"{th.get('enrichment')} and contrast at least {th.get('contrast')}. Measured: enrichment "
+                 f"{ci(tuple(g['enrichment']))}, contrast {ci(tuple(g['contrast']))}: <b>{res}</b>.</p>")
+    if e4.get("overlays"):
+        L.append('<p class="muted">The stored recordings keep image features, not the camera images, so the '
+                 "pictures of where the change lands are drawn on each camera's patch grid (in the E4 output folder), "
+                 "not on the images.</p>")
+    return "\n".join(L)
+
+
+def v5_e5(summ: dict) -> str:
+    """E5 from the V5 runs' grounding_summary.json: the short runs with the stage."""
+    d = summ.get("_e5")
+    if not d:
+        return ""
+    runs = defaultdict(list)
+    for n, st in sorted((summ.get("_settings") or {}).items()):
+        m = RUN_VARIANT.search(n)
+        if m and n not in (summ.get("_refused") or {}):
+            runs[m.group(1)].append(st)
+    rows = []
+    for v, what in V5_ROWS:
+        r = summ.get(v)
+        if not r:
+            continue
+        a = r.get("referent/already_harmed/T1 + T7", {})
+        seeds = " / ".join(f"{x:.2f}" for x in (a.get("per_seed") or {}).values())
+        pd = (d.get("paired_vs_v0p") or {}).get(v)
+        pd_s = "–" if not pd or pd[0] != pd[0] else f"{pd[0]:+.2f} [{pd[1]:+.2f}, {pd[2]:+.2f}]"
+        rep = " / ".join(f"{st['samples_per_episode']:,.0f}" for st in runs.get(v, [])
+                         if st.get("samples_per_episode") is not None) or "–"
+        rows.append(f'<tr><td>{e(SHORT_V5.get(v, v.upper()))}</td><td>{e(what)}</td>'
+                    f'<td class="num">{ci(tuple(a.get("mean", (float("nan"),) * 3)))} ({seeds})</td>'
+                    f'<td class="num">{pd_s}</td><td class="num">{rep}</td></tr>')
+    st0 = next(iter(runs.get("v0p") or runs.get("v5") or [{}]))
+    p0 = (summ.get("v0p") or summ.get("v5") or {}).get("referent/already_harmed/T1 + T7", {})
+    e4 = {True: "passed", False: "did not pass", None: "has not been measured"}[d.get("e4_passed")]
+    status = d.get("status")
+    out = e(d.get("outcome", "")) if status != "pending" else "Pending: " + e(d.get("outcome", ""))
+    return "\n".join([
+        "<h3>Short training runs with the stage</h3>",
+        f"<p>The short runs of section 6 ({e(st0.get('steps', '?'))} steps, tasks 1 and 7, the UR5 robot) on new "
+        "recordings of the same scenes that also keep the image features the stage needs. They are scored on new "
+        f"validation recordings ({p0.get('n_pairs', '?')} pairs in {p0.get('n_episodes', '?')} episodes), so these "
+        "numbers are not the same pairs as section 6. Cells: the mean over seeds [95% interval], each seed after it; "
+        "the paired column is the run minus the no-fusion baseline on the same pairs. Repeats: how often each "
+        "training scene was seen.</p>",
+        '<div class="tablebox"><table><thead><tr><th>Run</th><th>What changes</th>'
+        "<th>Different objects, already harmed (tasks 1 + 7)</th><th>Minus the no-fusion baseline</th>"
+        f"<th>Repeats per training scene</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>",
+        f"<p><b>Decision rule</b> (agreed beforehand): if the fusion run reaches {d.get('bar')}, we adopt it. If it is "
+        f"clearly above the baseline but below {d.get('bar')} and still rising with twice the scenes, we record more "
+        "scenes and test again. If it stays at the baseline's level although the stage picks out the object (E4 "
+        f"above), the model ignores a working signal and the next step is the data, not the model. E4 {e4}. "
+        f"<b>Outcome:</b> {out}.</p>"])
+
+
+SHORT_V5 = {"v0": "V0", "v0p": "V0'", "v0ps": "V0'-softmin", "v5": "V5", "v5w": "V5w", "v5d2": "V5-d2"}
+
+
+def curve_svg(points: list[dict], bar: float) -> str:
+    """Score vs training scenes (log x): new scenes (slot 1) and training scenes (slot 2), 95% whiskers, a hollow
+    marker for both robots, the bar and a coin flip as reference lines; native hover titles per marker."""
+    import math
+
+    pts = [p for p in points if p.get("train_episodes")]
+    if not pts:
+        return ""
+    W, H, Lm, Rm, T, B = 720, 260, 48, 128, 12, 34
+    xs = [float(p["train_episodes"]) for p in pts]
+    lx0, lx1 = math.log(min(xs) / 1.3), math.log(max(xs) * 1.3)
+    sx = lambda v: Lm + (math.log(v) - lx0) / max(lx1 - lx0, 1e-9) * (W - Lm - Rm)  # noqa: E731
+    y0, y1 = 0.3, 1.0
+    sy = lambda v: T + (y1 - min(max(v, y0), y1)) / (y1 - y0) * (H - T - B)  # noqa: E731
+    g = "".join(f'<line class="grid" x1="{Lm}" x2="{W - Rm}" y1="{sy(v):.1f}" y2="{sy(v):.1f}"/>'
+                f'<text class="lab" x="{Lm - 8}" y="{sy(v) + 4:.1f}" text-anchor="end">{v:.2f}</text>'
+                for v in (0.5, bar, 1.0))
+    xt = "".join(f'<text x="{sx(v):.1f}" y="{H - 12}" text-anchor="middle">{v:.0f}</text>' for v in sorted(set(xs)))
+    parts, ends = [], []
+    for key, k, name in (("new", 1, "new scenes"), ("train", 2, "training scenes")):
+        s = sorted(((float(p["train_episodes"]), (p.get(key) or {}).get("mean"), len(p.get("embodiments") or []) > 1,
+                     p["label"]) for p in pts), key=lambda q: q[0])
+        s = [q for q in s if q[1] and q[1][0] == q[1][0]]   # scored points only
+        if not s:
+            continue
+        parts.append(f'<path class="l{k}" d="M' + " L".join(f"{sx(x):.1f},{sy(m[0]):.1f}" for x, m, _, _ in s) + '"/>')
+        for x, m, both, lab in s:
+            if m[1] == m[1]:
+                parts.append(f'<line class="w{k}" x1="{sx(x):.1f}" x2="{sx(x):.1f}" y1="{sy(m[1]):.1f}" y2="{sy(m[2]):.1f}"/>')
+            parts.append(f'<circle class="{"h" if both else "d"}{k}" cx="{sx(x):.1f}" cy="{sy(m[0]):.1f}" r="5">'
+                         f'<title>{e(lab)}, {e(name)}: {e(ci(tuple(m)))}</title></circle>')
+        x, m = s[-1][0], s[-1][1]
+        ends.append((sy(m[0]), f'<text class="lab" x="{sx(x) + 12:.1f}" y="{{y}}">{e(name)}</text>'))
+    if len(ends) == 2 and abs(ends[0][0] - ends[1][0]) < 14:   # keep the two end labels apart
+        lo, hi = sorted(ends, key=lambda t: t[0])
+        ends = [(lo[0] - 7, lo[1]), (hi[0] + 7, hi[1])]
+    lab = "".join(t.replace("{y}", f"{y + 4:.1f}") for y, t in ends)
+    keys = ('<div class="keys">'
+            '<span><svg viewBox="0 0 26 10"><line x1="0" y1="5" x2="26" y2="5" style="stroke:var(--s1);stroke-width:2"/></svg>new scenes</span>'
+            '<span><svg viewBox="0 0 26 10"><line x1="0" y1="5" x2="26" y2="5" style="stroke:var(--s2);stroke-width:2"/></svg>training scenes</span>'
+            '<span><svg viewBox="0 0 26 10"><circle cx="13" cy="5" r="4" style="fill:var(--surface);stroke:var(--muted);stroke-width:2"/></svg>both robots</span></div>')
+    return (f'<div class="curve">{keys}<svg viewBox="0 0 {W} {H}" role="img" aria-label="Score against the number of '
+            f'training scenes">{g}<g class="axis">{xt}<text x="{(Lm + W - Rm) / 2:.0f}" y="{H}" text-anchor="middle">'
+            f'training scenes (log scale)</text></g>{"".join(parts)}{lab}</svg></div>')
+
+
+def v5_e6(e6: dict) -> str:
+    """E6 from scene_curve.json: the baseline trained on fewer and more scenes."""
+    pts = e6.get("points") or []
+    if not pts:
+        return ""
+    rows = []
+    for p in pts:
+        cells = [(ci(tuple(p[k]["mean"])) + " (" + " / ".join(f"{x:.2f}" for x in p[k]["per_seed"].values()) + ")")
+                 if p[k].get("n_pairs") else "–" for k in ("new", "train")]
+        rep = "–" if p.get("samples_per_episode") is None else f"{p['samples_per_episode']:,.0f}"
+        rows.append(f'<tr><td class="num">{" / ".join(str(x) for x in p.get("train_episodes_runs") or [p["train_episodes"]])}'
+                    f'</td><td>{e(", ".join(p.get("embodiments") or []))}</td><td class="num">{cells[0]}</td>'
+                    f'<td class="num">{cells[1]}</td><td class="num">{rep}</td></tr>')
+    return "\n".join([
+        "<h3>Does the score grow with the number of training scenes? (no fusion)</h3>",
+        "<p>The baseline model of section 6, trained on a fixed subset of the recorded scenes and on all of them, "
+        "scored on the same new scenes as section 6 and on its own training scenes. If the new-scene score rises "
+        "with the number of scenes, the model is short of scenes; if it stays flat while the training-scene score "
+        "stays high, more of the same scenes will not fix the reading.</p>",
+        curve_svg(pts, float(e6.get("bar", 0.85))),
+        '<div class="tablebox"><table><thead><tr><th>Training scenes</th><th>Robots</th>'
+        "<th>New scenes (each seed)</th><th>Training scenes (each seed)</th><th>Repeats per scene</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"])
+
+
+def section_v5(e4, e5, e6, n: int = 8) -> str:
+    """The V5 section, from the E4 / E5 / E6 JSON outputs that exist ("" when none does)."""
+    blocks = [b for b in (v5_e4(e4) if e4 else "", v5_e5(e5) if e5 else "", v5_e6(e6) if e6 else "") if b]
+    if not blocks:
+        return ""
+    return "\n".join([
+        '<section aria-labelledby="v5-h">', f'<h2 id="v5-h">{n}. Next: HoloBrain\'s own sentence-image fusion</h2>',
+        "<p>HoloBrain, whose frozen image features our model uses, reads its instruction together with the images in "
+        "six fusion layers that were trained on far more scenes than ours. Our model skipped those layers and had to "
+        "learn from its own few scenes which image patches a name refers to; section 4 shows it memorized the scenes "
+        "instead. The next version runs the fusion layers, frozen, with the rule's sentence, before our model sees "
+        "the image patches.</p>"] + blocks + ["</section>"])
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=str(G / "page"))
+    for k, f in V5_INPUTS.items():
+        ap.add_argument(f"--{k}", default=str(f), help=f"the {k.upper()} JSON of the V5 section (skipped when missing)")
     args = ap.parse_args(argv)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "index.html").write_text(build(out))
+    (out / "index.html").write_text(build(out, {k: Path(getattr(args, k)) for k in V5_INPUTS}))
     print(f"[grounding_page] {out / 'index.html'}")
     return 0
 

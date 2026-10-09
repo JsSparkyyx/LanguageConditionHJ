@@ -56,7 +56,9 @@ def words(B, g, L=24, lens=(9, 14)):
 
 
 def build(**kw):
-    cfg = dataclasses.replace(LangConfig(), **kw)
+    # this file tests the softmin readout (per-token values V, padding filled with 1e4); the MLP readout, the
+    # default since decision 6, is covered by test_critic_readout.py
+    cfg = dataclasses.replace(LangConfig(), **{"critic_readout": "softmin", **kw})
     torch.manual_seed(0)
     return cfg, LangPolicyEncoder(cfg, n_tok=NTOK).eval(), LangTwinCritic(cfg).eval()
 

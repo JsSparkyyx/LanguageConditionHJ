@@ -176,3 +176,79 @@ which regions have an entity. Every referent is visible at t = 0 (13 of 13 group
 From the same 170 traces (`main/lang/collect_report.py`, time from the start of the risky segment to the
 first violation): medians 0.60 s (T7 upright) to 3.4 s (T3 upright); every task is above the 0.4 s flag,
 roughly the 10-tick horizon of gamma = 0.9. Full table in `collect_report.md`.
+
+## V5 (2026-10-09)
+
+FUSION_PLAN step 1 (recon) and R2, for the frozen fusion stage. Checked on the login node on CPU: the
+safetensors header, a CPU build of the module, numpy cosines. No GPU, no simulator. Line anchors for every
+fact: `fusion_impl.md` section 1.
+
+| check | result |
+|---|---|
+| `feature_enhancer.*` in `pretrain/model.safetensors` | **277 keys, all F32**, 21,906,688 parameters (1,226 keys in the file). Per layer (6 layers): 18 `text_img_attn_blocks`, 16 `img_attn_blocks`, 12 `text_attn_blocks`; plus `level_embed` [4, 256] |
+| strict load | **pass**: `build(cfg["feature_enhancer"])` (`TextImageDeformable2DEnhancer`, from `model.config.json`) loads the 277 tensors with `strict=True`, no missing or unexpected keys. `pre_spatial_enhancer = False`: HoloBrain runs the fusion before the spatial enhancer |
+| layer scales γ_v, γ_l (init 1e-4) | trained but small: mean \|γ_v\| 0.013-0.030 per layer (max 0.078), mean \|γ_l\| 0.011-0.039 (max 0.109) |
+| D1 head-noun fix in `language._answers` | 0 of 2,806 stored `sampleable` flags flip on the 840 on-disk records (warmup 600, val 100, val20 100, val_grounding 40); env CPU suite 424 passed |
+
+### Provenance of the fusion weights (R2)
+
+Cosine similarity per tensor (a random pair of matrices this size gives about 0). Key sets, shapes and the
+`feature_enhancer` config entry are identical in the three HoloBrain / BIP3D checkpoints.
+
+| pair | cosine |
+|---|---|
+| `pretrain` vs `post_training_robotwin` (HoloBrain's RoboTwin stage) | median 0.986 over the 277 tensors, 0.95-0.98 on the matrices; none identical (min 0.65) |
+| `pretrain` vs `BIP3D_Tiny_Det` (Hugging Face, a detection model) | median 0.903 (min 0.488); 2-D weights median 0.838 (min 0.561), ‖Δ‖/‖b‖ median 0.57 |
+| `post_training_robotwin` vs `BIP3D_Tiny_Det` | median 0.886 |
+| `pretrain` vs `IDEA-Research/grounding-dino-tiny` | fusion `v_proj` / `l_proj` 0.885-0.918, `sampling_offsets` 0.89-0.94, image FFN 0.88-0.92, text FFN 0.73-0.83, `level_embed` 0.992; `text_feat_map` vs `text_projection` 0.919 |
+
+The lowest similarities are in the text self-attention blocks. BERT (197 tensors) is identical in `pretrain`
+and `post_training_robotwin`; `text_feat_map` differs (weight cosine 0.977). Reading: Grounding-DINO-family
+weights retrained through HoloBrain's stages, not a frozen copy of BIP3D, so E4 carries the decision. Our
+neck, spatial enhancer, BERT and `text_feat_map` come from `pretrain/`; the fusion is taken from the same file
+and checkpoints are never mixed. Open: the comparison against the `HorizonRobotics/BIP3D` grounding `.pth`
+files (needs torch).
+
+### Deformable attention: pure PyTorch, no kernel
+
+`bip3d/layers.py:29-39` imports `MultiScaleDeformableAttentionFunction` and `load_cuda_kernels` from
+transformers. 4.57.6 has neither, so the code falls back to transformers' `MultiScaleDeformableAttention`
+(`load_cuda_kernels = None`, checked): `grid_sample`, bilinear, zero padding, no parameters, `im2col_step`
+ignored. No `kernels` package, mmcv or `ms_deform_attn` build is installed, so nothing replaces it on the GPU.
+
+Memory. The op samples one tensor per level, [3F·8, 32, 1700, 4] fp32 for F frames (3 cameras × 8 heads,
+32 channels per head, 1700 queries, 4 points), stacks the 4 (a copy) and multiplies by the weights (a third
+copy): about 250 MB per frame at peak, about 16 GB at 64 frames, against 2.7 GB for the FFN's hidden layer
+(from the shapes; `scripts/lang/bench_fusion.py` measures it). So memory, not the FFN, sets the chunk size.
+Fix: `fusion.msda_lowmem`, a drop-in for each image block's `self_attn.func` that sums per level instead of
+stacking (exact up to summation order), and chunks of 32 frames (`fusion_chunk`).
+
+### Two masking defects of the official forward, and the fix
+
+1. Padded words are not masked in the text-image attention (`layers.py:662-681`). The mask is bool, and
+   `mask.masked_fill(mask == 0, -9e15)` casts −9e15 to True (checked: `[[True, False]]` → `[[True, True]]`),
+   so every logit gets +1 and nothing is masked. Image cells then read the pad rows, which are not zero:
+   BERT does not zero them under the 3-D mask, and the cache holds `text_feat_map(BERT([PAD]))` up to the
+   longest sentence of each build chunk, zeros after it. A padded sentence's fusion would depend on how the
+   cache was built.
+2. The text self-attention mask is tiled head-major (`feature_enhancer.py:220-225`,
+   `~masks.repeat(num_heads, 1, 1)`), while `nn.MultiheadAttention` reads a [B·H, L, L] mask batch-major
+   (row b·H + h). With B > 1 and sentences of different lengths, one sample's heads get other samples'
+   sub-sentence masks.
+
+HoloBrain's inference runs one unpadded sentence, so it hits neither. Fix (`FusionStage.fuse`): group the
+frames by sentence length n (`wmask.sum(1)`), slice the words to n, and run the official forward unchanged.
+Within a group there is no padding and every mask is the same, so neither defect can act, and the result is
+HoloBrain's single-sentence inference. `position_ids` ([CLS] = 0, w₁ = 0, ..., [SEP] = n − 2) and the
+sub-sentence mask (one block over tokens 1..n − 1, plus the identity) are a closed form of n, derived from the
+cached `mask`: no text-cache change. The fused words are re-padded with zeros to 24.
+
+### Sentence-dependent positions
+
+The spatial enhancer predicts each cell's depth distribution from the 2-D features it is given
+(`spatial_enhancer.py:211-248`); in HoloBrain's order those are the fused maps. So the tokens' 3D positions
+depend on the sentence too, not only their content: `fuse` returns tokens and positions, and the trainer, the
+shim, the probes and V4b carry the fused positions. Also, each fusion layer writes `LN(x) + γ·Δ`
+(`layers.py:807-817`) and then post-norm image and text layers, so even the content-free sentence
+("" → [CLS][SEP]) changes every cell. E4 measures token changes against that sentence and the pair's other
+sentence, and reports the change against the unfused tokens alongside.

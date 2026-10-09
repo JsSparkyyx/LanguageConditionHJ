@@ -16,6 +16,13 @@ with small injected pieces instead of copied methods.
 - per-tick trace: h_all, h_named, h_other_min, action_source, the named
   item's robot_item_dist, held (from the capture's diag).
 - ``wire_item_eval(ro, rule_id)``: the h_fn for evaluation, no buffer.
+- V5 (fusion_impl.md 4.6): ``fusion`` (a FusionStage) and ``keep_neck``. With
+  either, ``_encode_obs`` makes one backbone pass that also gives the frame's
+  neck dict (``_neck_now``) and still returns the UNFUSED tokens, so the
+  StepBuffer row is today's (FUSION_PLAN R3). ``fusion``: the shim fuses the
+  neck with each sentence into that sentence's own frame history.
+  ``keep_neck`` (version-2 collection): every captured row carries its
+  neck_buffer/ row (``_pending["_neck"]``, popped by NeckLockstepWriter).
 """
 
 from __future__ import annotations
@@ -65,12 +72,20 @@ class LangPolicyShim:
     frames, and t - k is frame 0 until k + 1 frames exist (the sampler's
     max(t - k, 0)). On the base class's cache-miss path the fresh frame is
     used as t without being pushed.
+
+    With a fusion stage on the controller (``ro.fusion``, V5) the tokens it is
+    handed are ignored: the frame's neck (``ro._neck_now``) is fused with the
+    named sentence, and with the counterfactual one when set, and each
+    sentence keeps its own history (``hist`` / ``frame0``, ``hist_cf`` /
+    ``frame0_cf``): a fused frame is valid for its sentence only (R4).
     """
 
     def __init__(self, ro, policy_enc, k: int = 2):
         self.ro, self.pe, self.k = ro, policy_enc, int(k)
         self.hist = deque(maxlen=self.k + 1)
         self.frame0 = None
+        self.hist_cf = deque(maxlen=self.k + 1)     # fusion: the counterfactual sentence's fused frames
+        self.frame0_cf = None
         self.cent_hist = deque(maxlen=self.k + 1)   # V3 monitor: {rule_id: centre or None} per captured frame
         self.cent0 = None
         self.enc_cf = None
@@ -132,10 +147,25 @@ class LangPolicyShim:
                 self.cent_hist.append(cn)
         else:
             cur = (tok, pos)
-        prev = self.hist[0] if len(self.hist) == self.k + 1 else self.frame0
+        return self._stack(self.hist, self.frame0, cur)
+
+    def frames_cf(self, tok, pos):
+        """frames() for the counterfactual sentence's own fused history (fusion only; pushed at the same captures
+        as the named one, so both hold the same frames, each fused with its sentence)."""
+        if self.ro._in_capture:
+            if self.frame0_cf is None:
+                self.frame0_cf = (tok, pos)
+            self.hist_cf.append((tok, pos))
+            cur = self.hist_cf[-1]
+        else:
+            cur = (tok, pos)
+        return self._stack(self.hist_cf, self.frame0_cf, cur)
+
+    def _stack(self, hist, frame0, cur):
+        prev = hist[0] if len(hist) == self.k + 1 else frame0
         if prev is None:   # nothing captured yet: frame 0 = the fresh frame
             prev = cur
-        f0 = self.frame0 if self.frame0 is not None else cur
+        f0 = frame0 if frame0 is not None else cur
         import torch
 
         st = torch.stack([cur[0], prev[0], f0[0]], dim=1)          # [1, 3, 1200, 256]
@@ -146,6 +176,8 @@ class LangPolicyShim:
         import torch
 
         self.n_calls += 1
+        if getattr(self.ro, "fusion", None) is not None:
+            return self._call_fused(state, body_tokens, link_pos, body_mask, joint_index)
         tok, pos = self._flat(tokens, pos_mean)
         st, sp = self.frames(tok, pos)
         ro = self.ro
@@ -158,14 +190,64 @@ class LangPolicyShim:
                                    text_out=ro.cf_text_out, **kw_b) if ro.cf_text_out is not None else None)
         return enc
 
+    def _call_fused(self, state, body_tokens, link_pos, body_mask, joint_index):
+        """V5: this frame's neck fused with each sentence (one fuse call, the neck twice when a counterfactual is
+        set), pushed into that sentence's history during a capture, then the encoder on each sentence's frames
+        [t, t-k, 0]. With fused_words the text adapter reads the fused words of frame t, so text_out is recomputed
+        every call (``ro.text_out`` / ``ro.cf_text_out`` hold the last one; FUSION_PLAN 3.4)."""
+        import torch
+
+        ro = self.ro
+        if ro.text_words is None:
+            raise RuntimeError("scene_fusion: no sentence before the first frame; call set_instruction before run() "
+                               "(frame 0 would be fused without the episode's sentence, FUSION_PLAN C5)")
+        cf = ro.cf_text_words is not None
+        neck, (words, wmask) = ro._neck_now, ro.text_words
+        if cf:
+            neck = {key: v.expand(2, *v.shape[1:]) for key, v in neck.items()}
+            words = torch.cat([words, ro.cf_text_words[0]])
+            wmask = torch.cat([wmask, ro.cf_text_words[1]])
+        t0 = time.perf_counter()
+        tok, pos, w_fused = ro.fusion.fuse(neck, words, wmask)        # [F, 1200, 256], [F, 1200, 3], [F, 24, 256]
+        timing = getattr(ro, "timing", None)
+        if timing is not None:
+            timing["fuse"] = timing.get("fuse", 0.0) + time.perf_counter() - t0
+        st, sp = self.frames(tok[:1], pos[:1])
+        st_cf, sp_cf = self.frames_cf(tok[1:2], pos[1:2]) if cf else (None, None)
+        tag = hasattr(self.pe, "e_tag")
+        kw_a = dict(zip(("ref_center", "ref_valid"), self.centres(ro.named_rule_id))) if tag else {}
+        kw_b = dict(zip(("ref_center", "ref_valid"), self.centres(ro.cf_rule_id))) if tag else {}
+        with torch.no_grad():
+            if bool(getattr(getattr(ro, "cfg", None), "fused_words", False)):
+                ro.text_out = self.pe.encode_text(w_fused[:1], ro.text_words[1])
+                if cf:
+                    ro.cf_text_out = self.pe.encode_text(w_fused[1:2], ro.cf_text_words[1])
+            enc = self.pe(state, body_tokens, link_pos, body_mask, joint_index, st, sp, text_out=ro.text_out, **kw_a)
+            self.enc_cf = (self.pe(state, body_tokens, link_pos, body_mask, joint_index, st_cf, sp_cf,
+                                   text_out=ro.cf_text_out, **kw_b) if cf else None)
+        return enc
+
 
 class LangRolloutController(RolloutController):
-    def __init__(self, *args, text_store=None, monitor_only: bool = False, **kwargs):
+    def __init__(self, *args, text_store=None, monitor_only: bool = False, fusion=None, keep_neck: bool = False,
+                 **kwargs):
         cfg0 = args[0] if args else kwargs.get("cfg")
         if getattr(cfg0, "oracle_ref_tag", False) and not monitor_only:
             raise SystemExit("oracle_ref_tag reads the named object's position from the simulator: an offline "
                              "measuring tool (review round 3, E2), never run in closed loop (monitor_only: Q is "
                              "recorded, the filter can never engage)")
+        if fusion is not None or getattr(cfg0, "scene_fusion", False):
+            # checked before the env is built: a scene_fusion model on unfused tokens (or a stage nothing calls)
+            # would run silently on inputs it was not trained on
+            from .network import LangPolicyEncoder
+
+            pe0 = kwargs.get("policy_enc", args[5] if len(args) > 5 else None)
+            if isinstance(pe0, LangPolicyEncoder) and (fusion is not None) != bool(getattr(cfg0, "scene_fusion", False)):
+                raise ValueError(f"scene_fusion={getattr(cfg0, 'scene_fusion', False)} in the config but fusion="
+                                 f"{'a FusionStage' if fusion is not None else 'None'}: pass the stage exactly when the "
+                                 "model was trained with scene_fusion")
+            if fusion is not None and not isinstance(pe0, LangPolicyEncoder):
+                raise ValueError("fusion needs a LangPolicyEncoder policy (the LangPolicyShim runs the stage)")
         # monitor_only (round 3, E0a / E3): Q of both sentences every tick, the filter never engages (nominal motion)
         self.monitor_only = bool(monitor_only)
         self.cf_rule_id = None
@@ -174,6 +256,13 @@ class LangRolloutController(RolloutController):
         self.text_out = self.cf_text_out = None
         self.text_store = text_store
         self.named_rule_id = None
+        # V5 (fusion_impl.md 4.6): the frozen fusion stage (the shim fuses the kept neck with the sentence) and
+        # version-2 collection (each captured row carries its neck row)
+        self.fusion = fusion
+        self.keep_neck = bool(keep_neck)
+        self._neck_now = None       # the neck dict of the last encoded frame (captures and cache misses)
+        self._neck_capture = None   # the neck of this capture's frame, until _collect_tick takes it
+        self.text_words = self.cf_text_words = None   # fusion: (words, mask) of each sentence, from the text store
         super().__init__(*args, **kwargs)
         self.timing = {"build": time.perf_counter() - t0}
         self.trace["status"] = "ok"
@@ -204,18 +293,31 @@ class LangRolloutController(RolloutController):
     # ------------------------------------------------------------------ text --
     def set_instruction(self, sentence: str, cf_sentence: str | None = None, rule_id: str | None = None,
                         cf_rule_id: str | None = None) -> None:
-        """Text store lookup + text adapter, once per episode (no grad)."""
+        """Text store lookup + text adapter, once per episode (no grad).
+
+        With fusion the words and masks are kept for the shim's fuse calls, and the call must come before the
+        first captured frame (the frame histories are fused with the sentence, R4). With fused_words the text
+        adapter runs in the shim, on each frame's fused words (text_out stays None until the first frame)."""
         import torch
 
         shim = self.policy_enc
         if not isinstance(shim, LangPolicyShim):
             raise ValueError("set_instruction needs a LangPolicyEncoder policy (LangPolicyShim)")
+        fusion = getattr(self, "fusion", None)
+        if fusion is not None and shim.n_pushed:
+            raise RuntimeError(f"set_instruction after {shim.n_pushed} captured frame(s): with scene_fusion the frame "
+                               "history is fused with the episode's first sentence (FUSION_PLAN R4)")
+        per_frame = fusion is not None and bool(getattr(self.cfg, "fused_words", False))
         with torch.no_grad():
             w, m = self.text_store.lookup([sentence])
-            self.text_out = shim.pe.encode_text(w, m)
+            self.text_out = None if per_frame else shim.pe.encode_text(w, m)
+            w2 = m2 = None
             if cf_sentence is not None:
                 w2, m2 = self.text_store.lookup([cf_sentence])
-                self.cf_text_out = shim.pe.encode_text(w2, m2)
+                self.cf_text_out = None if per_frame else shim.pe.encode_text(w2, m2)
+        if fusion is not None:
+            self.text_words = (w, m)
+            self.cf_text_words = (w2, m2) if cf_sentence is not None else None
         self.sentence, self.cf_sentence = sentence, cf_sentence
         if rule_id is not None:
             self.named_rule_id = rule_id
@@ -237,6 +339,47 @@ class LangRolloutController(RolloutController):
             self._trace_rules()
             self.timing["capture"] = self.timing.get("capture", 0.0) + time.perf_counter() - t0
             self.timing["n_capture"] = self.timing.get("n_capture", 0) + 1
+
+    def _encode_obs(self, obs):
+        """The base encoding (tokens, pos_mean, state, body), always UNFUSED: the StepBuffer row and the V0 readers
+        keep today's tokens (FUSION_PLAN R3). With fusion or keep_neck one backbone pass also gives the frame's neck
+        dict (fusion.encode_obs_with_neck: tokens and positions bit-identical to the base path), kept as _neck_now
+        for the shim and, inside a capture only, as the capture's neck for _collect_tick (the base class's
+        cache-miss encoding runs outside a capture and never reaches a buffer row)."""
+        if self.fusion is None and not self.keep_neck:
+            return super()._encode_obs(obs)
+        import torch
+
+        from .fusion import encode_obs_with_neck
+
+        with torch.no_grad():
+            (tokens, pos_mean), neck = encode_obs_with_neck(self.encoder, obs)
+            state = self.encoder.encode_joint_angles(
+                obs["joint_state"], self.kin, embodiedment_mat=obs["T_base2ego"],
+            ).squeeze(2)                          # [B, N, D]
+            body = self.extractor.extract()
+        self._neck_now = neck
+        if self._in_capture:
+            self._neck_capture = neck
+        return tokens, pos_mean, state, body
+
+    def _collect_tick(self, obs, h, diag, encoded):
+        """keep_neck (version 2): the capture's neck row rides in the entry the base class stashes as _pending and
+        writes one capture later (the last one in _flush_pending); NeckLockstepWriter pops it inside the same
+        append. The row is made before the base call, so a failed conversion (fp16 overflow) leaves the previous
+        entry pending, as any tick error does (the episode is then rolled back at its end)."""
+        row = None
+        if self.keep_neck:
+            neck, self._neck_capture = self._neck_capture, None
+            if neck is None:
+                raise RuntimeError("keep_neck: this capture's encoding left no neck (only _encode_obs inside a "
+                                   "capture provides one)")
+            from .fusion import neck_to_row
+
+            row = neck_to_row(neck)
+        super()._collect_tick(obs, h, diag, encoded)
+        if row is not None:
+            self._pending["_neck"] = row   # after super(): _pending is this capture's entry
 
     def _trace_rules(self):
         diag = self._last_diag

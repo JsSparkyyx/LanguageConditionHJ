@@ -18,6 +18,13 @@ Throughput: rows t-k ... t+1 of a sample are one contiguous slice when they do
 not cross the array end; frame-0 tokens are cached per (source, episode); a
 paired transition is read once; reads run on a thread pool; PrefetchSampler
 samples in a background thread (queue depth 2).
+
+Version-2 shards (FUSION_PLAN 3.2) add ``<root>/neck_buffer`` (NeckBuffer, read
+only). With ``neck=True`` a batch also carries the neck rows of its 5 frames (t,
+t-k, 0, t+1, t+1-k): each unique (source, ring row) once in ``neck``, indexed by
+``neck_idx`` [B, 5]; frame 0 from a per-(source, episode) RAM cache. The neck path
+draws no random numbers. ``episodes_per_task = N`` (E6 scene-count curve) keeps
+the first N episodes of each (task, embodiment) in a fixed hash order.
 """
 
 from __future__ import annotations
@@ -40,10 +47,13 @@ from main.item_envs import language  # noqa: E402
 from main.item_envs.relabel import RelabelSampler  # noqa: E402
 
 from .config import CANON_TASKS  # noqa: E402
+from .neck_buffer import NeckBuffer  # noqa: E402
 from .scene_roles import ref_rows  # noqa: E402
 
 ROBOT_FIELDS = ("state_tokens", "body_tokens", "link_pos", "body_mask", "joint_index", "Jlin", "Jang", "dtheta_max")
 STEP_FIELDS = ROBOT_FIELDS + ("scene_tokens", "scene_pos", "dtheta", "episode_id")
+# the 5 frames of a sample in neck_idx column order (t, t-k, 0, t+1, t+1-k): keys of LangSource.rows_of
+NECK_FRAMES = ("row", "prev_row", "first_row", "next_row", "next_prev_row")
 # tasks whose rules are bead rules; their h changed on 2026-10-07 (bead count once violated)
 BEAD_TASKS = ("granular_pour", "granular_carry", "clean_pour")
 
@@ -126,7 +136,8 @@ def bead_h_of(sources) -> str:
 
 
 class LangSource:
-    """One data root: index of usable non-terminal rows + StepBuffer arrays."""
+    """One data root: index of usable non-terminal rows + StepBuffer arrays (+ the neck sidecar of a version-2
+    shard, opened on first use)."""
 
     def __init__(self, root, k_prev: int = 2, recall_horizon: int = 7, name: str | None = None,
                  max_n: int | None = None, drop_stale_bead: bool = True):
@@ -154,11 +165,32 @@ class LangSource:
 
         self.rs.buf.refresh = capped
         self.first_cache: dict[int, tuple] = {}
+        self.neck_first_cache: dict[int, dict] = {}
+        self._neck: NeckBuffer | None = None
         self.refresh()
 
     @property
     def capacity(self) -> int:
         return self.rs.buf.capacity
+
+    @property
+    def has_neck(self) -> bool:
+        """A version-2 shard: neck_buffer/ next to buffer/ and item_buffer/."""
+        return (self.root / "neck_buffer" / "header.json").exists()
+
+    @property
+    def neck(self) -> NeckBuffer:
+        """The neck sidecar, opened read-only on first use (never creates a file)."""
+        if self._neck is None:
+            if not self.has_neck:
+                raise ValueError(f"{self.root}: no neck_buffer/ (a version-1 shard); the neck maps exist only in "
+                                 "shards collected with --lang-version 2")
+            nb = NeckBuffer(self.root / "neck_buffer")
+            if nb.capacity != self.capacity:
+                raise ValueError(f"{self.root}: neck_buffer capacity {nb.capacity} != item_buffer capacity "
+                                 f"{self.capacity}")
+            self._neck = nb
+        return self._neck
 
     def _open_step(self):
         for f in STEP_FIELDS:
@@ -193,6 +225,8 @@ class LangSource:
                     self.lines[int(d["episode_id"])] = d
         self.rs.refresh()
         self._open_step()
+        if self._neck is not None:   # after the lines: the writer publishes every header before the line
+            self._neck.refresh()
         rs, A = self.rs, self.rs.buf.arrays
         mixed = np.zeros(rs._rows.size, dtype=bool)
         mixed[rs._mixed] = True
@@ -224,6 +258,7 @@ class LangSource:
         # drop cached frame 0 of episodes no longer in the ring
         live = set(int(e) for e in np.unique(self.eid))
         self.first_cache = {e: v for e, v in self.first_cache.items() if e in live}
+        self.neck_first_cache = {e: v for e, v in self.neck_first_cache.items() if e in live}
         return int(self.rows.size)
 
     # -------------------------------------------------------------- reads ----
@@ -300,14 +335,55 @@ class LangSource:
         return {"row": slot, "next_row": nxt, "prev_row": (slot - min(k, t)) % C, "first_row": int(self.first[i]),
                 "next_prev_row": (nxt - min(k, t + 1)) % C}
 
+    # --------------------------------------------------------- neck rows ----
+    def neck_first(self, eid: int, first_slot: int) -> dict:
+        """Frame 0's neck row {field: array}, cached per episode like first_frame (2.9 MB each)."""
+        v = self.neck_first_cache.get(eid)
+        if v is None:
+            v = {f: np.array(a[first_slot]) for f, a in self.neck.arrays.items()}
+            self.neck_first_cache[eid] = v
+        return v
+
+    def check_neck(self, rows: np.ndarray, ep: np.ndarray, t: np.ndarray) -> None:
+        """The neck rows at these ring slots must hold the item sidecar's (episode_id, t_in_ep) there: a rollback
+        or resume mirrored on one side only shows here, on the CPU (FUSION_PLAN R6)."""
+        A = self.rs.buf.arrays
+        rows = np.asarray(rows, np.int64)
+        want_e, want_t = np.asarray(A["episode_id"][rows], np.int64), np.asarray(A["t_in_ep"][rows], np.int64)
+        bad = np.flatnonzero((np.asarray(ep, np.int64) != want_e) | (np.asarray(t, np.int64) != want_t))
+        if bad.size:
+            b = int(bad[0])
+            raise RuntimeError(f"{self.root}: neck_buffer row {int(rows[b])} holds episode {int(ep[b])} tick "
+                               f"{int(t[b])}, item_buffer episode {int(want_e[b])} tick {int(want_t[b])} ({bad.size} "
+                               "of the rows read): the sidecars are out of lockstep; check with "
+                               "scripts/lang/check_shards.py")
+
+    def neck_rows(self, rows, check: bool = True) -> dict:
+        """Neck rows of these ring slots -> {field: array [len(rows), ...]} (eval_offline, check_shards); check:
+        their alignment with the item sidecar (check_neck)."""
+        rows = np.asarray(rows, np.int64).reshape(-1)
+        out = self.neck.read(rows)
+        if check:
+            self.check_neck(rows, out["episode_id"], out["t_in_ep"])
+        return out
+
 
 class LangSampler:
-    """sample(B) -> batch dict (Section 4.4 output table)."""
+    """sample(B) -> batch dict (Section 4.4 output table).
+
+    neck: also gather the version-2 neck rows of the 5 frames (``neck`` / ``neck_idx``, module docstring); a
+    source without neck_buffer/ is a ValueError. episodes_per_task = N > 0: draw only from the first N episodes
+    of each (task, embodiment) (``_episode_subset``), for the training sampler of the scene-count curve.
+    """
 
     def __init__(self, roots, cfg, tasks=None, embodiments=None, seed: int = 0, probe: bool = False,
-                 n_threads: int = 8, split: str = "train", max_rows: dict | None = None):
+                 n_threads: int = 8, split: str = "train", max_rows: dict | None = None, neck: bool = False,
+                 episodes_per_task: int = 0):
         self.cfg = cfg
         self.k = int(cfg.k_prev)
+        self.with_neck = bool(neck)
+        self.episodes_per_task = int(episodes_per_task)
+        assert self.episodes_per_task >= 0, self.episodes_per_task
         self.sources = []
         self.max_rows = {str(Path(k).resolve()): int(v) for k, v in (max_rows or {}).items()}
         for r in roots:   # shards still being collected may have no rows (or no arrays) yet
@@ -317,6 +393,7 @@ class LangSampler:
                              max_n=self.max_rows.get(str(Path(r).resolve())),
                              drop_stale_bead=getattr(cfg, "drop_stale_bead_rows", True))
             if src.rows.size and "scene_tokens" in src.step:
+                self._check_neck_source(src)
                 self.sources.append(src)
             else:
                 print(f"[data] skipping {r}: no usable rows yet")
@@ -334,6 +411,7 @@ class LangSampler:
         src = LangSource(root, self.k, int(self.cfg.recall_ticks),
                          drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True))
         if src.rows.size and "scene_tokens" in src.step:
+            self._check_neck_source(src)
             self.sources.append(src)
             self.refresh(sources=False)
         else:
@@ -344,6 +422,18 @@ class LangSampler:
         for root in list(getattr(self, "_pending", [])):
             self._pending.remove(root)
             self.add_source(root)
+
+    def _check_neck_source(self, src: LangSource) -> None:
+        """With neck on: the source must be a version-2 shard whose neck fields match the other sources'."""
+        if not self.with_neck:
+            return
+        if not src.has_neck:
+            raise ValueError(f"{src.root}: no neck_buffer/ (a version-1 shard): scene_fusion needs version-2 "
+                             "shards (collect --lang-version 2)")
+        fields = src.neck.fields   # opens it (read-only) and checks its capacity
+        if self.sources and fields != self.sources[0].neck.fields:
+            raise ValueError(f"{src.root}: neck fields {fields} differ from {self.sources[0].root}'s "
+                             f"{self.sources[0].neck.fields}")
 
     def refresh(self, sources: bool = True) -> int:
         if sources:
@@ -362,14 +452,48 @@ class LangSampler:
             ok &= np.isin(self.task_of, [CANON_TASKS.index(t) for t in self.tasks])
         if self.embodiments is not None:
             ok &= np.isin(self.emb_of, list(self.embodiments))
+        keep = self._episode_subset() if self.episodes_per_task > 0 else None
+        self.episode_keep = keep
+        if keep is not None:
+            ok &= cat([np.isin(s.eid, [e for jj, e in keep if jj == j]) for j, s in enumerate(self.sources)], bool)
         self.ok = ok
         self.by_task = {int(t): np.flatnonzero(ok & (self.task_of == t)) for t in np.unique(self.task_of[ok])}
         self.mixed_by_task = {t: idx[self.mixed_of[idx]] for t, idx in self.by_task.items()}
         self.mixed_by_task = {t: v for t, v in self.mixed_by_task.items() if v.size}
         self.all_ok = np.flatnonzero(ok)
-        # episodes per (source) for the shuffled control
-        self.episodes = [(j, int(e)) for j, s in enumerate(self.sources) for e in np.unique(s.eid)]
+        # episodes per (source) for the shuffled control (the same subset as the drawn rows when one is set)
+        self.episodes = [(j, int(e)) for j, s in enumerate(self.sources) for e in np.unique(s.eid)
+                         if keep is None or (j, int(e)) in keep]
         return int(self.all_ok.size)
+
+    def _episode_subset(self) -> set[tuple[int, int]]:
+        """(source index, episode id) of the first episodes_per_task episodes of each (task, embodiment), in the
+        order sorted(eids, key=stable_hash(("e6", task, embodiment, eid))): fixed, so the subset for N is part of
+        the subset for N + 1 and every sampler over the same data draws the same episodes. Keyed by (source,
+        eid): episode ids repeat across sources (a _bead shard reuses its shard's ids; a version-2 replay its v1
+        shard's), and a repeated id sorts next to its twin (the same layout), ties broken by source name."""
+        groups: dict[tuple[str, str], list[tuple[int, int]]] = {}
+        for j, s in enumerate(self.sources):
+            eids, first = np.unique(s.eid, return_index=True)
+            for e, i0 in zip(eids.tolist(), first.tolist()):
+                groups.setdefault((CANON_TASKS[int(s.task[i0])], str(s.emb[i0])), []).append((j, int(e)))
+        keep = set()
+        for (task, emb), eps in groups.items():
+            eps.sort(key=lambda je: (stable_hash(("e6", task, emb, je[1])), self.sources[je[0]].name, je[0]))
+            keep.update(eps[: self.episodes_per_task])
+        return keep
+
+    def episode_counts(self) -> dict[tuple[str, str], int]:
+        """{(task, embodiment): episodes the sampler draws from} (after the task / embodiment filters and the
+        episode subset): with the sample count, the repeats per episode of a run (FUSION_PLAN C1)."""
+        out: dict[tuple[str, str], int] = {}
+        for j, s in enumerate(self.sources):
+            m = self.ok[self.sid == j]
+            task, emb = s.task[m], s.emb[m]
+            for i0 in np.unique(s.eid[m], return_index=True)[1].tolist():
+                key = (CANON_TASKS[int(task[i0])], str(emb[i0]))
+                out[key] = out.get(key, 0) + 1
+        return dict(sorted(out.items()))
 
     def __len__(self) -> int:
         return int(self.all_ok.size)
@@ -439,6 +563,45 @@ class LangSampler:
         return picks[:B]
 
     # ------------------------------------------------------------- sample ----
+    def _gather_neck(self, where: dict, B: int) -> tuple[dict, np.ndarray]:
+        """-> (neck {field: [U, ...]}, neck_idx int64 [B, 5]): every unique (source, ring row) among the batch's
+        frames (t, t-k, 0, t+1, t+1-k), read once (rows_of: the scene tokens' row arithmetic); a pair's members
+        and frames shared by samples (t = 0, t + 1 of one sample = t of another) point at one entry. Frame-0 rows
+        come from the per-episode cache, the others from the memmaps on the thread pool. No random numbers."""
+        idx = np.empty((B, len(NECK_FRAMES)), dtype=np.int64)
+        uniq: dict[tuple[int, int], int] = {}
+        todo: list[list] = []   # [u, source, ring row, eid if frame 0 of a sample else None]
+        for gi, bs in where.items():
+            j, i = int(self.sid[gi]), int(self.loc[gi])
+            rows = self.sources[j].rows_of(i)
+            for f, name in enumerate(NECK_FRAMES):
+                u = uniq.get((j, rows[name]))
+                if u is None:
+                    u = uniq[(j, rows[name])] = len(todo)
+                    todo.append([u, j, rows[name], None])
+                if name == "first_row":
+                    todo[u][3] = int(self.sources[j].eid[i])
+                idx[bs, f] = u
+        fields = self.sources[todo[0][1]].neck.fields
+        out = {f: np.empty((len(todo),) + tuple(shp), dtype=dt) for f, (shp, dt) in fields.items()}
+
+        def fill(item):
+            u, j, row, eid = item
+            s = self.sources[j]
+            if eid is not None:
+                for f, v in s.neck_first(eid, row).items():
+                    out[f][u] = v
+            else:
+                for f, a in s.neck.arrays.items():
+                    out[f][u] = a[row]
+
+        list(self.pool.map(fill, todo))
+        js, rws = (np.array([it[c] for it in todo], dtype=np.int64) for c in (1, 2))   # entry u = todo[u]
+        for j in np.unique(js).tolist():   # lockstep check against the item sidecar (episode_id, t_in_ep)
+            m = js == j
+            self.sources[j].check_neck(rws[m], out["episode_id"][m], out["t_in_ep"][m])
+        return out, idx
+
     def sample(self, B: int, rng=None, picks=None, pair_frac: float | None = None) -> dict:
         rng = rng or self.rng
         picks = picks if picks is not None else self.plan(B, rng, pair_frac)
@@ -449,6 +612,8 @@ class LangSampler:
         out = {k: np.empty((len(picks),) + shp, dtype=dt) for k, (shp, dt) in src0.shapes().items()}
         list(self.pool.map(lambda kv: self.sources[self.sid[kv[0]]].read_into(int(self.loc[kv[0]]), out, kv[1]),
                            where.items()))
+        if self.with_neck:
+            out["neck"], out["neck_idx"] = self._gather_neck(where, len(picks))
         meta = {k: [] for k in ("sentence", "rule_id", "consequence", "task", "host", "embodiment", "source",
                                 "episode_id", "rule_col", "row", "next_row", "prev_row", "first_row", "next_prev_row",
                                 "t_in_ep")}

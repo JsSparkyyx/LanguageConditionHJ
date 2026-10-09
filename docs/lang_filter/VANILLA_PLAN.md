@@ -671,7 +671,7 @@ with no_grad():
     enc_n = policy_enc_targ(..._next, words, wmask)          # same sentence at t+1
     a_n, _, _, _ = actor(enc_n.body, ji_n, dtheta_max_n)
     q1_t, q2_t, _, _ = critics_targ(enc_n, a_n, Jlin_n, Jang_n, ji_n)
-    y = (1 - gamma) * h + gamma * min(h, 0.5 * (q1_t + q2_t))   # gamma = 0.9, mean of target twins
+    y = (1 - gamma) * h + gamma * min(h, 0.5 * (q1_t + q2_t))   # gamma = 0.9 [superseded: 0.95], mean of target twins
 q1, q2, _, _ = critics(enc, dtheta, Jlin, Jang, ji)
 loss_q = mse(q1, y) + mse(q2, y)                             # trains critics + the whole policy encoder
 # actor step: encoder and critic params requires_grad False for the step, every field detached
@@ -689,6 +689,7 @@ polyak(targets, live, tau=0.005)
   that every trainable encoder and critic parameter has a target copy.
 - **The same sentence** is used at t and t+1, and for `a'`.
 - Schedules as `FrozenConfig`: γ fixed 0.9, α 0.2 → 0.02 over 20k steps, hard Bellman target.
+  [Superseded: γ = 0.95 from 2026-10-08, and the only value from 2026-10-09 (FUSION_PLAN decision 1).]
 
 ### 6.2 Modes and commands (always through `scripts/lang/in_container.sh`)
 
@@ -857,6 +858,7 @@ python -m main.lang.collect report data/lang/warmup
    - Measure the time from the start of the risky segment containing a rule's first violation to that
      violation.
    - Flag it if the median exceeds 0.4 s (10 ticks, roughly the horizon of γ = 0.9). γ may need 0.95;
+     [superseded: γ = 0.95 from 2026-10-08, and the only value from 2026-10-09 (FUSION_PLAN decision 1)]
 5. violation rates among non-`ok` episodes (timeouts can correlate with harm too);
 6. text cache: sentences per split, 20 random (rule id, sentence) examples per task;
 7. wall time per episode, rendering + encoding vs physics.

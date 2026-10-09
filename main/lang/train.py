@@ -18,11 +18,23 @@ Resume: ``--resume`` restores weights, targets, optimizers, step, the sampler
 and torch RNG states (the next batch is exactly the one an uninterrupted run
 would draw). ``--time-budget`` stops cleanly (state saved, exit 75) before a
 job's walltime; SIGTERM does the same.
+
+V5 (``--set scene_fusion=true``, FUSION_PLAN; contract fusion_impl.md 4.4):
+version-2 shards only. Each step fuses the 5 frames of every sample (t, t-k, 0,
+t+1, t+1-k) with the sample's own sentence in HoloBrain's frozen fusion stage
+(``FusionStage``, built once from the checkpoint, never part of the optimised,
+copied or saved modules), outside the TF32 block (the stage sets its own
+precision, cfg.fusion_dtype). The live encoder gets the fused frames t, t-k, 0,
+the target encoder t+1, t+1-k, 0 (frame 0 fused once per sample); with
+fusion_words the text adapter reads the fused words of frame t (t+1 for the
+target). Probes and sanity checks fuse the same way. Rounds mode refuses it (no
+neck ring yet: rounds.run_rounds).
 """
 
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import copy
 import dataclasses
@@ -44,14 +56,19 @@ ensure_item_path()
 
 
 from .config import CANON_EMBODIMENTS, CANON_TASKS, LangConfig  # noqa: E402
+from .neck_buffer import ROW_FIELDS  # noqa: E402
 from .network import LangPolicyEncoder, LangTwinCritic, make_actor, n_params, param_groups, set_probe  # noqa: E402
 
 EXIT_RESUME = 75
 LOG_EVERY = 20
 STATE_EVERY = 500
 # every policy-encoder part a switch can add must be listed, or a checkpoint silently drops it (the V3 tag and the V4
-# head were missing until 2026-10-08: V3 checkpoints held no tag and were scored with a zero one)
+# head were missing until 2026-10-08: V3 checkpoints held no tag and were scored with a zero one). V5 adds no part:
+# the fusion stage is frozen and rebuilt from the HoloBrain checkpoint, so consumers read cfg.scene_fusion
 CKPT_PARTS = ("injection", "scene_set", "text_adapter", "scene_reads_words", "r_static", "blocks", "e_tag", "aux_head")
+# neck_idx columns (data.NECK_FRAMES: t, t-k, 0, t+1, t+1-k) of the live stack [t, t-k, 0] and the target
+# stack [t+1, t+1-k, 0]: frame 0 is the same entry in both
+LIVE_COLS, TARGET_COLS = (0, 1, 2), (3, 4, 2)
 
 
 def _safe_wandb_log(run, logs: dict, step: int) -> None:
@@ -88,6 +105,133 @@ def _t(x, dtype=torch.float32, dev="cuda"):
     return torch.from_numpy(np.ascontiguousarray(a)).to(dev, non_blocking=False).to(dtype)
 
 
+# ---------------------------------------------------------------------------
+# V5: the frozen fusion stage on stored neck rows (fusion_impl.md 4.1, 4.4)
+# ---------------------------------------------------------------------------
+
+
+def make_fusion(cfg, device="cuda", spatial_enhancer=None):
+    """The frozen fusion stage of a scene_fusion config, None when it is off: HoloBrain's pretrain/ checkpoint (the
+    file of our neck, spatial enhancer and text_feat_map; $HOLOBRAIN_CKPT via main.train.collect.CKPT_DIR) at the
+    config's precision and chunk, the same in training, evaluation and the rollout. spatial_enhancer: the rollout's
+    HoloBrainEncoder one (no second copy); training and offline evaluation build their own."""
+    if not getattr(cfg, "scene_fusion", False):
+        return None
+    from main.train.collect import CKPT_DIR
+
+    from .fusion import FusionStage
+
+    return FusionStage(str(CKPT_DIR), device=device, dtype=cfg.fusion_dtype, chunk=int(cfg.fusion_chunk),
+                       spatial_enhancer=spatial_enhancer)
+
+
+def fusion_flags(lang_config: dict) -> tuple[bool, bool]:
+    """(scene_fusion, fused words) of a saved lang_config: what the scene tokens and the words the weights were
+    trained on are. A config saved before V5 has neither (unfused tokens, cached words)."""
+    sf = bool((lang_config or {}).get("scene_fusion", False))
+    return sf, sf and bool(lang_config.get("fusion_words", True))
+
+
+class SharedNeck(dict):
+    """A batch's neck rows {field: [U, ...]}, one table its samples share (neck_idx points into it).
+
+    metrics.Prober builds per-state sub-batches as ``[v[k]] * n`` for values that are not arrays; an integer index
+    returns the table itself, so such a sub-batch keeps the whole table next to its own neck_idx rows (neck_table
+    undoes the list). Field names index as in a dict."""
+
+    def __getitem__(self, k):
+        return self if isinstance(k, (int, np.integer)) else super().__getitem__(k)
+
+
+def neck_table(x) -> dict:
+    """b["neck"] as the sampler gives it, or the per-state list of one SharedNeck (Prober sub-batches)."""
+    if isinstance(x, (list, tuple)):
+        if not x or any(t is not x[0] for t in x):
+            raise ValueError("a batch's neck rows must be one table shared by its samples")
+        x = x[0]
+    return x
+
+
+def probe_neck(batch: dict) -> dict:
+    """A probe set's neck rows for frames t, t-k, 0 only (probes never encode the t+1 stack: about 3 GB of host
+    memory for 512 samples instead of 5), as a SharedNeck. Columns 3, 4 of neck_idx become -1 (fused() refuses
+    them)."""
+    nidx = np.asarray(batch["neck_idx"], np.int64)
+    used, inv = np.unique(nidx[:, list(LIVE_COLS)].ravel(), return_inverse=True)
+    new = np.full_like(nidx, -1)
+    new[:, list(LIVE_COLS)] = inv.reshape(-1, len(LIVE_COLS))
+    table = neck_table(batch["neck"])
+    return {"neck": SharedNeck({k: np.ascontiguousarray(v[used]) for k, v in table.items()}), "neck_idx": new}
+
+
+def neck_upload(rows: dict, device) -> dict:
+    """numpy neck rows -> device tensors of the five fusion fields, each in its stored dtype (fp16 maps stay fp16:
+    the stage casts each chunk to fp32, so a batch's ~250 frames take 0.7 GB, not 1.5), staged through pinned
+    memory on CUDA."""
+    cuda = str(device).startswith("cuda")
+    out = {}
+    for k in ROW_FIELDS:
+        a = np.asarray(rows[k])
+        if not a.flags.writeable:
+            a = a.copy()
+        t = torch.from_numpy(np.ascontiguousarray(a))
+        out[k] = t.pin_memory().to(device, non_blocking=True) if cuda else t.to(device)
+    return out
+
+
+def fuse_neck_rows(fusion, rows: dict, entry, words, wmask, device):
+    """The fusion of F frames: frame f is neck row entry[f] of rows ({field: np [U, ...]}) fused with words[f] /
+    wmask[f] -> fusion.fuse = (tokens [F, n, 256], positions [F, n, 3], fused words [F, L, 256]). The rows the
+    frames use are uploaded once and gathered on the device."""
+    entry = np.asarray(entry, np.int64)
+    n_rows = int(np.asarray(rows["neck_maps"]).shape[0])
+    used, inv = np.unique(entry, return_inverse=True)
+    if used.size != n_rows:   # some rows are not needed (probe sub-batches): upload the used ones only
+        rows = {k: np.asarray(rows[k])[used] for k in ROW_FIELDS}
+    dev = neck_upload(rows, device)
+    gather = torch.as_tensor(inv.reshape(-1), dtype=torch.long, device=device)
+    return fusion.fuse({k: t[gather] for k, t in dev.items()}, words, wmask)
+
+
+class StepTimer:
+    """Durations of named spans (perf/fusion_ms, perf/step_ms), read at log time: CUDA events on a GPU (wall time
+    without a sync is wrong there: a step's last kernels are still queued when the next step starts),
+    perf_counter on the CPU. A span is (mark(), mark()); at most the last `keep` spans per name are kept."""
+
+    def __init__(self, cuda: bool, keep: int = 4 * LOG_EVERY):
+        self.cuda = bool(cuda)
+        self.keep = int(keep)
+        self.spans: dict[str, collections.deque] = {}
+
+    def mark(self):
+        if self.cuda:
+            e = torch.cuda.Event(enable_timing=True)
+            e.record()
+            return e
+        return time.perf_counter()
+
+    def add(self, name: str, t0, t1) -> None:
+        self.spans.setdefault(name, collections.deque(maxlen=self.keep)).append((t0, t1))
+
+    def read(self) -> dict:
+        """{name: (mean ms per span, number of spans)} since the last read or clear; then cleared."""
+        out = {}
+        for name, spans in self.spans.items():
+            if not spans:
+                continue
+            if self.cuda:
+                spans[-1][1].synchronize()   # spans of one name are recorded in order on one stream
+                ms = [a.elapsed_time(b) for a, b in spans]
+            else:
+                ms = [1000.0 * (b - a) for a, b in spans]
+            out[name] = (float(np.mean(ms)), len(ms))
+        self.spans.clear()
+        return out
+
+    def clear(self) -> None:
+        self.spans.clear()
+
+
 def roots_of(spec) -> list[Path]:
     """--data accepts a data root, a directory of shard_g* roots, or globs."""
     out = []
@@ -115,7 +259,9 @@ class LangTrainer:
     def __init__(self, cfg: LangConfig, run_dir: Path, data_roots, val_roots=(), text_caches=(),
                  tasks=None, embodiments=None, use_wandb: bool = True, seed: int = 0, probe_n: int = 512,
                  name: str | None = None, prefetch: bool = True, device: str = "cuda", text_encoder=None,
-                 max_rows: dict | None = None):
+                 max_rows: dict | None = None, fusion=None):
+        """fusion: a FusionStage-like object (fuse(neck, words, wmask)) to use with cfg.scene_fusion instead of
+        building one from the checkpoint (shared by run_sanity's trainers; the CPU tests' stub)."""
         self.cfg, self.run = cfg, Path(run_dir).resolve()
         self.dev = device
         self.run.mkdir(parents=True, exist_ok=True)
@@ -125,8 +271,11 @@ class LangTrainer:
         from .data import LangSampler, PrefetchSampler
         from .text import TextStore
 
+        # V5: version-2 shards' neck rows (a version-1 shard is a ValueError); E6: the training sampler alone draws
+        # from the first train_episodes_per_task episodes per (task, embodiment)
         self.sampler = LangSampler(data_roots, cfg, tasks=tasks, embodiments=embodiments, seed=seed, n_threads=16,
-                                   max_rows=max_rows)
+                                   max_rows=max_rows, neck=bool(cfg.scene_fusion),
+                                   episodes_per_task=int(cfg.train_episodes_per_task))
         n_tok = self.sampler.sources[0].step["scene_tokens"].shape[1] if self.sampler.sources else 1200
         self.policy_enc = LangPolicyEncoder(cfg, n_tok=n_tok).to(device)
         self.actor = make_actor(cfg).to(device)
@@ -144,10 +293,20 @@ class LangTrainer:
                               backend_paths=cfg.backend_paths, encoder=text_encoder)
         self.prefetch = PrefetchSampler(self.sampler, cfg.batch_size, seed=seed + 1) if prefetch else None
         # probes measure the Section 8.2 quantities whatever the run's own sentence control is: real sentences
-        # (no --shuffle-text) and a random rule per sample (no --relabel fixed) (review M3)
-        probe_cfg = dataclasses.replace(cfg, shuffle_text=False, relabel="random")
+        # (no --shuffle-text) and a random rule per sample (no --relabel fixed) (review M3), on every validation
+        # episode (no E6 subset)
+        probe_cfg = dataclasses.replace(cfg, shuffle_text=False, relabel="random", train_episodes_per_task=0)
         self.val_sampler = LangSampler(val_roots, probe_cfg, tasks=tasks, embodiments=embodiments, seed=seed + 2,
-                                       probe=True) if val_roots else None
+                                       probe=True, neck=bool(cfg.scene_fusion)) if val_roots else None
+        # V5: HoloBrain's frozen fusion stage, a plain object next to the model (never a submodule of what is
+        # optimised, deep-copied for the target or saved); its weights come from the HoloBrain checkpoint
+        self.fusion = None
+        if cfg.scene_fusion:
+            self.fusion = fusion if fusion is not None else make_fusion(cfg, device)
+        self.timer = StepTimer(self.dev.startswith("cuda"))
+        self._step_t0 = None
+        self._fusion_frames = 0     # frames fused by the training steps since the last log
+        self.last_fused_frames = 0  # frame passes of the last fused() call
         self.prober = None
         self.identity: dict = {}   # code_identity(): saved with every state (set by the rounds / offline drivers)
         self.writer = None         # WriterLock of this run: checked right before a save replaces a file
@@ -172,6 +331,12 @@ class LangTrainer:
               f"from {len(self.sampler.sources)} sources | text cache {len(self.text)} | params "
               f"enc {n_params(self.policy_enc.parameters())} critics {n_params(self.critics.parameters())} "
               f"actor {n_params(self.actor.parameters())}")
+        if self.fusion is not None:
+            print(f"[lang-train] scene_fusion: frozen fusion stage {cfg.fusion_dtype}, chunk {cfg.fusion_chunk}, "
+                  f"fused words {cfg.fused_words}")
+        if cfg.train_episodes_per_task:
+            print(f"[lang-train] train_episodes_per_task {cfg.train_episodes_per_task}: episodes "
+                  + ", ".join(f"{t}/{e} {n}" for (t, e), n in self.sampler.episode_counts().items()))
 
     # ------------------------------------------------------------ schedules --
     def gamma(self) -> float:
@@ -187,6 +352,13 @@ class LangTrainer:
         g = lambda k: b[k + suffix]  # noqa: E731
         d = self.dev
         mod = self.policy_enc_targ if target else self.policy_enc
+        if self.fusion is not None:
+            # V5: the stored scene tokens are the unfused ones; a batch must pass through fused() first
+            if suffix not in b.get("_fused", ()):
+                raise RuntimeError(f"scene_fusion: the batch's frames{suffix or ' (live)'} are not fused "
+                                   "(LangTrainer.fused)")
+            if self.cfg.fused_words:
+                words = g("w_fused")   # frame t's fused words; t+1's for the target, never t's (review R5)
         kw = ({"ref_center": _t(g("ref_center"), dev=d), "ref_valid": _t(g("ref_center_valid"), torch.bool, d)}
               if getattr(self.cfg, "oracle_ref_tag", False) else {})   # V3 (round 3 E2)
         enc = mod(_t(g("state_tokens"), dev=d), _t(g("body_tokens"), dev=d), _t(g("link_pos"), dev=d),
@@ -194,14 +366,67 @@ class LangTrainer:
                   _t(g("scene_tokens"), dev=d), _t(g("scene_pos"), dev=d), words=words, word_mask=wmask, **kw)
         return enc, _t(g("Jlin"), dev=d), _t(g("Jang"), dev=d), _t(g("joint_index"), torch.int64, d)
 
+    def fused(self, b: dict, words, wmask, sentences=None, target: bool = True) -> dict:
+        """V5 (scene_fusion): a shallow copy of b whose scene frames are fused with each sample's sentence.
+
+        words / wmask: the samples' TextStore words (the sentences' order; ``sentences`` default b["sentence"]).
+        One fusion pass per unique (neck row, sentence): the two members of a pair share frames, not sentences;
+        frame 0, and frames shared by samples with one sentence (t = 0, repeated draws), are fused once. Writes
+        scene_tokens / scene_pos [B, 3, n, *] (frames t, t-k, 0) and w_fused (frame t's fused words) and, with
+        target, scene_tokens_next / scene_pos_next (t+1, t+1-k, 0: the same frame-0 pass) and w_fused_next (t+1's).
+        No-op when scene_fusion is off."""
+        if self.fusion is None:
+            return b
+        if "neck" not in b or "neck_idx" not in b:
+            raise ValueError("scene_fusion: the batch has no neck rows (a sampler built without neck=True)")
+        table = neck_table(b["neck"])
+        nidx = np.asarray(b["neck_idx"], np.int64)
+        sents = list(b["sentence"] if sentences is None else sentences)
+        cols = LIVE_COLS + TARGET_COLS[:2] if target else LIVE_COLS
+        if bool((nidx[:, list(cols)] < 0).any()):
+            raise ValueError("scene_fusion: the batch has no neck rows for some frames (a probe set: live frames only)")
+        first, passes, entry, who = {}, {}, [], []
+        p = np.full(nidx.shape, -1, np.int64)
+        for i, s in enumerate(sents):
+            w = first.setdefault(s, i)          # the words of a sentence: its first sample's
+            for c in cols:
+                key = (int(nidx[i, c]), s)
+                if key not in passes:
+                    passes[key] = len(entry)
+                    entry.append(key[0])
+                    who.append(w)
+                p[i, c] = passes[key]
+        sel = torch.as_tensor(who, dtype=torch.long, device=words.device)
+        tok, pos, wf = fuse_neck_rows(self.fusion, table, entry, words[sel], wmask[sel], self.dev)
+        self.last_fused_frames = len(entry)
+        pt = torch.as_tensor(p, dtype=torch.long, device=tok.device)
+        out = dict(b)
+        live = pt[:, list(LIVE_COLS)]
+        out["scene_tokens"], out["scene_pos"], out["w_fused"] = tok[live], pos[live], wf[pt[:, 0]]
+        if target:
+            targ = pt[:, list(TARGET_COLS)]
+            out["scene_tokens_next"], out["scene_pos_next"] = tok[targ], pos[targ]
+            out["w_fused_next"] = wf[pt[:, TARGET_COLS[0]]]
+        out["_fused"] = ("", "_next") if target else ("",)
+        return out
+
     # --------------------------------------------------------------- update --
     def grad_step(self, b: dict | None = None, log: bool = False) -> dict:
         if b is None:
             b = self.prefetch.next() if self.prefetch is not None else self.sampler.sample(self.cfg.batch_size)
             self._last_rng_after = b.get("_rng_after")
+        t0 = self.timer.mark()
         # outside TF32: a sentence missing from the cache is encoded here and cached for collection and probes
         # too, so it must be encoded in fp32 (review round 3, C8)
         words, wmask = self.text.lookup(b["sentence"], splits=["train"] * len(b["sentence"]))
+        if self.fusion is not None:
+            # V5, also outside the TF32 block: the stage sets its own precision (cfg.fusion_dtype), the one the
+            # evaluation and the rollout use, so training never sees other fused tokens than deployment
+            f0 = self.timer.mark()
+            b = self.fused(b, words, wmask)
+            self.timer.add("fusion", f0, self.timer.mark())
+            self._fusion_frames += self.last_fused_frames
+        self._step_t0 = t0
         with matmul_tf32(getattr(self.cfg, "tf32_train", False)):
             return self._grad_step(b, words, wmask, log)
 
@@ -241,7 +466,9 @@ class LangTrainer:
             att = self.policy_enc.blocks[-1].q_attn[:, 0]                              # [B, 3 * n_tok]
             Bn = att.shape[0]
             att = att.reshape(Bn, 3, -1)
-            pos = _t(b["scene_pos"], dev=d).reshape(Bn, 3, att.shape[-1], 3)
+            # the positions the encoder attended over: with scene_fusion the FUSED ones (the spatial enhancer
+            # predicts depth from the fused maps, so they move with the sentence); else the stored ones, same values
+            pos = enc.scene_pos.reshape(Bn, 3, att.shape[-1], 3)
             terms = []
             for k_f, f in ((0, 0), (1, 2)):
                 a_f = att[:, f] / att[:, f].sum(-1, keepdim=True).clamp_min(1e-12)
@@ -286,6 +513,9 @@ class LangTrainer:
             tau = cfg.tau
             for tp, sp in self.target_pairs:
                 tp.mul_(1 - tau).add_(tau * sp)
+        if self._step_t0 is not None:   # the whole step: text lookup, fusion, updates, Polyak (perf/step_ms)
+            self.timer.add("step", self._step_t0, self.timer.mark())
+            self._step_t0 = None
         self.step += 1
         out = {"loss/q": float(loss_q), "loss/pi": float(loss_pi), "alpha": alpha, "gamma": gamma, **gn, **aux_out}
         if log:
@@ -319,6 +549,15 @@ class LangTrainer:
         out["perf/data_wait_frac"] = (wait - self.wait_last) / max(dt, 1e-9)
         out["perf/gpu_mem_gb"] = torch.cuda.max_memory_allocated() / 2**30 if self.dev.startswith("cuda") else 0.0
         self.t_last, self.wait_last = now, wait
+        # per step, averaged over the steps since the last log: the whole step and (V5) its fusion, CUDA-timed
+        spans = self.timer.read()
+        out.update({f"perf/{k}_ms": ms for k, (ms, _) in spans.items()})
+        if "fusion" in spans:   # frames per step: fusion_ms / fusion_frames is the cost of one frame-pass
+            out["perf/fusion_frames"] = self._fusion_frames / max(spans["fusion"][1], 1)
+        self._fusion_frames = 0
+        # repeats per training episode so far (FUSION_PLAN C1: every E5 / E6 table reports it)
+        n_ep = sum(self.sampler.episode_counts().values())
+        out["data/samples_per_episode"] = self.step * int(self.cfg.batch_size) / max(n_ep, 1)
         return out
 
     def reset_perf(self) -> None:
@@ -327,6 +566,8 @@ class LangTrainer:
         self.t_last = time.perf_counter()
         self.wait_last = self.prefetch.wait_s if self.prefetch is not None else 0.0
         self.text.stats.clear()
+        self.timer.clear()
+        self._fusion_frames = 0
 
     def pause_prefetch(self) -> None:
         """Stop the prefetch thread and rewind its RNG to the last consumed batch."""
@@ -342,6 +583,8 @@ class LangTrainer:
         was = self.policy_enc.training
         self.policy_enc.eval(), self.critics.eval()
         words, wmask = self.text.lookup(sentences, splits=["probe"] * len(sentences))
+        # V5: the frames fused with THESE sentences (the shuffled / paraphrase probes change the fused tokens too)
+        sub = self.fused(sub, words, wmask, sentences=list(sentences), target=False)
         stores = set_probe(self.policy_enc, True) if probe else []
         enc, Jlin, Jang, ji = self.encode(sub, words, wmask)
         if probe and stores:
@@ -362,6 +605,8 @@ class LangTrainer:
             return {}
         if self.prober is None:
             self.prober = Prober(self.val_sampler, n=self.probe_n)
+            if "neck" in self.prober.batch:   # V5: frames t, t-k, 0 only, one table the per-state sub-batches share
+                self.prober.batch.update(probe_neck(self.prober.batch))
         t0 = time.time()
         out = self.prober.run(self.probe_forward, self.run / "probes", self.step)
         if getattr(self.cfg, "aux_target_loss", False):
@@ -377,6 +622,7 @@ class LangTrainer:
         was = self.policy_enc.training
         self.policy_enc.eval()
         words, wmask = self.text.lookup(sub["sentence"], splits=["probe"] * len(sub["sentence"]))
+        sub = self.fused(sub, words, wmask, target=False)
         enc, _, _, _ = self.encode(sub, words, wmask)
         self.policy_enc.train(was)
         err = (self.policy_enc.aux_predict(enc) - _t(sub["aux_target"], dev=self.dev)).norm(dim=-1).cpu().numpy() * 100
@@ -429,6 +675,17 @@ class LangTrainer:
             raise ValueError(f"{path}: switches {ck.get('switches')} != {self.cfg.path_switches()}")
         if ck.get("text_backend") != self.cfg.text_backend:
             raise ValueError(f"{path}: text backend {ck.get('text_backend')} != {self.cfg.text_backend}")
+        # V5 adds no parameter, so the parts cannot tell: weights trained on unfused tokens (or cached words) are no
+        # start for fused ones, and back
+        theirs, mine = fusion_flags(ck.get("lang_config") or {}), fusion_flags(self.cfg.to_dict())
+        if theirs != mine:
+            raise ValueError(f"{path}: trained with (scene_fusion, fused words) = {theirs}, this run has {mine}")
+        # decision 6: the readouts have different parameters (value heads vs readout_*); say so before the strict
+        # load does. A config saved before the field trained the softmin
+        readout = (ck.get("lang_config") or {}).get("critic_readout", "softmin")
+        if readout != self.cfg.critic_readout:
+            raise ValueError(f"{path}: critic readout {readout}, this run has {self.cfg.critic_readout} "
+                             "(--set 'critic_readout=\"softmin\"' to continue a softmin model)")
         load_policy(self.policy_enc, ck)
         self.actor.load_state_dict(ck["actor"])
         self.critics.load_state_dict(ck["critics"])
@@ -571,7 +828,8 @@ def run_sanity(args) -> int:
               else caches_of(args.data) + caches_of(args.val or []))
     from .data import LangSampler
 
-    base = LangSampler(roots, cfg0, seed=0)
+    base = LangSampler(roots, cfg0, seed=0, neck=bool(cfg0.scene_fusion))
+    stage = make_fusion(cfg0)   # V5: one frozen stage for the fusing trainers below (None when off)
     rng = np.random.default_rng(0)
     picks = base.plan(cfg0.batch_size, rng, pair_frac=1.0)       # 32 pairs from mixed rows
     batch = base.sample(cfg0.batch_size, rng, picks=picks)
@@ -588,6 +846,7 @@ def run_sanity(args) -> int:
         b["sentence"] = sentences
         with torch.no_grad():
             words, wmask = tr.text.lookup(b["sentence"])
+            b = tr.fused(b, words, wmask)
             enc, Jlin, Jang, ji = tr.encode(b, words, wmask)
             q1, q2, _, _ = tr.critics(enc, _t(b["dtheta"], dev=tr.dev), Jlin, Jang, ji)
             h = _t(b["h"], dev=tr.dev)
@@ -604,7 +863,7 @@ def run_sanity(args) -> int:
         return target_rank_acc(qm, y.cpu().numpy(), batch["pair"]), lab["lang/pair_rank_acc"]
 
     def overfit(tag, cfg, shuffle: bool, steps: int):
-        tr = LangTrainer(cfg, res_dir / tag, roots, (), caches, use_wandb=False, prefetch=False, seed=0)
+        tr = LangTrainer(cfg, res_dir / tag, roots, (), caches, use_wandb=False, prefetch=False, seed=0, fusion=stage)
         eval_rng = np.random.default_rng(12345)
         hist = []
         for s in range(steps):
@@ -643,8 +902,9 @@ def run_sanity(args) -> int:
                        "pass": bool(np.mean([h["target_rank_acc"] for h in tail]) <= 0.6)}
     del tr
     torch.cuda.empty_cache()
-    # switches off: the sentence cannot change Q (text_sens exactly 0)
-    off = dataclasses.replace(cfg0, **{k: False for k in cfg0.path_switches()})
+    # switches off: the sentence cannot change Q (text_sens exactly 0). With scene_fusion the fused tokens carry the
+    # sentence whatever the switches, so the check runs with the fusion off too (the shards' stored tokens)
+    off = dataclasses.replace(cfg0, scene_fusion=False, **{k: False for k in cfg0.path_switches()})
     tr = LangTrainer(off, res_dir / "switches_off", roots, (), caches, use_wandb=False, prefetch=False, seed=0)
     for _ in range(int(args.switch_steps)):
         tr.grad_step(log=False)
@@ -656,6 +916,8 @@ def run_sanity(args) -> int:
         q_b, _, _ = tr.probe_forward(b, shuf, False)
     sens = float((q_a - q_b).abs().mean() / q_a.abs().mean().clamp_min(1e-9))
     out["switches_off"] = {"text_sens": sens, "pass": sens == 0.0}
+    if cfg0.scene_fusion:
+        out["switches_off"]["scene_fusion"] = "off for this check (the fused tokens carry the sentence)"
     out["pass"] = all(out[k]["pass"] for k in ("overfit", "shuffled", "switches_off"))
     (res_dir / "sanity.json").write_text(json.dumps(out, indent=1))
     print(f"[sanity] overfit {out['overfit']['pass']} (acc {out['overfit']['target_rank_acc']:.3f}, loss x"
@@ -827,7 +1089,7 @@ def main(argv=None) -> int:
     if args.val and not vals:
         raise SystemExit(f"--val {args.val}: no validation shards found")
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.data) + caches_of(args.val)
-    if args.mode == "rounds":
+    if args.mode == "rounds":   # refuses scene_fusion (run_rounds: no neck ring yet, fusion_impl.md decision 8)
         from .rounds import run_rounds
 
         return run_rounds(cfg, args, roots, vals, caches, tasks, embs)

@@ -4,7 +4,8 @@ This file records the design decisions and the reasons behind them, from the pla
 (late September to early October 2026). Read it before changing the method, the data, or the
 environments.
 
-- Current implementation plan: `docs/lang_filter/VANILLA_PLAN.md`.
+- Current implementation plan: `docs/lang_filter/VANILLA_PLAN.md`, with the V5 addendum
+  `docs/lang_filter/FUSION_PLAN.md` (2026-10-09; the code's contract is `docs/lang_filter/fusion_impl.md`).
 - Environments (implemented): `envs/docs/item_envs/` (`tasks_overview.md`, `relabeling.md`,
   `task_cards/`, `final_report.md`; plans `ITEM_SAFETY_ENVS_PLAN.md` and `PLAN.md`).
 
@@ -122,6 +123,24 @@ CrossSafe plus text, trained only with the HJ-SAC losses.
 - **Scene**: frozen HoloBrain tokens of frames t, t−k (k = 2 ticks) and 0 (episode start). Each frame
   goes through CrossSafe's scene adapter (shared) plus a learned time embedding. 3600 tokens, each with
   its own world position from its frame's depth.
+- **Frozen fusion stage** (V5, `FUSION_PLAN.md`, 2026-10-09; switch `scene_fusion`, off by default until E5
+  passes, section 8): HoloBrain's own `feature_enhancer` (6 layers of text-image fusion, 277 tensors from the
+  same `pretrain/` checkpoint as the neck, the spatial enhancer and `text_feat_map`) runs frozen on the 4 neck
+  maps with the sample's constraint sentence, then the spatial enhancer runs on the fused maps, in
+  HoloBrain's order.
+  - Both the scene tokens and their 3D positions then depend on the sentence (the spatial enhancer predicts
+    depth from the fused maps). Example: in one frame, "don't touch the red mug" and "don't touch the blue
+    box" give two different sets of tokens and positions; E4 measures whether the change sits on the named
+    item.
+  - The stage sees the constraint sentence only, never the task description, and nothing in it is trained.
+  - `fusion_words` (default on, matters only with `scene_fusion`): the text adapter reads the fused words of
+    frame t (t+1 for the target) instead of the cached BERT words. Off, the fusion changes only the scene
+    side (the one new ablation).
+  - Precision: one `fusion_dtype` for every place the stage runs (training, evaluation, rollout), fp32 by
+    default; tf32 or bf16 only after the bench and the parity numbers.
+  - Data: needs version-2 shards (`neck_buffer/`, the neck maps per tick); a version-1 shard with
+    `scene_fusion` on is an error. Sentences are fused unpadded, grouped by length, because HoloBrain's
+    forward does not mask padded words.
 - **Robot**: CrossSafe `RobotInjection`, unchanged (22 tokens: 20 links + 2 payload, positions,
   Jacobians).
 - **Text**: frozen HoloBrain BERT + `text_feat_map` (24 word tokens, 256-d, cached), then a 2-layer
@@ -140,17 +159,30 @@ CrossSafe plus text, trained only with the HJ-SAC losses.
   actor loss trains only the actor on detached encoder features, so the head is the policy's only
   nonlinearity. Configs saved before the field keep the linear head.
 - **Twin critic**: CrossSafe action injection and post-action geometry, 2 more blocks with the same 5
-  sub-layers, value heads on the 22 body tokens and the 4 queries, `Q = softmin_T` over those 26 values,
-  T = 0.05 in h units. For contact rules a link carries the minimum. For spill, tilt, displacement and
-  zones a query does.
+  sub-layers, then a readout to one Q per twin (`critic_readout`):
+  - "mlp", the default (decision 6, Yuxuan 2026-10-09): one shared RMSNorm on r, q₁..q₄ and the masked mean
+    of the 22 body tokens (padding excluded), concatenated (6 × 256 = 1536), then Linear(1536, 512) → SiLU →
+    Linear(512, 1) = Q. Reason: under the softmin, nearly all of a sample's gradient goes to the one token
+    that holds the minimum, so the other 25 heads learn only where they hold it; the MLP gives every sample a
+    dense gradient and does not assume which token owns the rule.
+  - "softmin", the ablation: value heads on the 22 body tokens and the 4 queries, `Q = softmin_T` over those
+    26 values, T = 0.05 in h units. For contact rules a link carries the minimum. For spill, tilt,
+    displacement and zones a query does. Configs saved before the field keep the softmin.
 - **Loss**: CrossSafe HJ-SAC. Target `y = (1−γ) h + γ min(h, mean of target twins at t+1)`, γ = 0.95
-  (0.9 until 2026-10-08; runs keep the γ of their saved config).
+  (0.9 until 2026-10-08; from 2026-10-09 no γ 0.9 run is started, continued or used as a baseline; runs
+  keep the γ of their saved config).
   The critic loss trains the encoder, all new modules and the critics. The actor loss trains the actor
   only.
-- **Frozen**: HoloBrain vision, robot state encoder, BERT, `text_feat_map`. Everything else from
-  scratch.
+- **Frozen**: HoloBrain vision, robot state encoder, BERT, `text_feat_map`, and with `scene_fusion` the
+  fusion stage (built from the checkpoint, kept outside the trained modules and their target copy).
+  Everything else from scratch.
 - **Deployment**: each tick, encode cameras (history kept for t−k and 0), encode the sentence once per
-  episode, engage the actor for 3 ticks when `min(Q1, Q2)(s, a_nom) < 0`.
+  episode, engage the actor for 3 ticks when `min(Q1, Q2)(s, a_nom) < 0`. With `scene_fusion`, each new
+  frame is fused once with the episode's sentence (twice in monitor mode, the measuring mode that scores a
+  second, counterfactual sentence every tick and never engages; that sentence keeps its own history) and the
+  history keeps fused frames, so the sentence must be set before the first frame.
+  With `fusion_words` the text adapter runs every tick, because the fused words change with the frame
+  (1.6 M parameters on 29 tokens, small next to the fusion pass).
 - **Text paths**: text reaches the model in five places, each with a switch for the Q2 ablations:
   - scene-reads-words;
   - body-reads-words;
@@ -158,7 +190,8 @@ CrossSafe plus text, trained only with the HJ-SAC losses.
   - readout queries;
   - the rule token `r` in self-attention (switched off, `r` is a learned sentence-independent token).
 
-  With all five off, the sentence cannot affect Q.
+  With all five off, the sentence cannot affect Q. With `scene_fusion` on it still can, through the fused
+  scene tokens and positions (a sixth path, not behind these switches).
 
 ### 5.2 Advanced version (planned after the vanilla results)
 
@@ -205,8 +238,10 @@ Hardware: SO-101 or the UR5 setup, to be decided.
 
 - k = 2 ticks for the past frame. T = 0.05. Batch 64, lr 3e-4. TF32 matmuls in the training step only
   (user, 2026-10-08; `tf32_train`), fp32 everywhere else.
-- γ = 0.95 by default (Yuxuan, 2026-10-08; `GAMMA` defaults to 0.95 in the job scripts). Runs keep the γ of
-  their saved config.
+- γ = 0.95 only (FUSION_PLAN decision 1, Yuxuan 2026-10-09): no run at 0.9 is started, continued or
+  reported as a baseline; the job scripts pass 0.95 (no `GAMMA` variable). The γ 0.9 models, the grounding
+  report's official `lang_full_paired_off_1007` included, are historical references only. Runs keep the γ of
+  their saved config, so old checkpoints still load.
 - Validation: 20 ur5-wsg episodes per task, all 7 tasks, masks on, their own episode ids (91M-100M) and text
   cache (T1 / T7 in `data/lang/val_grounding`, T2-T6 in `data/lang/val20`).
 - Object reading (grounding), in this order, each step only if the previous one does not fix it (T1 and T7,
@@ -217,7 +252,39 @@ Hardware: SO-101 or the UR5 setup, to be decided.
   `item_pose` / `region_T`, training only; the head is unused at deployment; `aux_target_loss`), on the better
   of V1 / V2 if either helped, else on V0; (c) the oracle tag V3 stays the ceiling reference. Decision: if a or
   b reaches ≥ 0.85 on "already harmed" referent pairs (T1 and T7 pooled), keep the vanilla model with that
-  change; only if neither does but V3 does, propose slots plus a pointer (5.2).
+  change; only if neither does but V3 does, propose slots plus a pointer (5.2). Outcome
+  (`grounding_report_2026-10-09.md`): a and b fail (V0, V1, V2 0.59, V4 0.60), V3 is ignored (0.58), and the
+  name → object map is memorized per training scene.
+- V5, the next step (`FUSION_PLAN.md` decisions 2-6, Yuxuan 2026-10-09; the code's contract is
+  `fusion_impl.md`):
+  - slots plus a pointer stay on the shelf: the report's evidence (V3 ignored, V4 memorized) does not
+    support them. The next step adds a pretrained grounding stage instead (5.1, frozen fusion stage);
+  - the fusion stage sees the constraint sentence only, the same string the text adapter sees;
+  - the grounding gate stays: ≥ 0.85 rank accuracy on "already harmed" object pairs, T1 + T7 pooled.
+    "Not yet" pairs are reported, not gating. V5 runs are scored on the re-collected version-2 validation
+    set (the report's validation shards hold tokens, not neck maps), with the old V0 checkpoints scored on
+    it too to link the two sets;
+  - the scene-count curve (E6: about 15, 30, 60 and 120 scenes = 8 and 15 episodes per task, the report's
+    V0 and the d2 run; V0 settings with the softmin readout, version-1 data) runs in parallel with V5. It separates "too few scenes" from "the architecture cannot ground";
+  - the critic's readout is an MLP by default (5.1); E5 isolates its own effect with one extra row
+    (V0'-softmin).
+- V5 order (2026-10-09): code → version-2 validation collection (T1 / T7 ur5-wsg, 40 episodes, the recorded
+  seeds replayed) → E4, no training: does the frozen fusion single out the named item → only if E4 passes,
+  the version-2 warmup (the 60 recorded layouts replayed) → E5 (6,000 steps, 2 seeds). E6 runs now, on
+  version-1 data.
+  - E4 gate, on T1: enrichment ≥ 2 and contrast ≥ 0.7. A token's change is the distance between its fused
+    value under the rule's sentence and under the content-free sentence ("" → [CLS][SEP]). Enrichment = the
+    mean change over the named item's tokens ÷ the mean over the other tokens. Contrast = for two rules of
+    the same consequence in one scene, the share of the named item's tokens that change more under its own
+    sentence than under the other one. Example: enrichment 3 means the mug's tokens move 3× as much as the
+    rest of the scene under "don't touch the red mug".
+  - E5 rows: V0' (fusion off on the version-2 shards, the reference), V5 (fusion and fused words on), V5w
+    (fused words off), V5-d2 (V5 on both robots' T1 / T7, 120 scenes), V0'-softmin (V0' with the softmin
+    readout).
+  - E5 decision rule: V5 ≥ 0.85, adopt (re-collect the full warmup in version 2, retrain the official model,
+    turn `scene_fusion` on by default); clearly above V0' but below 0.85 and V5-d2 > V5, collect more T1 / T7
+    scenes and re-test; at the V0 level with E4 passed, the next lever is the data, not the architecture.
+    Until then `scene_fusion` stays off by default, because every shard today is version 1.
 - T6 success: left as is (its nominal succeeds in 3-7% of episodes); success cost is not reported on T6.
 - Projection solver for deployment: deferred.
 - Novelty check needed against:

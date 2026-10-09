@@ -14,6 +14,15 @@ CLI (always through scripts/lang/in_container.sh, cwd = repo root):
     python -m main.lang.collect validation --out data/lang/val/shard_g<g> ...
     python -m main.lang.collect recon --out <scratch> --embodiment ur5-wsg --per-task 2
     python -m main.lang.collect report data/lang/warmup
+
+Version 2 (V5, fusion_impl.md 4.6): ``--lang-version 2`` adds the neck_buffer/
+sidecar (created, resumed, rolled back and flushed with the pair). ``--replay
+<shard>`` collects that shard's recorded episodes again, each with its own seed:
+
+    python -m main.lang.collect validation --lang-version 2 --embodiment ur5-wsg \\
+        --replay data/lang/val_grounding/shard_g0 --out data/lang_v2/val_grounding/shard_g0
+    python -m main.lang.collect warmup --lang-version 2 --embodiment ur5-wsg \\
+        --tasks selective_avoid,gap_place --replay data/lang/warmup/shard_g0 --out data/lang_v2/warmup/shard_g0
 """
 
 from __future__ import annotations
@@ -71,15 +80,36 @@ def shard_schedule(tasks, emb: str, shard: int, n_shards: int, episodes_per_task
 # ---------------------------------------------------------------------------
 
 
-def make_pair(out_root: Path, cfg: LangConfig, capacity: int):
-    """A fresh StepBuffer + lockstep sidecar under out_root (never reused)."""
+def make_pair(out_root: Path, cfg: LangConfig, capacity: int, *, neck: bool = False):
+    """A fresh StepBuffer + lockstep sidecar under out_root (never reused). neck=True (version 2): also the
+    neck_buffer/ sidecar (same capacity and rows), returned third."""
     from main.item_envs.item_buffer import ItemSidecarBuffer
     from main.item_envs.masks import token_grid
     from main.train.buffer import StepBuffer
 
     buf = StepBuffer(out_root / "buffer", capacity=int(capacity), header=cfg.to_dict())
     sidecar = ItemSidecarBuffer.for_step_buffer(buf, n_tok=token_grid()[1])
-    return buf, sidecar
+    if not neck:
+        return buf, sidecar
+    from .neck_buffer import NeckBuffer
+
+    return buf, sidecar, NeckBuffer.for_step_buffer(buf)
+
+
+def open_neck(out_root: Path, buf):
+    """The neck_buffer/ of a version-2 shard at resume, opened directly (r+, the shapes of its header): for_step_buffer
+    refuses a pair whose n differ, which a kill between the flushes leaves, before resume_point rolls the rings back
+    (rounds.make_ring parity). A neck buffer never created (the first launch died between the creations) is paired
+    fresh while the StepBuffer is still empty."""
+    from .neck_buffer import NeckBuffer
+
+    root = Path(out_root) / "neck_buffer"
+    if (root / "header.json").exists():
+        hdr = json.loads((root / "header.json").read_text())
+        return NeckBuffer(root, capacity=buf.capacity, level_shapes=[tuple(x) for x in hdr["level_shapes"]])
+    if len(buf) == 0:
+        return NeckBuffer.for_step_buffer(buf)
+    raise SystemExit(f"{out_root}: a version-2 shard with {len(buf)} rows and no neck_buffer/; refusing to resume")
 
 
 def _jsonable(x):
@@ -158,11 +188,13 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                  inits: dict | None = None, video_every: int = 0, text_store=None,
                  max_retries: int = 5, log_prefix: str = "", slot_offset: int = 0,
                  with_masks: bool = True, deadline: float | None = None, extra_line: dict | None = None,
-                 round_metrics=None, writer=None) -> dict:
+                 round_metrics=None, writer=None, neck_buf=None) -> dict:
     """Run one episode per slot (task, emb, host) into (buf, sidecar).
 
     Episode i of the stream has seed = episode_id = episode_offset + attempt
-    (attempt counts every env build, retries included). Returns a summary
+    (attempt counts every env build, retries included). A slot (task, emb,
+    host, seed) is a replayed episode (--replay): that seed, one build, no new
+    seed on failure (a skipped line). Returns a summary
     dict; appends one line per slot to out_root/lang_episodes.jsonl.
     models: (policy_enc, actor, critics) for filter episodes (Phase 4),
     None = nominal only. slot_offset: index of slots[0] in the full schedule
@@ -171,6 +203,9 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     the sidecar; only validation data feeds ref_mask). deadline (unix time):
     no new slot starts when the mean episode wall time would pass it
     (summary["stopped"] = True; the caller exits 75 and resumes later).
+    neck_buf: the NeckBuffer of a version-2 shard (cfg.lang_version 2): the controller keeps each capture's neck
+    and ro.buf becomes a NeckLockstepWriter, so slot i of the three rings is the same capture; guarded, synced,
+    flushed and rolled back with the pair, and every line carries lang_version 2.
     """
     import torch
 
@@ -182,6 +217,15 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     from .rollout import LangRolloutController
     from .scene_roles import all_designations, harm_reasons, in_way, in_way_reasons, mask_region_rows
 
+    if (neck_buf is not None) != (int(getattr(cfg, "lang_version", 1)) >= 2):
+        raise ValueError(f"lang_version {getattr(cfg, 'lang_version', 1)} with neck_buf "
+                         f"{'given' if neck_buf is not None else 'None'}: a version-2 shard is written with its neck "
+                         "buffer, a version-1 shard without")
+    if neck_buf is not None:
+        from .neck_buffer import NeckLockstepWriter
+
+        extra_line = {**(extra_line or {}), "lang_version": int(cfg.lang_version)}
+    necks = (neck_buf,) if neck_buf is not None else ()
     out_root = Path(out_root).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
     jsonl = out_root / "lang_episodes.jsonl"
@@ -195,8 +239,10 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     attempt = int(attempt0)
     summary = {"episodes": 0, "skipped": 0, "status": {}, "inits": 0, "wall": 0.0, "stopped": False}
     if writer is not None:
-        guard_writes(writer, buf, sidecar)
-    for slot_i, (task, emb, host) in enumerate(slots):
+        guard_writes(writer, buf, sidecar, *necks)
+    for slot_i, slot in enumerate(slots):
+        task, emb, host = slot[:3]
+        fixed = int(slot[3]) if len(slot) > 3 else None   # a replayed episode's recorded seed
         if deadline is not None:
             est = summary["wall"] / summary["episodes"] if summary["episodes"] else 420.0
             if time.time() + 1.2 * est > deadline:
@@ -208,10 +254,10 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             kins[emb] = make_kinematics(CKPT_DIR, emb)
         use_filter = models is not None and rng_policy.random() < filter_frac
         ro, seed, errors = None, None, []
-        for _ in range(max_retries):
+        for _ in range(max_retries if fixed is None else 1):
             if inits["n"] >= cfg.max_inits_per_process:
                 raise InitLimit(f"{inits['n']} environment inits")
-            seed = check_stream(episode_offset, attempt)
+            seed = check_stream(episode_offset, attempt) if fixed is None else fixed
             attempt += 1
             inits["n"] += 1
             cfg_ep = dataclasses.replace(
@@ -227,11 +273,12 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                     filter_active=use_filter, buf=buf, episode_id=seed,
                     perturb_prob=cfg.perturb_prob, rng=np.random.RandomState(seed),
                     max_steps=10 * int(cfg.max_steps_per_episode),
-                    controller_cls=RiskTickController, text_store=text_store,
+                    controller_cls=RiskTickController, text_store=text_store, keep_neck=neck_buf is not None,
                 )
             except Exception as exc:
                 errors.append(f"seed {seed}: build {type(exc).__name__}: {exc}"[:300])
-                print(f"{log_prefix}[collect] {task}/{emb} seed {seed}: build failed ({exc}); new seed")
+                print(f"{log_prefix}[collect] {task}/{emb} seed {seed}: build failed ({exc}); "
+                      f"{'new seed' if fixed is None else 'replayed seed: no retry'}")
                 continue
             if cand.env.obstacle is None:  # no rules (layout-infeasible T1 seed)
                 errors.append(f"seed {seed}: no rules")
@@ -279,8 +326,14 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                     cf_sentence = language.sample_sentence(cands[int(rng_ep.integers(len(cands)))], record, rng_ep, "train")
                 ro.set_instruction(sentence, cf_sentence, rule_id=named["rule_id"])
         n_before = len(buf)
+        if neck_buf is not None and (len(sidecar), len(neck_buf)) != (n_before, n_before):
+            ro.env.close()
+            raise RuntimeError(f"{out_root}: rings ({n_before}, {len(sidecar)}, {len(neck_buf)}) out of lockstep "
+                               f"before episode {seed}")
         ro.writer = writer
         wire_item_episode(ro, sidecar)
+        if neck_buf is not None:
+            ro.buf = NeckLockstepWriter(ro.buf, neck_buf)   # pops each entry's _neck inside the same append
         if not with_masks:
             ro.h_fn.with_masks = False
         if video_every and summary["episodes"] % int(video_every) == 0:
@@ -319,15 +372,19 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             getattr(ro.buf, "_rows", []).clear()
             buf.discard_to(n_before)
             sidecar.discard_to(n_before)
+            for nb in necks:
+                nb.discard_to(n_before)
             trace["status"] = "exception"
             trace["exception"] = f"lockstep after a tick error ({exc})"[:800]
         # arrays first (the heavy msync), then the lock check, then the small header writes: a writer that
         # stalls in the sync and wakes after a takeover never writes headers (review round 3, C2)
-        sync_arrays(buf, sidecar)
+        sync_arrays(buf, sidecar, *necks)
         if writer is not None:
             writer.check()
         buf.flush()
         sidecar.flush()
+        for nb in necks:
+            nb.flush()
         rows = np.arange(n_before, len(buf)) % buf.capacity
         violated, hmin = _rule_outcomes(sidecar, rows, len(record["rules"]))
         line = {
@@ -439,12 +496,14 @@ def read_lines(jsonl: Path) -> list[dict]:
     return out
 
 
-def resume_point(out: Path, buf, sidecar) -> tuple[int, int, int]:
+def resume_point(out: Path, buf, sidecar, neck=None) -> tuple[int, int, int]:
     """(slots done, attempt, rows) of an interrupted shard; both rings are
     rolled back to the end of the last recorded episode (an episode killed
     mid-run, or flushed without its line, is discarded and collected again
     with the NEXT seed (attempt + 1): rows a stalled former writer might still add then carry another
-    episode id than the new rows at the same positions, so check_shards sees them; review round 3, C1)."""
+    episode id than the new rows at the same positions, so check_shards sees them; review round 3, C1).
+    neck: a version-2 shard's NeckBuffer, checked and rolled back exactly like the item sidecar (its rows hold
+    episode_id / t_in_ep too)."""
     lines = read_lines(out / "lang_episodes.jsonl")
     done = len(lines)
     attempt = int(lines[-1]["attempt_next"]) if lines else 0
@@ -452,12 +511,14 @@ def resume_point(out: Path, buf, sidecar) -> tuple[int, int, int]:
     for d in lines:
         if not d.get("skipped"):
             rows = int(d["rows"][1])
-    if len(buf) < rows or len(sidecar) < rows:
-        raise RuntimeError(f"{out}: rings ({len(buf)}, {len(sidecar)}) shorter than the recorded rows {rows}")
+    rings = (buf, sidecar) + ((neck,) if neck is not None else ())
+    if any(len(b) < rows for b in rings):
+        raise RuntimeError(f"{out}: rings {tuple(len(b) for b in rings)} shorter than the recorded rows {rows}")
     # every recorded episode's END rows must hold that episode (both buffers) with ticks 0 and n-1: this
     # catches two writers and most copies made mid-write (review B4), but not every torn array (only the end
     # rows are read). The real guard is copying finished shards only (scripts/lang/bridges/README.md)
-    eb, es, ts = buf.arrays.get("episode_id"), sidecar.arrays["episode_id"], sidecar.arrays["t_in_ep"]
+    eb = buf.arrays.get("episode_id")
+    sides = [(b.arrays["episode_id"], b.arrays["t_in_ep"]) for b in rings[1:]]   # item sidecar (+ neck buffer)
     for d in lines:
         if d.get("skipped"):
             continue
@@ -465,17 +526,18 @@ def resume_point(out: Path, buf, sidecar) -> tuple[int, int, int]:
         eid = int(d["episode_id"])
         if r1 == r0:   # an episode that failed before its first tick wrote no rows (review, round 2)
             continue
-        ends_ok = (r1 > r0 and int(es[r0]) == eid and int(es[r1 - 1]) == eid and int(ts[r0]) == 0
-                   and int(ts[r1 - 1]) == r1 - r0 - 1 and (eb is None or (int(eb[r0]) == eid and int(eb[r1 - 1]) == eid)))
+        ends_ok = (r1 > r0 and all(int(es[r0]) == eid and int(es[r1 - 1]) == eid and int(ts[r0]) == 0
+                                   and int(ts[r1 - 1]) == r1 - r0 - 1 for es, ts in sides)
+                   and (eb is None or (int(eb[r0]) == eid and int(eb[r1 - 1]) == eid)))
         if not ends_ok:
             raise RuntimeError(f"{out}: episode {eid} rows [{r0}, {r1}) do not hold that episode (a partial copy or "
                                f"two writers?); refusing to resume: check with scripts/lang/check_shards.py")
-    if (len(buf), len(sidecar)) != (rows, rows):
-        print(f"[collect] resume: discarding rows {rows}..{max(len(buf), len(sidecar))} of an interrupted episode")
-        buf.discard_to(rows)
-        sidecar.discard_to(rows)
-        buf.flush()
-        sidecar.flush()
+    if any(len(b) != rows for b in rings):
+        print(f"[collect] resume: discarding rows {rows}..{max(len(b) for b in rings)} of an interrupted episode")
+        for b in rings:
+            b.discard_to(rows)
+        for b in rings:
+            b.flush()
         attempt += 1
     return done, attempt, rows
 
@@ -496,6 +558,10 @@ TRAIN_ONLY_FIELDS = frozenset({
     "aux_attention_weight", "shuffle_text", "relabel", "harmful_frac", "pair_frac", "task_balance",
     "recall_horizon_ticks", "drop_stale_bead_rows", "episodes_per_round", "grad_steps_per_round", "collect_rounds",
     "named_harm_frac", "filter_episode_frac", "warmup_episodes_per_task", "val_episodes_per_task",
+    # V5 / decision 6 / E6 (2026-10-09): the frozen fusion runs on stored neck maps, the readout and the episode
+    # subset are training-side only. lang_version stays IN the hash: a version-2 shard is a different collection
+    "scene_fusion", "fusion_words", "fusion_dtype", "fusion_chunk", "critic_readout", "critic_mlp_hidden",
+    "train_episodes_per_task",
 })
 
 
@@ -590,8 +656,12 @@ def shard_meta_diff(old: dict, meta: dict, out: Path) -> list:
     """The shard.json fields that stop a resume. config_hash is recorded only: the collection fields are
     compared through collect_hash, recomputed from the shard's config.json for shards written before it
     existed (review round 3, C5). h is compared on h_code_v2 when the old shard has it, else on h_code."""
-    skip = {"config_hash", "collect_hash", "h_code", "h_code_v2"}
+    # lang_version: absent = 1 (every shard before V5); replay_of: where the replayed shard was read (its slots,
+    # seeds included, are compared, so a moved source still resumes)
+    skip = {"config_hash", "collect_hash", "h_code", "h_code_v2", "lang_version", "replay_of"}
     diff = [k for k in meta if k not in skip and old.get(k) != meta[k]]
+    if old.get("lang_version", 1) != meta.get("lang_version", 1):
+        diff.append("lang_version")
     old_c = old.get("collect_hash")
     if old_c is None and (out / "config.json").exists():
         old_c = collect_hash(LangConfig.load(out / "config.json"))
@@ -603,20 +673,123 @@ def shard_meta_diff(old: dict, meta: dict, out: Path) -> list:
     return sorted(diff)
 
 
-def cmd_shard(args, kind: str) -> int:
+def replay_plan(src: Path, kind: str, emb: str, tasks=None) -> dict:
+    """What --replay collects again: the recorded episodes of the FINISHED shard src for these tasks (None = all)
+    and this embodiment, in slot order, each with its own seed -> {"meta": src's shard.json, "cfg": its config,
+    "slots": [(task, emb, host, episode_id)], "src_slots": their slot indices in src}.
+
+    Every recorded episode counts, whatever its status (an exception episode is replayed too); a skipped slot (no
+    build succeeded, so no layout was recorded) is left out. Read-only: src is never rewritten (read_lines repairs
+    a truncated line in place; here a bad line refuses)."""
+    src = Path(src).resolve()
+    if not (src / "shard.json").exists():
+        raise SystemExit(f"--replay {src}: no shard.json")
+    meta = json.loads((src / "shard.json").read_text())
+    summ = src / "summary.json"
+    if not (summ.exists() and json.loads(summ.read_text()).get("complete")):
+        raise SystemExit(f"--replay {src}: not a finished shard (no complete summary.json)")
+    if (meta.get("kind"), meta.get("embodiment")) != (kind, emb):
+        raise SystemExit(f"--replay {src}: a {meta.get('kind')} shard of {meta.get('embodiment')}; this command "
+                         f"collects {kind} for {emb}")
+    slots, src_slots = [], []
+    for i, ln in enumerate((src / "lang_episodes.jsonl").read_text().splitlines()):
+        if not ln.strip():
+            continue
+        try:
+            d = json.loads(ln)
+        except json.JSONDecodeError:
+            raise SystemExit(f"--replay {src}: line {i + 1} of lang_episodes.jsonl is not JSON (a partial copy?)")
+        if d.get("skipped") or d.get("embodiment") != emb or (tasks is not None and d.get("task") not in tasks):
+            continue
+        slots.append((d["task"], emb, d.get("host"), int(d["episode_id"])))
+        src_slots.append(int(d["slot"]))
+    if not slots:
+        raise SystemExit(f"--replay {src}: no recorded {emb} episode of tasks {tasks or 'all'}")
+    return {"meta": meta, "cfg": LangConfig.load(src / "config.json"), "slots": slots, "src_slots": src_slots}
+
+
+def config_drift(old, new) -> list:
+    """The collection fields (outside TRAIN_ONLY_FIELDS, lang_version aside) on which two configs differ."""
+    a, b = (json.loads(json.dumps(c.to_dict(), default=str)) for c in (old, new))
+    return sorted(k for k in set(a) | set(b)
+                  if k not in TRAIN_ONLY_FIELDS and k != "lang_version" and a.get(k) != b.get(k))
+
+
+def replay_mismatch(lines: list, slots) -> list:
+    """How a finished replay shard differs from its plan: slot i must hold the recorded episode slots[i] (task,
+    embodiment, host, episode_id); a skipped slot (its one build failed) is a difference."""
+    out = [] if len(lines) == len(slots) else [f"{len(lines)} episode lines for {len(slots)} replayed slots"]
+    for i, (d, s) in enumerate(zip(lines, slots)):
+        got = (d.get("task"), d.get("embodiment"), d.get("host"), d.get("episode_id"))
+        if d.get("skipped"):
+            out.append(f"slot {i}: skipped ({'; '.join(d.get('errors') or [])}) instead of {tuple(s)}")
+        elif got != tuple(s):
+            out.append(f"slot {i}: {got} instead of {tuple(s)}")
+    return out
+
+
+def plan_shard(args, kind: str):
+    """What cmd_shard collects, before anything is written -> (cfg, shard.json meta, slots, episode offset, masks).
+
+    Version 2 (--lang-version 2): cfg.lang_version = 2 (in collect_hash) and meta["lang_version"] = 2; a version-1
+    meta is exactly the one before V5. --replay <shard>: the shard's recorded episodes (replay_plan) with its shard
+    / g / offset / masks / task list, refused when today's collection config differs from its config."""
+    tasks = None if args.tasks == "all" else tuple(args.tasks.split(","))
+    replay = getattr(args, "replay", None)
     cfg = LangConfig()
-    if args.tasks != "all":
-        cfg = dataclasses.replace(cfg, task_choices=tuple(args.tasks.split(",")))
-    out = Path(args.out).resolve()
-    g = shard_g(args.embodiment, args.shard, args.n_shards) + int(getattr(args, "g_base", 0) or 0)
-    stream = getattr(args, "stream", "default")
-    offset = warmup_offset(g) if kind == "warmup" else valg_offset(g) if stream == "grounding" else val_offset(g)
-    slots = shard_schedule(cfg.task_choices, args.embodiment, args.shard, args.n_shards, args.episodes_per_task, g)
-    meta = {"kind": kind, "embodiment": args.embodiment, "shard": args.shard, "n_shards": args.n_shards,
-            "g": g, "episode_offset": offset, "episodes_per_task": args.episodes_per_task,
+    rp = None
+    if replay:
+        rp = replay_plan(Path(replay), kind, args.embodiment, tasks)
+        src = rp["meta"]
+        for name, got in (("shard", args.shard), ("n_shards", args.n_shards),
+                          ("episodes_per_task", args.episodes_per_task)):
+            if got is not None and got != src.get(name):
+                raise SystemExit(f"--replay: --{name.replace('_', '-')} {got}, the replayed shard has {src.get(name)}")
+        if args.no_masks and src.get("masks"):
+            raise SystemExit("--replay: --no-masks, but the replayed shard has masks (a replay keeps its setting)")
+        # its task list too: the StepBuffer's task_id is the task's index in it
+        cfg = dataclasses.replace(cfg, task_choices=tuple(rp["cfg"].task_choices))
+        drift = config_drift(rp["cfg"], cfg)
+        if drift:
+            raise SystemExit(f"--replay: today's collection config differs from {Path(replay).resolve()}'s in {drift}: "
+                             "the episodes would not be the recorded ones")
+        shard, n_shards, g = src["shard"], src["n_shards"], src["g"]
+        offset, ept, masks = src["episode_offset"], src["episodes_per_task"], bool(src.get("masks"))
+        slots = rp["slots"]
+    else:
+        if args.shard is None or args.n_shards is None:
+            raise SystemExit("--shard and --n-shards are required (unless --replay)")
+        if tasks is not None:
+            cfg = dataclasses.replace(cfg, task_choices=tasks)
+        shard, n_shards, masks = args.shard, args.n_shards, not args.no_masks
+        ept = args.episodes_per_task if args.episodes_per_task is not None else (30 if kind == "warmup" else 5)
+        g = shard_g(args.embodiment, shard, n_shards) + int(getattr(args, "g_base", 0) or 0)
+        stream = getattr(args, "stream", "default")
+        offset = warmup_offset(g) if kind == "warmup" else valg_offset(g) if stream == "grounding" else val_offset(g)
+        slots = shard_schedule(cfg.task_choices, args.embodiment, shard, n_shards, ept, g)
+    v2 = int(getattr(args, "lang_version", 1) or 1) >= 2
+    if v2:
+        cfg = dataclasses.replace(cfg, lang_version=2)
+    meta = {"kind": kind, "embodiment": args.embodiment, "shard": shard, "n_shards": n_shards,
+            "g": g, "episode_offset": offset, "episodes_per_task": ept,
             "slots": [list(x) for x in slots], "config_hash": cfg.hash(), "collect_hash": collect_hash(cfg),
-            "bank_hash": cfg.bank_hash, "masks": not args.no_masks, "h_code": h_code_hash(cfg.task_choices),
+            "bank_hash": cfg.bank_hash, "masks": masks, "h_code": h_code_hash(cfg.task_choices),
             "h_code_v2": h_code_hash_v2(cfg.task_choices)}
+    if v2:
+        meta["lang_version"] = 2
+    if rp is not None:
+        meta["replay_of"] = str(Path(replay).resolve())
+        meta["replay_slots"] = rp["src_slots"]
+    return cfg, meta, slots, offset, masks
+
+
+def cmd_shard(args, kind: str) -> int:
+    cfg, meta, slots, offset, with_masks = plan_shard(args, kind)
+    out = Path(args.out).resolve()
+    if meta.get("replay_of") == str(out):   # before the writer lock, which writes a file into --out
+        raise SystemExit(f"--out {out} is the replayed shard itself: a replay is written to a new root")
+    g = meta["g"]
+    v2 = int(meta.get("lang_version", 1)) >= 2
     capacity = int(len(slots) * cfg.max_steps_per_episode * 1.1) + 16
     # one writer per shard for this process's lifetime (review O1): a second process (a duplicated claim)
     # waits out a crashed writer's lock, then leaves the shard to the live one (exit 75: resumable)
@@ -629,7 +802,12 @@ def cmd_shard(args, kind: str) -> int:
         return 75
     if (out / "shard.json").exists():
         # a finished shard is done whatever code wrote it (checked first: older shard.json lack h_code)
-        if (out / "summary.json").exists() and json.loads((out / "summary.json").read_text()).get("complete"):
+        done_summary = json.loads((out / "summary.json").read_text()) if (out / "summary.json").exists() else {}
+        if done_summary.get("complete"):
+            if done_summary.get("replay_mismatch"):
+                print(f"[collect] ERROR: {out} is complete but differs from the replayed episodes: "
+                      f"{done_summary['replay_mismatch']}", flush=True)
+                return 1
             print(f"[collect] {out} is complete")
             return 0
         old = json.loads((out / "shard.json").read_text())
@@ -643,7 +821,8 @@ def cmd_shard(args, kind: str) -> int:
 
         buf = StepBuffer(out / "buffer")
         sidecar = ItemSidecarBuffer(out / "item_buffer")
-        done, attempt, rows = resume_point(out, buf, sidecar)
+        neck = open_neck(out, buf) if v2 else None
+        done, attempt, rows = resume_point(out, buf, sidecar, neck)
         print(f"[collect] resume {out.name}: {done}/{len(slots)} slots done, attempt {attempt}, rows {rows}")
     else:
         _check_fresh(out)
@@ -652,14 +831,17 @@ def cmd_shard(args, kind: str) -> int:
             print(f"[collect] WARNING: {len(slots)} slots may exceed {cfg.max_inits_per_process} inits with retries")
         cfg.save(out / "config.json")
         (out / "shard.json").write_text(json.dumps(meta, indent=1))
-        buf, sidecar = make_pair(out, cfg, capacity)
+        if v2:
+            buf, sidecar, neck = make_pair(out, cfg, capacity, neck=True)
+        else:
+            (buf, sidecar), neck = make_pair(out, cfg, capacity), None
         done, attempt = 0, 0
     deadline = stage_deadline(args.time_budget)
     t0 = time.time()
     try:
         summary = run_episodes(cfg, out, slots[done:], offset, buf, sidecar, video_every=args.video_every,
                                log_prefix=f"[g{g}] ", slot_offset=done, attempt0=attempt,
-                               with_masks=not args.no_masks, deadline=deadline, writer=writer)
+                               with_masks=with_masks, deadline=deadline, writer=writer, neck_buf=neck)
         writer.check()
     except WriterLock.LockLost as exc:
         print(f"[collect] {exc} (exit 75)", flush=True)
@@ -667,11 +849,17 @@ def cmd_shard(args, kind: str) -> int:
     summary["wall_total"] = time.time() - t0
     lines = read_lines(out / "lang_episodes.jsonl")
     summary["complete"] = len(lines) >= len(slots)
+    if "replay_of" in meta and summary["complete"]:
+        summary["replay_mismatch"] = replay_mismatch(lines, slots)   # [] = every slot holds its recorded episode
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     print(f"[collect] {'done' if summary['complete'] else 'paused'}: {summary}")
     if summary["inits"] >= cfg.max_inits_per_process:
         print("[collect] ERROR: shard reached the init limit — delete it and collect with more shards")
         return 3
+    if summary.get("replay_mismatch"):
+        print(f"[collect] ERROR: the replay differs from the recorded episodes: {summary['replay_mismatch']}",
+              flush=True)
+        return 1
     return 0 if summary["complete"] else 75
 
 
@@ -706,13 +894,20 @@ def main(argv=None) -> int:
         p = sub.add_parser(kind)
         p.add_argument("--out", required=True)
         p.add_argument("--embodiment", required=True, choices=CANON_EMBODIMENTS)
-        p.add_argument("--shard", type=int, required=True)
-        p.add_argument("--n-shards", type=int, required=True)
-        p.add_argument("--episodes-per-task", type=int, default=30 if kind == "warmup" else 5)
-        p.add_argument("--tasks", default="all")
+        p.add_argument("--shard", type=int, default=None, help="required unless --replay (then the replayed shard's)")
+        p.add_argument("--n-shards", type=int, default=None, help="required unless --replay")
+        p.add_argument("--episodes-per-task", type=int, default=None,
+                       help=f"default {30 if kind == 'warmup' else 5} (with --replay: the replayed shard's)")
+        p.add_argument("--tasks", default="all", help="comma list; with --replay, the recorded episodes to replay")
         p.add_argument("--video-every", type=int, default=0)
         p.add_argument("--no-masks", action="store_true", help="skip per-tick segmentation masks (warmup)")
         p.add_argument("--time-budget", type=float, default=None, help="seconds; then pause (exit 75)")
+        p.add_argument("--lang-version", type=int, choices=(1, 2), default=1,
+                       help="2: a version-2 shard, with the neck_buffer/ sidecar the frozen fusion reads (V5)")
+        p.add_argument("--replay", default=None, metavar="SHARD",
+                       help="collect a finished shard's recorded episodes again (task, host, episode id; all "
+                            "statuses), one build each, with its masks setting; the new shard's slots and ids must "
+                            "equal the recorded ones (else exit 1)")
         if kind == "validation":
             p.add_argument("--stream", choices=("default", "grounding"), default="default",
                            help="grounding: the 20-per-task ur5-wsg validation ids (config.valg_offset; T1 / T7 at "

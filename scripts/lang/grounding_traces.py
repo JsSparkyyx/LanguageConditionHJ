@@ -11,7 +11,8 @@ item is in the way of the careless motion), sentence B the benign one. The selec
 Each scene runs once with LangRolloutController in monitor_only mode: the filter never engages (nominal
 motion) while Q(s, a_nom) of A and of B (the counterfactual path) is recorded every tick. Writes
 <out>/<variant>_<task>_s<seed>.json (t, h(A), h(B), Q(A), Q(B), sentences, outcome) for the page's figures,
-and videos/grounding_<variant>_<t1|t7>_s<seed>.mp4 with the two-sentence panel.
+and videos/grounding_<variant>_<t1|t7>_s<seed>.mp4 with the two-sentence panel. A scene_fusion (V5) checkpoint gets
+the frozen fusion stage on the rollout encoder's spatial enhancer: both sentences are fused every tick.
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ def select_scenes(roots, tasks, per_task: int) -> list[dict]:
     return out
 
 
-def run_scene(models, sc: dict, variant: str, out: Path, vdir: Path, encoder, kins) -> dict:
+def run_scene(models, sc: dict, variant: str, out: Path, vdir: Path, encoder, kins, fusion=None) -> dict:
     import torch
 
     from main.item_envs import language
@@ -91,7 +92,7 @@ def run_scene(models, sc: dict, variant: str, out: Path, vdir: Path, encoder, ki
                                actor=models.actor, critics=models.critics, filter_active=True, monitor_only=True,
                                episode_id=seed, rng=np.random.RandomState(seed),
                                max_steps=10 * int(cfg.max_steps_per_episode), controller_cls=RiskTickController,
-                               text_store=models.text)
+                               text_store=models.text, fusion=fusion)
     runner = ro.env._item_runner
     rec = language.episode_record(runner, seed)
     ids = [r["rule_id"] for r in rec["rules"]]
@@ -126,7 +127,7 @@ def run_scene(models, sc: dict, variant: str, out: Path, vdir: Path, encoder, ki
 
 def main(argv=None) -> int:
     import main.lang  # noqa: F401
-    from main.lang.eval_closed import Models
+    from main.lang.eval_closed import Models, controller_fusion
     from main.lang.train import caches_of, roots_of
     from main.network.encoder import HoloBrainEncoder
     from main.train.collect import CKPT_DIR
@@ -155,13 +156,14 @@ def main(argv=None) -> int:
     print(f"[grounding_traces] {len(scenes)} scenes: " + ", ".join(f"{s['task']} s{s['seed']}" for s in scenes), flush=True)
     models = Models(Path(args.run), args.ckpt, caches_of(args.val))
     encoder = HoloBrainEncoder(str(CKPT_DIR), device="cuda")
+    fusion = controller_fusion(models.cfg, encoder)   # V5: both sentences fused every tick (monitor mode)
     kins = {}
     vdir = Path(args.videos) if args.videos else out.parent / "videos"
     for sc in scenes:
         done = out / f"{args.variant}_{sc['task']}_s{sc['seed']}.json"
         if done.exists():
             continue
-        r = run_scene(models, sc, args.variant, out, vdir, encoder, kins)
+        r = run_scene(models, sc, args.variant, out, vdir, encoder, kins, fusion)
         print(f"[grounding_traces] {args.variant} {sc['task']} s{sc['seed']}: {r.get('status', r.get('error'))} "
               f"A '{sc['sentence_a']}' / B '{sc['sentence_b']}'", flush=True)
     return 0

@@ -74,7 +74,9 @@ FILTER_CODE = ("main/lang/rollout.py", "main/lang/eval_closed.py", "main/lang/ne
                "main/lang/collect.py", "main/train/rollout.py", "main/train/filter.py", "main/network/*.py",
                # round 3, B5: the environment / config code a filtered run also executes
                "main/train/collect.py", "main/train/config.py", "main/train/hfunc.py", "main/lang/config.py",
-               "main/lang/train.py")
+               "main/lang/train.py",
+               # V5: the frozen fusion stage a scene_fusion checkpoint runs every tick
+               "main/lang/fusion.py")
 
 
 def _hash_files(patterns) -> str:
@@ -289,11 +291,20 @@ def ckpt_sha(path: Path) -> str:
     return file_sha(Path(path))
 
 
+def controller_fusion(cfg, encoder):
+    """V5: the frozen fusion stage of a scene_fusion checkpoint for LangRolloutController(fusion=...), on the
+    rollout encoder's own spatial enhancer (no second copy); None for other checkpoints (the base path)."""
+    from .train import make_fusion
+
+    return make_fusion(cfg, "cuda", spatial_enhancer=encoder.spatial_enhancer) if cfg.scene_fusion else None
+
+
 def filter_run(models: Models, cfg: LangConfig, nom: dict, rule: dict, kind: str, axis: str, sentence: str,
                cf_sentence: str | None, inits: dict, encoder, kins, video_dir: Path | None,
-               filter_active: bool = True) -> dict:
+               filter_active: bool = True, fusion=None) -> dict:
     """One closed-loop run naming `rule`. filter_active=False: the control (round 3, B5) — the same language
-    controller with the filter never engaging, to compare with the standalone runner's nominal runs."""
+    controller with the filter never engaging, to compare with the standalone runner's nominal runs. fusion: the
+    checkpoint's frozen fusion stage (controller_fusion), None without scene_fusion."""
     import dataclasses
 
     import torch
@@ -317,7 +328,7 @@ def filter_run(models: Models, cfg: LangConfig, nom: dict, rule: dict, kind: str
                                filter_active=bool(filter_active),
                                episode_id=seed, rng=np.random.RandomState(seed),
                                max_steps=10 * int(cfg.max_steps_per_episode), controller_cls=RiskTickController,
-                               text_store=models.text)
+                               text_store=models.text, fusion=fusion)
     runner = ro.env._item_runner
     rec = language.episode_record(runner, seed)
     desig = all_designations(rec, in_way(ro.env, rec))
@@ -382,6 +393,7 @@ def child(args) -> int:
     cfg = models.cfg
     bank = language.load_bank()
     encoder = HoloBrainEncoder(str(CKPT_DIR), device="cuda")
+    fusion = controller_fusion(cfg, encoder)
     kins, inits = {}, {"n": 0}
     cache_dir = REPO / "runs/lang/_nominal_cache"
     axes = [] if args.axes in ("", "none") else args.axes.split(",")   # none: nominal + control runs only
@@ -451,7 +463,8 @@ def child(args) -> int:
                     vdir = out_dir / "videos" if (args.video_every and si % int(args.video_every) == 0) else None
                     t0 = time.time()
                     try:
-                        m = filter_run(models, cfg, nom, rule, kind, axis, sent, cf, inits, encoder, kins, vdir)
+                        m = filter_run(models, cfg, nom, rule, kind, axis, sent, cf, inits, encoder, kins, vdir,
+                                       fusion=fusion)
                     except Exception as exc:
                         print(f"[eval_closed] {key} crashed: {exc}", flush=True)
                         raise
@@ -476,7 +489,7 @@ def child(args) -> int:
                     return EXIT_INIT
                 sent = hsel(language.sentences(rule, rec, "train", bank), (nom["seed"], "control"))
                 m = filter_run(models, cfg, nom, rule, "harm", "control", sent, None, inits, encoder, kins, None,
-                               filter_active=False)
+                               filter_active=False, fusion=fusion)
                 write({"key": list(ckey), "type": "control", "task": task, "embodiment": args.embodiment,
                        "scene_idx": si, "host": nom["host"], "seed": nom["seed"], "rule_id": rule["rule_id"],
                        "nominal_violated": [bool(r["violated"].get(rule["rule_id"], False)) for r in nom["runs"]],
@@ -825,7 +838,10 @@ def parent(args) -> int:
                   "code_hash": env_code_hash(), "filter_hash": filter_code_hash(), "ckpt": args.ckpt,
                   "ckpt_sha": sorted({r["ckpt_sha"] for r in fr if r.get("ckpt_sha")}),
                   "ckpt_step": sorted({r["ckpt_step"] for r in fr if r.get("ckpt_step") is not None}),
-                  "actor_hidden": int(getattr(mcfg, "actor_hidden", 0) or 0), "gamma": float(mcfg.gamma)}
+                  "actor_hidden": int(getattr(mcfg, "actor_hidden", 0) or 0), "gamma": float(mcfg.gamma),
+                  # V5 / decision 6: what the filter read and how its critic reads out (saved before: off / softmin)
+                  "scene_fusion": bool(mcfg.scene_fusion), "fused_words": bool(mcfg.fused_words),
+                  "fusion_dtype": mcfg.fusion_dtype, "critic_readout": mcfg.critic_readout}
     (out_dir / "summary.json").write_text(json.dumps(S, indent=1, default=float))
     (out_dir / "tables.md").write_text(tables(S, f"{run.name} / {args.ckpt} (actor_hidden {S['_meta']['actor_hidden']}, "
                                                  f"{'MLP' if S['_meta']['actor_hidden'] else 'linear'} actor head; "

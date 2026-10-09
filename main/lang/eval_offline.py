@@ -25,6 +25,13 @@ reported. Metrics per axis, task and consequence and pooled: rank_acc (Q(harmful
 rank_acc_consequence (same item, different consequence), auroc of -Q for
 fails_soon (+ auroc_base with other-episode sentences), prec / rec at Q < 0
 against fails_soon_recall, v_le_h = P[Q <= h + 0.05], para_std(_ratio).
+
+``--axes train`` (or any comma list) scores only those axes; with the train axis
+alone the base and paraphrase sentences are skipped too (the grounding pair
+score reads neither: ~5x fewer forwards). A scene_fusion checkpoint (V5) is
+scored on version-2 validation shards: frames t, t-k, 0 of each (state,
+sentence) are fused from the neck rows, cached per (source, ring row, sentence)
+within a chunk of states, frame 0 across chunks (bounded LRU).
 """
 
 from __future__ import annotations
@@ -32,7 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -211,7 +218,11 @@ class TextPrior:
 
 class Evaluator:
     def __init__(self, run: Path, ckpt: str, val_roots, device="cuda", text_caches=(), batch: int = 96,
-                 text_encoder=None, embodiments="trained", tasks=None, zero_tag: bool = False):
+                 text_encoder=None, embodiments="trained", tasks=None, zero_tag: bool = False, fusion=None,
+                 fuse_cache: int = 1024):
+        """fusion: a FusionStage-like object for a scene_fusion checkpoint (default: built from the HoloBrain
+        checkpoint; the CPU tests' stub). fuse_cache: fused frames kept per cache (two caches: the chunk's frames
+        t / t-k, frame 0 across chunks; ~1.3 MB each on the device), 0 = no caching."""
         from .network import LangPolicyEncoder, LangTwinCritic
         from .text import TextStore
         from .train import load_policy
@@ -233,6 +244,22 @@ class Evaluator:
         self.tasks = None if tasks in (None, "all") else tuple(tasks)
         self.sources = [LangSource(r, self.cfg.k_prev, self.cfg.recall_ticks,
                                    drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True)) for r in val_roots]
+        # V5: the checkpoint read fused scene tokens; they are fused here from the validation shards' neck rows
+        self.fusion = None
+        if getattr(self.cfg, "scene_fusion", False):
+            for s in self.sources:
+                if not s.has_neck:
+                    raise ValueError(f"{s.root}: no neck_buffer/ (a version-1 shard): a scene_fusion checkpoint is "
+                                     "scored on version-2 validation shards (collect validation --lang-version 2)")
+                _ = s.neck   # opens it (read-only) and checks its capacity against the item sidecar
+            from .train import make_fusion
+
+            self.fusion = fusion if fusion is not None else make_fusion(self.cfg, device)
+        self.fuse_cache = int(fuse_cache)
+        self._fz_chunk: OrderedDict = OrderedDict()   # (source, ring row, sentence) -> fused frame: frames t, t-k
+        self._fz_first: OrderedDict = OrderedDict()   # ... frame 0 (kept across chunks)
+        self.fuse_stats = {"frames": 0, "fused": 0, "hit_chunk": 0, "hit_first": 0}
+        self.axes_scored, self.extras_scored = AXES, True   # set by evaluate()
         n_tok = self.sources[0].step["scene_tokens"].shape[1]
         self.pe = LangPolicyEncoder(self.cfg, n_tok=n_tok).to(device).eval()
         load_policy(self.pe, ck)
@@ -331,11 +358,72 @@ class Evaluator:
         return c, v
 
     @torch.no_grad()
+    def fused_scene(self, keys, sentences, words, wmask):
+        """V5: frames t, t-k, 0 of each item's state (key (source j, index row i)) fused with its sentence ->
+        scene tokens [N, 3, n, 256], positions [N, 3, n, 3], the fused words of frame t [N, L, 256].
+
+        One fusion pass per (source, ring row, sentence) not yet cached, the neck rows read through
+        LangSource.neck_rows (checked against the item sidecar). Frames t / t-k go to the chunk cache (cleared per
+        evaluate() chunk: the base sentence of one rule is often another rule's sentence at the same state), frame
+        0 to the first-frame cache, kept across chunks (every state of an episode shares it), both LRU-bounded by
+        fuse_cache. A t = 0 state's frame t is its frame 0: one key, one pass."""
+        from .train import fuse_neck_rows
+
+        got, miss, first = {}, {}, set()
+        frames = []
+        for n, ((j, i), s) in enumerate(zip(keys, sentences)):
+            rows = self.sources[j].rows_of(i)
+            ks = tuple((j, rows[f], s) for f in ("row", "prev_row", "first_row"))
+            frames.append(ks)
+            first.add(ks[2])
+            for k in ks:
+                self.fuse_stats["frames"] += 1
+                if k in got or k in miss:
+                    continue
+                for name, cache in (("first", self._fz_first), ("chunk", self._fz_chunk)):
+                    v = cache.get(k)
+                    if v is not None:
+                        cache.move_to_end(k)
+                        got[k] = v
+                        self.fuse_stats["hit_" + name] += 1
+                        break
+                else:
+                    miss[k] = n   # fused with item n's words
+        if miss:
+            mk = list(miss)
+            by_src = defaultdict(list)    # each (source, row) read once, whatever the sentences it is fused with
+            for j, r in dict.fromkeys((j, r) for j, r, _ in mk):
+                by_src[j].append(r)
+            tables, at, base = [], {}, 0
+            for j, rws in by_src.items():
+                rws = sorted(rws)   # memmap reads in ring order
+                tables.append(self.sources[j].neck_rows(np.asarray(rws, np.int64)))
+                at.update({(j, r): base + q for q, r in enumerate(rws)})
+                base += len(rws)
+            table = tables[0] if len(tables) == 1 else {f: np.concatenate([t[f] for t in tables]) for f in tables[0]}
+            sel = torch.as_tensor([miss[k] for k in mk], dtype=torch.long, device=words.device)
+            tok, pos, wf = fuse_neck_rows(self.fusion, table, [at[(j, r)] for j, r, _ in mk], words[sel], wmask[sel],
+                                          self.dev)
+            self.fuse_stats["fused"] += len(mk)
+            for m, k in enumerate(mk):
+                got[k] = (tok[m], pos[m], wf[m])
+                if self.fuse_cache > 0:   # own copies: a view would keep the whole batch's output alive
+                    cache = self._fz_first if k in first else self._fz_chunk
+                    cache[k] = tuple(x.clone() for x in got[k])
+                    while len(cache) > self.fuse_cache:
+                        cache.popitem(last=False)
+        st = torch.stack([torch.stack([got[k][0] for k in ks]) for ks in frames])
+        sp = torch.stack([torch.stack([got[k][1] for k in ks]) for ks in frames])
+        return st, sp, torch.stack([got[ks[0]][2] for ks in frames])
+
+    @torch.no_grad()
     def q_batch(self, reads: list[dict], sentences: list[str], keys=None, cols=None) -> np.ndarray:
         from .train import _t
 
         d = self.dev
-        b = {k: np.stack([r[k] for r in reads]) for k in reads[0]}
+        # V5: the stored (unfused) scene frames are not used
+        skip = ("scene_tokens", "scene_pos", "scene_tokens_next", "scene_pos_next") if self.fusion is not None else ()
+        b = {k: np.stack([r[k] for r in reads]) for k in reads[0] if k not in skip}
         words, wmask = self.text.lookup(sentences)
         kw = {}
         if getattr(self.cfg, "oracle_ref_tag", False):
@@ -343,9 +431,17 @@ class Evaluator:
                 raise ValueError("a V3 (oracle_ref_tag) checkpoint needs each item's state key and rule column")
             c, v = self.ref_tag(keys, cols)
             kw = {"ref_center": _t(c, dev=d), "ref_valid": _t(v, torch.bool, d)}
+        if self.fusion is not None:
+            if keys is None:
+                raise ValueError("a scene_fusion checkpoint needs each item's state key (its neck rows)")
+            scene, scene_pos, w_fused = self.fused_scene(keys, sentences, words, wmask)
+            if self.cfg.fused_words:
+                words = w_fused   # frame t's fused words, the cached mask
+        else:
+            scene, scene_pos = _t(b["scene_tokens"], dev=d), _t(b["scene_pos"], dev=d)
         enc = self.pe(_t(b["state_tokens"], dev=d), _t(b["body_tokens"], dev=d), _t(b["link_pos"], dev=d),
                       _t(b["body_mask"], torch.bool, d), _t(b["joint_index"], torch.int64, d),
-                      _t(b["scene_tokens"], dev=d), _t(b["scene_pos"], dev=d), words=words, word_mask=wmask, **kw)
+                      scene, scene_pos, words=words, word_mask=wmask, **kw)
         self._aux_err = None
         if hasattr(self.pe, "aux_head") and keys is not None and cols is not None:   # V4: the head's centre error
             from .data import named_centers
@@ -380,7 +476,15 @@ class Evaluator:
 
     # ---------------------------------------------------------------- run --
     def evaluate(self, per_task: int = 2000, n_para: int = 3, para_states: int = 200, chunk_states: int = 192,
-                 seed: int = 0) -> tuple[dict, list[dict]]:
+                 seed: int = 0, axes=AXES) -> tuple[dict, list[dict]]:
+        """axes: the sentence axes scored (default all). Only ("train",): no base and no paraphrase sentences
+        either (the grounding score reads neither); the train-axis sentences and states are those of a full run."""
+        unknown = sorted(set(axes) - set(AXES))
+        if unknown or not axes:
+            raise ValueError(f"axes {list(axes)}: expected a non-empty subset of {list(AXES)}")
+        axes = tuple(ax for ax in AXES if ax in set(axes))
+        extras = axes != ("train",)   # base (auroc_base, rank_acc_base) and paraphrase (para_std) sentences
+        self.axes_scored, self.extras_scored = axes, extras
         rng = np.random.default_rng(seed)
         states = self.states(per_task, seed=seed)
         rows = []          # one per (state, rule)
@@ -388,6 +492,7 @@ class Evaluator:
         for c0 in range(0, len(states), chunk_states):
             chunk = states[c0:c0 + chunk_states]
             cache = {k: self.sources[k[0]].read(k[1]) for k in chunk}
+            self._fz_chunk.clear()   # V5: fused frames t / t-k of the previous chunk's states are not needed again
             items, meta = [], []
             for k in chunk:
                 j, i = k
@@ -403,7 +508,7 @@ class Evaluator:
                                 and L_ep - 1 - int(s.t[i]) < FAILS_SOON_H - 1)
                 for rule in rec["rules"]:
                     el = {ax: eligible(rule, rec, ax, self.bank) for ax in AXES}
-                    if not any(el.values()):
+                    if not any(el[ax] for ax in axes):
                         continue
                     col = rule["idx"]
                     # E0b (round 3): the most endangered object of this consequence in the scene, named or not
@@ -422,7 +527,7 @@ class Evaluator:
                             "fs_any": bool(np.any(A["fails_soon"][slot, same])) if same else None}
                     r_idx = len(rows)
                     rows.append(base)
-                    for ax in AXES:
+                    for ax in axes:
                         if not el[ax]:
                             continue
                         sent = (self._other_sentence(j, eid, rng) if ax == "shuffled"
@@ -432,6 +537,8 @@ class Evaluator:
                             base["prior"][ax] = float(self.prior(sent))
                         items.append((k, sent, None if ax == "shuffled" else col))
                         meta.append((r_idx, ax))
+                    if not extras:
+                        continue
                     # base sentence for auroc_base / rank_acc_base: another rule of the same state (E3)
                     base["sentences"]["base"], base_col = self._base_sentence(rule, rec, j, eid, rng)
                     items.append((k, base["sentences"]["base"], base_col))
@@ -453,9 +560,12 @@ class Evaluator:
                     rows[r_idx]["q"][ax] = float(qv)
                 if ax == "train" and self.aux_err is not None:   # V4: centre error (cm) at frames t and 0
                     rows[r_idx]["aux_err_cm"] = [float(x) for x in self.aux_err[n]]
+            fz = self.fuse_stats
             print(f"[eval_offline] {min(c0 + chunk_states, len(states))}/{len(states)} states, {len(rows)} (state, rule) "
-                  f"rows, {time.time() - t0:.0f}s", flush=True)
-        return summarize(rows), rows
+                  f"rows, {time.time() - t0:.0f}s" + (f" | fused {fz['fused']} of {fz['frames']} frames (cache hits "
+                                                    f"{fz['hit_chunk']} t / t-k, {fz['hit_first']} frame 0)"
+                                                    if self.fusion is not None else ""), flush=True)
+        return summarize(rows, axes=axes), rows
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +652,7 @@ def _ep(r) -> str:
     return f"{r['src']}:{r['episode_id']}"
 
 
-def summarize(rows: list[dict], seed: int = 0) -> dict:
+def summarize(rows: list[dict], seed: int = 0, axes=AXES) -> dict:
     """Pair metrics per axis and group, each with an episode-bootstrap 95% interval (`<metric>_ci`) and the
     number of episodes behind it:
 
@@ -555,7 +665,8 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
     - groups: pooled, task, consequence, the harmful rule's time to its first violation (violated / 1-7 /
       8-25 ticks, review E1c), and T5 pairs split by whether either sentence has a size word (review E2).
     Per (state, rule): AUROC of -Q for fails_soon with intervals, and the per-state Spearman correlation of
-    Q with y across the state's rules (states with >= 3 rules).
+    Q with y across the state's rules (states with >= 3 rules). axes: the axes summarized (evaluate(axes=...));
+    pairs and rows not scored on an axis (or without a base sentence) are left out of its cells.
     """
     out = {}
 
@@ -583,7 +694,7 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
                 g.append(("t5_state", sw, state))   # the size-word split crossed with the strata (round 3, A1)
         return g
 
-    for ax in AXES:
+    for ax in axes:
         acc = defaultdict(lambda: defaultdict(list))
         n_censored = 0
         for hr, bn in _pairs(rows):
@@ -594,18 +705,20 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
             if not (e1 or e2):
                 continue
             if e1 and e2:
+                if ax not in hr["q"] or ax not in bn["q"]:   # rows of an evaluation that skipped this axis
+                    continue
                 kind = "symmetric"
                 qh, qb = hr["q"][ax], bn["q"][ax]
                 qh0 = qb0 = None
             elif ax in ("heldout_word", "heldout_item") and (e1 or e2) and hr["eligible"]["train"] | bn["eligible"]["train"]:
                 kind = "mixed"
                 elig, other = (hr, bn) if e1 else (bn, hr)
-                if "train" not in other["q"]:
+                if "train" not in other["q"] or ax not in elig["q"]:
                     continue
                 q_el, q_ot = elig["q"][ax], other["q"]["train"]
-                q_el0 = elig["q"]["base"]
+                q_el0 = elig["q"].get("base")
                 qh, qb = (q_el, q_ot) if e1 else (q_ot, q_el)
-                qh0, qb0 = (q_el0, q_ot) if e1 else (q_ot, q_el0)
+                qh0, qb0 = ((q_el0, q_ot) if e1 else (q_ot, q_el0)) if q_el0 is not None else (None, None)
             else:
                 continue
             same_cons = hr["consequence"] == bn["consequence"]
@@ -685,7 +798,7 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
             if not rr:
                 continue
             q = np.array([r["q"][ax] for r in rr])
-            qb = np.array([r["q"]["base"] for r in rr])
+            qb = np.array([r["q"]["base"] for r in rr]) if all("base" in r["q"] for r in rr) else None
             fs = np.array([r["fails_soon"] for r in rr])
             rec = np.array([r["recall"] for r in rr])
             h = np.array([r["h"] for r in rr])
@@ -705,8 +818,9 @@ def summarize(rows: list[dict], seed: int = 0) -> dict:
             m.update({"n": len(rr), "n_episodes": int(len(set(cl))), "auroc": auroc(-q, fs),
                       "auroc_not_yet": auroc(-q[nyet], fs[nyet]),
                       "auroc_not_yet_ci": boot_auroc_ci(-q[nyet], fs[nyet], cl[nyet], seed=seed),
-                      "auroc_ci": boot_auroc_ci(-q, fs, cl, seed=seed), "auroc_base": auroc(-qb, fs),
-                      "auroc_base_ci": boot_auroc_ci(-qb, fs, cl, seed=seed),
+                      "auroc_ci": boot_auroc_ci(-q, fs, cl, seed=seed),
+                      **({"auroc_base": auroc(-qb, fs), "auroc_base_ci": boot_auroc_ci(-qb, fs, cl, seed=seed)}
+                         if qb is not None else {}),
                       "prec_at_0": tp / max(float(pred.sum()), 1e-9), "rec_at_0": tp / max(float(rec.sum()), 1e-9),
                       "v_le_h": float((q <= h + V_LE_H_EPS).mean()), "q_mean": float(q.mean()), "h_mean": float(h.mean())})
             by_state = defaultdict(list)
@@ -1017,7 +1131,7 @@ def file_sha(path: Path, n: int = 12) -> str:
 EVAL_CODE = ("main/lang/eval_offline.py", "main/lang/data.py", "main/lang/network.py", "main/lang/text.py",
              "main/lang/config.py", "main/lang/train.py", "main/network/heads.py", "main/network/trunk.py",
              "main/network/encoder.py", "envs/main/item_envs/language/__init__.py",
-             "envs/main/item_envs/language/paraphrases.yaml")
+             "envs/main/item_envs/language/paraphrases.yaml", "main/lang/fusion.py", "main/lang/neck_buffer.py")
 
 
 def eval_code_hash() -> str:
@@ -1049,6 +1163,9 @@ def data_info(ev, rows, roots) -> dict:
             "prior_docs": int(ev.prior.n_docs) if ev.prior is not None else None,
             "bead_h_train": ev.bead_h_train, "ckpt_sha": ev.ckpt_sha, "ckpt_step": ev.ckpt_step,
             "eval_code_hash": eval_code_hash(), "ckpt_parts": ev.ckpt_parts, "zero_tag": ev.zero_tag,
+            # the scored sentence axes (--axes) and whether base / paraphrase sentences were scored with them
+            "axes": list(getattr(ev, "axes_scored", AXES)), "base_para": bool(getattr(ev, "extras_scored", True)),
+            **({"fusion_frames": dict(ev.fuse_stats)} if getattr(ev, "fusion", None) is not None else {}),
             **model_info(ev.cfg)}
 
 
@@ -1059,14 +1176,23 @@ def model_info(cfg) -> dict:
             "switches": {k: bool(getattr(cfg, k, False)) for k in ("text_out_norm", "mask_special_tokens", "oracle_ref_tag",
                                                                   "aux_target_loss", "aux_attention_loss")},
             "aux": {k: getattr(cfg, k, None) for k in ("aux_loss_weight", "aux_unit", "aux_huber_delta",
-                                                       "aux_attention_weight")}}
+                                                       "aux_attention_weight")},
+            # V5 and decision 6 (2026-10-09); a config saved before them loads unfused / softmin
+            "scene_fusion": bool(getattr(cfg, "scene_fusion", False)), "fusion_words": bool(getattr(cfg, "fusion_words", True)),
+            "fused_words": bool(getattr(cfg, "fused_words", False)), "fusion_dtype": getattr(cfg, "fusion_dtype", "fp32"),
+            "critic_readout": getattr(cfg, "critic_readout", "softmin"),
+            "train_episodes_per_task": int(getattr(cfg, "train_episodes_per_task", 0) or 0)}
 
 
 def model_line(cfg) -> str:
     m = model_info(cfg)
     on = [k for k, v in m["switches"].items() if v]
+    fz = (f", scene fusion {m['fusion_dtype']} (fused words {'on' if m['fused_words'] else 'off'})"
+          if m["scene_fusion"] else "")
+    sub = f", {m['train_episodes_per_task']} training episodes per task" if m["train_episodes_per_task"] else ""
     return (f"actor_hidden {m['actor_hidden']} ({'MLP' if m['actor_hidden'] else 'linear'} actor head), gamma {m['gamma']}, "
-            f"tf32_train {m['tf32_train']}, switches: {', '.join(on) or 'none'}")
+            f"tf32_train {m['tf32_train']}, critic readout {m['critic_readout']}{fz}{sub}, "
+            f"switches: {', '.join(on) or 'none'}")
 
 
 def main(argv=None) -> int:
@@ -1089,12 +1215,21 @@ def main(argv=None) -> int:
     ap.add_argument("--zero-tag", action="store_true", help="V3 only: score with the learned tag zeroed (tag-use check)")
     ap.add_argument("--prior-data", nargs="*", default=None,
                     help="training data roots for the scene-free text prior (rank_acc_text), e.g. data/lang/warmup")
+    ap.add_argument("--axes", default="all",
+                    help=f"sentence axes scored: 'all' (default) or a comma list of {','.join(AXES)}; 'train' alone "
+                         "also skips the base and paraphrase sentences (enough for grounding_summary)")
+    ap.add_argument("--fuse-cache", type=int, default=1024,
+                    help="scene_fusion checkpoints: fused frames cached per cache (frames t / t-k; frame 0), 0 = none")
     args = ap.parse_args(argv)
+    axes = AXES if args.axes == "all" else tuple(a for a in args.axes.split(",") if a)
+    if set(axes) - set(AXES) or not axes:
+        raise SystemExit(f"--axes {args.axes}: expected 'all' or a comma list of {','.join(AXES)}")
     roots = roots_of(args.val)
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.val)
     embs = args.embodiments if args.embodiments in ("trained", "all") else tuple(args.embodiments.split(","))
     ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch, embodiments=embs,
-                   tasks=None if args.tasks == "all" else args.tasks.split(","), zero_tag=args.zero_tag)
+                   tasks=None if args.tasks == "all" else args.tasks.split(","), zero_tag=args.zero_tag,
+                   fuse_cache=args.fuse_cache)
     if args.prior_data:
         prior_roots = roots_of(args.prior_data)
         if not prior_roots:   # else the prior is a constant 0.5 without a word (round 3, B6)
@@ -1105,7 +1240,7 @@ def main(argv=None) -> int:
         ev.prior = TextPrior(prior_roots, ev.cfg.k_prev)
         if not ev.prior.n_docs:
             raise SystemExit(f"--prior-data {args.prior_data}: the text prior found no training sentences")
-    M, rows = ev.evaluate(args.states_per_task, args.paraphrases)
+    M, rows = ev.evaluate(args.states_per_task, args.paraphrases, axes=axes)
     out = Path(args.run) / "eval_offline" / (args.out_name or Path(args.ckpt).stem)
     out.mkdir(parents=True, exist_ok=True)
     import gzip

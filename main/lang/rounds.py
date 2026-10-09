@@ -109,6 +109,11 @@ def run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, col
     refuses (after waiting out a crashed one's lock)."""
     from .locks import WriterLock
 
+    if getattr(cfg, "scene_fusion", False):
+        # fusion_impl.md decision 8: the ring is a version-1 pair (no neck_buffer/), so the rounds' own episodes
+        # could not be fused at training time, and the rollout would need the stage for its filter episodes
+        raise ValueError("rounds mode does not support scene_fusion yet (the run's ring has no neck_buffer/): "
+                         "train V5 offline on version-2 shards (E5)")
     run = Path(args.run).resolve()
     try:
         writer = WriterLock(run / "ring", wait_s=200.0)

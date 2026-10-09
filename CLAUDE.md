@@ -29,6 +29,7 @@ Plans and docs (open when working on that part, not imported):
   without asking. Compose and subclass in `main/lang/`.
 - No rule-type or task-type input to the model. The sentence is the only rule description.
 - Keep CrossSafe semantics identical (Q(s, a_nom) < 0 engages the filter, 3-tick hold), with γ = 0.95
-  (Yuxuan, 2026-10-08; runs keep the γ of their saved config).
+  only (Yuxuan, 2026-10-09, FUSION_PLAN decision 1: no γ 0.9 run is started, continued or used as a
+  baseline; runs keep the γ of their saved config, so old checkpoints still load).
 - No external detector or segmenter in the deployed filter (offline labeling and ablations only).
 - When explaining design choices, define every symbol and give a concrete example.

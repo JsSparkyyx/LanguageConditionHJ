@@ -163,8 +163,11 @@ def _obj_words(o: dict) -> list[str]:
 
 
 def _answers(o: dict, noun: str, color, size) -> bool:
-    """Would someone looking at object o accept the phrase (noun, color, size)?"""
-    if noun not in _obj_words(o):
+    """Would someone looking at object o accept the phrase (noun, color, size)?
+    A bare head noun fits any of o's words with that head ("the box" fits a
+    coffee box, "the bottle" a pill bottle); "the coffee box" still does not
+    fit a plain box (D1, Yuxuan 2026-10-09)."""
+    if not any(w == noun or w.endswith(" " + noun) for w in _obj_words(o)):
         return False
     if color is not None and o.get("color") != color:
         return False

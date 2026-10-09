@@ -85,6 +85,25 @@ def test_describe_only_unique_phrases():
     assert "the red block" not in tall and "the block" not in tall
 
 
+def test_bare_head_noun_is_not_unique_next_to_a_compound():
+    """D1 (2026-10-09): "the box" fits a coffee box and "the bottle" a pill
+    bottle, so a bare head noun is not unique next to a compound with that
+    head; the compound still names only its own object."""
+    s = _scene([("box", ["crate"], None, None), ("coffee box", ["coffee carton", "coffee bag"], None, None),
+                ("bottle", ["water bottle"], None, None), ("pill bottle", ["pill jar", "small bottle"], None, None)])
+    box, coffee, bottle, pill = s["objects"]
+    assert L.describe(box, s) == [] and L.describe(box, s, "heldout") == ["the crate"]  # "crate" is held out
+    assert "the coffee box" in L.describe(coffee, s)
+    assert "the bottle" not in L.describe(bottle, s) and "the water bottle" in L.describe(bottle, s)
+    assert "the pill bottle" in L.describe(pill, s)
+    s2 = _scene([("box", [], "red", None), ("coffee box", [], "blue", None)])
+    assert L.describe(s2["objects"][0], s2) == ["the red box"]
+    # the region path checks objects through the same match
+    s3 = _scene([("coffee box", [], None, None)], [("bin", ["bin", "box"], "green")])
+    green = L.describe_region(s3["regions"][0], s3)
+    assert "the bin" in green and "the box" not in green
+
+
 def test_heldout_words():
     s = _scene([("cup", ["glass", "mug"], "red", None)])
     train = L.describe(s["objects"][0], s, "train")

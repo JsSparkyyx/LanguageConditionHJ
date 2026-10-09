@@ -171,6 +171,22 @@ class LangConfig(FrozenConfig):
     # within frames t and 0) pulled to the named item's centre: sum_j a_f,j |p_j - c_f|^2 / aux_unit^2
     aux_attention_loss: bool = False
     aux_attention_weight: float = 0.1
+    # V5 (FUSION_PLAN, 2026-10-09): HoloBrain's frozen text-image fusion (feature_enhancer) runs on the neck maps
+    # with the sample's sentence before the spatial enhancer, so scene tokens AND their positions depend on the
+    # sentence. Needs version-2 shards (neck_buffer/). Off by default until V5 passes its gate (E5 decision rule:
+    # adopt, then flip); a config saved before the field loads as False
+    scene_fusion: bool = False
+    fusion_words: bool = True       # with scene_fusion: the text adapter reads the fused words (frame t; t+1 target)
+    fusion_dtype: str = "fp32"      # the frozen stage's matmuls everywhere (train, eval, rollout): fp32 | tf32 | bf16
+    fusion_chunk: int = 32          # frames per fusion pass (memory only, no effect on values)
+    # decision 6 (Yuxuan, 2026-10-09): the critic's readout. "mlp" = an MLP over [r, queries, masked body mean]
+    # (FUSION_PLAN 3.6); "softmin" = CrossSafe's soft minimum over the body / query values (softmin_T_h). A config
+    # saved before the field loads as "softmin", so those checkpoints rebuild the head they trained
+    critic_readout: str = "mlp"
+    critic_mlp_hidden: int = 512
+    # E6 scene-count curve: train on the first N episodes per (task, embodiment) of a fixed nested order (0 = all).
+    # Training sampler only (the validation / probe sampler always sees every episode)
+    train_episodes_per_task: int = 0
 
     # --- sampling / relabeling ---
     shuffle_text: bool = False
@@ -204,6 +220,12 @@ class LangConfig(FrozenConfig):
         assert self.relabel in ("paired", "random", "fixed"), self.relabel
         assert self.text_backend in ("holobrain_bert", "bert_raw", "sentence_generic"), self.text_backend
         assert self.item_out_root, "item_out_root must never be None/empty"
+        assert self.fusion_dtype in ("fp32", "tf32", "bf16"), self.fusion_dtype
+        assert self.critic_readout in ("mlp", "softmin"), self.critic_readout
+        assert self.train_episodes_per_task >= 0, self.train_episodes_per_task
+        # the frozen fusion reads HoloBrain's text_feat_map words (256-d); other backends cannot feed it
+        assert not self.scene_fusion or self.text_backend == "holobrain_bert", \
+            "scene_fusion needs text_backend = holobrain_bert"
         if not self.bank_hash:
             self.bank_hash = bank_hash()
 
@@ -236,7 +258,16 @@ class LangConfig(FrozenConfig):
             kw["tf32_train"] = False
         if "actor_hidden" not in d:  # ... and with CrossSafe's linear actor head
             kw["actor_hidden"] = 0
+        if "scene_fusion" not in d:  # saved before V5 (2026-10-09): unfused scene tokens
+            kw["scene_fusion"] = False
+        if "critic_readout" not in d:  # ... and the softmin readout (decision 6)
+            kw["critic_readout"] = "softmin"
         return cls(**kw)
+
+    @property
+    def fused_words(self) -> bool:
+        """The text adapter reads the fusion's words (fusion_words matters only with scene_fusion on)."""
+        return bool(self.scene_fusion and self.fusion_words)
 
     @classmethod
     def load(cls, path: str | Path) -> "LangConfig":
