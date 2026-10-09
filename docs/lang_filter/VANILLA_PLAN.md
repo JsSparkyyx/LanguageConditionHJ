@@ -472,7 +472,7 @@ Tests:
 |---|---|---|
 | `RobotInjection` (link tokens, 2 payload tokens, `scene_adapter`) | reused unchanged | `main/network/encoder.py` |
 | `GeoCrossAttention` | reused unchanged | `main/network/trunk.py` |
-| `TokenActor` | reused unchanged | `main/network/heads.py` |
+| `TokenActor` | reused with an MLP head (`network.LangTokenActor`, `actor_hidden` 256; Yuxuan 2026-10-08; 0 = the original linear head) | `main/network/heads.py`, `main/lang/network.py` |
 | `SafetyFilter` | reused unchanged | `main/train/filter.py` |
 | action effects (`dp = Jlin·dθ`, `dω = Jang·dθ`, the 8-number effect `[own dθ, dp, dω, valid]`, zero rows for the 2 payload tokens, post-action positions) | copied into `action_effects()` with a parity test against `CriticHead` | `main/network/heads.py` |
 | `TextAdapter`, `SceneSet`, scene-reads-words, `LangTrunkBlock`, `LangPolicyEncoder`, `LangCriticHead`, `LangTwinCritic` | new | `main/lang/network.py` |
@@ -598,7 +598,7 @@ class LangPolicyEncoder(nn.Module):
 
 ### 5.7 Actor
 
-`TokenActor` unchanged, on `enc.body` (from a detached `LangEncoded` in the actor update).
+`TokenActor`'s forward with an MLP head (`LangTokenActor`: RMSNorm → Linear(256, 256) → SiLU → Linear(256, 2) per joint token), on `enc.body` (from a detached `LangEncoded` in the actor update).
 
 ### 5.8 `LangCriticHead` and readout
 

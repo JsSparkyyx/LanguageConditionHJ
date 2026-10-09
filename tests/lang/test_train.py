@@ -176,3 +176,30 @@ def test_tf32_only_inside_the_training_step(tmp_path, root):
         tr.grad_step()
         assert torch.backends.cuda.matmul.allow_tf32 is False       # restored after the step
     assert seen == [("lookup", False), True, ("lookup", False), False]   # sentences are looked up in fp32
+
+
+def test_actor_head_is_an_mlp_and_old_configs_keep_the_linear_one(tmp_path, root):
+    """Yuxuan 2026-10-08: the actor's per-token head is an MLP (actor_hidden 256); a config saved before the
+    field loads actor_hidden 0 and gets CrossSafe's Linear(256, 2) back, so its checkpoint still loads."""
+    from main.lang.network import LangTokenActor, make_actor
+    from main.network.heads import TokenActor
+
+    a = make_actor(LangConfig())
+    assert isinstance(a, LangTokenActor) and sum(p.numel() for p in a.parameters()) > 60_000
+    old = {k: v for k, v in LangConfig().to_dict().items() if k != "actor_hidden"}
+    lin = make_actor(LangConfig.from_dict(old))
+    assert type(lin) is TokenActor and sum(p.numel() for p in lin.parameters()) == 514
+    tr = trainer(tmp_path / "run", root)
+    assert isinstance(tr.actor, LangTokenActor)
+    tr.grad_step()
+    p = tr.save_ckpt()
+    tr2 = trainer(tmp_path / "run2", root)
+    tr2.load_weights(p)
+    b = tr.sampler.sample(4)
+    words, wmask = tr.text.lookup(b["sentence"])
+    enc, _, _, ji = tr.encode(b, words, wmask)
+    import torch
+    with torch.no_grad():
+        a1 = tr.actor(enc.body, ji, torch.as_tensor(b["dtheta_max"]), deterministic=True)[0]
+        a2 = tr2.actor(enc.body, ji, torch.as_tensor(b["dtheta_max"]), deterministic=True)[0]
+    assert torch.allclose(a1, a2)

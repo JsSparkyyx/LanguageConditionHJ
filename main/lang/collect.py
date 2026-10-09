@@ -491,7 +491,7 @@ TRAIN_ONLY_FIELDS = frozenset({
     # LangConfig: model, sampling, precision, rounds bookkeeping
     "k_prev", "n_queries", "max_text_tokens", "text_backend", "backend_paths", "trunk_depth", "critic_depth",
     "lang_scene", "lang_body", "lang_film", "lang_queries", "lang_rtoken", "film_zero_init", "softmin_T_h",
-    "activation_checkpointing", "tf32_train", "text_out_norm", "mask_special_tokens", "oracle_ref_tag",
+    "activation_checkpointing", "tf32_train", "actor_hidden", "text_out_norm", "mask_special_tokens", "oracle_ref_tag",
     "oracle_tag_sigma", "aux_target_loss", "aux_loss_weight", "aux_huber_delta", "shuffle_text", "relabel", "harmful_frac", "pair_frac", "task_balance",
     "recall_horizon_ticks", "drop_stale_bead_rows", "episodes_per_round", "grad_steps_per_round", "collect_rounds",
     "named_harm_frac", "filter_episode_frac", "warmup_episodes_per_task", "val_episodes_per_task",

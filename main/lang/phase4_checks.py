@@ -32,14 +32,12 @@ SEED_BASE = 960_000_000   # scratch stream
 def _models(cfg, caches):
     import torch
 
-    from main.network.heads import TokenActor
-
-    from .network import LangPolicyEncoder, LangTwinCritic
+    from .network import LangPolicyEncoder, LangTwinCritic, make_actor
     from .text import TextStore
 
     torch.manual_seed(0)
     pe = LangPolicyEncoder(cfg).cuda().eval()
-    actor = TokenActor().cuda().eval()
+    actor = make_actor(cfg).cuda().eval()
     critics = LangTwinCritic(cfg).cuda().eval()
     text = TextStore(caches, cfg.text_backend, "cuda")
     return pe, actor, critics, text

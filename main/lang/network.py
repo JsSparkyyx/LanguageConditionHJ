@@ -26,6 +26,7 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 
 from main.network.encoder import RobotInjection
+from main.network.heads import TokenActor
 from main.network.trunk import GeoCrossAttention
 
 DIM = 256
@@ -122,6 +123,24 @@ class TextAdapter(nn.Module):
             r0, w = self.norm_r0(r0), self.norm_w(w)
             q = self.norm_q(q) if self.norm_q is not None else q
         return r0, q, w
+
+
+class LangTokenActor(TokenActor):
+    """CrossSafe's per-token SAC actor (same forward: tanh-squashed Gaussian per joint token, log-std clamp,
+    scatter by joint_index) with an MLP head in place of its single Linear(256, 2): RMSNorm -> Linear(256,
+    hidden) -> SiLU -> Linear(hidden, 2), shared over the joint tokens (Yuxuan, 2026-10-08). The actor loss
+    trains only the actor, on detached encoder features, so the head is the policy's only nonlinearity."""
+
+    def __init__(self, hidden: int = 256, dim: int = DIM):
+        super().__init__(dim)
+        self.head = nn.Sequential(nn.RMSNorm(dim), nn.Linear(dim, int(hidden)), nn.SiLU(), nn.Linear(int(hidden), 2))
+
+
+def make_actor(cfg) -> nn.Module:
+    """The actor a config asks for: LangTokenActor(cfg.actor_hidden), or CrossSafe's TokenActor (one linear
+    layer) when actor_hidden is 0 (configs saved before the field: those checkpoints hold a linear head)."""
+    hidden = int(getattr(cfg, "actor_hidden", 0) or 0)
+    return LangTokenActor(hidden) if hidden > 0 else TokenActor()
 
 
 def drop_special(wm: torch.Tensor) -> torch.Tensor:

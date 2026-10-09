@@ -9,7 +9,7 @@
 Update (one grad step, Section 6.1): the critic loss trains the whole
 LangPolicyEncoder (injection, scene set, text adapter, scene-reads-words,
 trunk; r_static when lang_rtoken is off) and both critic heads; the actor loss
-trains TokenActor only (encoder and critics frozen for the step, every
+trains the actor only (encoder and critics frozen for the step, every
 LangEncoded field detached). Target y = (1 - g) h + g min(h, mean of the
 target twins at t+1), the same sentence at t and t+1 and for a'. Polyak
 copies of the whole encoder and both critics (tau 0.005).
@@ -42,10 +42,9 @@ from . import ensure_item_path
 
 ensure_item_path()
 
-from main.network.heads import TokenActor  # noqa: E402
 
 from .config import CANON_EMBODIMENTS, CANON_TASKS, LangConfig  # noqa: E402
-from .network import LangPolicyEncoder, LangTwinCritic, n_params, param_groups, set_probe  # noqa: E402
+from .network import LangPolicyEncoder, LangTwinCritic, make_actor, n_params, param_groups, set_probe  # noqa: E402
 
 EXIT_RESUME = 75
 LOG_EVERY = 20
@@ -128,7 +127,7 @@ class LangTrainer:
                                    max_rows=max_rows)
         n_tok = self.sampler.sources[0].step["scene_tokens"].shape[1] if self.sampler.sources else 1200
         self.policy_enc = LangPolicyEncoder(cfg, n_tok=n_tok).to(device)
-        self.actor = TokenActor().to(device)
+        self.actor = make_actor(cfg).to(device)
         self.critics = LangTwinCritic(cfg).to(device)
         self.policy_enc_targ = copy.deepcopy(self.policy_enc)
         self.critics_targ = copy.deepcopy(self.critics)

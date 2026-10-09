@@ -134,7 +134,11 @@ CrossSafe plus text, trained only with the HJ-SAC losses.
   - (c) queries read scene (no geometric bias);
   - (d) self-attention over [body, r, queries];
   - (e) FiLM from `r₀` on body and queries, then FFN.
-- **Actor**: CrossSafe `TokenActor`, unchanged.
+- **Actor**: CrossSafe `TokenActor` (per joint token: a tanh-squashed Gaussian, shared over joints) with an
+  MLP head, RMSNorm → Linear(256, 256) → SiLU → Linear(256, 2), about 66k weights (Yuxuan, 2026-10-08;
+  `actor_hidden`, `network.LangTokenActor`). CrossSafe's head was one Linear(256, 2), 514 weights, and the
+  actor loss trains only the actor on detached encoder features, so the head is the policy's only
+  nonlinearity. Configs saved before the field keep the linear head.
 - **Twin critic**: CrossSafe action injection and post-action geometry, 2 more blocks with the same 5
   sub-layers, value heads on the 22 body tokens and the 4 queries, `Q = softmin_T` over those 26 values,
   T = 0.05 in h units. For contact rules a link carries the minimum. For spill, tilt, displacement and

@@ -149,6 +149,9 @@ class LangConfig(FrozenConfig):
     # step only; collection, probes and evaluation keep fp32 matmuls. A config saved before this field
     # (2026-10-08) loads as False, so older runs resume as they trained
     tf32_train: bool = True
+    # actor head: an MLP of this width (network.LangTokenActor; Yuxuan, 2026-10-08), 0 = CrossSafe's single
+    # Linear(256, 2). A config saved before the field loads as 0: those checkpoints hold the linear head
+    actor_hidden: int = 256
     # review round 3, Part II E2 (short grounding runs only; all off by default, the official runs unchanged):
     text_out_norm: bool = False          # V1: a final RMSNorm on the text adapter's outputs (r0, q, w')
     mask_special_tokens: bool = False    # V2: [CLS] / [SEP] out of the keys of body / scene-reads-words
@@ -214,6 +217,8 @@ class LangConfig(FrozenConfig):
             kw[k] = v
         if "tf32_train" not in d:   # saved before the field existed: those runs trained in fp32
             kw["tf32_train"] = False
+        if "actor_hidden" not in d:  # ... and with CrossSafe's linear actor head
+            kw["actor_hidden"] = 0
         return cls(**kw)
 
     @classmethod

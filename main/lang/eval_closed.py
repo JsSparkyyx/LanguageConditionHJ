@@ -225,9 +225,7 @@ class Models:
     def __init__(self, run: Path, ckpt: str, caches):
         import torch
 
-        from main.network.heads import TokenActor
-
-        from .network import LangPolicyEncoder, LangTwinCritic
+        from .network import LangPolicyEncoder, LangTwinCritic, make_actor
         from .text import TextStore
         from .train import load_policy
 
@@ -237,7 +235,7 @@ class Models:
         self.step, self.sha = int(ck.get("step", 0)), ckpt_sha(path)   # round 3, B1
         self.pe = LangPolicyEncoder(self.cfg).cuda().eval()
         load_policy(self.pe, ck)
-        self.actor = TokenActor().cuda().eval()
+        self.actor = make_actor(self.cfg).cuda().eval()
         self.actor.load_state_dict(ck["actor"])
         self.critics = LangTwinCritic(self.cfg).cuda().eval()
         self.critics.load_state_dict(ck["critics"])
