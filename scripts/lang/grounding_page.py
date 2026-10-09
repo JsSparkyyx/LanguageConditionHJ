@@ -135,6 +135,8 @@ a { color: var(--accent); }
 .diagram .row { fill: var(--muted); font-family: var(--font-display); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
 .diagram .arrow { stroke: var(--muted); stroke-width: 1.5; fill: none; marker-end: url(#ah); }
 .diagram .arrow.hot { stroke: var(--unsafe); stroke-width: 2.5; marker-end: url(#ahr); }
+details > summary { cursor: pointer; color: var(--accent); font-weight: 600; padding-block: 6px; }
+details[open] > summary { margin-bottom: 12px; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
 """
 
@@ -440,6 +442,93 @@ def special_reading(wa: dict) -> str:
 
 
 
+def _ref_ah(name: str, run: Path | None = None) -> tuple | None:
+    """(referent rank accuracy at already-harmed moments, T1 + T7, its interval, pairs) from an eval_offline
+    output (rc_state/violated: the same pairs as the primary metric)."""
+    f = (run or REPO / "runs/lang/lang_full_paired_off_1007") / "eval_offline" / name / "metrics.json"
+    if not f.exists():
+        return None
+    m = json.loads(f.read_text())["metrics"].get("train/symmetric/rc_state/violated") or {}
+    if m.get("rank_acc_referent") is None:
+        return None
+    return (*_t(m, "rank_acc_referent"), m.get("n_referent", 0))
+
+
+def why_bullet() -> str:
+    """The header's 'why' bullet: the official model on its training scenes vs new scenes (section 4)."""
+    tr, va = _ref_ah("grounding_e0_train"), _ref_ah("grounding_e0")
+    if not (tr and va):
+        return ""
+    return (f"<li><b>Why</b>It memorizes its training scenes: on different-object pairs at already-harmed moments it scores "
+            f"{tr[0]:.2f} on the episodes it trained on and {va[0]:.2f} on new ones.</li>")
+
+
+def section_memorize(summ) -> str:
+    """Section 4 (audit 2026-10-08): the same score on the scenes the model trained on and on new scenes; harm-
+    coming pairs on training scenes against the simulator's present-state number; the validation learning
+    curve; the two-robot data-scale run. Every number is read from the eval outputs."""
+    L = ['<section aria-labelledby="mem-h">', '<h2 id="mem-h">4. Training scenes versus new scenes</h2>']
+    off_val, off_tr = _ref_ah("grounding_e0"), _ref_ah("grounding_e0_train")
+    ex, st = (summ or {}).get("_extra", {}), (summ or {}).get("_settings", {})
+    runs = [(n, x["train"]) for n, x in sorted(ex.items()) if x.get("train")]
+    if not off_tr and not runs:
+        L.append("<p>Running.</p></section>")
+        return "\n".join(L)
+    L.append("<p>The score of section 2 for different objects at already-harmed moments, on the episodes each model "
+             "trained on and on new episodes of the same tasks. A model that has learned to find the named object scores "
+             "about the same on both.</p>")
+    rows = []
+    if off_val and off_tr:
+        rows.append(("Official model (20,000 steps, all tasks, both robots)", off_tr, off_val, None))
+    for n, tr in runs:
+        v, sd = n.rsplit("_", 2)[-2:]
+        val = (summ.get(v, {}).get("referent/already_harmed/T1 + T7", {}).get("per_seed", {}) or {}).get(sd.lstrip("s"))
+        rows.append((f"{v.upper()} seed {sd.lstrip('s')} (6,000 steps, tasks 1 and 7)", (tr[0], None, None, tr[1]),
+                     (val, None, None, None), st.get(n, {}).get("train_pair_acc")))
+    L.append('<div class="tablebox"><table><thead><tr><th>Model</th><th>Training scenes</th><th>New scenes</th>'
+             '</tr></thead><tbody>')
+    fmt = lambda t: "–" if t is None or t[0] is None else (ci(t[:3]) if t[1] is not None and t[1] == t[1] else f"{t[0]:.2f}")  # noqa: E731
+    for name, tr, va, ib in rows:
+        L.append(f'<tr><td>{e(name)}</td><td class="num">{fmt(tr)}</td><td class="num">{fmt(va)}</td></tr>')
+    L.append("</tbody></table></div>")
+    # harm-coming pairs on training scenes vs the simulator's present number
+    run0 = next((REPO / "runs/lang/grounding_1008" / n for n, _ in runs if "_v0_" in n), None)
+    f = run0 / "eval_offline/grounding_train/metrics.json" if run0 else None
+    if f and f.exists():
+        M = json.loads(f.read_text())["metrics"]
+        cells = []
+        for t, name in (("selective_avoid", "task 1"), ("gap_place", "task 7")):
+            m = M.get(f"train/symmetric/task_state/{t}/not_yet") or {}
+            if m:
+                cells.append(f"{name} {m['rank_acc']:.2f} against {m['rank_acc_h']:.2f}")
+        if cells:
+            L.append("<p><b>It remembers what happens next in its training episodes.</b> On training scenes, before the "
+                     "harm, V0 ranks the pairs better than the simulator's present safety number does (" +
+                     "; ".join(cells) + "). The present number cannot see which object will be hit a second later; a model "
+                     "can know that only from having seen the episode.</p>")
+    curves = {n: x["curve"] for n, x in ex.items() if x.get("curve")}
+    if curves:
+        n, c = sorted(curves.items())[0]
+        v, sd = n.rsplit("_", 2)[-2:]
+        fin = (summ.get(v, {}).get("referent/already_harmed/T1 + T7", {}).get("per_seed", {}) or {}).get(sd.lstrip("s"))
+        pts = ", ".join(f"{int(k):,} steps {a[0]:.2f}" for k, a in sorted(c.items(), key=lambda kv: int(kv[0])))
+        run_c = REPO / "runs/lang/grounding_1008" / n
+        trc = [(k, _ref_ah(f"grounding_train_step{k}", run_c)) for k in (1000, 2000, 3000, 4000, 5000)]
+        trc = [(k, x) for k, x in trc if x]
+        tr_txt = ("; on its training scenes: " + ", ".join(f"{k:,} steps {x[0]:.2f}" for k, x in trc)) if trc else ""
+        L.append(f"<p><b>More training does not help on new scenes.</b> {e(v.upper())} seed {e(sd.lstrip('s'))} on new "
+                 f"scenes by checkpoint: {pts}" + (f", 6,000 steps {fin:.2f}" if fin is not None else "") + tr_txt + ".</p>")
+    d2 = [(_ref_ah("grounding", REPO / f"runs/lang/grounding_1008/g1008_d2_s{k}"), k) for k in (0, 1)]
+    d2 = [(x, k) for x, k in d2 if x]
+    if d2:
+        L.append("<p><b>Twice the scenes.</b> V0 trained on tasks 1 and 7 from both robots (120 training episodes "
+                 "instead of 60), scored on the same new ur5 scenes: " +
+                 "; ".join(f"seed {k} {ci(x[:3])}" for x, k in d2) + ".</p>")
+    L.append("</section>")
+    return "\n".join(L)
+
+
+
 def build(out: Path) -> str:
     svs = json.loads((E0 / "seeing_vs_selecting.json").read_text())
     wa = json.loads((E0 / "word_attention.json").read_text())
@@ -469,6 +558,7 @@ def build(out: Path) -> str:
 <ul class="points">
 <li><b>The kind of rule</b>{ci(found["cons"])} when two sentences name the same object with different rules (tasks 1 and 7; 0.5 is a coin flip).</li>
 <li><b>The object</b>{ci(found["ref"])} when two sentences name different objects with the same rule; words alone give {ci(found["ref_prior"])}.</li>
+{why_bullet()}
 <li><b>What we propose</b>{{PROPOSE}}</li>
 </ul>
 <p class="muted">The tasks, the careless controller and the safety numbers are described on the <a href="{TASK_PAGE}">Named-Object Safety Tasks</a> page.</p>
@@ -511,22 +601,24 @@ def build(out: Path) -> str:
            f"sentence (relative spread {sp.get('sep', {}).get('rel_std', float('nan')):.2f}, against "
            f"{sp.get('cls', {}).get('rel_std', float('nan')):.4f} for the start token), so it can carry the name."
            if sp else "")
+    P.append(section_memorize(summ))
     P.append(f"""<section aria-labelledby="why-h">
-<h2 id="why-h">4. Three possible reasons</h2>
+<h2 id="why-h">5. Three other possible reasons</h2>
 <div class="measure"><b>1. The word features enter too large.</b><p>The frozen text encoder's word features are about 9 times larger than everything else, with a few channels up to 150. They enter the model's word attention unnormalized, so attention can lock onto whichever words are large rather than the object's name.</p></div>
 <div class="measure"><b>2. Attention lands on the sentence's start token.</b><p>{e(special_reading(wa))}{e(tok)}</p></div>
 <div class="measure"><b>3. Nothing ties a phrase to one object.</b><p>The images are 3,600 small patches, and an object is spread over dozens of them. The model has to learn, from the safety loss alone, which patches "the red mug" refers to. Its only teacher is pairs of sentences on the same moment.</p></div>
-<p>Reasons 1 and 2 are cheap to fix. Reason 3 needs a design change.</p>
+<p>Reasons 1 and 2 are cheap to fix. Reason 3 needs a design change. Section 6 tests them.</p>
 </section>""")
     # section 5
     P.append(section5(summ, e3, vid))
     P.append(section6(summ))
     P.append(f"""<section aria-labelledby="cav-h">
-<h2 id="cav-h">7. Caveats</h2>
+<h2 id="cav-h">8. Caveats</h2>
 <ul>
 <li>One checkpoint, and short runs for the experiments.</li>
 <li>Validation episodes are few: {svs['selective_avoid/all']['n_episodes']} for task 1 and {svs['gap_place/all']['n_episodes']} for task 7 in the experiments (20 new per task plus the earlier ur5 ones; two new task-1 episodes failed at their first tick when the host task found no grasp).</li>
 <li>Offline scores, not closed loop. The filter's own corrective moves are not tested here.</li>
+<li>Some task-1 sentences name an object by a word another object in the scene also fits ("the box" next to a "coffee box", "the bottle" next to a "pill bottle"), about one in eight task-1 pairs. The model scores about the same on those pairs as on the rest, so they do not explain the low score. Fixing it changes the sentence generator, which needs a decision first.</li>
 <li>Task 1 "don't touch" is the case where a geometric controller could also work once the object is known. Its value here is as the cleanest test of reading the name.</li>
 </ul>
 </section>""")
@@ -558,12 +650,27 @@ def propose(summ) -> str:
                 "from the sentence to one object, object slots plus a pointer.")
     if st == "inconclusive_oracle":
         return ("No fix reaches the bar, and the model ignores even the oracle mark on the named object, so the agreed "
-                "rule cannot decide yet: see sections 5 and 6.")
+                "rule cannot decide yet: see sections 4, 6 and 7.")
     if st == "final_other":
         return "The small experiments do not point at object reading alone: " + e(o) + "."
     if st == "pending":
-        return "Pending: " + e(o) + "."
+        return "Pending: " + e(pending_text(summ)) + "."
     return "Written once the experiments are in."
+
+
+def pending_text(summ) -> str:
+    """The pending decision in plain words (the summary's outcome string is for the results file)."""
+    pr = (summ or {}).get("_e4", {}).get("primary", {})
+    got = lambda v: pr.get(v) and pr[v][0] == pr[v][0]  # noqa: E731
+    parts = []
+    if got("v1") or got("v2"):
+        parts.append("the text fixes V1 and V2 do not reach the bar (" + ", ".join(
+            f"{v.upper()} {pr[v][0]:.2f}" for v in ("v1", "v2") if got(v)) + " against 0.85)")
+    if not got("v4"):
+        parts.append("V4, which trains one readout query to point at the named object, is still training")
+    elif not got("v4b"):
+        parts.append("V4b, which pulls that query's attention toward the named object, is still training")
+    return "; ".join(parts) if parts else outcome(summ)
 
 
 ROWS = [("v0", "nothing (short-run baseline)"), ("v1", "word features normalized"),
@@ -574,39 +681,39 @@ ROWS = [("v0", "nothing (short-run baseline)"), ("v1", "word features normalized
 
 
 def train_val(summ) -> str:
-    """Training scenes vs new scenes, and whether V3 reads its tag (audit 2026-10-08), from the summary."""
-    st, ex = summ.get("_settings", {}), summ.get("_extra", {})
-    rows = []
-    for n in sorted(st):
-        if n in summ.get("_refused", {}):
-            continue
-        tr, ib = ex.get(n, {}).get("train"), st[n].get("train_pair_acc")
-        rows.append((n, tr, ib))
-    if not any(tr or ib for _, tr, ib in rows):
+    """Whether V3 reads its mark (audit 2026-10-08), from the summary; the training-vs-new-scene table is section 4."""
+    tags = [(n, x["tag_use"]) for n, x in sorted((summ or {}).get("_extra", {}).items()) if x.get("tag_use")]
+    if not tags:
         return ""
-    L = ["<h3>Training scenes versus new scenes</h3>",
-         "<p>The same primary score on episodes the model trained on, and the score on its own training batches in the "
-         "last 1,000 steps (all pair kinds). A model that reads the name the general way scores alike on both.</p>",
-         '<div class="tablebox"><table><thead><tr><th>Run</th><th>New scenes (validation)</th>'
-         "<th>Training scenes</th><th>Training batches</th></tr></thead><tbody>"]
-    for n, tr, ib in rows:
-        v, sd = n.rsplit("_", 2)[-2:]
-        val = summ.get(v, {}).get("referent/already_harmed/T1 + T7", {}).get("per_seed", {}).get(sd.lstrip("s"))
-        L.append(f'<tr><td>{e(v.upper())} seed {e(sd.lstrip("s"))}</td><td class="num">{"–" if val is None else f"{val:.2f}"}</td>'
-                 f'<td class="num">{"–" if not tr else f"{tr[0]:.2f} ({tr[1]} pairs)"}</td>'
-                 f'<td class="num">{"–" if ib is None else f"{ib:.2f}"}</td></tr>')
-    L.append("</tbody></table></div>")
-    tags = [(n, x["tag_use"]) for n, x in ex.items() if x.get("tag_use")]
-    if tags:
-        L.append("<p><b>Does V3 read its mark?</b> The same V3 model scored with the mark on the named object removed: " +
-                 "; ".join(f"seed {e(n.rsplit('_s', 1)[1])}: {t['flip_frac']:.0%} of the primary pairs change, "
-                           f"{t['acc_tag']:.2f} with the mark vs {t['acc_no_tag']:.2f} without" for n, t in tags) +
-                 ". The model fits its training scenes without the mark, so nothing pushes it to use it.</p>")
-    return "\n".join(L)
+    return ("<p><b>Does V3 read its mark?</b> The same V3 model scored with the mark on the named object removed: " +
+            "; ".join(f"seed {e(n.rsplit('_s', 1)[1])}: {t['flip_frac']:.0%} of the {t['n_pairs']} pairs change, "
+                      f"{t['acc_tag']:.2f} with the mark vs {t['acc_no_tag']:.2f} without" for n, t in tags) +
+            ". The model fits its training scenes without the mark (section 4), so nothing pushes it to use it.</p>")
+
+
+def e3_tally(e3: dict) -> str:
+    """How the two Q lines behave in the second before the harm, per variant, on the same recorded scenes."""
+    from collections import Counter
+
+    by = {}
+    official = [json.loads(f.read_text()) for f in sorted((G / "e0a").glob("v0_*.json"))]
+    for d in official + list(e3.values()):
+        d = dict(d, variant="official" if d in official else d["variant"])
+        pre = separation(d)[1]
+        k = "sep" if pre == pre and pre < -0.1 else "wrong" if pre == pre and pre > 0.1 else "none"
+        by.setdefault(d["variant"], Counter())[k] += 1
+    order = lambda v: (v != "official", v)  # noqa: E731
+    rows = "".join(f'<tr><td>{e("Official model" if v == "official" else v.upper())}</td><td class="num">{c["sep"]}</td><td class="num">{c["none"]}</td>'
+                   f'<td class="num">{c["wrong"]}</td><td class="num">{sum(c.values())}</td></tr>' for v, c in sorted(by.items(), key=lambda kv: order(kv[0])))
+    return ("<h3>The same scenes, run with each model</h3><p>Each model watches the same nominal runs (task 1 and task 7, three "
+            "scenes each) with the two sentences of section 3. In the second before the harm, does Q for the sentence about the "
+            "object at risk drop below Q for the safe one?</p>"
+            '<div class="tablebox"><table><thead><tr><th>Model</th><th>Separates</th><th>No separation</th><th>Wrong order</th>'
+            f"<th>Scenes</th></tr></thead><tbody>{rows}</tbody></table></div>")
 
 
 def section5(summ, e3, vid) -> str:
-    L = ['<section aria-labelledby="exp-h">', '<h2 id="exp-h">5. Small experiments</h2>']
+    L = ['<section aria-labelledby="exp-h">', '<h2 id="exp-h">6. Small experiments</h2>']
     if not summ:
         L.append("<p>Running.</p></section>")
         return "\n".join(L)
@@ -657,11 +764,12 @@ def section5(summ, e3, vid) -> str:
              f"reaches 0.85 on different-object pairs at already-harmed moments, tasks 1 and 7 pooled, we keep the model "
              f"with that change; only if neither the text fixes nor V4 do but the oracle (V3) does, we propose object "
              f"slots plus a pointer. "
-             f"<b>Outcome:</b> {e(outcome(summ))}.</p>")
+             f"<b>Outcome:</b> {e(pending_text(summ) if status(summ) == 'pending' else outcome(summ))}.</p>")
     if e3:
-        L.append('<div class="videos">' + "".join(
+        L.append(e3_tally(e3))
+        L.append('<details><summary>All scene videos of the small runs</summary><div class="videos">' + "".join(
             video_fig(vid(d["video"]), d, f'{d["variant"].upper()} · ' + ("Task 1" if d["task"] == "selective_avoid" else "Task 7"))
-            for d in e3.values()) + "</div>")
+            for d in sorted(e3.values(), key=lambda d: (d["variant"], d["task"], d.get("seed", 0)))) + "</div></details>")
     L.append("</section>")
     return "\n".join(L)
 
@@ -692,7 +800,7 @@ DIAGRAM = """<div class="diagram"><svg viewBox="0 0 980 300" role="img" aria-lab
 
 def section6(summ) -> str:
     o, st = outcome(summ), status(summ)
-    head = '<section aria-labelledby="prop-h">\n<h2 id="prop-h">6. {title}</h2>'
+    head = '<section aria-labelledby="prop-h">\n<h2 id="prop-h">7. {title}</h2>'
     if st == "final_slots":
         return (head.format(title="Proposed change: object slots and a pointer") + DIAGRAM + """
 <ul>
@@ -712,7 +820,7 @@ def section6(summ) -> str:
                 "pointer. A pointer comes with its own supervised loss, which the model cannot ignore the way it "
                 "ignores an added tag.</p></section>")
     if st == "pending":
-        return head.format(title="Status") + f"<p>Pending: {e(o)}. The decision follows the agreed rule once the remaining runs are scored.</p></section>"
+        return head.format(title="Status") + f"<p>Pending: {e(pending_text(summ))}. The decision follows the agreed rule once the remaining runs are scored.</p></section>"
     return head.format(title="Status") + "<p>Written once the experiments are in.</p></section>"
 
 

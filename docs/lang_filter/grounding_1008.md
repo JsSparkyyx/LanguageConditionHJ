@@ -67,4 +67,49 @@ whether the two rho intervals overlap):
 - **The named item's words are preferred where the body first reads words:** encoder block 1 2.1x (T1 2.5x),
   the critics' first blocks 1.4-1.8x; scene-reads-words 1.5x.
 
-(E0a, E2, V4, E3 and the decision follow.)
+## E2. Short runs V0-V3 (6,000 steps, 2 seeds each)
+
+Runs `runs/lang/grounding_1008/g1008_v{0..3}_s{0,1}`, trained at 9b5057f / e9f1d98 (V3 s1 finished on a5b6055,
+which differs only in checkpoint export), all with gamma 0.95, the linear actor head (actor_hidden 0),
+tf32_train on, 6,000 steps, T1 + T7, ur5-wsg, recall horizon 7; scored on the same 1735 primary pairs (41
+episodes with pairs). Full tables and the per-run settings: `runs/lang/grounding_1008/summary.md`.
+
+| primary: referent, already harmed, T1 + T7 | seed mean [95%] | seed 0 / seed 1 |
+|---|---|---|
+| V0 baseline | 0.59 [0.48, 0.70] | 0.557 / 0.613 |
+| V1 words normalized | 0.59 [0.44, 0.75] | 0.575 / 0.612 |
+| V2 V1 + [CLS] / [SEP] hidden | 0.59 [0.50, 0.71] | 0.560 / 0.628 |
+| V3 oracle tag | 0.58 [0.47, 0.71] | 0.580 / 0.588 |
+| sentence-only prior | 0.55 [0.47, 0.64] | |
+
+Neither text fix helps (decision step a fails). V3 is no ceiling: zeroing its learned tag (eval_offline
+`--zero-tag`, `grounding_notag`) changes 1.7% of seed 0's primary outcomes (0.580 with the tag, 0.569 without).
+
+## Why: the model memorizes its training scenes (audit 2026-10-08)
+
+The same primary score on the training episodes (T1 / T7 ur5 of `data/lang/warmup`, 30 + 30 episodes; out-name
+`grounding_train`, 2498 pairs) and on the new ones:
+
+| model | training scenes | new scenes |
+|---|---|---|
+| official (20,000 steps, 7 tasks, both robots; 120 T1 / T7 scenes) | 0.93 [0.90, 0.96] | 0.57 [0.45, 0.71] |
+| V0 s0 | 0.971 | 0.557 |
+| V0 s1 | 0.974 | 0.613 |
+| V3 s0 | 0.962 | 0.580 |
+
+- On training scenes the model also ranks the "not yet" pairs above the simulator's present h (V0 s0: T1 0.84
+  vs 0.73, T7 0.96 vs 0.61): it has learned which object each training episode will hit, which only seeing
+  the episode can tell.
+- V0 s0 on new scenes is flat from the first checkpoint: 0.567 (1,000 steps), 0.563 (2,000), 0.561 (3,000),
+  0.557 (6,000).
+- So the text path works on scenes it has seen (it picks the named object at 0.97), but it does not carry to
+  new scenes. The oracle tag changes nothing because the training loss is already near its floor without it.
+- Training data: 30 T1 + 30 T7 ur5 episodes (212 + 150 sampleable rules); 6,000 steps x 64 = 384k samples, so
+  every episode is seen about 6,400 times.
+
+Running (queue `runs/lang_grounding_1008/e2.cmds`, frozen checkout `_exp3` at 0e97772, pinned to V0's
+settings): V4 and V4b x 2 seeds, V3 s1 with its tag zeroed, V0 trained on both robots' T1 / T7 (120 scenes,
+`g1008_d2_s*`), V0 s0's training-scene score at 1,000 / 3,000 steps, and the official model on val20 (T3 / T5).
+V4 weight: two-pass calibration (`calib/v4_weight2` = 0.0082; median aux/ratio over steps 400-600: 0.26 for s0,
+0.48 for s1); V4b weight 0.0039 (att ratio 1.1-1.2: stronger than the 0.2 aimed at; at weight 1 the attention
+loss pushed the critic loss from about 0.04 to 0.3).
