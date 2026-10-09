@@ -667,12 +667,16 @@ def pending_text(summ) -> str:
         parts.append("the text fixes V1 and V2 do not reach the bar (" + ", ".join(
             f"{v.upper()} {pr[v][0]:.2f}" for v in ("v1", "v2") if got(v)) + " against 0.85)")
     if not got("v4"):
-        parts.append("V4, which trains one readout query to point at the named object, is still training")
+        done = all((G / f"g1008_v4_s{k}" / "checkpoint_final.pt").exists() for k in (0, 1))
+        parts.append("V4, which trains one readout query to point at the named object, is "
+                     + ("trained and not scored yet" if done else "still training"))
     else:
         n4 = len((summ or {}).get("v4", {}).get("seeds", []))
         parts.append(f"V4 scores {pr['v4'][0]:.2f} ({n4} seed{'s' if n4 != 1 else ''} scored)")
         if not got("v4b"):
-            parts.append("V4b, which pulls that query's attention toward the named object, is still training")
+            done = all((G / f"g1008_v4b_s{k}" / "checkpoint_final.pt").exists() for k in (0, 1))
+            parts.append("V4b, which pulls that query's attention toward the named object, is "
+                         + ("trained and not scored yet" if done else "still training"))
     return "; ".join(parts) if parts else outcome(summ)
 
 

@@ -107,6 +107,24 @@ The same primary score on the training episodes (T1 / T7 ur5 of `data/lang/warmu
 - Training data: 30 T1 + 30 T7 ur5 episodes (212 + 150 sampleable rules); 6,000 steps x 64 = 384k samples, so
   every episode is seen about 6,400 times.
 
+## V4 (decision step b): the auxiliary target loss
+
+Two seeds from `_exp3` (0e97772), V0's settings pinned, weight 0.0082 from the two-pass calibration (median
+aux/ratio over steps 400-600: 0.26 for s0, 0.48 for s1, both counting as tried):
+
+| primary | seed mean [95%] | seed 0 / seed 1 |
+|---|---|---|
+| V4 | 0.60 [0.50, 0.72] | 0.627 / 0.581 |
+| V0 (same seeds) | 0.59 [0.48, 0.70] | 0.557 / 0.613 |
+
+Step b fails too. Where the V4 head points on new scenes (median centre error, frame t): T1 19 cm, T7 6 cm; the
+middle of the scene's named objects is 18 cm (T1) and 5 cm (T7) from the named one, the nearest other named
+object 13 cm and 10 cm. On new scenes the head is no closer than the middle of the scene, so even a direct
+"where is it" signal is learned only for the training scenes (training batches: 6 cm).
+
+V0 s0's validation learning curve, complete: 0.567, 0.563, 0.561, 0.560, 0.542, 0.557 at 1,000-6,000 steps.
+V3 s1 with its tag zeroed: 0.588 -> 0.581 (0.9% of outcomes change).
+
 Running (queue `runs/lang_grounding_1008/e2.cmds`, frozen checkout `_exp3` at 0e97772, pinned to V0's
 settings): V4 and V4b x 2 seeds, V3 s1 with its tag zeroed, V0 trained on both robots' T1 / T7 (120 scenes,
 `g1008_d2_s*`), V0 s0's training-scene score at 1,000 / 3,000 steps, and the official model on val20 (T3 / T5).
