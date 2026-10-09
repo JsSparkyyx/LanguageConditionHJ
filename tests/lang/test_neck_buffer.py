@@ -85,6 +85,38 @@ def test_readers_never_create_or_change_files(tmp_path):
     assert not (root / "neck_3d.npy").exists()
 
 
+def test_writable_reopen_refuses_a_missing_array(tmp_path):
+    """V2-2 hardening: an existing buffer (header present) that lost an array is refused on a writable reopen (the
+    resume path), never recreated as zeros under rows already recorded; a fresh buffer still creates every array,
+    also after a first creation killed before its header."""
+    root = tmp_path / "nb"
+    nb = small(root, 6)
+    for w in range(3):
+        nb.append(full_row(w, t=w))
+    nb.flush()
+    del nb
+    for name in ("neck_maps", "t_in_ep"):
+        p = root / f"{name}.npy"
+        keep = p.read_bytes()
+        p.unlink()
+        before = snapshot(root)
+        with pytest.raises(FileNotFoundError, match=f"{name}.npy: missing in an existing neck buffer"):
+            small(root, 6)
+        assert not p.exists() and snapshot(root) == before            # nothing created or changed
+        p.write_bytes(keep)
+    nb2 = small(root, 6)                                              # restored: reopens and keeps its rows
+    assert nb2.n == 3 and [neck_ident(m)[0] for m in nb2.read(np.arange(3))["neck_maps"]] == [0, 1, 2]
+    # a first creation killed between the arrays and the header: no header, so still fresh, every array created
+    part = tmp_path / "part"
+    small(part, 6)
+    (part / "header.json").unlink()
+    for name in ("neck_3d", "episode_id"):
+        (part / f"{name}.npy").unlink()
+    nb3 = small(part, 6)
+    assert set(nb3.arrays) == set(NECK_FIELDS) and (part / "header.json").exists() and nb3.n == 0
+    assert all((part / f"{name}.npy").exists() for name in NECK_FIELDS)
+
+
 def test_header_mismatch_refused(tmp_path):
     root = tmp_path / "nb"
     small(root, 6)

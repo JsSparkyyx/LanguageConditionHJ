@@ -10,7 +10,8 @@ the unfused tokens (V0 reads a version-2 shard unchanged).
 Ring semantics mirror StepBuffer / ItemSidecarBuffer: header.json with capacity, field shapes and dtypes, n / head;
 the oldest row is overwritten at capacity; ``discard_to`` only before the first wrap; flush = memmaps, then the
 header atomically (tmp + replace). The field shapes are fixed by the level shapes, so the memmaps are created
-eagerly, before the header (a reader never sees a header without its arrays). Readers (``capacity=None``) open
+eagerly, before the header (a reader never sees a header without its arrays), and a writable reopen of an existing
+buffer refuses a missing array instead of recreating it as zeros. Readers (``capacity=None``) open
 ``np.load(mmap_mode="r")`` and never create or change a file.
 
 Lockstep: StepBuffer rows are written one capture late (the controller's ``_pending`` entry), so the neck row
@@ -59,7 +60,8 @@ def _fields_json(fields: dict) -> dict:
 class NeckBuffer:
     def __init__(self, root: str | Path, capacity: int | None = None, *, level_shapes=LEVEL_SHAPES,
                  n_cam: int = N_CAM):
-        """capacity given: create, or reopen r+ (the header must match); None: read-only, the header's fields."""
+        """capacity given: create, or reopen r+ (the header must match; an existing buffer missing an array
+        raises FileNotFoundError); None: read-only, the header's fields."""
         # resolve NOW: RoboTwin chdirs during env setup (StepBuffer parity)
         self.root = Path(root).resolve()
         header_path = self.root / "header.json"
@@ -98,8 +100,13 @@ class NeckBuffer:
                 arr = np.load(p, mmap_mode="r+" if self.writable else "r")
                 if arr.shape != full or arr.dtype != dt:
                     raise ValueError(f"{self.root}: {name}.npy is {arr.dtype} {arr.shape}, expected {dt} {full}")
-            elif self.writable:
+            elif self.writable and fresh:
                 arr = np.lib.format.open_memmap(p, mode="w+", dtype=dt, shape=full)
+            elif self.writable:
+                # a header means its arrays were all created first: recreating one as zeros would blank the rows
+                # already recorded while their episode_id / t_in_ep still pass every alignment check
+                raise FileNotFoundError(f"{p}: missing in an existing neck buffer (header.json present; a partial "
+                                        "copy?)")
             else:
                 raise FileNotFoundError(f"{p}: missing (a partial copy?)")
             self.arrays[name] = arr

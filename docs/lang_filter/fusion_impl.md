@@ -29,9 +29,13 @@ against. `FUSION_PLAN.md` section 8 summarises the judgement; this file is the c
    rounds) into a hard error. V5 commands pass `--set scene_fusion=true`. Flip the default when the full
    warmup is re-collected in version 2 (the plan's "adopt" branch).
 2. `critic_readout` defaults to "mlp" (decision 6); a saved config without it loads "softmin".
-3. **E6 pins `critic_readout = softmin`** (and V0's other settings: γ 0.95, actor_hidden 0, recall 7), so
-   its 60-scene point is the report's V0 and its 120-scene point the queued d2 run. Sizes: 8 and 15 episodes
-   per task (new) + 30 (V0, 29 usable T1) + d2.
+3. **E6 pins `critic_readout = softmin`** (and V0's other settings: γ 0.95, actor_hidden 0, recall 7). Sizes: 8
+   and 15 episodes per task, all (30; 29 usable T1) and d2 (both robots), 2 seeds each, **all trained and scored
+   from one checkout with the D1 fix** (review 2026-10-09, BC-1 / F3): D1 changes the scored sentences of 275 of
+   the 1,735 primary pairs and the training sentence pools of 30 of 212 T1 rules, so the report's V0 runs and the
+   queued `_exp3` d2 runs (pre-D1) cannot be points of the same curve. They are re-scored under D1
+   (`grounding_d1`) only to measure D1's own effect. `scene_curve` refuses rows scored under another sentence
+   set.
 4. `lang_version` (config) is the **data** version of a shard: 2 only for shards collected with
    `--lang-version 2` (it stays in `collect_hash`). The class default stays 1.
 5. Fusion precision is one config field for every place the stage runs (train, eval, rollout), so training
@@ -282,6 +286,18 @@ are defined once, in `neck_buffer.py` (torch-free, read by `check_shards` on the
   recall_horizon_ticks=7 train_episodes_per_task=N`.
 - E5 run names for `grounding_summary.py` are `<prefix>_<variant>_s<seed>`, with variant v0p, v0ps, v5, v5w or
   v5d2 (no underscore inside the variant). Use `--reference v0p --exempt v5d2:embodiments`.
+- E5 tables default to `--reference v0p`; a missing reference keeps the decision "pending". Old V0 rows in an E5
+  table need `--exempt v0:train_data_version --exempt v0:train_collect_hash` and must be scored on the same
+  version-2 set. Each E5 variant's config is checked against its name (e.g. v5 needs scene_fusion on, MLP
+  readout), and `fusion_dtype` is held equal across the fused rows.
+- Out-names: every scoring on the version-2 validation set uses `--out-name grounding_v2` (eval_offline refuses
+  to overwrite an out dir that holds another scored set unless `--force`).
+- Data roots: `data/lang_v2/{val_grounding,val,warmup}/shard_g<k>`, one replay of each version-1 shard (`val`
+  replays only its ur5 T1 / T7 episodes, so the version-2 set has the report's 50 layouts).
+- E4: the word columns are `word_change_f0*` (fused words at frame t vs the same text at frame 0) and
+  `word_cosd_f0*`; states at t = 0 are left out of them.
+- `word_attention.py` and `eval_offline` share `Evaluator.scene_inputs`, so both read fused tokens / words for a
+  V5 checkpoint. `bench_fusion.py --train-steps N` times the real trainer with the fusion off and on.
 - The page reads the V5 outputs from `runs/lang/fusion_1009/` by default.
 - `check_shards.py --fusion-parity N --parity-tol T`: T = 2e-2 is a placeholder; set it from the first measurement.
 
@@ -291,9 +307,6 @@ old validation shards with this code picks other sentences for those rules. The 
 reproduce exactly.
 
 **Not covered.**
-- `scripts/lang/word_attention.py` builds its own `ev.pe(...)` call from the stored `scene_tokens`, so it would score
-  a scene_fusion checkpoint on unfused tokens without an error. It has no owner in section 6; until it calls
-  `ev.fused_scene`, do not run it on V5 checkpoints.
 - `bench_latency.py` and `profile_step.py` copy `grad_step`. On a scene_fusion config they stop with an error: the
   sampler refuses version-1 shards, and on version-2 shards `encode` refuses a batch that was not fused.
 - Nothing has run on a GPU: bf16 and tf32, memory per chunk, speed, the real `encode_obs_with_neck` inside a

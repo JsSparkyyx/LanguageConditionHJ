@@ -25,6 +25,7 @@ import torch
 from main.item_envs.item_buffer import ItemSidecarBuffer, LockstepItemWriter
 from main.lang import collect as C
 from main.lang.config import LangConfig
+from main.lang.fusion import neck_to_row
 from main.lang.neck_buffer import NeckBuffer, NeckLockstepWriter
 from main.lang.network import LangPolicyEncoder
 from main.lang.rollout import LangPolicyShim, LangRolloutController
@@ -432,11 +433,21 @@ class FakeLock:
         pass
 
 
+def overflow_neck(w, t, e):
+    """A live neck whose neck_maps hold one value past the fp16 range: the real neck_to_row raises on it."""
+    neck = live_neck(w, t, e)
+    neck["neck_maps"][0, 1, 2, 5] = 1e6
+    return neck
+
+
 class FakeRollout:
     """LangRolloutController stand-in for run_episodes, following the base rollout's collection protocol: the h_fn
     offers one item row per capture, each capture's entry is appended one capture late (with its neck row when
     keep_neck), the last one with done. PLAN[seed]: ticks, fail_at (a tick error after the h_fn: the base run
-    catches it and flushes the pending entry), kill_at (Killed after that tick's append), build_fails."""
+    catches it and flushes the pending entry), bad_neck_at (the same through the REAL neck_to_row, which raises on
+    an fp16 overflow before the entry is stashed, as LangRolloutController._collect_tick does), error_after (an
+    error between captures, e.g. the planner, after that tick's capture: status exception, every row paired),
+    kill_at (Killed after that tick's append), build_fails."""
 
     PLAN: dict = {}
     built: list = []
@@ -458,7 +469,7 @@ class FakeRollout:
         rec = template("gap_place")
         H = h_pattern(len(rec["rules"]), L, 0)
         rng = np.random.default_rng(self.seed)
-        e, pending, status = self.seed % 1000, None, "ok"
+        e, pending, status, err = self.seed % 1000, None, "ok", None
         for t in range(L):
             self.h_fn.row_sink.offer(item_row(rec, H[t], t, self.seed))
             if t == self.plan.get("fail_at"):
@@ -466,17 +477,25 @@ class FakeRollout:
                 break
             entry = step_entry(rng, FakeRollout.w, t, e, self.seed, float(H[t].min()), False)
             if self.keep_neck:
-                entry["_neck"] = neck_row(FakeRollout.w, t, e)
+                try:
+                    entry["_neck"] = (neck_to_row(overflow_neck(FakeRollout.w, t, e))
+                                      if t == self.plan.get("bad_neck_at") else neck_row(FakeRollout.w, t, e))
+                except Exception as exc:   # the base run catches the tick error, then flushes the pending entry
+                    status, err = "exception", f"{type(exc).__name__}: {exc}"
+                    break
             FakeRollout.w += 1
             if pending is not None:
                 self.buf.append(pending)
             pending = entry
             if t == self.plan.get("kill_at"):
                 raise Killed(f"seed {self.seed} killed at tick {t}")
+            if t == self.plan.get("error_after"):
+                status, err = "exception", "RuntimeError: fake planner error"
+                break
         if pending is not None:
             pending["done"] = np.bool_(True)
             self.buf.append(pending)
-        return {"status": status, "success": status == "ok", "n_ticks": L}
+        return {"status": status, "success": status == "ok", "n_ticks": L, **({"exception": err} if err else {})}
 
 
 def fake_wire(ro, sidecar):
@@ -627,6 +646,11 @@ def test_open_neck(tmp_path, monkeypatch):
         C.open_neck(v1, StepBuffer(v1 / "buffer"))
     with pytest.raises(ValueError, match="capacity"):                      # a StepBuffer of another capacity
         C.open_neck(root, NS(capacity=200))
+    del nb
+    (root / "neck_buffer" / "neck_3d.npy").unlink()                         # a resume of a shard that lost an array
+    with pytest.raises(FileNotFoundError, match="neck_3d.npy: missing in an existing neck buffer"):
+        C.open_neck(root, buf)
+    assert not (root / "neck_buffer" / "neck_3d.npy").exists()
 
 
 # ------------------------------------------------------------------------------ shard meta, --replay --
@@ -805,6 +829,93 @@ def test_replay_mismatch_exits_1(tmp_path, fake_env):
     with pytest.raises(SystemExit, match="replayed shard itself"):          # never written into the source
         C.main(REPLAY_ARGV + ["--replay", str(src), "--out", str(src)])
     assert snapshot(src) == before
+
+
+def check_shards_mod():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("check_shards_t", REPO / "scripts" / "lang" / "check_shards.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def replay_line(i, **kw):
+    task, emb, host, eid = REPLAY[i]
+    return dict(task=task, embodiment=emb, host=host, episode_id=eid, **kw)
+
+
+def test_replay_mismatch_flags_zero_rows_not_status(tmp_path):
+    """V2-1: a replayed episode rolled back to zero rows (a tick error between the h_fn's sidecar row and the
+    StepBuffer append) lost its layout, in replay_mismatch and in check_shards.check_replay; one whose status differs
+    from the source's but that kept its rows is not a difference (cuRobo redraws the motion)."""
+    cs = check_shards_mod()
+    root = tmp_path / "replay"
+    root.mkdir()
+    (root / "shard.json").write_text(json.dumps({"replay_of": "/src", "slots": [list(s) for s in REPLAY]}))
+    ok = [replay_line(0, status="ok", rows=[0, 6]), replay_line(1, status="ok", rows=[6, 12]),
+          replay_line(2, status="ok", rows=[12, 18])]
+    # slot 0 raised in the source (SRC_LINES) and is ok here; slot 1 was ok there and raises here after 4 rows
+    mixed = [ok[0], replay_line(1, status="exception", exception="RuntimeError: planner", rows=[6, 10]),
+             replay_line(2, status="ok", rows=[10, 16])]
+    assert SRC_LINES[0]["status"] == "exception" and SRC_LINES[1]["status"] == "ok"
+    for lines in (ok, mixed):
+        assert C.replay_mismatch(lines, REPLAY) == [] and cs.check_replay(root, lines) == []
+    tick_error = "lockstep after a tick error (lockstep: 1 queued item row(s) never appended)"
+    rolled = [ok[0], replay_line(1, status="exception", exception=tick_error, rows=[6, 6]),
+              replay_line(2, status="ok", rows=[6, 12])]
+    got = C.replay_mismatch(rolled, REPLAY)
+    assert len(got) == 1 and got[0].startswith(f"slot 1: no rows for {REPLAY[1]}") and tick_error in got[0]
+    bad = cs.check_replay(root, rolled)
+    assert len(bad) == 1 and bad[0].startswith("replay slot 1: episode gap_place 92000001 has no rows")
+    no_rows = [ok[0], {k: v for k, v in ok[1].items() if k != "rows"}, ok[2]]   # a line without rows: no rows
+    assert [m[:16] for m in C.replay_mismatch(no_rows, REPLAY)] == ["slot 1: no rows "]
+    # a zero-row line that is ALSO another episode: both differences listed
+    got = C.replay_mismatch([ok[0], dict(rolled[1], episode_id=5), ok[2]], REPLAY)
+    assert len(got) == 2 and got[0] == f"slot 1: {('gap_place', 'ur5-wsg', None, 5)} instead of {REPLAY[1]}"
+    assert got[1].startswith("slot 1: no rows")
+
+
+@pytest.mark.parametrize("plan", [{"bad_neck_at": 2}, {"fail_at": 3}])
+def test_replay_zero_row_episode_exits_1(tmp_path, fake_env, plan):
+    """V2-1 end to end: a replayed slot whose capture raises in neck_to_row (an fp16 overflow) or after its h_fn
+    row is rolled back to zero rows; the command writes a non-empty replay_mismatch and exits 1, also on a rerun,
+    and check_shards fails the shard."""
+    with pytest.raises(ValueError, match="overflows fp16"):            # the real conversion refuses the fake's neck
+        neck_to_row(overflow_neck(0, 0, 0))
+    src = v1_source(tmp_path / "v1")
+    out = tmp_path / "v2"
+    argv = REPLAY_ARGV + ["--replay", str(src), "--out", str(out)]
+    fake_env.PLAN = {92000001: plan}
+    assert C.main(argv) == 1
+    lines = C.read_lines(out / "lang_episodes.jsonl")
+    assert [d["status"] for d in lines] == ["ok", "exception", "ok"]
+    assert [d["rows"] for d in lines] == [[0, 6], [6, 6], [6, 12]]           # rolled back, the next one follows
+    assert "lockstep after a tick error" in lines[1]["exception"]
+    summ = json.loads((out / "summary.json").read_text())
+    assert summ["complete"] and len(summ["replay_mismatch"]) == 1
+    assert summ["replay_mismatch"][0].startswith("slot 1: no rows for ('gap_place', 'ur5-wsg', None, 92000001)")
+    assert C.main(argv) == 1                                                # still reported on a rerun
+    assert [s for s, _ in fake_env.built] == [92000000, 92000001, 92000008]
+    assert check_aligned(out) == 12
+    bad = check_shards_mod().check(out)
+    assert any(b.startswith("replay slot 1: episode gap_place 92000001 has no rows") for b in bad)
+    assert any(b.startswith("summary.json replay_mismatch (1): slot 1: no rows") for b in bad)
+
+
+def test_replay_exception_episode_with_rows_is_not_a_mismatch(tmp_path, fake_env):
+    """An error between captures (the planner) after 3 ticks: status exception, its rows kept and paired. The
+    replay differs from the source in status only (slot 0 raised there and is ok here, slot 1 the other way round),
+    which is no mismatch: exit 0 and check_shards passes."""
+    src = v1_source(tmp_path / "v1")
+    out = tmp_path / "v2"
+    fake_env.PLAN = {92000001: {"error_after": 2}}
+    assert C.main(REPLAY_ARGV + ["--replay", str(src), "--out", str(out)]) == 0
+    lines = C.read_lines(out / "lang_episodes.jsonl")
+    assert [d["status"] for d in lines] == ["ok", "exception", "ok"] and lines[1]["exception"].startswith("Runtime")
+    assert [d["rows"] for d in lines] == [[0, 6], [6, 9], [9, 15]]
+    assert json.loads((out / "summary.json").read_text())["replay_mismatch"] == []
+    assert check_aligned(out) == 15 and check_shards_mod().check(out) == []
 
 
 @pytest.mark.parametrize("version", [1, 2])

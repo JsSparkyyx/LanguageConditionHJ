@@ -8,8 +8,8 @@ the end of the last line. Two writers on one shard break at least one of these.
 Version-2 shards (FUSION_PLAN 3.2: a neck_buffer/ next to buffer/ and item_buffer/), still torch-free: the neck
 header's capacity, n and head equal the StepBuffer's and the item sidecar's; every filled neck row holds the item
 sidecar's episode_id and t_in_ep of that row; shard.json and every episode line say lang_version 2. A shard
-without neck_buffer/ must not claim version 2. A --replay shard: line i holds slot i's recorded episode, and its
-summary.json records no replay_mismatch.
+without neck_buffer/ must not claim version 2. A --replay shard: line i holds slot i's recorded episode, with rows,
+and its summary.json records no replay_mismatch.
 
 --fusion-parity N (FUSION_PLAN R6; torch and a GPU): N random filled rows of every version-2 shard,
 FusionStage.unfused(neck rows) (the spatial enhancer on the stored fp16 neck maps) against the StepBuffer's
@@ -89,8 +89,9 @@ def check(root: Path) -> list[str]:
 
 def check_replay(root: Path, lines: list[dict]) -> list[str]:
     """A --replay shard (shard.json has replay_of): episode line i holds the recorded episode of slot i (task and
-    the replayed seed, the slot's 4th field), and a finished shard's summary.json records no replay_mismatch (a
-    slot whose one build failed, or other ids than the source's)."""
+    the replayed seed, the slot's 4th field) with rows (an episode rolled back to zero rows lost its layout, as in
+    collect.replay_mismatch; its status is not compared), and a finished shard's summary.json records no
+    replay_mismatch (a slot whose one build failed, or other ids than the source's)."""
     meta_p = root / "shard.json"
     meta = json.loads(meta_p.read_text()) if meta_p.exists() else {}
     if "replay_of" not in meta:
@@ -104,6 +105,10 @@ def check_replay(root: Path, lines: list[dict]) -> list[str]:
             continue   # no episode in the rings; summary.json's replay_mismatch lists it once the shard is done
         if len(s) < 4 or (d.get("task"), int(d["episode_id"])) != (s[0], int(s[3])):
             bad.append(f"replay slot {i}: episode {d.get('task')} {d.get('episode_id')}, the replayed slot is {s}")
+        rows = d.get("rows")
+        if not rows or int(rows[1]) <= int(rows[0]):
+            bad.append(f"replay slot {i}: episode {d.get('task')} {d.get('episode_id')} has no rows (rows {rows}, "
+                       f"status {d.get('status')}: {(d.get('exception') or '')[:120]})")
     summ = root / "summary.json"
     mism = json.loads(summ.read_text()).get("replay_mismatch") if summ.exists() else None
     if mism:

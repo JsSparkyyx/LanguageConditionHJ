@@ -18,8 +18,14 @@ d2 runs (both robots, about 120 scenes). One point per (train_episodes_per_task,
 
 Held equal to the reference run (--reference; default the first run that trained on all scenes of one robot), else
 left out and listed: gamma, actor head, TF32, steps, tasks, the critic readout (a config saved before the field
-reads softmin), the training data version and the scored set. Embodiments and train_episodes_per_task differ by
-design. Writes <out>.json, <out>.md and <out>.png (score vs training scenes, log x).
+reads softmin), the model switches (grounding_summary.run_settings' switches: text_out_norm, mask_special_tokens,
+oracle_ref_tag, aux_target_loss, aux_attention_loss, scene_fusion / fusion_words; so V1-V4 and V5 runs cannot join a
+V0 point), the training data version, the scored set (roots, tasks, embodiments, episodes) and the scored sentences
+(grounding_summary.val_sentences: rows scored before the D1 head-noun fix of 2026-10-09, such as the report's V0 and
+the d2 runs scored in the pre-D1 checkout, carry other sentences for some T1 rules and are refused: re-score them under
+the current language code). Embodiments and train_episodes_per_task differ by design. A second run with the same
+point and seed is refused too (it would replace the first). Writes <out>.json, <out>.md and <out>.png (score vs
+training scenes, log x).
 """
 
 from __future__ import annotations
@@ -52,8 +58,15 @@ def _sibling(name: str):
 
 
 gs = _sibling("grounding_summary")
-FIXED = ("gamma", "actor_hidden", "tf32_train", "steps", "tasks", "critic_readout", "train_data_version")
+FIXED = ("gamma", "actor_hidden", "tf32_train", "steps", "tasks", "critic_readout", "model_switches",
+         "train_data_version")
 CHECKED = FIXED + gs.SCORED + gs.SCORED_V2
+
+
+def model_switches(switches) -> list:
+    """run_settings' switches without what a curve point differs in by design (the episodes per task) or holds
+    equal on its own (the critic readout, a config without the field reading softmin): the model's switches."""
+    return sorted(s for s in switches if not s.endswith(" episodes / task") and not s.startswith("critic_readout "))
 
 
 def point_score(by_seed: dict) -> dict:
@@ -83,12 +96,13 @@ def own_rows(rows: list[dict], val_roots, episodes) -> list[dict]:
 def run_info(run: Path, out_name: str) -> dict:
     """grounding_summary.run_settings plus what the curve needs: the critic readout, the training episodes, the
     scored validation episodes and both pair-outcome sets."""
-    st = gs.run_settings(run, out_name)
+    st = gs.run_settings(run, out_name)   # critic_readout as LangConfig.from_dict reads it (gs.lang_fields)
     cfg = json.loads((run / "lang_config.json").read_text())
-    st["critic_readout"] = cfg.get("critic_readout", "softmin")
+    st["model_switches"] = model_switches(st["switches"])
     st["tasks"] = tuple(sorted(st["tasks"]))   # the sampler draws by task, not by its place in --tasks
     rows = gs._rows(run / "eval_offline" / out_name / "rows.json.gz")
     st["val_episodes"] = gs.val_episodes(rows)
+    st["val_sentences"] = gs.val_sentences(rows)
     st["new"] = gs.pair_outcomes(rows)
     del rows
     ck = run / (st.get("ckpt") or "checkpoint_final.pt")
@@ -135,7 +149,9 @@ def plot(points: list[dict], path: Path) -> None:
         lo = np.array([q[1][1] if q[1][1] == q[1][1] else q[1][0] for q in pts])
         hi = np.array([q[1][2] if q[1][2] == q[1][2] else q[1][0] for q in pts])
         ax.plot(x, m, color=color, lw=2, label=name, zorder=3)
-        ax.errorbar(x, m, yerr=[m - lo, hi - m], fmt="none", ecolor=color, elinewidth=1.5, capsize=3, zorder=3)
+        # clamped at 0: a degenerate interval can sit one ulp off the mean (matplotlib refuses a negative bar)
+        ax.errorbar(x, m, yerr=[np.maximum(m - lo, 0.0), np.maximum(hi - m, 0.0)], fmt="none", ecolor=color,
+                    elinewidth=1.5, capsize=3, zorder=3)
         for xi, mi, both in zip(x, m, [q[2] for q in pts]):   # both robots: a hollow marker
             ax.plot([xi], [mi], "o", ms=8, mfc="white" if both else color, mec=color, mew=2, zorder=4)
         ax.annotate(name, (x[-1], m[-1]), xytext=(8, 0), textcoords="offset points", va="center", fontsize=9, color=INK)
@@ -183,20 +199,24 @@ def main(argv=None) -> int:
                                   and len(info[n]["embodiments"]) == 1), names[0] if names else None)
     if ref is not None and ref not in info:
         raise SystemExit(f"--reference {ref}: not among the scored runs ({', '.join(names)})")
-    refused = {}
-    for n in names:
-        why = [f"{k} {info[n][k]} != {ref}'s {info[ref][k]}" for k in CHECKED if info[n][k] != info[ref][k]]
+    refused, taken = {}, {}
+    groups = defaultdict(list)
+    for n in sorted(names, key=lambda x: x != ref):   # the reference first: it keeps its (point, seed)
+        why = [gs.differs(k, info[n][k], info[ref][k], f"{ref}'s") for k in CHECKED if info[n][k] != info[ref][k]]
         if info[n]["train_set"] is None:
             why.append("no training episodes found (the checkpoint's data roots have no episode lines)")
+        point = (info[n]["train_episodes_per_task"], tuple(info[n]["embodiments"]))
+        if not why and (point, info[n]["seed"]) in taken:   # by_new / by_tr are keyed by seed: it would replace one
+            why.append(f"same point and seed as {taken[(point, info[n]['seed'])]}")
         if why:
             refused[n] = why
             print(f"[scene_curve] refused {n}: {'; '.join(why)}", flush=True)
-    groups = defaultdict(list)
-    for n in names:
-        if n not in refused:
-            groups[(info[n]["train_episodes_per_task"], tuple(info[n]["embodiments"]))].append(n)
+            continue
+        taken[(point, info[n]["seed"])] = n
+        groups[point].append(n)
     points = []
     for (per_task, embs), ns in groups.items():
+        ns = sorted(ns)
         sts = [info[n] for n in ns]
         n_ep = sorted({x["train_episodes"] for x in sts})
         spe = [x["samples_per_episode"] for x in sts if x["samples_per_episode"] is not None]
@@ -213,8 +233,8 @@ def main(argv=None) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     keep = ("gamma", "actor_hidden", "tf32_train", "steps", "tasks", "embodiments", "critic_readout", "recall_ticks",
-            "train_data_version", "val_episodes", "train_episodes", "train_episodes_per_task", "samples_per_episode",
-            "git_head", "switches")
+            "train_data_version", "val_episodes", "val_sentences", "train_episodes", "train_episodes_per_task",
+            "samples_per_episode", "git_head", "switches", "model_switches")
     res = {"reference": ref, "out_name": args.out_name, "points": points, "refused": refused, "pending": pending,
            "settings": {n: {k: (list(v) if isinstance(v, tuple) else v) for k, v in info[n].items() if k in keep}
                         for n in names}, "held_equal": list(CHECKED), "bar": BAR}

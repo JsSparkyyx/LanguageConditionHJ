@@ -19,8 +19,12 @@ Per (state, rule), with delta_j = ||fuse(s)_j - fuse("")_j|| over the scene toke
   also against the unfused tokens, and for the bare phrase;
 - contrast, for pairs of same-consequence rules on different objects in the same state: the share of the named
   item's mask tokens where delta under its own sentence exceeds delta under the other rule's sentence;
-- word movement: ||w_fused_k - words_k|| / ||words_k|| over the sentence's tokens k (words = the cached words the
-  text adapter reads), and over the object's words alone;
+- word change vs frame 0: ||w_fused(s, frame t)_k - w_fused(s, frame 0)_k|| / ||w_fused(s, frame 0)_k|| over the
+  sentence's tokens k, the same sentence fused on the episode's first frame as the reference (how much the fused
+  words depend on the scene), and 1 - cos of the two; over all words, the object's words and the bare phrase. States
+  at t = 0 are left out of these columns (frame 0 itself: 0 by construction). The cached words are no reference: the
+  enhancer's LayerNorms bring the words from norm ~113 to ~2.5, so ||w_fused - words|| / ||words|| reads ~1 whatever
+  the scene (review 2026-10-09);
 - position shift: ||pos(s)_j - pos("")_j|| in cm, over all tokens and the named item's (the spatial enhancer predicts
   depth from the fused maps);
 - bi-attention, fusion layers 1 and 6 (FusionStage.capture_bi_attention): the share of the object words' attention
@@ -62,7 +66,8 @@ NAN = float("nan")
 OBS_METRICS = (
     "enrich", "enrich_unfused", "enrich_phrase", "enrich_phrase_unfused",
     "delta_mean", "delta_named", "delta_unfused_mean", "delta_empty_unfused_mean",
-    "word_move", "word_move_obj", "word_move_phrase",
+    "word_change_f0", "word_change_f0_obj", "word_change_f0_phrase", "word_cosd_f0", "word_cosd_f0_obj",
+    "word_cosd_f0_phrase",
     "pos_shift_cm", "pos_shift_named_cm", "pos_shift_unfused_cm",
 ) + tuple(f"att_{k}{p}_l{i + 1}" for i in LAYERS for p in ("", "_phrase") for k in ("share", "ratio"))
 PAIR_METRICS = ("contrast", "contrast_unfused", "contrast_phrase")
@@ -147,8 +152,9 @@ def state_metrics(items: list[dict], D: dict) -> tuple[list[dict], list[dict]]:
     items: one per rule, {"rule", "consequence", "object", "sentence", "phrase", "mask" [N] bool, "cells" [n_cells]
     bool, "obj_s" / "obj_p" (object-word positions in s / p)}. D (fuse_state's output): "index" {text: frame},
     "delta" / "delta_u" [F, N] (||fuse(text) - fuse("")||, ||fuse(text) - unfused|| per token), "shift" / "shift_u"
-    [F, N] (position change, cm), "move" [F, L] (word movement, nan past the sentence), "cell" {layer: [F] lists of
-    [heads, n, n_cells]}. -> (observations, ordered pairs)."""
+    [F, N] (position change, cm), "wchange" / "wcosd" [F, L] (word change vs frame 0, relative and 1 - cos; nan past
+    the sentence and everywhere at t = 0), "cell" {layer: [F] lists of [heads, n, n_cells]}. -> (observations,
+    ordered pairs)."""
     ix, e = D["index"], D["index"][""]
     obs, pairs = [], []
     for it in items:
@@ -161,11 +167,13 @@ def state_metrics(items: list[dict], D: dict) -> tuple[list[dict], list[dict]]:
              "enrich_phrase_unfused": enrichment(D["delta_u"][fp], m) if fp is not None else NAN,
              "delta_mean": _mean(D["delta"][fs]), "delta_named": _mean(D["delta"][fs][m]) if m.any() else NAN,
              "delta_unfused_mean": _mean(D["delta_u"][fs]), "delta_empty_unfused_mean": _mean(D["delta_u"][e]),
-             "word_move": _mean(D["move"][fs]),
-             "word_move_obj": _mean(D["move"][fs][[k for k in it["obj_s"] if k < D["move"].shape[1]]]),
-             "word_move_phrase": _mean(D["move"][fp]) if fp is not None else NAN,
              "pos_shift_cm": _mean(D["shift"][fs]), "pos_shift_named_cm": _mean(D["shift"][fs][m]) if m.any() else NAN,
              "pos_shift_unfused_cm": _mean(D["shift_u"][fs])}
+        obj_k = [k for k in it["obj_s"] if k < D["wchange"].shape[1]]
+        for name, key in (("change", "wchange"), ("cosd", "wcosd")):   # nan at t = 0: _stat leaves them out
+            o[f"word_{name}_f0"] = _mean(D[key][fs])
+            o[f"word_{name}_f0_obj"] = _mean(D[key][fs][obj_k])
+            o[f"word_{name}_f0_phrase"] = _mean(D[key][fp]) if fp is not None else NAN
         for layer in LAYERS:
             cells = D["cell"].get(layer)
             for p, f, idx in (("", fs, it["obj_s"]), ("_phrase", fp, it["obj_p"])):
@@ -294,9 +302,11 @@ def overlay_png(path: Path, delta, mask, level_shapes, title: str) -> None:
 # ---------------------------------------------------------------------------- fusion (torch) --
 
 
-def fuse_state(stage, text, neck: dict, texts: list[str], layers=LAYERS) -> dict:
+def fuse_state(stage, text, neck: dict, texts: list[str], layers=LAYERS, neck0: dict | None = None) -> dict:
     """Frame t (neck: one row, leading dim 1) fused with each of `texts` ("" included; the neck expanded to one copy
-    per text, so one fuse call groups them by length) and unfused -> state_metrics' D (numpy)."""
+    per text, so one fuse call groups them by length) and unfused -> state_metrics' D (numpy). neck0: the episode's
+    frame 0 (one row), fused with the same texts (outside the bi-attention capture) as the reference of the word
+    change; None at t = 0 (the change would be 0 by construction): the word-change columns are nan."""
     import torch
 
     words, wmask = text.lookup(texts)
@@ -304,17 +314,23 @@ def fuse_state(stage, text, neck: dict, texts: list[str], layers=LAYERS) -> dict
     nk = {k: v.expand(F, *v.shape[1:]) for k, v in neck.items()}
     with stage.capture_bi_attention(layers) as cap:
         tok, pos, wf = stage.fuse(nk, words, wmask)
+    wf0 = (stage.fuse({k: v.expand(F, *v.shape[1:]) for k, v in neck0.items()}, words, wmask)[2]
+           if neck0 is not None else None)
     tok_u, pos_u = stage.unfused(neck)
     e = texts.index("")
     with torch.no_grad():
         wm = wmask.to(wf.device).bool()
-        w = words.to(wf.device).float()
-        move = (wf - w).norm(dim=-1) / w.norm(dim=-1).clamp_min(1e-12)
-        move = torch.where(wm, move, torch.full_like(move, NAN))
+        if wf0 is None:
+            wchange = wcosd = torch.full(wf.shape[:2], NAN, device=wf.device)
+        else:
+            wf0 = wf0.to(wf.device).float()
+            wchange = (wf - wf0).norm(dim=-1) / wf0.norm(dim=-1).clamp_min(1e-12)
+            wcosd = 1.0 - torch.nn.functional.cosine_similarity(wf.float(), wf0, dim=-1, eps=1e-12)
+            wchange, wcosd = (torch.where(wm, x, torch.full_like(x, NAN)) for x in (wchange, wcosd))
         D = {"index": {s: i for i, s in enumerate(texts)},
              "delta": (tok - tok[e:e + 1]).norm(dim=-1), "delta_u": (tok - tok_u).norm(dim=-1),
              "shift": 100.0 * (pos - pos[e:e + 1]).norm(dim=-1), "shift_u": 100.0 * (pos - pos_u).norm(dim=-1),
-             "move": move}
+             "wchange": wchange, "wcosd": wcosd}
         D = {k: (v if k == "index" else v.float().cpu().numpy()) for k, v in D.items()}
     D["cell"] = {layer: [np.asarray(c.float().cpu().numpy() if hasattr(c, "cpu") else c) for c in cap.per_frame(layer)[1]]
                  for layer in layers}
@@ -336,6 +352,7 @@ def probe(sources, stage, text, tokenizer, every: int = 25, tasks=None, embodime
     L = int(text.max_len)
     obs, pairs, store = [], [], {}
     t0, n_states = time.time(), 0
+    neck0, neck0_of = None, None   # the current episode's frame 0 (the word-change reference)
     for j, s in enumerate(sources):
         level_shapes = s.neck.level_shapes
         sel = s.t % every == 0
@@ -372,7 +389,9 @@ def probe(sources, stage, text, tokenizer, every: int = 25, tasks=None, embodime
                 continue
             texts = [""] + list(dict.fromkeys(x for it in items for x in (it["sentence"], it["phrase"]) if x))
             neck = rows_to_neck(s.neck_rows(np.array([slot])), stage.device)
-            D = fuse_state(stage, text, neck, texts)
+            if t > 0 and neck0_of != (j, eid):
+                neck0, neck0_of = rows_to_neck(s.neck_rows(np.array([int(s.first[i])])), stage.device), (j, eid)
+            D = fuse_state(stage, text, neck, texts, neck0=neck0 if t > 0 else None)
             if D["delta"].shape[1] != items[0]["mask"].size:
                 raise ValueError(f"{s.root}: {D['delta'].shape[1]} fused tokens but token masks of "
                                  f"{items[0]['mask'].size}")
@@ -407,8 +426,12 @@ ROWS_MD = [
     ("delta_mean", "delta, sentence vs \"\", all tokens"), ("delta_named", "delta, sentence vs \"\", named item"),
     ("delta_unfused_mean", "delta, sentence vs unfused, all tokens"),
     ("delta_empty_unfused_mean", "delta, \"\" vs unfused, all tokens"),
-    ("word_move", "word movement, all words"), ("word_move_obj", "word movement, object words"),
-    ("word_move_phrase", "word movement, bare phrase"),
+    ("word_change_f0", "word change vs frame 0, all words"),
+    ("word_change_f0_obj", "word change vs frame 0, object words"),
+    ("word_change_f0_phrase", "word change vs frame 0, bare phrase"),
+    ("word_cosd_f0", "word change vs frame 0 (1 - cos), all words"),
+    ("word_cosd_f0_obj", "word change vs frame 0 (1 - cos), object words"),
+    ("word_cosd_f0_phrase", "word change vs frame 0 (1 - cos), bare phrase"),
     ("pos_shift_cm", "position shift (cm), all tokens"), ("pos_shift_named_cm", "position shift (cm), named item"),
     ("pos_shift_unfused_cm", "position shift vs unfused (cm)"),
 ] + [(f"att_{k}{p}_l{i + 1}", f"bi-attention layer {i + 1}, object words on the item's cells: "
@@ -426,7 +449,10 @@ def markdown(res: dict) -> str:
          f"checkpoint {res['config']['ckpt']}. Cells: mean [episode-bootstrap 95% interval] (observations). delta = "
          "||fuse(text) - fuse(\"\")|| per scene token of frame t unless it says unfused; enrichment = mean delta on "
          "the named item's mask tokens / mean on the others; contrast = share of the item's mask tokens where its own "
-         "sentence's delta exceeds the other same-consequence rule's; word movement = ||w_fused - words|| / ||words||.",
+         "sentence's delta exceeds the other same-consequence rule's; word change vs frame 0 = ||w_fused(s, frame t) - "
+         "w_fused(s, frame 0)|| / ||w_fused(s, frame 0)|| (and 1 - cos), the same sentence fused on the episode's first "
+         "frame: how much the fused words depend on the scene; states at t = 0 are left out of these rows (0 by "
+         "construction).",
          "", f"**Gate** ({g['task']}): enrichment >= {g['thresholds']['enrichment']} and contrast >= "
          f"{g['thresholds']['contrast']}: enrichment {g['enrichment'][0]:.2f} [{g['enrichment'][1]:.2f}, "
          f"{g['enrichment'][2]:.2f}], contrast {g['contrast'][0]:.2f} [{g['contrast'][1]:.2f}, {g['contrast'][2]:.2f}]: "

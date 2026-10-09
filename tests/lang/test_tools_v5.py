@@ -220,15 +220,15 @@ def _items_and_D(fp, own_gain=5.0):
     delta[0] = 0.0
     for f, m in ((1, ma), (2, ma), (3, mb), (4, mb), (5, ma)):
         delta[f, m] = own_gain
-    move = np.full((len(texts), 24), np.nan)
-    move[:, :5] = 0.1
-    move[:, 3] = 0.5
+    wchange = np.full((len(texts), 24), np.nan)
+    wchange[:, :5] = 0.1
+    wchange[:, 3] = 0.5
     cell = [np.full((2, 5, 3), 1 / 3) for _ in texts]
     for c in cell:
         c[:, :, 0] = 0.8
         c[:, :, 1:] = 0.1
     D = {"index": {s: i for i, s in enumerate(texts)}, "delta": delta, "delta_u": delta + 1.0, "shift": delta * 0.1,
-         "shift_u": delta * 0.2, "move": move, "cell": {0: cell, 5: cell}}
+         "shift_u": delta * 0.2, "wchange": wchange, "wcosd": wchange / 10, "cell": {0: cell, 5: cell}}
     return items, D
 
 
@@ -240,7 +240,9 @@ def test_fusion_probe_state_metrics_summary_and_gate():
     o = obs[0]
     assert o["enrich"] == pytest.approx(5.0) and o["enrich_phrase"] == pytest.approx(5.0)
     assert o["enrich_unfused"] == pytest.approx(6.0 / 2.0)
-    assert o["word_move"] == pytest.approx((0.1 * 4 + 0.5) / 5) and o["word_move_obj"] == pytest.approx(0.5)
+    assert o["word_change_f0"] == pytest.approx((0.1 * 4 + 0.5) / 5) and o["word_change_f0_obj"] == pytest.approx(0.5)
+    assert o["word_cosd_f0"] == pytest.approx((0.1 * 4 + 0.5) / 50) and o["word_cosd_f0_obj"] == pytest.approx(0.05)
+    assert o["word_change_f0_phrase"] == pytest.approx(0.18)
     assert o["att_share_l1"] == pytest.approx(0.8) and o["att_ratio_l1"] == pytest.approx(0.8 * 3)
     assert np.isnan(obs[1]["att_share_l1"])            # no coarse cell covers b
     assert o["pos_shift_named_cm"] == pytest.approx(0.5) and o["delta_empty_unfused_mean"] == pytest.approx(1.0)
@@ -294,7 +296,8 @@ class StubText:
 class ProbeStage:
     """A deterministic stand-in for FusionStage on a fake shard: fuse adds c * (bump + 0.01) to the tokens, c = the
     sentence's mean |word| (0 for ""), bump = 1 on token (camera 0, t % 4), the fake item's mask; the fused words
-    are the words + 0.1; the bi-attention is uniform."""
+    are (the words + 0.1) x (1 + 0.04 t), so at t = 25 they change by exactly 1.0 relative to frame 0 (and keep
+    their direction: 1 - cos = 0); the bi-attention is uniform."""
 
     device = torch.device("cpu")
 
@@ -308,15 +311,17 @@ class ProbeStage:
     def fuse(self, neck, words, wmask):
         F = words.shape[0]
         tok, pos = self.unfused(neck)
+        scale = torch.ones(F, 1, 1)
         for f in range(F):
             t = neck_ident(neck["neck_maps"][f].numpy())[1]
             c = float(words[f].abs().mean())
             tok[f] += 0.01 * c
             tok[f, t % N_TOK_CAM] += c
             pos[f, :, 2] = 0.001 * c
+            scale[f] = 1.0 + 0.04 * t
         for cap in self._caps:
             cap.cells = [torch.full((2, int(m.sum()), 3), 1 / 3) for m in wmask]
-        return tok, pos, (words + 0.1) * wmask[..., None]
+        return tok, pos, (words + 0.1) * scale * wmask[..., None]
 
     @contextmanager
     def capture_bi_attention(self, layers=(0, 5)):
@@ -353,13 +358,18 @@ def test_fusion_probe_runs_on_a_fake_version2_shard(tmp_path, monkeypatch):
     assert res["n"]["states"] == 8 and res["n"]["rules"] == 32   # ticks 0 and 25 of 4 episodes, 4 rules each
     assert S["enrich"]["n"] == 16 and S["enrich"]["mean"] == pytest.approx(101.0, rel=1e-3)   # block_0's rules
     assert S["contrast"]["n"] == 16 and 0.0 <= S["contrast"]["mean"] <= 1.0
-    assert S["word_move"]["n"] == 32 and S["pos_shift_cm"]["mean"] > 0
+    # word change vs frame 0: the 16 rules at t = 25 only (t = 0 is frame 0 itself), (1 + 0.04 * 25) - 1 = 1.0
+    assert S["word_change_f0"]["n"] == 16 and S["word_change_f0"]["mean"] == pytest.approx(1.0, rel=1e-5)
+    assert S["word_cosd_f0"]["n"] == 16 and abs(S["word_cosd_f0"]["mean"]) < 1e-5
+    assert S["pos_shift_cm"]["mean"] > 0
     assert S["enrich_phrase"]["n"] == 16   # "the yellow block" etc. found in every sentence
     assert res["gate"]["passed"] is None   # no T1 here
     assert len(res["overlays"]) == 6 and all((out / o["png"]).exists() for o in res["overlays"])
     with gzip.open(out / "fusion_probe_rows.json.gz", "rt") as f:
         rows = json.load(f)
     assert {o["object"] for o in rows["obs"]} == {"block_0", "block_1"} and rows["pairs"]
+    assert all(np.isnan(o["word_change_f0"]) == (o["t"] == 0) for o in rows["obs"])
+    assert "word change vs frame 0" in (out / "fusion_probe.md").read_text()
     assert "token grid" in (out / "fusion_probe.md").read_text()
 
 
@@ -371,12 +381,80 @@ def test_fusion_probe_refuses_a_version1_shard(tmp_path, monkeypatch):
         fp.main(["--val", str(tmp_path / "val"), "--text-cache", "--out", str(tmp_path / "e4"), "--device", "cpu"])
 
 
+class ScaleStage:
+    """The scale of the real enhancer's words (review 2026-10-09, fusion-semantics F1): the cached words have norm
+    ~113, the fused ones are LayerNorm-scaled to ~2.5. fuse: 2.5 x the unit words plus a scene term c * e_0, c = the
+    frame's first neck value."""
+
+    device = torch.device("cpu")
+
+    def unfused(self, neck):
+        F = neck["neck_maps"].shape[0]
+        return torch.zeros(F, 6, 4), torch.zeros(F, 6, 3)
+
+    def fuse(self, neck, words, wmask):
+        c = neck["neck_maps"].reshape(words.shape[0], -1)[:, 0]
+        wf = 2.5 * torch.nn.functional.normalize(words, dim=-1)
+        wf[:, :, 0] += c[:, None]
+        return (*self.unfused(neck), wf * wmask[..., None])
+
+    @contextmanager
+    def capture_bi_attention(self, layers=(0, 5)):
+        class Cap:
+            def per_frame(self, layer):
+                return [], []
+        yield Cap()
+
+
+class ScaleText:
+    def __init__(self):
+        g = torch.Generator().manual_seed(0)
+        self.words = {s: 7.0 * torch.randn(24, 256, generator=g) for s in ("", "keep the mug still")}
+
+    def lookup(self, texts):
+        m = torch.zeros(len(texts), 24, dtype=torch.bool)
+        for i, s in enumerate(texts):
+            m[i, :2 + len(s.split())] = True
+        return torch.stack([self.words[s] for s in texts]), m
+
+
+def test_fusion_probe_word_change_measures_the_scene_not_the_layernorm_scale():
+    """The word column compares the fused words of frame t with the same sentence fused on frame 0: a pure scene term
+    of 0.5 on words of fused norm 2.5 reads 0.2, where the old ||w_fused - cached|| / ||cached|| read ~1 whatever
+    the scene. At t = 0 (no frame-0 reference) the column is nan and the summary leaves it out."""
+    fp = _script("fusion_probe")
+    stage, text, texts = ScaleStage(), ScaleText(), ["", "keep the mug still"]
+
+    def neck(c):
+        return {"neck_maps": torch.full((1, 3, 8, 4), float(c))}
+    D = fp.fuse_state(stage, text, neck(0.5), texts, neck0=neck(0.0))
+    words, wm = text.lookup(texts)
+    wf_t, wf_0 = (stage.fuse({"neck_maps": torch.full((2, 3, 8, 4), c)}, words, wm)[2] for c in (0.5, 0.0))
+    s = texts.index("keep the mug still")
+    n = int(wm[s].sum())
+    assert np.allclose(D["wchange"][s, :n], 0.2, atol=1e-6) and np.isnan(D["wchange"][s, n:]).all()
+    cos = torch.nn.functional.cosine_similarity(wf_t[s, :n], wf_0[s, :n], dim=-1).numpy()
+    assert np.allclose(D["wcosd"][s, :n], 1.0 - cos, atol=1e-6) and (D["wcosd"][s, :n] > 0).all()
+    old = ((wf_t - words).norm(dim=-1) / words.norm(dim=-1))[s, :n]   # the replaced metric: pinned near 1
+    assert float(old.min()) > 0.95
+    assert np.isnan(fp.fuse_state(stage, text, neck(0.5), texts)["wchange"]).all()   # t = 0: no reference
+    items = [{"rule": "stay|mug", "consequence": "stay", "object": "mug", "sentence": texts[1], "phrase": None,
+              "mask": np.arange(6) < 2, "cells": np.zeros(3, bool), "obj_s": [3], "obj_p": []}]
+    D0 = fp.fuse_state(stage, text, neck(0.5), texts)
+    D["cell"] = D0["cell"] = {}   # no bi-attention captured by the stub
+    obs = [dict({"task": "selective_avoid", "src": 0, "episode_id": 1, "t": t}, **fp.state_metrics(items, d)[0][0])
+           for t, d in ((0, D0), (25, D))]
+    st = fp.summarize(obs, [], B=20)["selective_avoid"]["word_change_f0"]
+    assert st["n"] == 1 and st["mean"] == pytest.approx(0.2, abs=1e-6)
+
+
 # ------------------------------------------------------------------------------------- grounding_summary --
 
 
-def _rows(acc: float, episodes=range(6), states: int = 20, src: int = 0) -> list[dict]:
+def _rows(acc: float, episodes=range(6), states: int = 20, src: int = 0, verb: str = "don't touch") -> list[dict]:
     """Referent pairs (selective_avoid, already harmed): the first round(acc * states) states of every episode are
-    ranked right, the rest wrong, so every episode has the same accuracy (degenerate bootstrap intervals)."""
+    ranked right, the rest wrong, so every episode has the same accuracy (degenerate bootstrap intervals); each row's
+    training-template sentence is "<verb> the <object>"."""
     out = []
     for ep in episodes:
         for st in range(states):
@@ -386,11 +464,12 @@ def _rows(acc: float, episodes=range(6), states: int = 20, src: int = 0) -> list
                 out.append({"src": src, "i": ep * 100 + st, "episode_id": ep, "task": "selective_avoid",
                             "rule": f"avoid|{obj}", "consequence": "avoid", "referent": obj, "fails_soon": harmful,
                             "ttv": 0 if harmful else None, "censored": False, "eligible": {"train": True},
-                            "q": {"train": q}, "prior": {"train": 0.5}})
+                            "q": {"train": q}, "prior": {"train": 0.5}, "sentences": {"train": f"{verb} the {obj}"}})
     return out
 
 
-def _data_root(d: Path, version: int, n_ep: int = 10, embodiments=("ur5-wsg",), eid0: int = 1000) -> Path:
+def _data_root(d: Path, version: int, n_ep: int = 10, embodiments=("ur5-wsg",), eid0: int = 1000,
+               collect_hash: str | None = None) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     lines, r0 = [], 0
     for emb in embodiments:
@@ -401,16 +480,19 @@ def _data_root(d: Path, version: int, n_ep: int = 10, embodiments=("ur5-wsg",), 
     lines.append({"episode_id": eid0 + len(lines), "task": "gap_place", "embodiment": embodiments[0],
                   "rows": [r0, r0 + 1]})   # a one-row episode: never drawn
     (d / "lang_episodes.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
-    (d / "shard.json").write_text(json.dumps({"kind": "warmup", **({"lang_version": version} if version != 1 else {})}))
+    (d / "shard.json").write_text(json.dumps({"kind": "warmup", **({"lang_version": version} if version != 1 else {}),
+                                              **({"collect_hash": collect_hash} if collect_hash else {})}))
     return d
 
 
-def _run(d: Path, rows, data_roots=(), cfg=None, step=6000, train_rows=None, train_roots=None, val_roots=("/v/a",)):
+def _run(d: Path, rows, data_roots=(), cfg=None, step=6000, train_rows=None, train_roots=None, val_roots=("/v/a",),
+         data=None):
     e = d / "eval_offline" / "grounding"
     e.mkdir(parents=True)
     with gzip.open(e / "rows.json.gz", "wt") as f:
         json.dump(rows, f)
-    data = {"val_roots": list(val_roots), "tasks": ["gap_place", "selective_avoid"], "embodiments": ["ur5-wsg"]}
+    data = {"val_roots": list(val_roots), "tasks": ["gap_place", "selective_avoid"], "embodiments": ["ur5-wsg"],
+            **(data or {})}
     (e / "metrics.json").write_text(json.dumps({"step": step, "ckpt": "checkpoint_final.pt", "data": data}))
     base = {"gamma": 0.95, "tf32_train": True, "task_choices": ["selective_avoid", "gap_place"],
             "embodiment_choices": ["ur5-wsg"], "batch_size": 64}
@@ -496,8 +578,8 @@ def test_grounding_summary_e5_decision_rule(tmp_path, v5_acc, e4_passed, status)
     gs = _script("grounding_summary")
     runs = tmp_path / "runs"
     for s in (0, 1):
-        _run(runs / f"e5_v0p_s{s}", _rows(0.55))
-        _run(runs / f"e5_v5_s{s}", _rows(v5_acc), cfg={"scene_fusion": True})
+        _run(runs / f"e5_v0p_s{s}", _rows(0.55), cfg={"critic_readout": "mlp"})
+        _run(runs / f"e5_v5_s{s}", _rows(v5_acc), cfg={"scene_fusion": True, "critic_readout": "mlp"})
     args = ["--runs", str(runs / "e5_*"), "--md", str(tmp_path / "s.md"), "--reference", "v0p"]
     if e4_passed is not None:
         (tmp_path / "e4.json").write_text(json.dumps({"gate": {"passed": e4_passed}}))
@@ -508,6 +590,138 @@ def test_grounding_summary_e5_decision_rule(tmp_path, v5_acc, e4_passed, status)
     assert d["e4_passed"] is e4_passed
 
 
+def test_grounding_summary_lang_fields_read_configs_as_langconfig_does():
+    """A config without scene_fusion is unfused and one without critic_readout uses softmin, as LangConfig.from_dict
+    loads it (the run that trained on it)."""
+    from main.lang.config import LangConfig
+
+    gs = _script("grounding_summary")
+    for d in ({}, {"scene_fusion": True}, {"critic_readout": "mlp"},
+              {"scene_fusion": True, "fusion_words": False, "critic_readout": "mlp"}):
+        c = LangConfig.from_dict(d)
+        assert gs.lang_fields(d) == {"scene_fusion": c.scene_fusion, "fusion_words": c.fusion_words,
+                                     "critic_readout": c.critic_readout}, d
+
+
+def test_grounding_summary_e5_refuses_configs_that_do_not_match_the_variant(tmp_path):
+    """Review 2026-10-09 plan-compliance F1: a V5 run launched without --set scene_fusion=true trains as V0'; under the
+    V5 name it would drive the E5 decision. Each variant's scene_fusion / fusion_words / critic_readout are fixed, and
+    fusion_dtype is held equal across the scene_fusion runs."""
+    gs = _script("grounding_summary")
+    v2 = [_data_root(tmp_path / "data" / "v2", 2)]
+    runs = tmp_path / "runs"
+    mlp, v5 = {"critic_readout": "mlp"}, {"critic_readout": "mlp", "scene_fusion": True}
+    for s in (0, 1):
+        _run(runs / f"e5_v0p_s{s}", _rows(0.55), v2, mlp)
+    _run(runs / "e5_v5_s0", _rows(0.75), v2, v5, data={"fusion_dtype": "fp32"})
+    _run(runs / "e5_v5_s1", _rows(0.75), v2)                                   # the flag forgotten: V0'-softmin
+    _run(runs / "e5_v5_s2", _rows(0.75), v2, {**v5, "fusion_dtype": "fp32"})
+    _run(runs / "e5_v5w_s0", _rows(0.7), v2, v5)                               # fusion_words left on
+    _run(runs / "e5_v5w_s1", _rows(0.7), v2, {**v5, "fusion_words": False}, data={"fusion_dtype": "bf16"})
+    _run(runs / "e5_v5w_s2", _rows(0.7), v2, {**v5, "fusion_words": False})
+    _run(runs / "e5_v0ps_s0", _rows(0.55), v2)                                  # saved without the field: softmin
+    _run(runs / "e5_v0ps_s1", _rows(0.55), v2, mlp)
+    _run(runs / "e5_v0p_s2", _rows(0.55), v2, v5)                               # V0' with the fusion on
+    md = tmp_path / "s.md"
+    assert gs.main(["--runs", str(runs / "e5_*"), "--md", str(md), "--reference", "v0p"]) == 0
+    res = json.loads(md.with_suffix(".json").read_text())
+    ref = res["_refused"]
+    assert set(ref) == {"e5_v5_s1", "e5_v5w_s0", "e5_v5w_s1", "e5_v0ps_s1", "e5_v0p_s2"}, ref
+    why = " | ".join(ref["e5_v5_s1"])
+    assert "scene_fusion False but V5 has True" in why and "critic_readout softmin but V5 has mlp" in why
+    assert ref["e5_v5w_s0"] == ["fusion_words True but V5w has False (the run's config does not match its variant)"]
+    assert ref["e5_v5w_s1"] == ["fusion_dtype bf16 != e5_v5_s0's fp32 (held equal across the scene_fusion runs)"]
+    assert "critic_readout mlp but V0'-softmin has softmin" in " ".join(ref["e5_v0ps_s1"])
+    assert "scene_fusion True but V0' has False" in " ".join(ref["e5_v0p_s2"])
+    assert res["v5"]["seeds"] == [0, 2] and res["v5w"]["seeds"] == [2] and res["v0ps"]["seeds"] == [0]
+    assert res["_settings"]["e5_v0ps_s0"]["critic_readout"] == "softmin"
+    assert "V5w: scene_fusion True, fusion_words False, critic_readout mlp" in md.read_text()
+
+
+def test_grounding_summary_e5_reference_defaults_to_v0p_and_a_missing_one_leaves_the_decision_pending(tmp_path, capsys):
+    """Review 2026-10-09 plan-compliance F2: an E5 table without --reference is held against V0' (it was held against
+    nothing: a V5 at another gamma and step count could 'adopt'); a reference that is not scored leaves the decision
+    pending, with a warning."""
+    gs = _script("grounding_summary")
+    runs = tmp_path / "runs"
+    mlp, v5 = {"critic_readout": "mlp"}, {"critic_readout": "mlp", "scene_fusion": True}
+    for s in (0, 1):
+        _run(runs / f"e5_v0p_s{s}", _rows(0.55), cfg=mlp)
+        _run(runs / f"e5_v5_s{s}", _rows(0.9), cfg={**v5, "gamma": 0.9}, step=3000)
+    md = tmp_path / "s.md"
+    assert gs.main(["--runs", str(runs / "e5_*"), "--md", str(md)]) == 0
+    res = json.loads(md.with_suffix(".json").read_text())
+    assert res["_reference"] == "e5_v0p_s0" and set(res["_refused"]) == {"e5_v5_s0", "e5_v5_s1"}
+    assert "gamma 0.9 != the reference (V0')'s 0.95" in " ".join(res["_refused"]["e5_v5_s0"])
+    assert "_e5" not in res   # no V5 row left: no decision (it was 'adopt')
+    for s in (0, 1):   # comparable V5 runs; the reference names a variant that was not run
+        shutil.rmtree(runs / f"e5_v5_s{s}")
+        _run(runs / f"e5_v5_s{s}", _rows(0.9), cfg=v5)
+    capsys.readouterr()
+    assert gs.main(["--runs", str(runs / "e5_*"), "--md", str(md), "--reference", "v0ps"]) == 0
+    res = json.loads(md.with_suffix(".json").read_text())
+    assert "reference v0ps: no scored run" in capsys.readouterr().out and res["_reference"] is None
+    assert res["_e5"]["status"] == "pending" and "comparability unchecked" in res["_e5"]["outcome"]
+    assert gs.main(["--runs", str(runs / "e5_*"), "--md", str(md)]) == 0
+    assert json.loads(md.with_suffix(".json").read_text())["_e5"]["status"] == "adopt"
+
+
+def test_grounding_summary_holds_the_training_collect_hash_equal(tmp_path):
+    """Review 2026-10-09 plan-compliance F6: runs trained on shards of different collection configs are not pooled;
+    the report's V0 (version-1 warmup, no collect_hash) joins an E5 table only with the documented exemptions."""
+    gs = _script("grounding_summary")
+    a = _data_root(tmp_path / "data" / "a", 2, collect_hash="aaa")
+    b = _data_root(tmp_path / "data" / "b", 2, eid0=5000, collect_hash="bbb")
+    fr = _data_root(tmp_path / "data" / "fr", 2, embodiments=("franka-panda",), eid0=9000, collect_hash="ccc")
+    tr = gs.training_episodes((str(a), str(b), str(fr)), ("selective_avoid", "gap_place"), ("ur5-wsg",), 0)
+    assert tr["collect_hash"] == "aaa+bbb"   # only the roots that hold a training episode
+    assert gs.training_episodes((str(_data_root(tmp_path / "data" / "old", 1)),))["collect_hash"] == "none"
+    runs = tmp_path / "runs"
+    mlp = {"critic_readout": "mlp"}
+    for s in (0, 1):
+        _run(runs / f"e5_v0p_s{s}", _rows(0.55), [a], mlp)
+    _run(runs / "e5_v0ps_s0", _rows(0.55), [b], {"critic_readout": "softmin"})
+    _run(runs / "e5_v0_s0", _rows(0.55), [_data_root(tmp_path / "data" / "v1", 1, eid0=7000)])
+    md = tmp_path / "s.md"
+    args = ["--runs", str(runs / "e5_*"), "--md", str(md), "--exempt", "v0:train_data_version"]
+    assert gs.main(args) == 0
+    ref = json.loads(md.with_suffix(".json").read_text())["_refused"]
+    assert ref["e5_v0ps_s0"] == ["train_collect_hash bbb != the reference (V0')'s aaa"]
+    assert ref["e5_v0_s0"] == ["train_collect_hash none != the reference (V0')'s aaa"]
+    assert gs.main(args + ["--exempt", "v0:train_collect_hash"]) == 0
+    assert set(json.loads(md.with_suffix(".json").read_text())["_refused"]) == {"e5_v0ps_s0"}
+    assert "| collect hash |" in md.read_text()
+
+
+def test_grounding_summary_refuses_rows_scored_under_other_sentences(tmp_path):
+    """Review 2026-10-09 BC-1 / plan-compliance F3: the D1 head-noun fix moved the scored sentence of some rules
+    without changing the scored episodes; rows scored under another sentence set are refused (E5 and E2 tables)."""
+    gs = _script("grounding_summary")
+    rows = _rows(0.55)
+    assert gs.val_sentences(rows) == gs.val_sentences(rows[::-1])
+    other = [dict(r, sentences={"train": "never bump the a"}) if r["rule"] == "avoid|a" and r["i"] == 3 else r
+             for r in rows]
+    assert gs.val_sentences(other) != gs.val_sentences(rows) and gs.val_episodes(other) == gs.val_episodes(rows)
+    v2 = [_data_root(tmp_path / "data" / "v2", 2)]
+    runs = tmp_path / "runs"
+    mlp, v5 = {"critic_readout": "mlp"}, {"critic_readout": "mlp", "scene_fusion": True}
+    for s in (0, 1):
+        _run(runs / f"e5_v0p_s{s}", _rows(0.55), v2, mlp)
+    _run(runs / "e5_v5_s0", _rows(0.75), v2, v5)
+    _run(runs / "e5_v5_s1", _rows(0.75, verb="never bump"), v2, v5)
+    md = tmp_path / "s.md"
+    assert gs.main(["--runs", str(runs / "e5_*"), "--md", str(md)]) == 0
+    ref = json.loads(md.with_suffix(".json").read_text())["_refused"]
+    assert set(ref) == {"e5_v5_s1"} and len(ref["e5_v5_s1"]) == 1
+    assert ref["e5_v5_s1"][0].startswith("val_sentences ") and "re-score under the current language code" in ref[
+        "e5_v5_s1"][0]
+    _run(tmp_path / "e2" / "g_v0_s0", _rows(0.55), v2)          # an E2 table too (all E2 runs share one set)
+    _run(tmp_path / "e2" / "g_v1_s0", _rows(0.6, verb="never bump"), v2, {"text_out_norm": True})
+    assert gs.main(["--runs", str(tmp_path / "e2" / "g_v*"), "--md", str(md)]) == 0
+    res = json.loads(md.with_suffix(".json").read_text())
+    assert "val_sentences" in " ".join(res["_refused"]["g_v1_s0"]) and "val_sentences" not in res["_settings"]["g_v0_s0"]
+
+
 def test_grounding_summary_e2_layout_without_e5_runs(tmp_path):
     """Without V0' / V5 runs the tables keep the E2 layout and JSON keys (the new fields are still checked)."""
     gs = _script("grounding_summary")
@@ -516,7 +730,8 @@ def test_grounding_summary_e2_layout_without_e5_runs(tmp_path):
     assert gs.main(["--runs", str(tmp_path / "g_v*"), "--md", str(tmp_path / "s.md")]) == 0
     res = json.loads((tmp_path / "s.json").read_text())
     assert "train_data_version 1 != V0's 2" in " ".join(res["_refused"]["g_v1_s0"])
-    assert not any(k in res["_settings"]["g_v0_s0"] for k in gs.V2_KEYS) and "_e5" not in res and "_reference" not in res
+    assert not any(k in res["_settings"]["g_v0_s0"] for k in gs.V2_KEYS + gs.V5_KEYS)
+    assert "_e5" not in res and "_reference" not in res
     md = (tmp_path / "s.md").read_text()
     assert md.startswith("# Grounding runs: summary (review round 3, Part II E2 / E4)") and "data version" not in md
     assert "## Decision (decision 5)" in md
@@ -614,6 +829,42 @@ def test_scene_curve_points_training_scenes_and_refusals(tmp_path):
     assert pts[1]["train"]["n_episodes"] == 40 and pts[2]["train"]["n_pairs"] == 0
     assert pts[0]["samples_per_episode"] == pytest.approx(64 * 6000 / 10)
     assert out.with_suffix(".png").exists() and "| 10 | 5 / task (ur5-wsg) |" in out.with_suffix(".md").read_text()
+
+
+def test_scene_curve_refuses_other_switches_other_sentences_and_a_taken_seed(tmp_path):
+    """Review 2026-10-09 (plan-compliance, missed defect; BC-1): V1-V4 / V5 runs with all scenes of one robot would
+    join the V0 point, and a second run with the same point and seed replaced the first one's outcomes; rows scored
+    under another sentence set (before D1) are refused with the re-score hint."""
+    sc = _script("scene_curve")
+    ur5 = [_data_root(tmp_path / "data" / f"g{g}", 1, n_ep=10, eid0=1000 * (g + 1)) for g in (0, 1)]
+    runs = tmp_path / "runs"
+    soft = {"critic_readout": "softmin", "recall_horizon_ticks": 7}
+    for s in (0, 1):
+        _run(runs / f"g_v0_s{s}", _rows(0.6), ur5, soft)
+    _run(runs / "g_v1_s0", _rows(0.9), ur5, {**soft, "text_out_norm": True})
+    _run(runs / "h_v4_s1", _rows(0.95), ur5, {**soft, "aux_target_loss": True})
+    _run(runs / "h_v5_s0", _rows(0.95), ur5, {**soft, "scene_fusion": True})
+    _run(runs / "g_v0b_s0", _rows(0.3), ur5, soft)                         # the V0 point's seed 0 again
+    _run(runs / "g_v0c_s2", _rows(0.6, verb="never bump"), ur5, soft)      # scored under other sentences
+    _run(runs / "g_v0d_s3", _rows(0.6), ur5, {"recall_horizon_ticks": 7})  # saved before critic_readout: softmin
+    out = tmp_path / "e6" / "curve"
+    assert sc.main(["--runs", str(runs / "*"), "--out", str(out)]) == 0
+    res = json.loads(out.with_suffix(".json").read_text())
+    ref = res["refused"]
+    assert res["reference"] == "g_v0_s0" and set(ref) == {"g_v1_s0", "h_v4_s1", "h_v5_s0", "g_v0b_s0", "g_v0c_s2"}, ref
+    assert ref["g_v1_s0"] == ["model_switches ['text_out_norm'] != g_v0_s0's []"]
+    assert "aux_target_loss" in ref["h_v4_s1"][0] and "scene_fusion" in ref["h_v5_s0"][0]
+    assert ref["g_v0b_s0"] == ["same point and seed as g_v0_s0"]
+    assert ref["g_v0c_s2"][0].startswith("val_sentences ") and "re-score under the current language code" in ref[
+        "g_v0c_s2"][0]
+    (pt,) = res["points"]
+    assert pt["runs"] == ["g_v0_s0", "g_v0_s1", "g_v0d_s3"] and pt["new"]["mean"][0] == pytest.approx(0.6)
+    assert "model_switches" in res["held_equal"] and "val_sentences" in res["held_equal"]
+    # the reference keeps its (point, seed): the other run with that seed is the one left out
+    assert sc.main(["--runs", str(runs / "*"), "--out", str(out), "--reference", "g_v0b_s0"]) == 0
+    res = json.loads(out.with_suffix(".json").read_text())
+    assert res["refused"]["g_v0_s0"] == ["same point and seed as g_v0b_s0"]
+    assert res["points"][0]["new"]["per_seed"]["0"] == pytest.approx(0.3)
 
 
 # --------------------------------------------------------------------------------------------- the page --

@@ -3,13 +3,16 @@
     python scripts/lang/bench_fusion.py --synthetic --out runs/lang_bench/fusion_<gpu>.json
     python scripts/lang/bench_fusion.py --data data/lang/val_v2/shard_g0 \
         --text-cache data/lang/val_grounding/text_cache.pt --out runs/lang_bench/fusion_<gpu>_data.json
+    python scripts/lang/bench_fusion.py --data data/lang_v2/warmup/shard_g0 --train-steps 50 \
+        --text-cache data/lang/warmup/text_cache.pt --out runs/lang_bench/fusion_<gpu>_train.json
 
 - Speed and memory: ms per frame-pass of ``FusionStage.fuse`` at chunks 8 / 16 / 32 / 64, dtypes fp32 / tf32 / bf16,
   the low-memory deformable attention (``msda_lowmem``) on and off. Every frame gets the same sentence length here,
   so the chunk is the only variable (one enhancer call per chunk); one more row per (lowmem, dtype) fuses the batch's
   mixed lengths at chunk 32, as training does. ``unfused`` (the V0 path) for reference. Median over --iters after
   --warmup, synchronized. Peak = max allocated during the call minus allocated before (outputs included).
-  ``step_ms_320`` = ms per frame x 320, the 5 x 64 frame-passes of one training step.
+  ``step_ms_320`` = ms per frame x 320, the 5 x 64 frame-passes of one training step: the fusion share only, an
+  upper bound (before the trainer's dedup of repeated (frame, sentence) pairs), not the step time.
 - Precision: tf32 / bf16 (and lowmem off) against fp32 lowmem on the same frames and sentences: max / mean abs and
   relative differences of the tokens, positions (cm) and fused words (valid positions only), next to the scale of the
   sentence's own effect (the same frames fused with other sentences).
@@ -17,6 +20,20 @@
   vs the StepBuffer's stored scene_tokens / scene_pos on --parity-rows random rows (R6; the neck rows are fp16, so the
   bound is measured, not 1e-5), the neck rows' episode_id / t_in_ep against the item sidecar, and the time to read
   and upload a training step's frames.
+- With --train-steps N (needs --data, a version-2 shard; only this phase runs): the end-to-end training step,
+  the input to FUSION_PLAN 3.3's "more than doubles" decision. LangTrainer is built on the shard twice, with
+  scene_fusion off (V0') and on (V5), the same config otherwise (LangConfig defaults, embodiment ur5-wsg, plus
+  --train-set key=value overrides with JSON values, as train.py --set), and times N grad_steps after
+  --train-warmup: the trainer's own CUDA-timed perf/step_ms and perf/fusion_ms, the frames fused per step, the
+  synchronous batch draw (sample_ms: the host gather, neck rows included, that the PrefetchSampler hides behind
+  the previous step) and the wall time of draw + step. step_ratio = step_ms on / off; > 2 means the step more
+  than doubles. A cross-check from two short training runs, perf/step_ms and perf/fusion_ms of their
+  <run>/train_log.jsonl (every 20 steps):
+      python -m main.lang.train offline --data data/lang_v2/warmup --run runs/lang_bench/smoke_v0p \
+          --tasks selective_avoid,gap_place --grad-steps 200 --probe-every 0 --ckpt-every 0 --no-wandb
+      python -m main.lang.train offline --data data/lang_v2/warmup --run runs/lang_bench/smoke_v5 \
+          --tasks selective_avoid,gap_place --grad-steps 200 --probe-every 0 --ckpt-every 0 --no-wandb \
+          --set scene_fusion=true
 
 Words come from --text-cache files (rows drawn at random) or, without one, random N(0, 1) words with lengths 5-18.
 Writes <out>.json and the tables as <out>.md.
@@ -45,6 +62,10 @@ DEFAULT_CKPT = os.environ.get("HOLOBRAIN_CKPT", "/work/nvme/bifq/project/tmp/hol
 STEP_FRAMES = 320  # 5 frames (t, t-k, 0, t+1, t+1-k) x batch 64
 TIMING_LEN = 12    # sentence length of the speed sweep (the cache's lengths run 5-18)
 DEVICE = "cuda"
+TEXT_ENCODER = None  # tests inject a stub text encoder (--train-steps; None: the trainer's HoloBrain BERT)
+STEP_MS_320_NOTE = ("ms per frame x 320 (5 frames x batch 64): the fusion share only (upper bound, before dedup of "
+                    "repeated (frame, sentence) pairs), not the training step time; the step time on / off is "
+                    "--train-steps")
 
 
 def timed(fn, iters: int, warmup: int) -> float:
@@ -276,6 +297,91 @@ def io_cost(args, rng) -> dict:
             "mb_per_frame": mb / n, "note": "cold or warm page cache: run twice to see both"}
 
 
+def _sync(device) -> None:
+    if str(device).startswith("cuda"):
+        torch.cuda.synchronize()
+
+
+def train_config(sets):
+    """LangConfig defaults on one embodiment (ur5-wsg, train.py's default) plus key=value overrides (JSON values)."""
+    import dataclasses
+
+    from main.lang.config import LangConfig
+
+    kw = {"embodiment_choices": ("ur5-wsg",)}
+    for item in sets:
+        k, v = item.split("=", 1)
+        kw[k] = json.loads(v)
+    if "scene_fusion" in kw:
+        raise SystemExit("--train-set scene_fusion: the bench times both settings")
+    return dataclasses.replace(LangConfig(), **kw)
+
+
+def train_steps(args, stage, device, text_encoder=None) -> dict:
+    """End-to-end training steps (FUSION_PLAN 3.3): LangTrainer on the --data shard with scene_fusion off, then on (the
+    stage passed in, at the config's fusion_dtype / chunk), the same config and seed otherwise. Per variant, over
+    --train-steps steps after --train-warmup: the medians of the trainer's own spans (perf/step_ms: text lookup,
+    fusion, updates, Polyak; perf/fusion_ms), of the synchronous batch draw (sample_ms) and of draw + step wall time
+    (synchronized), the mean frames fused per step, and the peak memory."""
+    import dataclasses
+    import gc
+    import tempfile
+
+    from main.lang.train import LangTrainer, trained_subsets
+
+    base = train_config(args.train_set)
+    tasks, embs = trained_subsets(base)
+    out_dir = Path(args.out).resolve().parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    res = {"steps": int(args.train_steps), "warmup": int(args.train_warmup), "batch_size": int(base.batch_size),
+           "config_hash": base.hash(), "overrides": list(args.train_set), "variants": {}}
+    for on in (False, True):
+        cfg = dataclasses.replace(base, scene_fusion=on)
+        if on:
+            stage.dtype, stage.chunk = cfg.fusion_dtype, int(cfg.fusion_chunk)
+        name = "V5 (scene_fusion on)" if on else "V0' (scene_fusion off)"
+        with tempfile.TemporaryDirectory(prefix="_bench_train_", dir=out_dir) as tmp:
+            tr = LangTrainer(cfg, Path(tmp) / "run", [Path(args.data)], (), [Path(c) for c in args.text_cache],
+                             tasks=tasks, embodiments=embs, use_wandb=False, prefetch=False, device=device,
+                             text_encoder=text_encoder, seed=args.seed, fusion=stage if on else None)
+            tr.policy_enc.train(), tr.critics.train(), tr.actor.train()
+
+            def one():
+                t0 = time.perf_counter()
+                b = tr.sampler.sample(cfg.batch_size)
+                t1 = time.perf_counter()
+                tr.grad_step(b)
+                _sync(device)
+                t2 = time.perf_counter()
+                spans = tr.timer.read()   # this step's spans (read per step: the timer keeps a bounded window)
+                return {"sample_ms": 1000 * (t1 - t0), "wall_ms": 1000 * (t2 - t0), "step_ms": spans["step"][0],
+                        "fusion_ms": spans["fusion"][0] if "fusion" in spans else None,
+                        "fusion_frames": tr.last_fused_frames if on else 0}
+
+            for _ in range(args.train_warmup):
+                one()
+            if str(device).startswith("cuda"):
+                torch.cuda.reset_peak_memory_stats()
+            rows = [one() for _ in range(args.train_steps)]
+            row = {k: (float(np.median([r[k] for r in rows])) if rows[0][k] is not None else None)
+                   for k in ("sample_ms", "wall_ms", "step_ms", "fusion_ms")}
+            row["step_ms_mean"] = float(np.mean([r["step_ms"] for r in rows]))
+            row["fusion_frames"] = float(np.mean([r["fusion_frames"] for r in rows]))
+            row["peak_gb"] = torch.cuda.max_memory_allocated() / 2**30 if str(device).startswith("cuda") else None
+            row["text_miss_frac"] = tr.text.miss_frac().get("all", 0.0)
+            res["variants"][name] = row
+            print(json.dumps({name: row}), flush=True)
+            del tr
+            gc.collect()
+            if str(device).startswith("cuda"):
+                torch.cuda.empty_cache()
+    off, on_ = res["variants"]["V0' (scene_fusion off)"], res["variants"]["V5 (scene_fusion on)"]
+    res["step_ratio"] = on_["step_ms"] / max(off["step_ms"], 1e-9)
+    res["wall_ratio"] = on_["wall_ms"] / max(off["wall_ms"], 1e-9)
+    res["more_than_doubles"] = bool(res["step_ratio"] > 2.0)
+    return res
+
+
 # ----------------------------------------------------------------- report --
 
 
@@ -283,28 +389,50 @@ def markdown(res: dict) -> str:
     def f(x, nd=2):
         return "-" if x is None else (f"{x:.{nd}f}" if isinstance(x, float) else str(x))
 
-    lines = [f"# Fusion bench ({res['env']['gpu']}, {res['env']['source']}, {res['env']['frames']} frames)", ""]
-    lines += ["## Speed and memory (fuse)", "",
-              "| lowmem | dtype | chunk | lengths | ms / frame | step ms (320) | peak MB | peak MB / frame |",
-              "|---|---|---|---|---|---|---|---|"]
-    for r in res["speed"]:
-        if "error" in r:
-            lines.append(f"| {r['lowmem']} | {r['dtype']} | {r['chunk']} | {r['lengths']} | {r['error']} | | | |")
-        else:
-            lines.append(f"| {r['lowmem']} | {r['dtype']} | {r['chunk']} | {r['lengths']} | {f(r['ms_per_frame'])} | "
-                         f"{f(r['step_ms_320'], 0)} | {f(r['peak_mb'], 0)} | {f(r.get('peak_mb_per_frame'), 1)} |")
-    lines += ["", "## unfused (V0 path)", "", "| dtype | ms / frame | peak MB |", "|---|---|---|"]
-    for r in res["unfused"]:
-        lines.append(f"| {r['dtype']} | {r.get('error') or f(r['ms_per_frame'])} | {f(r.get('peak_mb'), 0)} |")
-    lines += ["", "## Precision against fp32 (lowmem)", "",
-              "| run | field | max abs | mean abs | max / max ref | rel L2 |", "|---|---|---|---|---|---|"]
-    for name, r in res["precision"].items():
-        if "error" in r:
-            lines.append(f"| {name} | {r['error']} | | | | |")
-            continue
-        for field, d in r.items():
-            lines.append(f"| {name} | {field} | {d['max_abs']:.3g} | {d['mean_abs']:.3g} | {d['rel_max']:.3g} | "
-                         f"{d['rel_l2']:.3g} |")
+    env = res["env"]
+    lines = [f"# Fusion bench: training step ({env['gpu']}, {env['source']})" if res.get("train") else
+             f"# Fusion bench ({env['gpu']}, {env['source']}, {env['frames']} frames)", ""]
+    if res.get("train"):
+        t = res["train"]
+        lines += ["## Training step, scene_fusion off vs on (LangTrainer.grad_step)", "",
+                  f"{t['steps']} steps after {t['warmup']}, batch {t['batch_size']}, config {t['config_hash']} "
+                  f"(overrides: {', '.join(t['overrides']) or 'none'}). Medians per step. step ms = the trainer's "
+                  "perf/step_ms (text lookup, fusion, updates, Polyak); sample ms = the synchronous batch draw "
+                  "(hidden by the PrefetchSampler in a real run); wall = draw + step, synchronized.", "",
+                  "| variant | step ms | fusion ms | frames fused / step | sample ms | wall ms | peak GB | text miss |",
+                  "|---|---|---|---|---|---|---|---|"]
+        for name, r in t["variants"].items():
+            lines.append(f"| {name} | {f(r['step_ms'], 0)} | {f(r['fusion_ms'], 0)} | {f(r['fusion_frames'], 0)} | "
+                         f"{f(r['sample_ms'], 0)} | {f(r['wall_ms'], 0)} | {f(r['peak_gb'], 1)} | "
+                         f"{f(r['text_miss_frac'], 3)} |")
+        lines += ["", f"- step time on / off: {t['step_ratio']:.2f}x (wall {t['wall_ratio']:.2f}x): "
+                      f"{'more than doubles' if t['more_than_doubles'] else 'does not double'} (FUSION_PLAN 3.3)", ""]
+    if res.get("speed"):
+        lines += ["## Speed and memory (fuse)", "",
+                  "| lowmem | dtype | chunk | lengths | ms / frame | fusion ms / step (x 320) * | peak MB | "
+                  "peak MB / frame |", "|---|---|---|---|---|---|---|---|"]
+        for r in res["speed"]:
+            if "error" in r:
+                lines.append(f"| {r['lowmem']} | {r['dtype']} | {r['chunk']} | {r['lengths']} | {r['error']} | | | |")
+            else:
+                lines.append(f"| {r['lowmem']} | {r['dtype']} | {r['chunk']} | {r['lengths']} | "
+                             f"{f(r['ms_per_frame'])} | {f(r['step_ms_320'], 0)} | {f(r['peak_mb'], 0)} | "
+                             f"{f(r.get('peak_mb_per_frame'), 1)} |")
+        lines += ["", f"\\* step_ms_320: {STEP_MS_320_NOTE}"]
+    if res.get("unfused"):
+        lines += ["", "## unfused (V0 path)", "", "| dtype | ms / frame | peak MB |", "|---|---|---|"]
+        for r in res["unfused"]:
+            lines.append(f"| {r['dtype']} | {r.get('error') or f(r['ms_per_frame'])} | {f(r.get('peak_mb'), 0)} |")
+    if res.get("precision"):
+        lines += ["", "## Precision against fp32 (lowmem)", "",
+                  "| run | field | max abs | mean abs | max / max ref | rel L2 |", "|---|---|---|---|---|---|"]
+        for name, r in res["precision"].items():
+            if "error" in r:
+                lines.append(f"| {name} | {r['error']} | | | | |")
+                continue
+            for field, d in r.items():
+                lines.append(f"| {name} | {field} | {d['max_abs']:.3g} | {d['mean_abs']:.3g} | {d['rel_max']:.3g} | "
+                             f"{d['rel_l2']:.3g} |")
     if res.get("parity"):
         p = res["parity"]
         lines += ["", "## Stored-row parity (unfused on fp16 neck rows vs stored tokens)", "",
@@ -340,13 +468,34 @@ def main(argv=None) -> int:
     ap.add_argument("--iters", type=int, default=3)
     ap.add_argument("--warmup", type=int, default=1)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--train-steps", type=int, default=0,
+                    help="N > 0: only time N LangTrainer grad_steps with scene_fusion off and on (needs --data, a "
+                         "version-2 shard); the input to FUSION_PLAN 3.3's 'more than doubles' decision")
+    ap.add_argument("--train-warmup", type=int, default=3, help="--train-steps: untimed steps first, per variant")
+    ap.add_argument("--train-set", nargs="*", default=[],
+                    help="--train-steps: LangConfig overrides key=value, JSON values (as train.py --set), e.g. "
+                         "fusion_dtype='\"bf16\"' batch_size=64; scene_fusion is the bench's own variable")
     args = ap.parse_args(argv)
     if args.precision_frames < 2:
         ap.error("--precision-frames must be >= 2")
+    if args.train_steps < 0 or args.train_warmup < 0:
+        ap.error("--train-steps / --train-warmup must be >= 0")
+    if args.train_steps and not args.data:
+        ap.error("--train-steps needs --data (a version-2 shard: the trainer reads its neck rows)")
     if DEVICE == "cuda" and not torch.cuda.is_available():
         raise SystemExit("bench_fusion needs a GPU")
 
     rng = np.random.default_rng(args.seed)
+    if args.train_steps:   # the training-step comparison alone (it builds its own trainers; no sweep)
+        train_config(args.train_set)   # a bad override fails before the stage loads
+        t0 = time.time()
+        stage = fz.FusionStage(args.ckpt, device=DEVICE)
+        res = {"env": {"gpu": torch.cuda.get_device_name(0) if DEVICE == "cuda" else DEVICE,
+                       "torch": torch.__version__, "source": str(args.data),
+                       "text": args.text_cache or "encoded on a cache miss", "build_s": time.time() - t0,
+                       "args": vars(args)}}
+        res["train"] = train_steps(args, stage, DEVICE, TEXT_ENCODER)
+        return write(res, Path(args.out))
     t0 = time.time()
     stages = {True: fz.FusionStage(args.ckpt, device=DEVICE)}
     if not args.no_hf:
@@ -357,7 +506,8 @@ def main(argv=None) -> int:
                    "source": "synthetic" if args.synthetic else str(args.data), "frames": args.frames,
                    "text": args.text_cache or "random words", "build_s": build_s,
                    "n_enhancer_keys": stages[True].n_enhancer_keys, "n_lowmem_layers": stages[True].n_lowmem,
-                   "args": vars(args)}}
+                   "args": vars(args)},
+           "notes": {"step_ms_320": STEP_MS_320_NOTE}}
 
     neck, _ = neck_frames(args, args.frames, rng, DEVICE)
     words, mask, _ = load_words(args.text_cache, args.frames, rng, DEVICE)
@@ -378,7 +528,10 @@ def main(argv=None) -> int:
         res["parity"] = parity(stages[True], args, rng)
         res["io"] = io_cost(args, rng)
 
-    out = Path(args.out)
+    return write(res, Path(args.out))
+
+
+def write(res: dict, out: Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(res, indent=1, default=str))
     out.with_suffix(".md").write_text(markdown(res))

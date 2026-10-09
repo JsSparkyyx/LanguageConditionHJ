@@ -32,12 +32,18 @@ score reads neither: ~5x fewer forwards). A scene_fusion checkpoint (V5) is
 scored on version-2 validation shards: frames t, t-k, 0 of each (state,
 sentence) are fused from the neck rows, cached per (source, ring row, sentence)
 within a chunk of states, frame 0 across chunks (bounded LRU).
+
+Output: <run>/eval_offline/<out-name> (default: the checkpoint's stem). An
+existing one whose metrics.json records other validation roots or another
+scored task / embodiment set is refused before scoring (``--force`` replaces
+it); the same set is rewritten in place, as before.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from collections import OrderedDict, defaultdict
 from pathlib import Path
@@ -58,6 +64,7 @@ from .scene_roles import referent  # noqa: E402
 
 AXES = ("train", "heldout_template", "heldout_word", "heldout_item", "shuffled")
 V_LE_H_EPS = 0.05
+SCENE_KEYS = ("scene_tokens", "scene_pos", "scene_tokens_next", "scene_pos_next")   # the stored (unfused) frames
 
 
 def eligible(rule: dict, rec: dict, axis: str, bank) -> bool:
@@ -304,6 +311,23 @@ class Evaluator:
             out += lst
         return out
 
+    def scored_set(self, per_task: int, axes=AXES, seed: int = 0) -> dict:
+        """The tasks and embodiments evaluate(per_task, axes=axes, seed=seed) scores (its rows' sets: data_info's
+        "tasks" / "embodiments"), without scoring: a state gives rows when a rule of its episode is eligible on a
+        scored axis, and eligibility depends on the episode only."""
+        axes = tuple(ax for ax in AXES if ax in set(axes))
+        tasks, embs, seen = set(), set(), set()
+        for j, i in self.states(per_task, seed=seed):
+            key = (j, int(self.sources[j].eid[i]))
+            if key in seen:
+                continue
+            seen.add(key)
+            rec = self.sources[j].rs.records[key[1]]
+            if any(eligible(rule, rec, ax, self.bank) for rule in rec["rules"] for ax in axes):
+                tasks.add(rec["task"])
+                embs.add(rec["embodiment"])
+        return {"tasks": sorted(tasks), "embodiments": sorted(embs)}
+
     def _episode(self, j: int, eid: int):
         """(t_in_ep -> episode row, HJ return y [L, R], ticks to the next violation [L, R]) of one episode."""
         key = (j, eid)
@@ -417,12 +441,28 @@ class Evaluator:
         return st, sp, torch.stack([got[ks[0]][2] for ks in frames])
 
     @torch.no_grad()
+    def scene_inputs(self, b: dict, keys, sentences, words, wmask):
+        """The scene frames and words the encoder reads for these items -> (scene [N, 3, n, 256], positions
+        [N, 3, n, 3], words [N, L, 256]). scene_fusion: frames t, t-k, 0 fused from the neck rows with each item's
+        sentence (fused_scene; keys = the items' state keys) and, with fused words, frame t's fused words under the
+        cached mask; else the stacked reads b's stored scene_tokens / scene_pos and the cached words. q_batch and
+        word_attention.py both read the scene through here, so neither can feed a V5 checkpoint unfused tokens."""
+        from .train import _t
+
+        if self.fusion is not None:
+            if keys is None:
+                raise ValueError("a scene_fusion checkpoint needs each item's state key (its neck rows)")
+            scene, scene_pos, w_fused = self.fused_scene(keys, sentences, words, wmask)
+            return scene, scene_pos, (w_fused if self.cfg.fused_words else words)
+        return _t(b["scene_tokens"], dev=self.dev), _t(b["scene_pos"], dev=self.dev), words
+
+    @torch.no_grad()
     def q_batch(self, reads: list[dict], sentences: list[str], keys=None, cols=None) -> np.ndarray:
         from .train import _t
 
         d = self.dev
         # V5: the stored (unfused) scene frames are not used
-        skip = ("scene_tokens", "scene_pos", "scene_tokens_next", "scene_pos_next") if self.fusion is not None else ()
+        skip = SCENE_KEYS if self.fusion is not None else ()
         b = {k: np.stack([r[k] for r in reads]) for k in reads[0] if k not in skip}
         words, wmask = self.text.lookup(sentences)
         kw = {}
@@ -431,14 +471,7 @@ class Evaluator:
                 raise ValueError("a V3 (oracle_ref_tag) checkpoint needs each item's state key and rule column")
             c, v = self.ref_tag(keys, cols)
             kw = {"ref_center": _t(c, dev=d), "ref_valid": _t(v, torch.bool, d)}
-        if self.fusion is not None:
-            if keys is None:
-                raise ValueError("a scene_fusion checkpoint needs each item's state key (its neck rows)")
-            scene, scene_pos, w_fused = self.fused_scene(keys, sentences, words, wmask)
-            if self.cfg.fused_words:
-                words = w_fused   # frame t's fused words, the cached mask
-        else:
-            scene, scene_pos = _t(b["scene_tokens"], dev=d), _t(b["scene_pos"], dev=d)
+        scene, scene_pos, words = self.scene_inputs(b, keys, sentences, words, wmask)
         enc = self.pe(_t(b["state_tokens"], dev=d), _t(b["body_tokens"], dev=d), _t(b["link_pos"], dev=d),
                       _t(b["body_mask"], torch.bool, d), _t(b["joint_index"], torch.int64, d),
                       scene, scene_pos, words=words, word_mask=wmask, **kw)
@@ -1184,6 +1217,36 @@ def model_info(cfg) -> dict:
             "train_episodes_per_task": int(getattr(cfg, "train_episodes_per_task", 0) or 0)}
 
 
+def out_dir_clash(out: Path, roots, scored: dict) -> str | None:
+    """Why scoring into an existing eval_offline/<out-name> would replace the results of another set (review F5:
+    re-scoring a V0 checkpoint on the version-2 validation set under --out-name grounding would overwrite its E2
+    scoring): its metrics.json records other validation roots (compared as sets of real paths) or another scored
+    task / embodiment set (scored: Evaluator.scored_set). None: no metrics.json there, or the same set (a
+    rescoring, written over as before). A field the record lacks (scored before the field existed) is not
+    compared."""
+    mj = Path(out) / "metrics.json"
+    if not mj.exists():
+        return None
+    try:
+        md = json.loads(mj.read_text())
+    except (OSError, ValueError) as exc:
+        return f"its metrics.json is unreadable ({type(exc).__name__})"
+    old = (md.get("data") if isinstance(md, dict) else None) or {}
+
+    def real(rs):
+        return {os.path.realpath(str(r)) for r in rs}
+
+    why = []
+    if old.get("val_roots") is not None and real(old["val_roots"]) != real(roots):
+        a, b = real(old["val_roots"]), real(roots)
+        why.append(f"other validation roots ({len(a)} recorded, {len(b)} now; recorded only: {sorted(a - b)[:2]}, "
+                   f"now only: {sorted(b - a)[:2]})")
+    for k in ("tasks", "embodiments"):
+        if old.get(k) is not None and sorted(old[k]) != sorted(scored[k]):
+            why.append(f"other scored {k} ({sorted(old[k])} recorded, {sorted(scored[k])} now)")
+    return "; ".join(why) or None
+
+
 def model_line(cfg) -> str:
     m = model_info(cfg)
     on = [k for k, v in m["switches"].items() if v]
@@ -1220,6 +1283,9 @@ def main(argv=None) -> int:
                          "also skips the base and paraphrase sentences (enough for grounding_summary)")
     ap.add_argument("--fuse-cache", type=int, default=1024,
                     help="scene_fusion checkpoints: fused frames cached per cache (frames t / t-k; frame 0), 0 = none")
+    ap.add_argument("--force", action="store_true",
+                    help="write over an eval_offline/<out-name> whose metrics.json records other validation roots or "
+                         "another scored task / embodiment set (refused otherwise; the same set is always rewritten)")
     args = ap.parse_args(argv)
     axes = AXES if args.axes == "all" else tuple(a for a in args.axes.split(",") if a)
     if set(axes) - set(AXES) or not axes:
@@ -1230,6 +1296,14 @@ def main(argv=None) -> int:
     ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch, embodiments=embs,
                    tasks=None if args.tasks == "all" else args.tasks.split(","), zero_tag=args.zero_tag,
                    fuse_cache=args.fuse_cache)
+    # before scoring (review F5): never replace another set's results in place without --force
+    out = Path(args.run) / "eval_offline" / (args.out_name or Path(args.ckpt).stem)
+    clash = out_dir_clash(out, roots, ev.scored_set(args.states_per_task, axes))
+    if clash and not args.force:
+        raise SystemExit(f"{out} holds the scoring of another set: {clash}. Use another --out-name (e.g. "
+                         f"{out.name}_v2 for the version-2 validation set), or --force to replace it")
+    if clash:
+        print(f"[eval_offline] --force: replacing {out} ({clash})", flush=True)
     if args.prior_data:
         prior_roots = roots_of(args.prior_data)
         if not prior_roots:   # else the prior is a constant 0.5 without a word (round 3, B6)
@@ -1241,7 +1315,6 @@ def main(argv=None) -> int:
         if not ev.prior.n_docs:
             raise SystemExit(f"--prior-data {args.prior_data}: the text prior found no training sentences")
     M, rows = ev.evaluate(args.states_per_task, args.paraphrases, axes=axes)
-    out = Path(args.run) / "eval_offline" / (args.out_name or Path(args.ckpt).stem)
     out.mkdir(parents=True, exist_ok=True)
     import gzip
 

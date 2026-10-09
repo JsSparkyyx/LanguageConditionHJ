@@ -715,16 +715,33 @@ def config_drift(old, new) -> list:
                   if k not in TRAIN_ONLY_FIELDS and k != "lang_version" and a.get(k) != b.get(k))
 
 
+def replay_rows_missing(d: dict) -> bool:
+    """An episode line without rows in the rings: rows [r0, r1) with r1 <= r0 (or no rows field). run_episodes
+    writes it when a tick error came between the h_fn's sidecar row and the StepBuffer append (neck_to_row's fp16
+    overflow, an encode error) and the episode was rolled back, or when the first capture failed before any row."""
+    rows = d.get("rows")
+    return not rows or int(rows[1]) <= int(rows[0])
+
+
 def replay_mismatch(lines: list, slots) -> list:
     """How a finished replay shard differs from its plan: slot i must hold the recorded episode slots[i] (task,
-    embodiment, host, episode_id); a skipped slot (its one build failed) is a difference."""
+    embodiment, host, episode_id) WITH rows. A skipped slot (its one build failed) is a difference, and so is an
+    episode rolled back to zero rows (replay_rows_missing): its layout is missing from the rings either way.
+
+    The status is not compared: cuRobo redraws the motion on every run, so a replayed episode may end ok where the
+    source raised, or raise where the source was ok. An exception episode that kept its rows holds the recorded
+    layout up to the error and is not a difference (replay_plan replays those too)."""
     out = [] if len(lines) == len(slots) else [f"{len(lines)} episode lines for {len(slots)} replayed slots"]
     for i, (d, s) in enumerate(zip(lines, slots)):
         got = (d.get("task"), d.get("embodiment"), d.get("host"), d.get("episode_id"))
         if d.get("skipped"):
             out.append(f"slot {i}: skipped ({'; '.join(d.get('errors') or [])}) instead of {tuple(s)}")
-        elif got != tuple(s):
+            continue
+        if got != tuple(s):
             out.append(f"slot {i}: {got} instead of {tuple(s)}")
+        if replay_rows_missing(d):
+            out.append(f"slot {i}: no rows for {tuple(s)} (rows {d.get('rows')}, status {d.get('status')}: "
+                       f"{(d.get('exception') or '')[:120]})")
     return out
 
 
@@ -907,7 +924,7 @@ def main(argv=None) -> int:
         p.add_argument("--replay", default=None, metavar="SHARD",
                        help="collect a finished shard's recorded episodes again (task, host, episode id; all "
                             "statuses), one build each, with its masks setting; the new shard's slots and ids must "
-                            "equal the recorded ones (else exit 1)")
+                            "equal the recorded ones and every slot must keep rows (else exit 1)")
         if kind == "validation":
             p.add_argument("--stream", choices=("default", "grounding"), default="default",
                            help="grounding: the 20-per-task ur5-wsg validation ids (config.valg_offset; T1 / T7 at "

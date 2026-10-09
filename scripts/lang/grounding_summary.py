@@ -22,12 +22,20 @@ E5 (FUSION_PLAN section 4, the V5 short runs), on the version-2 validation set:
 Run names end in _<variant>[_<tag>]_s<seed>, variant = v<digit> plus letters / digits without an underscore:
 v0p (V0': scene_fusion off on version-2 shards, MLP readout), v0ps (V0'-softmin), v5 (fusion on), v5w
 (fusion_words off), v5d2 (V5 on both robots; "v5_d2" would read as v5 with a tag). The reference (--reference, a
-run name or a variant / label such as V0'; default the first v0 run) holds the settings below fixed; --exempt
-variant:field lets one variant differ in one of them (V5-d2's embodiments). Besides gamma, the actor head, TF32,
-steps, tasks, embodiments and the scored set, every table holds equal the training data version (shard.json
-lang_version of the shards the run trained on, via the checkpoint identity's data_roots) and the scored validation
-episodes (a hash of the rows' (source, episode_id) set). scene_fusion, fusion_words and critic_readout differ by
-design between E5 rows: they show in the switches column and are never refused on. Tables with V0' / V5 rows also
+run name or a variant / label such as V0'; default the first v0' run in a table with E5 variants, else the first v0
+run) holds the settings below fixed; --exempt variant:field lets one variant differ in one of them (V5-d2's
+embodiments). Without a scored reference nothing is held equal: a warning, and the E5 decision stays "pending"
+(comparability unchecked). Besides gamma, the actor head, TF32, steps, tasks, embodiments and the scored set, every
+table holds equal the training data (shard.json lang_version and the sorted set of shard.json collect_hash values of
+the shards the run trained on, via the checkpoint identity's data_roots; "none" for shards written before
+collect_hash), the scored validation episodes (a hash of the rows' (source, episode_id) set) and the scored
+sentences (val_sentences: a hash of the rows' (source, state, rule, training-template sentence); rows scored before
+the D1 head-noun fix of 2026-10-09 carry other sentences for some T1 rules and are refused: re-score under the current
+language code). scene_fusion, fusion_words and critic_readout differ by design between E5 rows, but each variant's are
+fixed (EXPECT, read as LangConfig.from_dict reads a saved config: no scene_fusion = off, no critic_readout = softmin):
+a run whose config disagrees with its variant is refused; fusion_dtype is held equal across the scene_fusion runs.
+The report's V0 rows in an E5 table need --exempt v0:train_data_version --exempt v0:train_collect_hash (version-1
+warmup), and its scored set exempted or re-scored on the version-2 validation set. Tables with V0' / V5 rows also
 list the training episodes and samples per episode (batch_size x steps / training episodes, FUSION_PLAN C1) and end
 in the E5 decision: V5 >= 0.85 adopt; V5 clearly above V0' (paired difference interval above 0) but below 0.85 and
 V5-d2 > V5: more scenes; V5 at V0' level with E4 passed (--e4, fusion_probe.py's gate): the data lever.
@@ -91,11 +99,22 @@ def pair_outcomes(rows: list[dict], ax: str = "train") -> dict:
 FIXED = ("gamma", "actor_hidden", "tf32_train", "steps", "tasks", "embodiments")   # held equal to V0's (round 4, 2)
 SCORED = ("val_roots", "scored_tasks", "scored_embodiments")   # ... and the scored set (audit 2026-10-08)
 # FUSION_PLAN C7: also held equal in every table (they never differ between the E2 runs, so the E2 tables do not list
-# them): the data version of the training shards and the scored validation episodes
-FIXED_V2 = ("train_data_version",)
-SCORED_V2 = ("val_episodes",)
+# them): the data version and the collection configs (collect_hash) of the training shards, the scored validation
+# episodes and the sentences they were scored with (review 2026-10-09 BC-1: the D1 head-noun fix changed the scored
+# sentence of 275 of 1735 primary pairs; all ten scored E2 runs share one sentence set)
+FIXED_V2 = ("train_data_version", "train_collect_hash")
+SCORED_V2 = ("val_episodes", "val_sentences")
 CHECKED = FIXED + SCORED + FIXED_V2 + SCORED_V2
 V2_KEYS = FIXED_V2 + SCORED_V2 + ("train_episodes", "train_episodes_per_task", "samples_per_episode")
+HINTS = {"val_sentences": ": scored under another sentence set (e.g. before the D1 head-noun fix of 2026-10-09); "
+                          "re-score under the current language code"}
+# E5: what each variant's config must say (LangConfig.from_dict defaults for a field the config lacks: lang_fields)
+EXPECT = {"v0p": {"scene_fusion": False, "critic_readout": "mlp"},
+          "v0ps": {"scene_fusion": False, "critic_readout": "softmin"},
+          "v5": {"scene_fusion": True, "fusion_words": True, "critic_readout": "mlp"},
+          "v5d2": {"scene_fusion": True, "fusion_words": True, "critic_readout": "mlp"},
+          "v5w": {"scene_fusion": True, "fusion_words": False, "critic_readout": "mlp"}}
+V5_KEYS = ("scene_fusion", "fusion_words", "critic_readout", "fusion_dtype")   # settings the E2 tables do not list
 PARTS = {"oracle_ref_tag": "e_tag", "aux_target_loss": "aux_head"}                   # what a switch's checkpoint needs
 RATIO_WINDOW = (400, 600)   # the same steps as scripts/lang/aux_calibrate.py
 PRIMARY_TASKS = ("selective_avoid", "gap_place")
@@ -169,6 +188,20 @@ def _data_version(root: str) -> int:
     return int(json.loads(f.read_text()).get("lang_version", 1)) if f.exists() else 1
 
 
+def _collect_hash(root: str) -> str:
+    """A shard's collection config: shard.json collect_hash ("none" for shards written before the field)."""
+    f = Path(root) / "shard.json"
+    return str(json.loads(f.read_text()).get("collect_hash") or "none") if f.exists() else "none"
+
+
+def lang_fields(cfg: dict) -> dict:
+    """scene_fusion, fusion_words, critic_readout of a saved lang_config.json as LangConfig.from_dict reads them: a
+    config saved before V5 has no scene_fusion (off) and one saved before decision 6 no critic_readout (softmin);
+    fusion_words takes the field default (on)."""
+    return {"scene_fusion": bool(cfg.get("scene_fusion", False)), "fusion_words": bool(cfg.get("fusion_words", True)),
+            "critic_readout": str(cfg.get("critic_readout", "softmin"))}
+
+
 @functools.lru_cache(maxsize=None)
 def training_episodes(data_roots: tuple, tasks: tuple = (), embodiments: tuple = (), per_task: int = 0,
                       drop_stale_bead: bool = True) -> dict | None:
@@ -180,10 +213,11 @@ def training_episodes(data_roots: tuple, tasks: tuple = (), embodiments: tuple =
     stable_hash(("e6", task, embodiment, episode_id)), ties by root name.
 
     -> {"episodes": sorted [(root, episode_id)], "per_group": {"task/embodiment": n}, "data_version": "1", "2" or
-    "1+2" (over the roots that hold a training episode)}; None when no data root has episode lines."""
+    "1+2", "collect_hash": the sorted shard.json collect_hash values joined by "+" (both over the roots that hold a
+    training episode)}; None when no data root has episode lines."""
     from main.lang.data import BEAD_TASKS, stable_hash
 
-    groups, versions, found = defaultdict(list), set(), False
+    groups, versions, hashes, found = defaultdict(list), set(), set(), False
     for j, root in enumerate(data_roots):
         lines = _episode_lines(str(root))
         if lines is None:
@@ -201,6 +235,7 @@ def training_episodes(data_roots: tuple, tasks: tuple = (), embodiments: tuple =
             n_root += 1
         if n_root:
             versions.add(_data_version(str(root)))
+            hashes.add(_collect_hash(str(root)))
     if not found:
         return None
     keep, per_group = [], {}
@@ -210,7 +245,8 @@ def training_episodes(data_roots: tuple, tasks: tuple = (), embodiments: tuple =
         keep += [(str(data_roots[j]), e) for e, _, j in sel]
         per_group[f"{task}/{emb}"] = len(sel)
     return {"episodes": sorted(keep), "per_group": per_group,
-            "data_version": "+".join(str(v) for v in sorted(versions)) or None}
+            "data_version": "+".join(str(v) for v in sorted(versions)) or None,
+            "collect_hash": "+".join(sorted(hashes)) or None}
 
 
 def val_episodes(rows: list[dict]) -> str:
@@ -219,10 +255,25 @@ def val_episodes(rows: list[dict]) -> str:
     return f"{hashlib.md5(json.dumps(eps).encode()).hexdigest()[:12]} ({len(eps)} episodes)"
 
 
+def val_sentences(rows: list[dict]) -> str:
+    """The sentences a rows file was scored with: a hash of its sorted (source, state, rule, training-template
+    sentence) rows, and their count. eval_offline.axis_sentence picks ss[hash % len(ss)], so a language change that
+    shortens a rule's sentence list (D1) moves the pick and changes this hash without changing val_episodes."""
+    key = sorted((int(r.get("src", 0)), int(r["i"]), str(r["rule"]), (r.get("sentences") or {}).get("train") or "")
+                 for r in rows)
+    return f"{hashlib.md5(json.dumps(key).encode()).hexdigest()[:12]} ({len(key)} rows)"
+
+
+def differs(k: str, mine, theirs, of: str) -> str:
+    """The refusal reason for a held-equal field k."""
+    return f"{k} {mine} != {of} {theirs}{HINTS.get(k, '')}"
+
+
 def run_settings(run: Path, out_name: str) -> dict:
     """What a comparison holds fixed and what each variant changes (round 4, item 2), from the run's
     lang_config.json, its scored metrics.json and (for the commit, the parts and the training data) the scored
-    checkpoint. The scored validation episodes (val_episodes) come from the rows: main fills them in."""
+    checkpoint. The scored validation episodes and sentences (val_episodes, val_sentences) come from the rows: main
+    fills them in."""
     cfg = json.loads((run / "lang_config.json").read_text())
     mj = run / "eval_offline" / out_name / "metrics.json"
     md = json.loads(mj.read_text()) if mj.exists() else {}
@@ -251,11 +302,14 @@ def run_settings(run: Path, out_name: str) -> dict:
                    if k in cfg}, "git_head": (ident.get("git_head") or "")[:10], "parts": sorted(keys),
            "train_pair_acc": train_pair_acc(run)}
     out["missing_parts"] = [part for sw, part in PARTS.items() if cfg.get(sw) and part not in keys]
+    # E5: the variant's fields (checked against EXPECT) and the fusion precision the scored weights ran at
+    out.update(lang_fields(cfg), fusion_dtype=str(data.get("fusion_dtype") or cfg.get("fusion_dtype") or "fp32"))
     tr = training_episodes(tuple(str(x) for x in ident.get("data_roots") or ()), out["tasks"], out["embodiments"],
                            per_task, bool(cfg.get("drop_stale_bead_rows", True)))
     n_ep = len(tr["episodes"]) if tr else None
-    out.update({"train_data_version": tr["data_version"] if tr else None, "train_episodes": n_ep,
-                "train_episodes_per_task": per_task, "val_episodes": None,
+    out.update({"train_data_version": tr["data_version"] if tr else None,
+                "train_collect_hash": tr["collect_hash"] if tr else None, "train_episodes": n_ep,
+                "train_episodes_per_task": per_task, "val_episodes": None, "val_sentences": None,
                 "samples_per_episode": (int(cfg.get("batch_size", 64)) * int(md["step"]) / n_ep
                                         if n_ep and md.get("step") is not None else None)})
     if cfg.get("aux_target_loss"):
@@ -394,7 +448,7 @@ def main(argv=None) -> int:
     ap.add_argument("--md", required=True)
     ap.add_argument("--reference", default=None,
                     help="the run the table is held against: a run name, or a variant / label (v0p, V0'); default "
-                         "the first v0 run")
+                         "the first v0p run in a table with E5 variants, else the first v0 run")
     ap.add_argument("--exempt", action="append", default=[], metavar="VARIANT:FIELD",
                     help=f"let a variant differ from the reference in one field (repeatable), one of {', '.join(CHECKED)}")
     ap.add_argument("--e4", default=None, help="fusion_probe.json (E4): its gate enters the E5 decision")
@@ -416,11 +470,12 @@ def main(argv=None) -> int:
             pending.append(r.name)
     pend_var = [RUN_RE.search(n).group(1) for n in pending]
     e5 = any(v in E5_VARIANTS for v in [x[1] for x in found] + pend_var)   # an E5 table: the V5 columns and blocks
-    ref_key = args.reference or "v0"
+    ref_key = args.reference or ("v0p" if e5 else "v0")   # FUSION_PLAN C7: an E5 table is held against V0'
     ref = (next((x for x in found if x[0].name == ref_key), None)
            or next((x for x in found if x[1] == variant_code(ref_key)), None))
-    if args.reference and ref is None:
-        print(f"[grounding_summary] reference {args.reference}: no scored run, nothing is refused", flush=True)
+    if ref is None and (args.reference or e5):
+        print(f"[grounding_summary] reference {ref_key}: no scored run, nothing is refused"
+              + ("; the E5 decision stays pending (comparability unchecked)" if e5 else ""), flush=True)
     ref_name = short(ref[1] if ref else variant_code(ref_key))
     ref_of = "V0's" if ref_name == "V0" else f"the reference ({ref_name})'s"   # the E2 tables say "V0's"
     if e5 and ref is not None and ref[1] != "v0p":
@@ -431,15 +486,26 @@ def main(argv=None) -> int:
         st = run_settings(r, args.out_name)
         rows = _rows(f)
         st["val_episodes"] = val_episodes(rows)
+        st["val_sentences"] = val_sentences(rows)
         outcomes[r.name] = pair_outcomes(rows)
         settings[r.name] = st
         del rows
     ref_set = settings[ref[0].name] if ref else None
+    # the fusion precision is held equal across the scene_fusion runs: against the reference if it fuses, else the
+    # first V5 run, else the first fusing run
+    fusing = [x[0].name for x in found if settings[x[0].name]["scene_fusion"]]
+    fuse_ref = next((n for n in ([ref[0].name] if ref else []) + [x[0].name for x in found if x[1] == "v5"] + fusing
+                     if n in fusing), None)
     taken = {}
     for r, v, seed, f in found:
         st = settings[r.name]
-        why = [f"{k} {st[k]} != {ref_of} {ref_set[k]}" for k in CHECKED
+        why = [differs(k, st[k], ref_set[k], ref_of) for k in CHECKED
                if ref_set is not None and k not in exempt.get(v, ()) and st[k] != ref_set[k]]
+        why += [f"{k} {st[k]} but {short(v)} has {x} (the run's config does not match its variant)"
+                for k, x in EXPECT.get(v, {}).items() if st[k] != x]
+        if st["scene_fusion"] and fuse_ref and st["fusion_dtype"] != settings[fuse_ref]["fusion_dtype"]:
+            why.append(f"fusion_dtype {st['fusion_dtype']} != {fuse_ref}'s {settings[fuse_ref]['fusion_dtype']} "
+                       "(held equal across the scene_fusion runs)")
         if st["missing_parts"]:   # e.g. a V3 checkpoint without its tag was scored with a zero one (round 4, item 1)
             why.append(f"checkpoint lacks {st['missing_parts']}")
         if (v, seed) in taken:    # "v5_d2_s0" parses as v5 with a tag: it would overwrite v5's seed
@@ -535,7 +601,10 @@ def main(argv=None) -> int:
         if args.e4 and e4 is None:
             print(f"[grounding_summary] --e4 {args.e4}: no such file; the E5 decision goes without E4", flush=True)
         res["_e5"] = e5_decision(res, by_var, e4, args.e4 if e4 else None)
-    hidden = () if e5 else V2_KEYS   # the E2 tables keep their layout (the queued E2 summary lines write them)
+        if ref is None:   # nothing was held equal: no decision from an unguarded table
+            res["_e5"].update(status="pending", outcome=f"no reference run ({ref_key} not scored): nothing is held "
+                                                        "equal, so the rule is not applied (comparability unchecked)")
+    hidden = () if e5 else V2_KEYS + V5_KEYS   # the E2 tables keep their layout (the queued E2 summary lines write them)
     res["_settings"] = {n: {k: (list(x) if isinstance(x, tuple) else x) for k, x in st.items()
                             if k != "parts" and k not in hidden} for n, st in settings.items()}
     res["_refused"] = refused
@@ -573,15 +642,18 @@ def main(argv=None) -> int:
     L += ["## Run settings (round 4, item 2)", "",
           f"Held equal to {ref_of}: " + ", ".join(held)
           + ("".join(f"; {short(v)} may differ in {', '.join(sorted(x))}" for v, x in sorted(exempt.items())) if e5 else "")
-          + (". scene_fusion, fusion_words and critic_readout differ by design (switches); samples / episode = "
-             "batch_size x steps / training episodes (FUSION_PLAN C1)" if e5 else "")
+          + (". scene_fusion, fusion_words and critic_readout differ by design (switches) and must match the variant ("
+             + "; ".join(f"{short(v)}: " + ", ".join(f"{k} {x}" for k, x in ex.items()) for v, ex in EXPECT.items())
+             + "); fusion_dtype is held equal across the scene_fusion runs; samples / episode = batch_size x steps / "
+             "training episodes (FUSION_PLAN C1)" if e5 else "")
           + ". aux ratio = lambda x L_aux / L_critic from "
           f"train_log.jsonl, the median over steps {RATIO_WINDOW[0]}-{RATIO_WINDOW[1]} (and the last one); below "
           f"{MIN_RATIO} the auxiliary loss does not count. recall = recall_horizon_ticks (diagnostics only).", "",
           "| run | commit | gamma | actor_hidden | tf32_train | steps | recall | tasks | embodiments | switches | "
           "aux settings | aux ratio (n) / last | att ratio (n) / last | "
-          + ("data version | val episodes | training episodes | samples / episode | " if e5 else "") + "refused |",
-          "|---|" + "---|" * (17 if e5 else 13)]
+          + ("data version | val episodes | val sentences | collect hash | fusion dtype | training episodes | "
+             "samples / episode | " if e5 else "") + "refused |",
+          "|---|" + "---|" * (20 if e5 else 13)]
     for n, st in sorted(settings.items()):
         aux = ", ".join(f"{k.replace('aux_', '')} {x}" for k, x in st["aux"].items()) if any(
             sw.startswith("aux") for sw in st["switches"]) else "–"
@@ -590,8 +662,9 @@ def main(argv=None) -> int:
                  f"{', '.join(st['tasks'])} | {', '.join(st['embodiments'])} | {', '.join(st['switches']) or '–'} | {aux} | "
                  f"{r2(st.get('aux_ratio_500'))} ({st.get('aux_ratio_n', 0)}) / {r2(st.get('aux_ratio_last'))} | "
                  f"{r2(st.get('att_ratio_500'))} ({st.get('att_ratio_n', 0)}) / {r2(st.get('att_ratio_last'))} | "
-                 + (f"{st['train_data_version'] or '?'} | {st['val_episodes']} | {r0(st['train_episodes'])} | "
-                    f"{r0(st['samples_per_episode'])} | " if e5 else "")
+                 + (f"{st['train_data_version'] or '?'} | {st['val_episodes']} | {st['val_sentences']} | "
+                    f"{st['train_collect_hash'] or '?'} | {st['fusion_dtype'] if st['scene_fusion'] else '–'} | "
+                    f"{r0(st['train_episodes'])} | {r0(st['samples_per_episode'])} | " if e5 else "")
                  + f"{'; '.join(refused.get(n, [])) or '–'} |")
     L.append("")
     L += ["## Training versus validation (audit 2026-10-08)", "",

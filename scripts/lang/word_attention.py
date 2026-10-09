@@ -22,6 +22,10 @@ bound, in brackets; uniform = ln of the token count); and the RMS of the adapted
 layer's keys per token kind (do large keys draw the attention?). Also: how much [CLS] and [SEP] vary across
 sentences (the HoloBrain text encoder's sub-sentence mask makes special tokens attend only to themselves).
 Writes <run>/eval_offline/<out-name>/word_attention.{md,json}.
+
+A scene_fusion (V5) checkpoint reads what it was trained on: the evaluator's scene_inputs (eval_offline.q_batch's
+path) fuses frames t, t-k, 0 of each state with its sentence from the version-2 shards' neck rows, and with fused
+words the word-reading layers see frame t's fused words, not the cached ones (review F4).
 """
 
 from __future__ import annotations
@@ -100,6 +104,7 @@ def key_rms(mha, w):
 
 
 _TEXT_ENCODER = None   # tests inject a stub text encoder here
+_FUSION = None         # ... and a stub fusion stage (scene_fusion checkpoints; None: the evaluator builds the real one)
 
 
 def special_token_spread(sentences, device) -> dict:
@@ -131,7 +136,7 @@ def main(argv=None) -> int:
 
     import main.lang  # noqa: F401
     from main.item_envs import language
-    from main.lang.eval_offline import Evaluator, axis_sentence
+    from main.lang.eval_offline import SCENE_KEYS, Evaluator, axis_sentence
     from main.lang.network import set_probe
     from main.lang.train import _t, caches_of, roots_of
 
@@ -150,7 +155,8 @@ def main(argv=None) -> int:
     roots = roots_of(args.val)
     ev = Evaluator(Path(args.run), args.ckpt, roots, device=args.device, text_caches=caches_of(args.val),
                    batch=args.batch, text_encoder=_TEXT_ENCODER, tasks=None if args.tasks == "all" else args.tasks.split(","),
-                   embodiments=args.embodiments if args.embodiments in ("trained", "all") else args.embodiments.split(","))
+                   embodiments=args.embodiments if args.embodiments in ("trained", "all") else args.embodiments.split(","),
+                   fusion=_FUSION)
     L = int(ev.cfg.max_text_tokens)
     tok = AutoTokenizer.from_pretrained("bert-base-uncased")
     bank = language.load_bank()
@@ -176,18 +182,20 @@ def main(argv=None) -> int:
     for a in range(0, len(items), args.batch):
         chunk = items[a:a + args.batch]
         reads = [ev.sources[k[0]].read(k[1]) for k, _, _, _, _ in chunk]
-        b = {key: np.stack([r[key] for r in reads]) for key in reads[0]}
+        b = {key: np.stack([r[key] for r in reads]) for key in reads[0] if ev.fusion is None or key not in SCENE_KEYS}
         words, wmask = ev.text.lookup([c[2] for c in chunk])
         kw = {}
         if getattr(ev.cfg, "oracle_ref_tag", False):
             c_, v_ = ev.ref_tag([c[0] for c in chunk], [c[4] for c in chunk])
             kw = {"ref_center": _t(c_, dev=d), "ref_valid": _t(v_, torch.bool, d)}
+        # the scene and words the checkpoint reads: stored tokens and cached words, or (V5) fused ones
+        scene, scene_pos, words = ev.scene_inputs(b, [c[0] for c in chunk], [c[2] for c in chunk], words, wmask)
         enc_stores = set_probe(ev.pe, True, heads=True)
         crit_stores = set_probe(ev.critics, True, heads=True)
         with torch.no_grad():
             enc = ev.pe(_t(b["state_tokens"], dev=d), _t(b["body_tokens"], dev=d), _t(b["link_pos"], dev=d),
                         _t(b["body_mask"], torch.bool, d), _t(b["joint_index"], torch.int64, d),
-                        _t(b["scene_tokens"], dev=d), _t(b["scene_pos"], dev=d), words=words, word_mask=wmask, **kw)
+                        scene, scene_pos, words=words, word_mask=wmask, **kw)
             ev.critics.qmin(enc, _t(b["dtheta"], dev=d), _t(b["Jlin"], dev=d), _t(b["Jang"], dev=d),
                             _t(b["joint_index"], torch.int64, d))
             # keys of every word-reading attention, in the order the stores below follow
@@ -262,6 +270,10 @@ def main(argv=None) -> int:
            "valid tokens (1 = no preference). Entropy in nats over the valid tokens: the mean over heads and queries "
            "(the head- and query-averaged attention's, an upper bound, then uniform, in brackets). key RMS: the RMS of "
            "the layer's keys per token kind. Review round 2 D1, round 3 B4 / E0c.", ""]
+    if ev.fusion is not None:   # V5: what the layers read (unfused checkpoints: the output is as before)
+        out["scene_fusion"] = {"fused_words": bool(ev.cfg.fused_words), "fusion_frames": dict(ev.fuse_stats)}
+        Lmd += [f"Scene fusion ({ev.cfg.fusion_dtype}): scene frames t, t-k, 0 fused with each sentence from the neck "
+                f"rows; words: {'the fused words of frame t' if ev.cfg.fused_words else 'the cached words'}.", ""]
     for grp in ["pooled"] + sorted(k for k in acc if k != "pooled"):
         Lmd += [f"## {grp}", "", "| layer | n | " + " | ".join(f"{k} mass (enrich.)" for k in KINDS) +
                 " | pad mass | entropy per head, query (averaged, uniform) | key RMS: " + " / ".join(KINDS) + " |",

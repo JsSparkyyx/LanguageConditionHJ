@@ -516,8 +516,10 @@ passes, the version-2 warmup (the 60 recorded layouts, replayed) → E5. E6 runs
 1. `scene_fusion` defaults to False (not True) until V5 is adopted: every shard today is version 1, and a True
    default would make every V0-style command a hard error. V5 runs pass `--set scene_fusion=true`.
 2. `critic_readout` defaults to "mlp" (decision 6); saved configs without it load "softmin".
-3. E6 pins `critic_readout = softmin` and V0's other settings, so its 60- and 120-scene points are the
-   report's V0 and the queued d2 run. New sizes: 8 and 15 episodes per task.
+3. E6 pins `critic_readout = softmin` and V0's other settings. Sizes 8, 15 and all episodes per task plus d2
+   (both robots), 2 seeds each, all trained and scored with the D1 fix in place: D1 changes the scored sentences
+   of 275 of the 1,735 primary pairs, so the report's V0 and the queued pre-D1 d2 runs cannot share the curve
+   (they are re-scored under D1 only to measure D1's own effect).
 4. `lang_version` is the shard's data version (2 only with `--lang-version 2`), kept in `collect_hash`.
 5. One `fusion_dtype` for training, evaluation and the rollout (fp32 default; tf32 / bf16 after the bench).
 6. Rounds training refuses `scene_fusion` for now (no neck ring); E5 is offline.
