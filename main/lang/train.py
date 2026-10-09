@@ -49,7 +49,9 @@ from .network import LangPolicyEncoder, LangTwinCritic, make_actor, n_params, pa
 EXIT_RESUME = 75
 LOG_EVERY = 20
 STATE_EVERY = 500
-CKPT_PARTS = ("injection", "scene_set", "text_adapter", "scene_reads_words", "r_static", "blocks")
+# every policy-encoder part a switch can add must be listed, or a checkpoint silently drops it (the V3 tag and the V4
+# head were missing until 2026-10-08: V3 checkpoints held no tag and were scored with a zero one)
+CKPT_PARTS = ("injection", "scene_set", "text_adapter", "scene_reads_words", "r_static", "blocks", "e_tag", "aux_head")
 
 
 def _safe_wandb_log(run, logs: dict, step: int) -> None:
@@ -511,6 +513,9 @@ def load_policy(policy_enc: LangPolicyEncoder, ck: dict) -> None:
             if key in ck:
                 raise ValueError(f"checkpoint has {key} but the model has no such part (switch mismatch)")
             continue
+        if key not in ck:
+            raise ValueError(f"the model has {key} but the checkpoint does not (saved before {key} was checkpointed? "
+                             "re-export it from the run's state.pt)")
         part = getattr(policy_enc, k)
         if isinstance(part, torch.nn.Module):
             part.load_state_dict(ck[key])

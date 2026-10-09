@@ -10,7 +10,7 @@ import torch
 from main.lang.config import LangConfig
 
 from .fake_data import make_root
-from .test_train import StubText, trainer
+from .test_train import StubText, root, trainer  # noqa: F401  (root: a fixture)
 
 
 def test_drop_special_masks_first_and_last_real_token():
@@ -180,3 +180,22 @@ def test_v4_head_error_in_probe_and_eval(tmp_path):
     ev = Evaluator(tmp_path / "run", "checkpoint.pt", [root], device="cpu", batch=16, text_encoder=StubText())
     M, rows = ev.evaluate(per_task=6, n_para=2, chunk_states=4)
     assert any(r.get("aux_err_cm") is not None for r in rows)
+
+
+def test_v3_and_v4_parts_are_checkpointed(tmp_path, root):
+    """The V3 tag and the V4 head travel with checkpoint.pt; a checkpoint without them is refused, not loaded
+    with a zero tag."""
+    from main.lang.network import LangPolicyEncoder
+    from main.lang.train import load_policy
+
+    tr = trainer(tmp_path / "run", root, oracle_ref_tag=True, aux_target_loss=True)
+    with torch.no_grad():
+        tr.policy_enc.e_tag.fill_(0.5)
+    ck = tr.ckpt_dict()
+    assert "e_tag" in ck and "aux_head" in ck
+    pe = LangPolicyEncoder(tr.cfg)
+    load_policy(pe, ck)
+    assert torch.allclose(pe.e_tag, torch.full_like(pe.e_tag, 0.5))
+    del ck["e_tag"]
+    with pytest.raises(ValueError, match="re-export"):
+        load_policy(LangPolicyEncoder(tr.cfg), ck)
