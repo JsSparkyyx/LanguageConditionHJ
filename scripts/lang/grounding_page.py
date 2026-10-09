@@ -668,8 +668,11 @@ def pending_text(summ) -> str:
             f"{v.upper()} {pr[v][0]:.2f}" for v in ("v1", "v2") if got(v)) + " against 0.85)")
     if not got("v4"):
         parts.append("V4, which trains one readout query to point at the named object, is still training")
-    elif not got("v4b"):
-        parts.append("V4b, which pulls that query's attention toward the named object, is still training")
+    else:
+        n4 = len((summ or {}).get("v4", {}).get("seeds", []))
+        parts.append(f"V4 scores {pr['v4'][0]:.2f} ({n4} seed{'s' if n4 != 1 else ''} scored)")
+        if not got("v4b"):
+            parts.append("V4b, which pulls that query's attention toward the named object, is still training")
     return "; ".join(parts) if parts else outcome(summ)
 
 
@@ -712,6 +715,77 @@ def e3_tally(e3: dict) -> str:
             f"<th>Scenes</th></tr></thead><tbody>{rows}</tbody></table></div>")
 
 
+def _qrot(q, v):
+    w, u = float(q[0]), np.asarray(q[1:4], float)
+    return v + 2.0 * np.cross(u, np.cross(u, v) + w * v)
+
+
+def scene_spread(root: Path = REPO / "data/lang/val_grounding") -> dict:
+    """Per task, over the named objects of the validation episodes at their first tick: the median distance to
+    the centre of the scene's named objects (what a head that only finds the middle of the scene is off by) and
+    to the nearest other named object, in cm."""
+    out = {}
+    for sh in sorted(root.glob("shard_g*")):
+        ib = sh / "item_buffer"
+        try:
+            pose, obb, val = (np.load(ib / f"{k}.npy", mmap_mode="r") for k in ("item_pose", "item_obb", "item_valid"))
+            ep, t = np.load(ib / "episode_id.npy", mmap_mode="r"), np.load(ib / "t_in_ep.npy", mmap_mode="r")
+        except FileNotFoundError:
+            continue
+        for f in sorted((ib / "episodes").glob("*.json")):
+            rec = json.loads(f.read_text())
+            if rec.get("task") not in ("selective_avoid", "gap_place"):
+                continue
+            rows = np.where((np.asarray(ep) == int(rec.get("episode_id", f.stem))) & (np.asarray(t) == 0))[0]
+            if not rows.size:
+                continue
+            r = int(rows[0])
+            named = {rr["subject"]["object"] for rr in rec["rules"]
+                     if rr.get("sampleable") and "object" in (rr.get("subject") or {})}
+            C = {}
+            for o in named:
+                k = int(rec["objects"][o]["id"])
+                if bool(val[r, k]):
+                    C[o] = np.asarray(pose[r, k, :3], float) + _qrot(pose[r, k, 3:7], np.asarray(obb[r, k, :3], float))
+            mid = np.mean(list(C.values()), 0) if C else None
+            for a in C:
+                oth = [np.linalg.norm(C[a] - C[b]) for b in C if b != a]
+                if oth:
+                    out.setdefault(rec["task"], []).append((np.linalg.norm(C[a] - mid), min(oth)))
+    return {k: tuple(100 * np.median(np.array(v), 0)) for k, v in out.items()}
+
+
+def v4_pointing(summ) -> str:
+    """Where V4's head points: its median centre error per task on new scenes and on training scenes (from the
+    scored rows' aux_err_cm), against the scene-middle and nearest-object distances."""
+    import gzip
+
+    err = {}
+    for f in sorted(G.glob("g1008_v4_s*/eval_offline/grounding*/rows.json.gz")):
+        kind = "train" if f.parent.name == "grounding_train" else "new" if f.parent.name == "grounding" else None
+        if kind is None:
+            continue
+        with gzip.open(f, "rt") as fh:
+            for r in json.load(fh):
+                if r.get("aux_err_cm") is not None and r["aux_err_cm"][0] == r["aux_err_cm"][0]:
+                    err.setdefault((r["task"], kind), []).append(r["aux_err_cm"][0])
+    if not err:
+        return ""
+    sp = scene_spread()
+    cells = []
+    for t, name in (("selective_avoid", "task 1"), ("gap_place", "task 7")):
+        new, tr = err.get((t, "new")), err.get((t, "train"))
+        if not new:
+            continue
+        c = f"{name}: off by {np.median(new):.0f} cm on new scenes" + (f", {np.median(tr):.0f} cm on training scenes" if tr else "")
+        if t in sp:
+            c += f"; the middle of the scene's named objects is {sp[t][0]:.0f} cm from the named one, the nearest other one {sp[t][1]:.0f} cm"
+        cells.append(c)
+    return ("<p><b>Where does V4's extra head point?</b> Its median distance from the named object's centre, at the current "
+            "frame (V4 seeds pooled): " + "; ".join(cells) + ". A head that is no closer than the middle of the scene has not "
+            "found the named object.</p>")
+
+
 def section5(summ, e3, vid) -> str:
     L = ['<section aria-labelledby="exp-h">', '<h2 id="exp-h">6. Small experiments</h2>']
     if not summ:
@@ -744,6 +818,7 @@ def section5(summ, e3, vid) -> str:
         L.append(f'<tr><td>–</td><td>sentence-only reference, same pairs</td><td class="num">{ci(pr)}</td><td></td><td></td></tr>')
     L.append("</tbody></table></div>")
     L.append(train_val(summ))
+    L.append(v4_pointing(summ))
     st = summ.get("_settings", {})
     v0s = next((x for n, x in sorted(st.items()) if "_v0_" in n), None)
     if v0s:
