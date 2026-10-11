@@ -188,7 +188,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                  inits: dict | None = None, video_every: int = 0, text_store=None,
                  max_retries: int = 5, log_prefix: str = "", slot_offset: int = 0,
                  with_masks: bool = True, deadline: float | None = None, extra_line: dict | None = None,
-                 round_metrics=None, writer=None, neck_buf=None) -> dict:
+                 round_metrics=None, writer=None, neck_buf=None, video_filter_only: bool = False) -> dict:
     """Run one episode per slot (task, emb, host) into (buf, sidecar).
 
     Episode i of the stream has seed = episode_id = episode_offset + attempt
@@ -206,6 +206,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     neck_buf: the NeckBuffer of a version-2 shard (cfg.lang_version 2): the controller keeps each capture's neck
     and ro.buf becomes a NeckLockstepWriter, so slot i of the three rings is the same capture; guarded, synced,
     flushed and rolled back with the pair, and every line carries lang_version 2.
+    video_filter_only: record videos of filter episodes only (rounds training; Yuxuan, 2026-10-11: the
+    nominal-episode videos are not wanted in the training log). Warmup / validation keep every video.
     """
     import torch
 
@@ -310,7 +312,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         layout = getattr(env.task, "layout_info", None) or {}
         region_rows = mask_region_rows(runner)
         smeta = scene_meta(env, runner)   # before run(): run() closes the env (actor poses gone)
-        named, sentence, cf_sentence = None, None, None
+        named, sentence, cf_sentence, cf_rule = None, None, None, None
         if use_filter:
             rng_ep = np.random.default_rng(seed)
             named = choose_named_rule(record, desig, rng_ep, cfg.named_harm_frac)
@@ -323,7 +325,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                 other = "benign" if desig.get(named["rule_id"]) == "harm" else "harm"
                 cands = [r for r in record["rules"] if r.get("sampleable") and desig.get(r["rule_id"]) == other]
                 if cands:
-                    cf_sentence = language.sample_sentence(cands[int(rng_ep.integers(len(cands)))], record, rng_ep, "train")
+                    cf_rule = cands[int(rng_ep.integers(len(cands)))]
+                    cf_sentence = language.sample_sentence(cf_rule, record, rng_ep, "train")
                 ro.set_instruction(sentence, cf_sentence, rule_id=named["rule_id"])
         n_before = len(buf)
         if neck_buf is not None and (len(sidecar), len(neck_buf)) != (n_before, n_before):
@@ -336,14 +339,15 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             ro.buf = NeckLockstepWriter(ro.buf, neck_buf)   # pops each entry's _neck inside the same append
         if not with_masks:
             ro.h_fn.with_masks = False
-        if video_every and summary["episodes"] % int(video_every) == 0:
+        if video_every and summary["episodes"] % int(video_every) == 0 and (not video_filter_only or named is not None):
             from .video import LangPanelVideoWriter, video_name
 
             vdir = out_root / "videos"
             vdir.mkdir(parents=True, exist_ok=True)
             kind = desig.get(named["rule_id"]) if named else "nominal"
             ro.video = LangPanelVideoWriter(vdir / video_name(task, runner.host if task == "selective_avoid" else None,
-                                                              emb, seed, kind), ro, named_rule=named, sentence=sentence)
+                                                              emb, seed, kind), ro, named_rule=named, sentence=sentence,
+                                            record=record, alt_rule=cf_rule, alt_sentence=cf_sentence)
         if use_filter:
             ctx = torch.no_grad()
             ctx.__enter__()

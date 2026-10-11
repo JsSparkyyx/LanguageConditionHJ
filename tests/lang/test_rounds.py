@@ -202,3 +202,28 @@ def test_resume_refuses_other_data_or_code(tmp_path, rounds_root):
     with pytest.raises(SystemExit, match="another git commit|--accept-code-change"):
         check_resume_identity({**st, "git_head": "f" * 40}, {**ident, "git_head": "e" * 40}, run)
     check_resume_identity({**st, "git_head": "f" * 40}, {**ident, "git_head": "e" * 40}, run, accept_code_change=True)
+
+
+def test_round_media_logs_filter_videos_only(tmp_path, monkeypatch):
+    """wandb gets this round's filter-episode videos only (Yuxuan, 2026-10-11); nominal ones stay on disk."""
+    import sys
+    import types
+
+    import main.lang.train as train_mod
+    from main.lang.rounds import log_round_media
+
+    fake = types.ModuleType("wandb")
+    fake.Video = lambda path, format=None, caption=None: ("video", Path(path).name)
+    fake.Image = lambda path: ("image", Path(path).name)
+    monkeypatch.setitem(sys.modules, "wandb", fake)
+    logged = []
+    monkeypatch.setattr(train_mod, "_safe_wandb_log", lambda run, logs, step: logged.append(logs))
+    lines = []
+    for i, (r, filt) in enumerate([(2, True), (2, False), (2, True), (1, True)]):
+        v = tmp_path / f"ep{i}.mp4"
+        v.write_bytes(b"")
+        lines.append({"round": r, "filter": filt, "video": str(v), "episode_id": i})
+    lj = tmp_path / "lang_episodes.jsonl"
+    lj.write_text("".join(json.dumps(d) + "\n" for d in lines))
+    log_round_media(SimpleNamespace(wandb=object(), step=7), 2, lj, [])
+    assert logged == [{"round_videos": [("video", "ep0.mp4"), ("video", "ep2.mp4")]}]

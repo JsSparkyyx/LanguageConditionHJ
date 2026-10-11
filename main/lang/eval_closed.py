@@ -342,7 +342,7 @@ def filter_run(models: Models, cfg: LangConfig, nom: dict, rule: dict, kind: str
 
         video_dir.mkdir(parents=True, exist_ok=True)
         ro.video = LangPanelVideoWriter(video_dir / video_name(task, host, emb, seed, kind, axis), ro,
-                                        named_rule=rule, sentence=sentence)
+                                        named_rule=rule, sentence=sentence, record=rec, alt_sentence=cf_sentence)
     with torch.no_grad():
         try:
             trace = ro.run()

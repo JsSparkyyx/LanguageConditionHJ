@@ -105,7 +105,7 @@ def run_scene(models, sc: dict, variant: str, out: Path, vdir: Path, encoder, ki
     vdir.mkdir(parents=True, exist_ok=True)
     stem = vdir / f"grounding_{variant}_{SHORT.get(task, task)}_s{seed}"
     ro.video = LangPanelVideoWriter(stem, ro, named_rule=rule_a, sentence=sc["sentence_a"], cf_rule=rule_b,
-                                    cf_sentence=sc["sentence_b"])
+                                    cf_sentence=sc["sentence_b"], record=rec)
     with torch.no_grad():
         trace = ro.run()
     path = ro.video.close()

@@ -266,7 +266,7 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                                       filter_frac=float(cfg.filter_episode_frac), rng_policy=rng_policy,
                                       attempt0=r_pos["attempt"], inits=inits,
                                       video_every=1 if (args.video_every and r % args.video_every == 0) else 0,
-                                      text_store=tr.text, log_prefix=f"[round {r}] ", slot_offset=k,
+                                      video_filter_only=True, text_store=tr.text, log_prefix=f"[round {r}] ", slot_offset=k,
                                       extra_line={"round": r}, round_metrics=(metrics, r), writer=writer)
                 except InitLimit:
                     return stop(r_pos, f"init limit inside round ({inits['n']} inits)")
@@ -334,7 +334,9 @@ def log_round_media(tr: LangTrainer, r: int, lj: Path, images) -> None:
 
         from .train import _safe_wandb_log
 
-        vids = [d["video"] for d in read_lines(lj) if d.get("round") == r and d.get("video") and Path(d["video"]).exists()]
+        # filter episodes only (Yuxuan, 2026-10-11): nominal videos written before the change stay on disk, unlogged
+        vids = [d["video"] for d in read_lines(lj) if d.get("round") == r and d.get("filter") and d.get("video")
+                and Path(d["video"]).exists()]
         logs = {f"heatmap/{p.parent.name}" if p.name != "trend.png" else "trend/overview": wandb.Image(str(p))
                 for p in images if p and Path(p).exists()}
         if vids:
