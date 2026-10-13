@@ -3,7 +3,7 @@
 # Keys are the relabeling consequence names (language.SPEC_CONSEQUENCE maps
 # the rules.Consequence values onto them). Placeholders: {obj} / {region} are
 # filled by language.describe() WITH their article ("the red cup", "the green
-# zone"); {material} is a bare particle word (rice, beads, beans). Templates
+# zone"); {material} is a bare particle word (beads, balls, small balls). Templates
 # never contain digits. The split is by TEMPLATE: a heldout template is never
 # used in training with any object (splits.yaml heldout_phrase_templates are
 # among the heldout ones here — tests/item_envs/test_language.py checks).
@@ -246,7 +246,7 @@ exclude_particles:
   heldout:
     - "don't get any {material} in {region}"
     - "{region} must stay clean"
-    - "not a single grain in {region}"
+    - "not a single bead in {region}"
     - "{region} must not get any {material}"
     - "spare {region} from the {material}"
     - "keep the {material} from reaching {region}"
@@ -254,18 +254,13 @@ exclude_particles:
 # Referent words never used in training (the "held-out referent words"
 # evaluation split): describe(words="heldout") uses only these nouns,
 # describe(words="train") never does.
-heldout_words:
-  - flask
+heldout_words:   # one per category where a fitting word exists (names checked against renders, 2026-10-12)
+  - plastic bottle
   - pill jar
-  - tin can
-  - crate
-  - glass
-  - juice box
-  - coffee bag
+  - beverage can
+  - mug
   - tea carton
-  - pillar
+  - rectangular block
   - serving tray
   - marked area
-  - saucer
-  - coffee mug
-  - grains
+  - little balls

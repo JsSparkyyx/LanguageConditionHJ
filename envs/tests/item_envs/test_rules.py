@@ -506,7 +506,7 @@ def test_objects_yaml_structure_and_v3_mass_ranges():
     for boxed in ("drink_box", "tea_box", "coffee_box"):
         assert cfg["categories"][boxed]["mass_range"] == [0.05, 0.30], boxed
     assert cfg["categories"]["beads"]["mass_range"] == [0.0005, 0.002]
-    assert set(cfg["categories"]["beads"]["synonyms"]) == {"beans", "rice", "grains"}
+    assert set(cfg["categories"]["beads"]["synonyms"]) == {"balls", "small balls", "little balls"}   # 2026-10-12
     # 6 training colors + 3 heldout
     assert len(cfg["colors"]["train"]) == 6
     assert set(cfg["colors"]["heldout"]) == {"purple", "orange", "cyan"}

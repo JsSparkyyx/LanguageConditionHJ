@@ -677,8 +677,11 @@ def test_plan_shard_v1_meta_unchanged():
     ref = REPO / "data/lang/val_grounding/shard_g0/shard.json"   # the command that wrote the report's validation
     if ref.exists():
         old = json.loads(ref.read_text())
-        same = [k for k in V1_KEYS if k not in ("config_hash", "h_code", "h_code_v2")]
+        # the names check of 2026-10-12 changed the vocabulary (bank_hash, so collect_hash): a v1 shard of the old
+        # vocabulary is not resumed or replayed with this code (the T1 model pool changed with it)
+        same = [k for k in V1_KEYS if k not in ("config_hash", "h_code", "h_code_v2", "bank_hash", "collect_hash")]
         assert {k: meta[k] for k in same} == {k: old[k] for k in same}
+        assert meta["bank_hash"] != old["bank_hash"]
 
 
 def test_plan_shard_v2_and_meta_diff(tmp_path):

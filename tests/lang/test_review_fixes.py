@@ -253,3 +253,20 @@ def test_bench_train_steps_argument_checks(tmp_path, monkeypatch, bench):
     assert dataclasses.replace(LangConfig(), embodiment_choices=("ur5-wsg",)) == bench.train_config([])
     assert bench.train_config(['fusion_dtype="bf16"']).fusion_dtype == "bf16"
     assert not os.path.exists(tmp_path / "x.json")
+
+
+def test_recover_model_ids_scene_check():
+    """recover_model_ids trusts a rebuilt T1 scene only when every recorded object comes back with its category and
+    position (names check, 2026-10-12)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("recover_model_ids", REPO / "scripts/lang/recover_model_ids.py")
+    rm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rm)
+    line = {"scene_meta": {"placements": [{"item_id": "obj_0", "xyz": [0.1, 0.2, 0.8]}]}}
+    record = {"objects": [{"item_id": "obj_0", "category_key": "drink_box"}]}
+    good = [{"item_id": "obj_0", "xyz": [0.1, 0.2, 0.8], "category": "drink_box", "asset": "068_boxdrink", "model_id": 2}]
+    assert rm.check(line, record, good, 1e-5) is None
+    assert "dxyz" in rm.check(line, record, [{**good[0], "xyz": [0.1, 0.25, 0.8]}], 1e-5)
+    assert "category" in rm.check(line, record, [{**good[0], "category": "bottle"}], 1e-5)
+    assert "items" in rm.check(line, record, good + [{**good[0], "item_id": "obj_1"}], 1e-5)

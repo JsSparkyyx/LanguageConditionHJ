@@ -998,7 +998,9 @@ def test_real_assets_bottom_rest_z():
             assert 0.0 <= offset <= 0.004, (
                 f"{draw.asset} id {model_id}: AABB bottom at {offset:+.4f} m rel. table")
             checked += 1
-    assert checked >= 55  # the full 57-id pool of 10 types (2026-10-05; guard against a silently empty pool)
+    # the full pool: 57 ids of 10 types (2026-10-05), 54 since the names check of 2026-10-12 dropped 068_boxdrink
+    # id 0 and 086_woodenblock ids 1 / 2 (guard against a silently empty pool)
+    assert checked >= 52
 
 
 # ---------------------------------------------------------------------------
@@ -1427,12 +1429,14 @@ def test_layout_plan_distinct_categories():
 
 
 def test_t1_pool_is_ten_distinct_types():
-    """objects.yaml t1_pool (user 2026-10-05): 10 entries, 10 categories, and
-    no category answers to another's name (mug's "cup", sauce can's "can")."""
+    """objects.yaml t1_pool (user 2026-10-05): 10 entries, and no category answers to another's name (mug's
+    "cup", sauce can's "can"). Since the names check of 2026-10-12, 068_boxdrink's models are bottles: 9
+    categories, bottle from two assets (still never twice in one scene)."""
     cfg = spawn.physics.load_objects_cfg()
     pool = spawn.t1_pool_entries(cfg)
     cats = [str(e["category"]) for e in pool]
-    assert len(pool) == 10 and len(set(cats)) == 10
+    assert len(pool) == 10 and len(set(cats)) == 9 and sorted(cats).count("bottle") == 2
+    cats = sorted(set(cats))
     words = {c: set((cfg["categories"][c].get("names") or []) + (cfg["categories"][c].get("synonyms") or []))
              for c in cats}
     for c in cats:

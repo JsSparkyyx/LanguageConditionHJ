@@ -24,8 +24,9 @@ import yaml
 
 __all__ = [
     "SPEC_CONSEQUENCE", "load_bank", "episode_record", "describe", "describe_region",
-    "materials", "sentences", "sample_sentence", "sampleable",
+    "materials", "sentences", "sample_sentence", "sampleable", "refresh_record", "load_model_ids",
 ]
+NAMES_VERSION = 2   # 2026-10-12: names checked against renders, per-model names (objects.yaml assets)
 
 # rules.Consequence value -> relabeling consequence name (the bank's keys)
 SPEC_CONSEQUENCE = {
@@ -53,8 +54,15 @@ def load_bank(path: str | Path | None = None) -> dict:
     return _BANK
 
 
+_OBJECTS = None
+
+
 def _objects_cfg() -> dict:
-    return yaml.safe_load((_HERE.parent / "configs" / "objects.yaml").read_text())
+    """objects.yaml (cached: refresh_record runs once per stored record)."""
+    global _OBJECTS
+    if _OBJECTS is None:
+        _OBJECTS = yaml.safe_load((_HERE.parent / "configs" / "objects.yaml").read_text())
+    return _OBJECTS
 
 
 # ---------------------------------------------------------------- record ----
@@ -62,6 +70,62 @@ def _objects_cfg() -> dict:
 
 def _words(entry: dict) -> list[str]:
     return [str(w) for w in list(entry.get("names", []) or []) + list(entry.get("synonyms", []) or [])]
+
+
+def _cat_words(cats: dict, key: str) -> list[str]:
+    return _words(cats.get(str(key), {}) or {}) or [str(key).replace("_", " ")]
+
+
+def model_words(cfg: dict, asset: str, model_id: int) -> tuple[str, list[str], bool]:
+    """(category key, words, nameable) of one asset model: the asset's category, unless objects.yaml overrides it
+    for that model (category_by_id, names_by_id); unnamed_ids are never the subject of a sentence."""
+    cats, a = cfg.get("categories", {}) or {}, (cfg.get("assets", {}) or {}).get(str(asset)) or {}
+    mid = int(model_id)
+    key = str((a.get("category_by_id") or {}).get(mid, a.get("category", asset)))
+    over = (a.get("names_by_id") or {}).get(mid)
+    words = _words(over) if over else _cat_words(cats, key)
+    return key, words, mid not in {int(i) for i in (a.get("unnamed_ids") or [])}
+
+
+def unknown_model_words(cfg: dict, category_key: str) -> tuple[str, list[str], bool]:
+    """A pool object recorded without its model id (episodes collected before 2026-10-12, no recovered id): the
+    words every model it may be share. Nameable only if all those models are nameable and of one category; with no
+    shared word it keeps its category's words (so other objects' phrases stay unique) and is never named."""
+    cats, assets = cfg.get("categories", {}) or {}, cfg.get("assets", {}) or {}
+    # the models a record of that key can be: the key its episodes recorded (legacy_category when the asset's key
+    # changed since, e.g. 068_boxdrink was "drink_box" for every model)
+    cands = [(n, a) for n, a in assets.items() if a.get("legacy_category", a.get("category")) == category_key]
+    if not any(a.get("names_by_id") or a.get("category_by_id") or a.get("unnamed_ids") for _, a in cands):
+        return category_key, _cat_words(cats, category_key), True
+    keys, shared, ok = set(), None, True
+    for n, a in cands:
+        for mid in list(a.get("ids") or [0]) + list(a.get("legacy_ids") or []):
+            k, w, named = model_words(cfg, n, mid)
+            keys.add(k); ok &= named
+            shared = set(w) if shared is None else shared & set(w)
+    words = [w for w in _cat_words(cats, category_key) if w in (shared or set())]
+    if not words:
+        return category_key, _cat_words(cats, category_key), False
+    return category_key, words, ok and len(keys) == 1
+
+
+def _name_object(o: dict, cfg: dict, task, asset=None, model_id=None) -> dict:
+    """Fill an object entry's names in place (category, synonyms, nameable, asset, model_id, category_key)."""
+    cats = cfg.get("categories", {}) or {}
+    if "category_key" not in o:   # a hand-built scene (tests, record_from_meta fixtures): nothing to re-name from
+        o.setdefault("nameable", True)
+        return o
+    asset = asset if asset is not None else o.get("asset")
+    model_id = model_id if model_id is not None else o.get("model_id")
+    if asset is not None and model_id is not None and asset in (cfg.get("assets", {}) or {}):
+        key, words, ok = model_words(cfg, asset, model_id)
+    elif task == "selective_avoid" and o.get("role") == "candidate":
+        key, words, ok = unknown_model_words(cfg, o["category_key"])
+    else:
+        key, words, ok = o["category_key"], _cat_words(cats, o["category_key"]), True
+    o.update({"category_key": key, "category": words[0], "synonyms": words[1:], "nameable": bool(ok),
+              "asset": asset, "model_id": None if model_id is None else int(model_id)})
+    return o
 
 
 def _region_key(region_id: str, regions_cfg: dict) -> tuple[str, dict]:
@@ -81,14 +145,15 @@ def episode_record(runner, episode_id: int = 0, objects_cfg: dict | None = None)
     cfg = objects_cfg if objects_cfg is not None else _objects_cfg()
     cats = cfg.get("categories", {}) or {}
     regions_cfg = cfg.get("regions", {}) or {}
+    # T1 pool objects: the asset and model id from the spawn report, so names can follow the model (2026-10-12)
+    drawn = {p.get("item_id"): (p.get("asset"), p.get("model_id"))
+             for p in ((getattr(runner, "_spawn_report", None) or {}).get("placements") or [])}
     objects = []
     for k, s in enumerate(runner.items):
-        words = _words(cats.get(str(s.category), {}) or {}) or [str(s.category).replace("_", " ")]
-        objects.append({
-            "id": k, "item_id": s.item_id, "category": words[0], "category_key": str(s.category),
-            "synonyms": words[1:], "color": (s.color or None), "size": getattr(s, "size", None),
-            "role": s.role, "kind": s.kind,
-        })
+        o = {"id": k, "item_id": s.item_id, "category_key": str(s.category), "color": (s.color or None),
+             "size": getattr(s, "size", None), "role": s.role, "kind": s.kind}
+        asset, mid = drawn.get(s.item_id, (None, None))
+        objects.append(_name_object(o, cfg, getattr(runner, "task_name", None), asset, mid))
     regions = []
     for k, r in enumerate(runner.regions):
         key, entry = _region_key(r.region_id, regions_cfg)
@@ -145,6 +210,7 @@ def episode_record(runner, episode_id: int = 0, objects_cfg: dict | None = None)
         "objects": objects,
         "regions": regions,
         "rules": rules,
+        "names_version": NAMES_VERSION,
     }
     for entry in rules:
         entry["sampleable"] = sampleable(entry, record)
@@ -201,6 +267,8 @@ def describe(obj: dict, scene: dict, words: str = "train", bank: dict | None = N
     "the {size} {color} {noun}", the noun from the category word and its
     synonyms. words="train" never uses a held-out word, words="heldout" only
     held-out ones. Empty when nothing names the object uniquely."""
+    if obj.get("nameable") is False:   # e.g. a model the names check excluded (objects.yaml unnamed_ids)
+        return []
     bank = bank or load_bank()
     heldout = _heldout_words(bank)
     others = [o for o in scene["objects"] if o["id"] != obj["id"] and o.get("kind") != "particle_set"]
@@ -314,6 +382,41 @@ def sample_sentence(rule: dict, scene: dict, rng: np.random.Generator, split: st
         if all(k in fill for k in keys):
             return t.format(**{k: fill[k][int(rng.integers(len(fill[k])))] for k in keys})
     raise ValueError(f"rule {rule.get('rule_id')}: no template fits its referents")
+
+
+def load_model_ids(root) -> dict:
+    """{episode_id: {item_id: (asset, model_id)}} recovered for a data root's T1 episodes recorded without model ids
+    (scripts/lang/recover_model_ids.py writes <shard>/item_buffer/model_ids.json; root = the shard or its
+    item_buffer/); {} when absent."""
+    import json
+
+    p = Path(root) / "model_ids.json"
+    if not p.exists():
+        p = Path(root) / "item_buffer" / "model_ids.json"   # a shard root instead of its item_buffer/
+    if not p.exists():
+        return {}
+    d = json.loads(p.read_text())
+    return {int(e): {i: (v["asset"], int(v["model_id"])) for i, v in items.items()} for e, items in d["episodes"].items()}
+
+
+def refresh_record(record: dict, model_ids: dict | None = None, objects_cfg: dict | None = None,
+                   bank: dict | None = None) -> dict:
+    """Re-name a stored episode record with the current objects.yaml / paraphrase bank (in place): an episode stores
+    the words it was collected with, so a names fix reaches old data only through this. model_ids: {item_id:
+    (asset, model_id)} for T1 objects the record lacks them for (load_model_ids). Recomputes the bead words of particle
+    rules and every rule's sampleable flag."""
+    cfg = objects_cfg if objects_cfg is not None else _objects_cfg()
+    model_ids = model_ids or {}
+    for o in record["objects"]:
+        asset, mid = model_ids.get(o["item_id"], (o.get("asset"), o.get("model_id")))
+        _name_object(o, cfg, record.get("task"), asset, mid)
+    for entry in record["rules"]:
+        subj = entry.get("subject") or {}
+        if "particles" in subj:
+            entry.setdefault("params", {})["material"] = materials(record["objects"][subj["particles"]], bank=bank)
+        entry["sampleable"] = sampleable(entry, record, bank)
+    record["names_version"] = NAMES_VERSION
+    return record
 
 
 def sampleable(rule: dict, scene: dict, bank: dict | None = None) -> bool:

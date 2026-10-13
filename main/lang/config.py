@@ -97,10 +97,11 @@ def check_stream(offset: int, attempt: int) -> int:
 
 
 def bank_hash() -> str:
-    """Hash of the paraphrase bank + splits.yaml (written into every checkpoint)."""
+    """Hash of the paraphrase bank, splits.yaml and the object names (written into every checkpoint)."""
     h = hashlib.md5()
     for p in (REPO / "envs/main/item_envs/language/paraphrases.yaml",
-              REPO / "envs/main/item_envs/configs/splits.yaml"):
+              REPO / "envs/main/item_envs/configs/splits.yaml",
+              REPO / "envs/main/item_envs/configs/objects.yaml"):   # the object names too (2026-10-12)
         h.update(p.read_bytes())
     return h.hexdigest()[:12]
 

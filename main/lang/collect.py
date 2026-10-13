@@ -141,7 +141,8 @@ def scene_meta(env, runner) -> dict:
     out = {}
     rep = getattr(runner, "_spawn_report", None) or {}
     if rep:
-        out["placements"] = [{k: p.get(k) for k in ("item_id", "cls", "xyz", "degraded_from", "lateral")}
+        out["placements"] = [{k: p.get(k) for k in ("item_id", "cls", "xyz", "degraded_from", "lateral", "asset",
+                                                    "model_id", "category")}
                              for p in rep.get("placements") or []]
         try:
             from main.envs.tasks import TASK_SPECS, iter_corridors

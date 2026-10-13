@@ -92,7 +92,9 @@ def test_bare_head_noun_is_not_unique_next_to_a_compound():
     s = _scene([("box", ["crate"], None, None), ("coffee box", ["coffee carton", "coffee bag"], None, None),
                 ("bottle", ["water bottle"], None, None), ("pill bottle", ["pill jar", "small bottle"], None, None)])
     box, coffee, bottle, pill = s["objects"]
-    assert L.describe(box, s) == [] and L.describe(box, s, "heldout") == ["the crate"]  # "crate" is held out
+    # "the box" is not unique next to the coffee box; the box's other word still names it ("crate" is no longer a
+    # held-out word: names check of 2026-10-12)
+    assert L.describe(box, s) == ["the crate"] and L.describe(box, s, "heldout") == []
     assert "the coffee box" in L.describe(coffee, s)
     assert "the bottle" not in L.describe(bottle, s) and "the water bottle" in L.describe(bottle, s)
     assert "the pill bottle" in L.describe(pill, s)
@@ -105,11 +107,11 @@ def test_bare_head_noun_is_not_unique_next_to_a_compound():
 
 
 def test_heldout_words():
-    s = _scene([("cup", ["glass", "mug"], "red", None)])
+    s = _scene([("cup", ["mug", "beaker"], "red", None)])
     train = L.describe(s["objects"][0], s, "train")
     held = L.describe(s["objects"][0], s, "heldout")
-    assert not any("glass" in p for p in train) and any("mug" in p for p in train)
-    assert held and all("glass" in p for p in held)  # "glass" is a held-out word
+    assert not any("mug" in p for p in train) and any("beaker" in p for p in train)
+    assert held and all("mug" in p for p in held)  # "mug" is a held-out word (names check, 2026-10-12)
 
 
 def test_describe_region_unique_and_not_an_object_name():
@@ -129,14 +131,14 @@ def _rule(cons, subject, reference=None, **kw):
 
 def test_sentence_splits_and_particles():
     bank = L.load_bank()
-    s = _scene([("beads", ["rice", "grains"], None, None, "particle_set"), ("mug", [], None, None)],
+    s = _scene([("beads", ["balls", "little balls"], None, None, "particle_set"), ("mug", [], None, None)],
                [("bin", ["bin", "box"], "green"), ("bowl_src_interior", ["source bowl", "bowl"], None)])
     spill = _rule("contain_particles", {"particles": 0}, {"regions": [1]})
     train = L.sentences(spill, s, "train")
-    assert "don't spill the rice" in train and not any("grains" in x for x in train)
+    assert "don't spill the balls" in train and not any("little balls" in x for x in train)
     held_t = L.sentences(spill, s, "heldout_template")
     assert held_t and not set(held_t) & set(train)
-    assert all("grains" in x for x in L.sentences(spill, s, "heldout_word"))
+    assert all("little balls" in x for x in L.sentences(spill, s, "heldout_word"))
     keep = _rule("exclude_particles", {"particles": 0}, {"region": 0})
     out = L.sentences(keep, s, "train")
     assert "keep the beads out of the green bin" in out and "keep the green box clean" in out
@@ -185,3 +187,44 @@ def test_rule_phrases_skip_heldout_words():
                         region_ids=(), params={"margin": 0.01, "category": cat})
         out = render_phrases(rule, cfg, np.random.RandomState(0), n=12)
         assert out and not any(w in p for p in out for w in held), out
+
+
+def test_per_model_names_and_old_records():
+    """Names checked against renders (2026-10-12): per-model words (objects.yaml assets), the conservative words of
+    a pool object recorded without its model id, and refresh_record re-naming a stored record."""
+    cfg = L._objects_cfg()
+    assert L.model_words(cfg, "001_bottle", 19)[1] == ["bottle", "water bottle"]
+    assert "water bottle" not in L.model_words(cfg, "001_bottle", 2)[1]
+    assert L.model_words(cfg, "068_boxdrink", 2)[0] == "bottle"            # ids 1-3 are bottles
+    assert L.model_words(cfg, "068_boxdrink", 0)[2] is False                # id 0 (a plastic cup) is never named
+    assert "cube" in L.model_words(cfg, "086_woodenblock", 4)[1] and "cube" not in L.model_words(cfg, "086_woodenblock", 3)[1]
+    assert L.unknown_model_words(cfg, "bottle") == ("bottle", ["bottle"], True)   # the word every bottle model shares
+    assert L.unknown_model_words(cfg, "drink_box")[2] is False                   # could be the plastic cup
+    assert L.unknown_model_words(cfg, "wooden_block")[2] is False                # could be the toy house
+    # a stored T1 record: the drink box gets its model id from the recovered map
+    rec = {"task": "selective_avoid", "objects": [
+        {"id": 0, "item_id": "obj_0", "category_key": "drink_box", "category": "drink box", "synonyms": ["carton"],
+         "color": None, "size": None, "role": "candidate", "kind": "rigid"},
+        {"id": 1, "item_id": "obj_1", "category_key": "can", "category": "can", "synonyms": ["tin"],
+         "color": None, "size": None, "role": "candidate", "kind": "rigid"}],
+        "regions": [], "rules": [
+        {"idx": 0, "rule_id": "avoid|obj_0|-", "consequence": "avoid", "subject": {"object": 0}, "reference": None,
+         "params": {}, "set": False, "split": "train", "ambiguous": False, "sampleable": True},
+        {"idx": 1, "rule_id": "avoid|obj_1|-", "consequence": "avoid", "subject": {"object": 1}, "reference": None,
+         "params": {}, "set": False, "split": "train", "ambiguous": False, "sampleable": True}]}
+    import copy
+    old = L.refresh_record(copy.deepcopy(rec))                                   # no id: the drink box is not named
+    assert old["rules"][0]["sampleable"] is False and old["objects"][1]["synonyms"] == ["soda can", "beverage can"]
+    new = L.refresh_record(copy.deepcopy(rec), {"obj_0": ("068_boxdrink", 1)})
+    assert new["objects"][0]["category_key"] == "bottle" and new["rules"][0]["sampleable"] is True
+    assert "the bottle" in L.describe(new["objects"][0], new) and "the tin" not in L.describe(new["objects"][1], new)
+    assert L.refresh_record(copy.deepcopy(rec), {"obj_0": ("068_boxdrink", 0)})["rules"][0]["sampleable"] is False
+
+
+def test_load_model_ids(tmp_path):
+    (tmp_path / "item_buffer").mkdir()
+    (tmp_path / "item_buffer" / "model_ids.json").write_text(
+        '{"episodes": {"7": {"obj_0": {"asset": "001_bottle", "model_id": 19}}}, "mismatch": []}')
+    assert L.load_model_ids(tmp_path) == {7: {"obj_0": ("001_bottle", 19)}}
+    assert L.load_model_ids(tmp_path / "item_buffer") == L.load_model_ids(tmp_path)
+    assert L.load_model_ids(tmp_path / "nowhere") == {}

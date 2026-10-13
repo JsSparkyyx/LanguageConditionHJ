@@ -49,6 +49,7 @@ class RelabelSampler:
         self.text_cache = text_cache
         self.bank = bank or language.load_bank()
         self.records: dict[int, dict] = {}
+        self._mids_stamp = None
         self.refresh()
 
     # -------------------------------------------------------------- index ----
@@ -57,10 +58,19 @@ class RelabelSampler:
         index of usable rows. Returns the number of usable rows."""
         self.buf.refresh()
         ep_dir = self.root / "episodes"
+        # records keep the words they were collected with: re-name them with the current vocabulary and the
+        # recovered T1 model ids (language.refresh_record; names checked 2026-10-12), again when the id file changes
+        mpath = self.root / "model_ids.json"
+        stamp = mpath.stat().st_mtime if mpath.exists() else None
+        mids = language.load_model_ids(self.root)
+        if stamp != self._mids_stamp:
+            for eid, rec in self.records.items():
+                language.refresh_record(rec, mids.get(eid), bank=self.bank)
+            self._mids_stamp = stamp
         for f in sorted(ep_dir.glob("*.json")) if ep_dir.exists() else []:
             eid = int(f.stem)
             if eid not in self.records:
-                self.records[eid] = json.loads(f.read_text())
+                self.records[eid] = language.refresh_record(json.loads(f.read_text()), mids.get(eid), bank=self.bank)
         self._sample_cols = {
             eid: np.array([r["idx"] for r in rec["rules"] if self._usable(r, rec)], dtype=np.int64)
             for eid, rec in self.records.items()
