@@ -224,7 +224,8 @@ def test_per_model_names_and_old_records():
 def test_load_model_ids(tmp_path):
     (tmp_path / "item_buffer").mkdir()
     (tmp_path / "item_buffer" / "model_ids.json").write_text(
-        '{"episodes": {"7": {"obj_0": {"asset": "001_bottle", "model_id": 19}}}, "mismatch": []}')
-    assert L.load_model_ids(tmp_path) == {7: {"obj_0": ("001_bottle", 19)}}
+        '{"episodes": {"7": {"obj_0": {"asset": "001_bottle", "model_id": 19}, '
+        '"obj_1": {"asset": "prim_box", "model_id": null}}}, "mismatch": []}')   # primitives have no model id
+    assert L.load_model_ids(tmp_path) == {7: {"obj_0": ("001_bottle", 19), "obj_1": ("prim_box", None)}}
     assert L.load_model_ids(tmp_path / "item_buffer") == L.load_model_ids(tmp_path)
     assert L.load_model_ids(tmp_path / "nowhere") == {}

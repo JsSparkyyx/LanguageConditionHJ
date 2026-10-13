@@ -396,7 +396,9 @@ def load_model_ids(root) -> dict:
     if not p.exists():
         return {}
     d = json.loads(p.read_text())
-    return {int(e): {i: (v["asset"], int(v["model_id"])) for i, v in items.items()} for e, items in d["episodes"].items()}
+    # primitives (prim_box, prim_tall_cylinder) have no model id: None, named by their category
+    return {int(e): {i: (v["asset"], None if v.get("model_id") is None else int(v["model_id"])) for i, v in items.items()}
+            for e, items in d["episodes"].items()}
 
 
 def refresh_record(record: dict, model_ids: dict | None = None, objects_cfg: dict | None = None,
