@@ -86,6 +86,7 @@ def check(line: dict, record: dict, placements: list[dict], tol: float) -> str |
 
 def recover_shard(shard: Path, code: str, tol: float, deadline: float | None) -> bool:
     """Fill <shard>/item_buffer/model_ids.json. False when stopped by the deadline."""
+    import main.lang  # noqa: F401  (puts envs/main on main.__path__ for main.item_envs)
     from main.item_envs.margin_hook import build_item_training_env
     from main.lang.config import LangConfig
 
