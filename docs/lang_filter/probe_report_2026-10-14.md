@@ -17,7 +17,7 @@ from what the critic and the actor read, or is it there and the sentence fails t
    differs. A linear read-out of what the critic and actor read puts the near object closer in 60-65% of these
    pairs on new scenes. A read-out of the sentence's words alone does as well (64%), so this comes from
    preferring some names ("the can" is often near), not from looking at the named object. On unseen kinds and
-   colours it falls to 40-54%. The model's own Q scores 47% on new scenes.
+   colours it falls to 40-52%. The model's own Q scores 47% on new scenes.
 2. **The information is there.** A linear read-out of the named object's own scene tokens, chosen with the true
    object mask (which the model never gets), ranks 99-100% of the same pairs right in every set, unseen kinds
    and colours included. It also recovers the distance itself (R² 0.49), where the model's summaries reach
@@ -65,7 +65,7 @@ Pictures:
 What the critic and the actor read (the encoder output, before the action):
 - the 4 read-out queries;
 - the rule token r and the sentence summary r0;
-- the body tokens (their mean, and the 14 joint and payload tokens the actor reads);
+- the body tokens (their mean, and the 14 valid joint tokens the actor reads);
 - the critic's last block (queries and body after the action is added).
 
 Controls:
@@ -141,7 +141,7 @@ the phase of the motion), and that is what is read. This test shows nothing abou
 - **Selection is what fails.** The sentence does not steer the queries, the rule token or the body tokens
   toward the named object's tokens on new scenes. What the model learned instead are name-level preferences
   that happen to fit its 60 training scenes ("the can is dangerous"). On those scenes the gain over the
-  words-only control is small (0.65-0.69 against 0.61), with wide intervals.
+  words-only control is small (0.62-0.69 against 0.61), with wide intervals.
 - **This fits the earlier results.** The training-scene accuracy without transfer (memorization; grounding
   report 2026-10-09) and the frozen fusion stage not helping (E4/E5) both point to selection, not perception.
   The oracle tag V3 was ignored (0.58): adding a tag to the named tokens was not enough. The probe says that
