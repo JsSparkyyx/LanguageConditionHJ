@@ -567,15 +567,33 @@ TRAIN_ONLY_FIELDS = frozenset({
     # subset are training-side only. lang_version stays IN the hash: a version-2 shard is a different collection
     "scene_fusion", "fusion_words", "fusion_dtype", "fusion_chunk", "critic_readout", "critic_mlp_hidden",
     "train_episodes_per_task",
+    # V6 (2026-10-14): which prefix the words read is decided at training time (the shard stores every frame's)
+    "qwen_words_prefix",
 })
+
+# Collection fields added after shards were written (V6, 2026-10-14). At these values they change nothing a
+# collection does, so collect_hash leaves them out and every shard written before them keeps its hash
+# (qwen_attn matters only with the Qwen encoder)
+NEUTRAL_COLLECT_FIELDS = {"encoder": "holobrain_gd", "spawn_pool": "current"}
+
+
+def collect_fields(cfg) -> dict:
+    """The config fields a collection episode depends on: everything but TRAIN_ONLY_FIELDS, without the
+    post-hoc fields at their neutral values."""
+    d = {k: v for k, v in cfg.to_dict().items() if k not in TRAIN_ONLY_FIELDS}
+    for k, neutral in NEUTRAL_COLLECT_FIELDS.items():
+        if d.get(k, neutral) == neutral:
+            d.pop(k, None)
+    if d.get("encoder", "holobrain_gd") == "holobrain_gd":
+        d.pop("qwen_attn", None)
+    return d
 
 
 def collect_hash(cfg) -> str:
-    """Hash of the config fields a collection episode depends on (everything but TRAIN_ONLY_FIELDS)."""
+    """Hash of the config fields a collection episode depends on (collect_fields)."""
     import hashlib
 
-    d = {k: v for k, v in cfg.to_dict().items() if k not in TRAIN_ONLY_FIELDS}
-    return hashlib.md5(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:12]
+    return hashlib.md5(json.dumps(collect_fields(cfg), sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 
 # what defines h (review round 3, C6): whole files, plus the h functions of files that mostly hold other code

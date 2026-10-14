@@ -188,6 +188,24 @@ class LangConfig(FrozenConfig):
     # E6 scene-count curve: train on the first N episodes per (task, embodiment) of a fixed nested order (0 = all).
     # Training sampler only (the validation / probe sampler always sees every episode)
     train_episodes_per_task: int = 0
+    # V6 (QWEN_PLAN, Yuxuan 2026-10-14; contract docs/lang_filter/qwen_impl.md): the frozen front end.
+    # "holobrain_gd" = HoloBrain-GD scene tokens (3 cameras x 400 per frame) with BERT words from the TextStore.
+    # "holobrain_qwen" = HoloBrain's Qwen2.5-VL variant: 3 x 99 scene tokens per frame that never see the sentence
+    # (vision tower + layer 0 over the image prefix, causal) and words from layer 0 run on the sentence against
+    # the frame's cached prefix keys / values (kv_buffer/), so the words are image-conditioned. A config saved
+    # before the field loads as GD
+    encoder: str = "holobrain_gd"
+    # Qwen encoder only: the prefix the words attend to. "frame" = frame t's (frame t+1's for the target);
+    # "blank" = one fixed prefix built from black images (the V6-blank control of QWEN_PLAN E8)
+    qwen_words_prefix: str = "frame"
+    # Qwen encoder only: the vision tower's and layer 0's attention kernel (numerics only): sdpa | flash_attention_2 |
+    # eager (eager returns attention weights, E7)
+    qwen_attn: str = "sdpa"
+    # T1 candidate pool. "current" = objects.yaml as it is. "pre_1012" = the pool before the 2026-10-12 renaming
+    # (068_boxdrink ids 0-3 as drink_box, 086_woodenblock ids 0-4, rebuilt from objects.yaml's legacy_ids /
+    # legacy_category): replays of the pre-10-12 shards and new rounds then draw the layouts the vanilla runs saw.
+    # Names still come from the current vocabulary
+    spawn_pool: str = "current"
 
     # --- sampling / relabeling ---
     shuffle_text: bool = False
@@ -219,7 +237,8 @@ class LangConfig(FrozenConfig):
         # Trainer.gamma() interpolates gamma -> gamma_final: they must match
         assert self.gamma_final == self.gamma, "LangConfig: gamma_final must equal gamma"
         assert self.relabel in ("paired", "random", "fixed"), self.relabel
-        assert self.text_backend in ("holobrain_bert", "bert_raw", "sentence_generic"), self.text_backend
+        assert self.text_backend in ("holobrain_bert", "bert_raw", "sentence_generic", "holobrain_qwen"), \
+            self.text_backend
         assert self.item_out_root, "item_out_root must never be None/empty"
         assert self.fusion_dtype in ("fp32", "tf32", "bf16"), self.fusion_dtype
         assert self.critic_readout in ("mlp", "softmin"), self.critic_readout
@@ -227,6 +246,18 @@ class LangConfig(FrozenConfig):
         # the frozen fusion reads HoloBrain's text_feat_map words (256-d); other backends cannot feed it
         assert not self.scene_fusion or self.text_backend == "holobrain_bert", \
             "scene_fusion needs text_backend = holobrain_bert"
+        # V6: the Qwen words exist only with the Qwen front end (they read its cached prefix), and the Qwen front
+        # end feeds no other words
+        assert self.encoder in ("holobrain_gd", "holobrain_qwen"), self.encoder
+        assert (self.text_backend == "holobrain_qwen") == (self.encoder == "holobrain_qwen"), \
+            "encoder holobrain_qwen and text_backend holobrain_qwen go together"
+        assert not (self.scene_fusion and self.encoder == "holobrain_qwen"), "scene_fusion is a GD-only stage"
+        # V2 drops each sentence's first and last token as [CLS] / [SEP]; the Qwen words are the instruction only
+        assert not (self.mask_special_tokens and self.text_backend == "holobrain_qwen"), \
+            "mask_special_tokens assumes BERT's [CLS] / [SEP]"
+        assert self.qwen_words_prefix in ("frame", "blank"), self.qwen_words_prefix
+        assert self.qwen_attn in ("sdpa", "flash_attention_2", "eager"), self.qwen_attn
+        assert self.spawn_pool in ("current", "pre_1012"), self.spawn_pool
         if not self.bank_hash:
             self.bank_hash = bank_hash()
 
@@ -269,6 +300,17 @@ class LangConfig(FrozenConfig):
     def fused_words(self) -> bool:
         """The text adapter reads the fusion's words (fusion_words matters only with scene_fusion on)."""
         return bool(self.scene_fusion and self.fusion_words)
+
+    @property
+    def qwen(self) -> bool:
+        """V6: the HoloBrain-Qwen front end (scene tokens 3 x 99 per frame, words from layer 0 on the prefix)."""
+        return self.encoder == "holobrain_qwen"
+
+    @property
+    def scene_tokens_per_frame(self) -> int:
+        """Scene tokens of one frame (all cameras): 3 x 400 GD, 3 x 99 Qwen. Shards carry the width themselves;
+        this is for code that builds a model without one (eval_closed)."""
+        return 297 if self.qwen else 1200
 
     @classmethod
     def load(cls, path: str | Path) -> "LangConfig":
