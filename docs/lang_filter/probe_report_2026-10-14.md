@@ -154,6 +154,15 @@ the phase of the motion), and that is what is read. This test shows nothing abou
   enough on the right tokens.
 - The oracle tokens are 16-32 pixel patches at the object's place. When the arm is over the object they show the
   arm too, so they encode whether the arm is at that object, which is what selection needs.
+- The model's own pictures (`runs/lang/probe_1013/camera_examples/`, four replayed scenes) show that the part of
+  the arm close to the near object is often outside the head camera's view, and the wrist cameras often miss the
+  object. Examples: the stamp at 1.6 cm and the purple box at 2.2 cm, with no arm next to them in the head
+  picture. Closeness then has to come from relating the object's 3D position to the robot's link positions.
+  - Part of the oracle tokens' 1.00 may therefore be where the object stands: objects on the arm's path are the
+    ones that get near.
+  - The geometry oracle, with no fitting (the object tokens' 3D positions against the link positions), still
+    ranks 0.93-0.99, and the object's own tokens follow the same object over two moments (0.83). So the distance
+    is in the inputs. The selection conclusion holds either way.
 - Pairs come in runs within an episode, so the intervals are over episodes (57 episodes hold new-scene pairs)
   and stay wide.
 - The sentences use the checkpoint's old words ("the tin", "the small bottle"), on purpose.
