@@ -227,3 +227,18 @@ def test_rows_capped_at_the_last_episode_line(tmp_path):
     hp.write_text(json.dumps(h))
     with pytest.raises(RuntimeError, match="episode lines end"):
         LangSource(root, k_prev=2)
+
+
+def test_clashing_source_names_resolve_to_their_own_root(tmp_path):
+    # val/shard_g3 and val_grounding/shard_g3: every batch row's source name must find the root it came from
+    # (the T1 rounds prober looked up 'shard_g3' and searched the first one, KeyError on the episode id)
+    a = make_root(tmp_path / "val" / "shard_g3", episodes=2, capacity=200, eid0=1000)
+    b = make_root(tmp_path / "val_grounding" / "shard_g3", episodes=2, capacity=200, eid0=5000)
+    c = make_root(tmp_path / "val" / "shard_g4", episodes=2, capacity=200, eid0=9000)
+    smp = LangSampler([a, b, c], cfg(pair_frac=0.0), seed=0)
+    names = [s.name for s in smp.sources]
+    assert names == ["val/shard_g3", "val_grounding/shard_g3", "shard_g4"]   # names without a clash unchanged
+    batch = smp.sample(32)
+    for src, e in zip(batch["source"], batch["episode_id"]):
+        s = next(x for x in smp.sources if x.name == src)
+        assert int(e) in s.rs.records

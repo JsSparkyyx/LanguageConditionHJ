@@ -135,6 +135,23 @@ def bead_h_of(sources) -> str:
     return "none" if not kinds else kinds.pop() if len(kinds) == 1 else "mixed"
 
 
+def unique_source_names(sources) -> None:
+    """Batches name their source (meta["source"]) and the probes look it up by that name: two roots with one
+    folder name (val/shard_g3 and val_grounding/shard_g3) would resolve to the first. A clashing name becomes
+    parent/name; names that do not clash stay as they are (the T1 rounds run's prober hit this, 2026-10-13)."""
+    for _ in range(4):
+        count: dict[str, int] = {}
+        for s in sources:
+            count[s.name] = count.get(s.name, 0) + 1
+        clash = [s for s in sources if count[s.name] > 1]
+        if not clash:
+            return
+        for s in clash:
+            depth = s.name.count("/") + 2
+            s.name = "/".join(s.root.parts[-depth:])
+    raise ValueError(f"source names still clash: {[s.name for s in sources]}")
+
+
 class LangSource:
     """One data root: index of usable non-terminal rows + StepBuffer arrays (+ the neck sidecar of a version-2
     shard, opened on first use)."""
@@ -397,6 +414,7 @@ class LangSampler:
                 self.sources.append(src)
             else:
                 print(f"[data] skipping {r}: no usable rows yet")
+        unique_source_names(self.sources)
         self.tasks = None if tasks in (None, "all") else tuple(tasks)
         self.embodiments = None if embodiments in (None, "all") else tuple(embodiments)
         self.rng = np.random.default_rng(seed)
@@ -413,6 +431,7 @@ class LangSampler:
         if src.rows.size and "scene_tokens" in src.step:
             self._check_neck_source(src)
             self.sources.append(src)
+            unique_source_names(self.sources)
             self.refresh(sources=False)
         else:
             print(f"[data] add_source {root}: no usable rows yet (added at the next refresh)")
