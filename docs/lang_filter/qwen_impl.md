@@ -21,8 +21,24 @@ Into `data/lang_qwen/{warmup,val}/<same shard names>`.
 draws other T1 objects for the same seeds. `spawn_pool = "pre_1012"` rebuilds the old pool from objects.yaml's
 `legacy_ids` / `legacy_category` (verified field by field against `7c2476d^`: identical ids, categories,
 mass ranges, colours, pool order). The V6 run uses it for the replays and for its rounds, so its training scenes
-are the vanilla runs' scenes (rounds seeds are paired by `--seed 0`). Names come from today's vocabulary, as in
-every run of today's code. Replays check every T1 placement against the source line.
+are the vanilla runs' scenes (rounds seeds are paired by `--seed 0`). Replays check every T1 placement against the
+source line.
+
+**Same words as the vanilla runs** (2026-10-15, the pre-run review; replaces "names come from today's vocabulary").
+Both vanilla runs predate 7c2476d, so they train and probe on the pre-10-12 objects.yaml and paraphrases.yaml:
+other object words (068 ids 1-3 "drink box / juice box / carton", 086 ids 1 / 2 "wooden block", "tin can", "rice",
+bins "tub" ...), other held-out words, and other sampleable rules. With today's words on the old pool, 6 of 30 ur5
+warmup T1 scenes got two objects called "bottle" (001_bottle and 068 id 1-3), neither nameable, so their rules
+(harm-designated ones included) dropped out. `vocab = "pre_1012"` (legacy_pool.install_vocab) makes the whole process
+use the two files as they were (copies in main/lang/vocab_pre_1012/, byte-identical to both vanilla worktrees'):
+physics.load_objects_cfg (the 10-12 change touched names only: every mass / friction range and colour list is the
+same; the old file holds the old T1 pool), the rule table's names and "ambiguous" flags, the language module's
+naming caches (object words, sentences, sampleable flags, held-out words), and refresh_record, which RelabelSampler
+applies to every stored record at load and which is wrapped to re-name region words too. Checked on 136 replayed
+episodes (runs/lang/v6_vocab_check/): object words, sampleable rules and all 44,010 training sentences equal what the
+g098 run's code (b7eb049) generates from the source records; the g095 run's code (0e97772) differs in 7 episodes, by
+the same head-noun rule that separates the two vanilla runs. The replays were collected with today's names; nothing
+needs re-collecting, because the records are re-named at load.
 
 **Front end built in `main/lang`, not through HoloBrain's class.** `HoloBrain_Qwen2_5_VL` hard-codes
 `flash_attention_2`, loads the full 36-layer 7.5 GB base before cutting it, resolves `vlm_pretrain` relative to
@@ -45,6 +61,7 @@ now, because round training runs it every 10 rounds.
 | `qwen_words_prefix` | `frame` (default) / `blank` | training | which prefix the words read |
 | `qwen_attn` | `sdpa` (default) / `flash_attention_2` / `eager` | collection (Qwen only) | attention kernel |
 | `spawn_pool` | `current` (default) / `pre_1012` | collection | the T1 candidate pool |
+| `vocab` | `current` (default) / `pre_1012` | collection + training | objects.yaml / paraphrases.yaml of the process |
 
 Refused: Qwen with `scene_fusion`, Qwen with `mask_special_tokens` (no [CLS] / [SEP] in the Qwen words), a
 text backend and encoder that do not match. Properties `cfg.qwen` and `cfg.scene_tokens_per_frame` (297 / 1200).
