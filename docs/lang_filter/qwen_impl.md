@@ -166,7 +166,9 @@ only after other fields were written).
   offline: `rgb` uint8 [3,240,320,3], `depth` fp16 [3,240,320], `K` f64 [3,3,3], `ext` f64 [3,4,4],
   `T_base2ego` f64 [4,4], `episode_id`, `t_in_ep`. Header `frames_version` 1, channel order, camera names,
   native size. On in the replayed warmup / val shards, off in rounds rings (about 260 GB by round 100).
-- **`main/lang/lockstep.py`**: `SidecarLockstepWriter(inner, {"_kv": kv_buf, "_frames": frames_buf})`, the
+- **`main/lang/sidecar.py`** (the contract first named it `lockstep.py`): `RingSidecar`, NeckBuffer's ring with
+  the fields given by a subclass (`KvBuffer` and `FramesBuffer` are thin subclasses; `reopen(root)` reopens r+ with
+  the header's own fields), and `SidecarLockstepWriter(inner, {"_kv": kv_buf, "_frames": frames_buf})`, the
   NeckLockstepWriter pattern generalised (pop all keys, align `episode_id` / `t_in_ep` from the queued item row,
   validate every row, `inner.append`, then each sidecar; restore the keys on failure; `end_episode` checks each
   sidecar's (n, head); attribute passthrough).
@@ -176,7 +178,9 @@ only after other fields were written).
   image_wh=(308, 252), strides=(28,))`, cameras [left, right, head]); zeros [K+G, 3, 99] when masks are off.
   `use_qwen_grid(ro)` switches a wired controller's h_fn to it. Qwen shards create the item sidecar with
   `n_tok = 99`, so the probe's `ref_mask` is [3, 297] per frame and data.py:644/681 works unchanged.
-- **`main/lang/legacy_pool.py`**: `PRE_1012_BANK_HASH = "693f7ef522ed"`; `install_spawn_pool(name)` wraps
+- **`main/lang/legacy_pool.py`**: `PRE_1012_BANK_HASH = "693f7ef522ed"` (the hash every pre-10-12 shard records:
+  `bank_hash()` then covered paraphrases.yaml and splits.yaml only, equal at ae5b02c and 7c2476d^, and objects.yaml
+  did not change between them); `install_spawn_pool(name)` wraps
   `main.item_envs.spawn.t1_pool_entries` (looked up by module global at spawn.py:1145) so each entry gets
   `ids = sorted(ids + legacy_ids)` and `category = legacy_category or category`; "current" restores the original;
   idempotent. A test compares the rebuilt pool with `tests/lang/fixtures/objects_pre_1012.yaml` (the file at
@@ -210,8 +214,10 @@ Nominal episodes run no text pass (the shim is called only in filter episodes).
   `qwen` / `keep_kv` / `keep_frames`; after `wire_item_episode`, `use_qwen_grid(ro)` under Qwen and
   `ro.buf = SidecarLockstepWriter(ro.buf, ...)`; the extras join `guard_writes`, the per-episode lockstep check,
   the rollback, `sync_arrays` and the flushes; lines carry `encoder`.
-- `make_pair(out, cfg, capacity, *, neck=False, kv=False, frames=False)` (item sidecar `n_tok` 99 under Qwen),
-  `open_kv` / `open_frames` (the `open_neck` pattern), `resume_point(out, buf, sidecar, *extras)`.
+- `make_pair(out, cfg, capacity, *, neck=False)` (item sidecar `n_tok` = `item_n_tok(cfg)`, 99 under Qwen),
+  `open_extras(out, buf, *, kv_dims, frames)` -> {"_kv", "_frames"} (the `open_neck` pattern: fresh next to an empty
+  StepBuffer, else reopened r+ from its header; refuses kv rows of another checkpoint or attention kernel),
+  `resume_point(out, buf, sidecar, *extras)` (None entries ignored).
 - CLI for `warmup` / `validation`: `--encoder {holobrain_gd,holobrain_qwen}`, `--frames / --no-frames` (default on
   for Qwen), `--spawn-pool {current,pre_1012}`, `--qwen-attn`. The Qwen encoder is built once per process.
 - Replays: `config_drift` ignores `encoder` and `qwen_attn` (like `lang_version`); `bank_hash` and `spawn_pool`
@@ -219,10 +225,15 @@ Nominal episodes run no text pass (the shim is called only in filter episodes).
   `spawn_pool = pre_1012` (the shard records `replay_bank_hash`). **Layout check**: every replayed T1 line's
   placements (item ids, classes, xyz within 1e-5 m, asset and model id) and every T3-T7 line's `layout` /
   `episode_info` must equal the source line; a mismatch is written to `replay_mismatch` (the command then exits 1,
-  as today).
+  as today). As built (`replay_layout_mismatch`): per episode id, the item tables of `item_buffer/episodes.jsonl`
+  (the last line per id: ids, categories, colours, kinds, roles, half extents, OBB centres within 1e-5, masses within
+  1e-9), T1's placements (item id, class, xyz within 1e-5; asset and model id only where the source recorded them,
+  which the pre-10-12 lines do not: the item tables carry the draw instead) and the other tasks' `layout` /
+  `episode_info` (the source's keys, floats within 1e-5). It runs for every Qwen replay and every legacy replay.
 - `check_shards.py`: `kv_buffer/` and `frames/` present exactly as `shard.json` says; equal (capacity, n, head)
-  with buffer and item sidecar; per-row (episode_id, t_in_ep) equality; scene width 297 iff Qwen; item
-  `n_cam × n_tok` equals the scene width.
+  with buffer and item sidecar; per-row (episode_id, t_in_ep) equality; the kv rows' checkpoint; scene width 297
+  under Qwen and never 297 under GD (fake test shards are narrower); under Qwen the item `n_cam × n_tok` equals the
+  scene width; Qwen lines name the encoder.
 
 ## 7. Training (`network.py`, `text.py`, `data.py`, `train.py`)
 
@@ -235,7 +246,7 @@ Nominal episodes run no text pass (the shim is called only in filter episodes).
   lockstep check against the item sidecar. `LangSampler(..., kv=False)`: the batch gains
   `kv = {"k", "v": int16 [U,2,325,128], "episode_id", "t_in_ep"}` and `kv_idx` int64 [B,2] (frame t `row`, frame
   t+1 `next_row`), one entry per unique (source, row), no random draws. Sources with another encoder or width are
-  refused with a clear message; with `probe=True` the item sidecar width must equal the scene width.
+  refused with a clear message; with `probe=True` a Qwen source's item sidecar width must equal the scene width.
 - `train.py`: under Qwen the trainer builds `HoloBrainQwenEncoder(vision=False)` unless one is passed (`qwen=`,
   injectable for CPU stubs, shared with round collection); `qwen_words(b, sentences=None, target=True)`, modelled
   on `fused()`: one `encode_text` per unique (kv entry, sentence) over columns t and t+1, chunked, under no_grad,
@@ -267,6 +278,12 @@ together; one `HoloBrainQwenEncoder(vision=True)` per process, shared with the t
   the first state save, so the first launch must be right.
 
 ## 10. Order of work and checks
+
+Status (2026-10-14): step 1 done (commits 8fa60a0 to 5a85771; `tests/lang` 340 passed on the login node, the
+memory-heavy `test_shim_with_the_real_stage` left out). Steps 2 and 3 are queued from the frozen worktree
+`LanguageConditionHJ_qwenT` at 5a85771: `qwen_recon` on the A100 chain (`runs/lang_pipeline_e2`), `qwen_smoke` on
+the A40 chain (`runs/lang/qwen_smoke/smoke.sh`).
+
 
 1. CPU: this contract's unit tests, the whole `tests/lang` suite.
 2. GPU recon (A100 / H200, no simulator): `qwen_recon.py`.
