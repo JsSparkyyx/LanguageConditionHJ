@@ -40,6 +40,19 @@ g098 run's code (b7eb049) generates from the source records; the g095 run's code
 the same head-noun rule that separates the two vanilla runs. The replays were collected with today's names; nothing
 needs re-collecting, because the records are re-named at load.
 
+**Front-end version 2: float32 RoPE, flash_attention_2** (2026-10-15, the pre-run review). The first build cast the
+whole VLM with `.to(bfloat16)`, which also rounded the three rotary `inv_freq` buffers that HoloBrain's
+`from_pretrained` build keeps in float32: the vision RoPE angles moved by up to 0.06 rad and the image features came
+out 6-9 % off HoloBrain-Qwen's own model on the same frame (scene tokens about 5 %). Version 2 casts only the
+parameters and refuses non-float32 `inv_freq`. With `flash_attention_2` (HoloBrain's kernel) it reproduces
+HoloBrain's own `HoloBrain_Qwen2_5_VL` on an A40: vision embeddings and prefix keys bit-identical, fused image maps
+within 0.2 % (runs/lang/v6_review/frontend_fidelity/result_row853_22914557.json); with sdpa the kernel alone adds
+about 4 %. The run therefore uses `qwen_attn = "flash_attention_2"`. Every replay shard keeps its native renders
+(frames/), so `scripts/lang/qwen_recompute.py` rewrites buffer/scene_tokens, scene_pos and kv_buffer/{k, v} with
+version 2 on A40 (about 0.42 s per 8 frames) instead of re-simulating; kv headers record `encoder_version`, and the
+trainer refuses kv rows of another version or attention kernel. The finalize gate (runs/lang_qwen_data/finalize.sh)
+requires every shard recomputed.
+
 **Front end built in `main/lang`, not through HoloBrain's class.** `HoloBrain_Qwen2_5_VL` hard-codes
 `flash_attention_2`, loads the full 36-layer 7.5 GB base before cutting it, resolves `vlm_pretrain` relative to
 the checkpoint folder and builds the action decoder. Everything V6 needs is in
@@ -59,7 +72,7 @@ now, because round training runs it every 10 rounds.
 | `encoder` | `holobrain_gd` (default, and for saved configs) / `holobrain_qwen` | collection | the frozen front end |
 | `text_backend` | adds `holobrain_qwen` | training | must equal "qwen" exactly when `encoder` is |
 | `qwen_words_prefix` | `frame` (default) / `blank` | training | which prefix the words read |
-| `qwen_attn` | `sdpa` (default) / `flash_attention_2` / `eager` | collection (Qwen only) | attention kernel |
+| `qwen_attn` | `sdpa` (default) / `flash_attention_2` / `eager` | collection (Qwen only) | attention kernel (the run: flash_attention_2) |
 | `spawn_pool` | `current` (default) / `pre_1012` | collection | the T1 candidate pool |
 | `vocab` | `current` (default) / `pre_1012` | collection + training | objects.yaml / paraphrases.yaml of the process |
 
