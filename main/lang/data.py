@@ -47,6 +47,7 @@ from main.item_envs import language  # noqa: E402
 from main.item_envs.relabel import RelabelSampler  # noqa: E402
 
 from .config import CANON_TASKS  # noqa: E402
+from .kv_buffer import KvBuffer  # noqa: E402
 from .neck_buffer import NeckBuffer  # noqa: E402
 from .scene_roles import ref_rows  # noqa: E402
 
@@ -184,6 +185,10 @@ class LangSource:
         self.first_cache: dict[int, tuple] = {}
         self.neck_first_cache: dict[int, dict] = {}
         self._neck: NeckBuffer | None = None
+        self._kv: KvBuffer | None = None
+        hdr = self.root / "buffer" / "header.json"
+        # the front end the scene tokens came from (V6): the StepBuffer header holds the collection config
+        self.encoder = (json.loads(hdr.read_text()).get("encoder") if hdr.exists() else None) or "holobrain_gd"
         self.refresh()
 
     @property
@@ -208,6 +213,37 @@ class LangSource:
                                  f"{self.capacity}")
             self._neck = nb
         return self._neck
+
+    @property
+    def has_kv(self) -> bool:
+        """A V6 shard or ring: kv_buffer/ (each frame's HoloBrain-Qwen prefix keys / values)."""
+        return (self.root / "kv_buffer" / "header.json").exists()
+
+    @property
+    def kv(self) -> KvBuffer:
+        """The kv sidecar, opened read-only on first use (never creates a file)."""
+        if self._kv is None:
+            if not self.has_kv:
+                raise ValueError(f"{self.root}: no kv_buffer/ (the HoloBrain-Qwen words read each frame's prefix; "
+                                 "collect with --encoder holobrain_qwen)")
+            kb = KvBuffer(self.root / "kv_buffer")
+            if kb.capacity != self.capacity:
+                raise ValueError(f"{self.root}: kv_buffer capacity {kb.capacity} != item_buffer capacity "
+                                 f"{self.capacity}")
+            self._kv = kb
+        return self._kv
+
+    def check_kv(self, rows, ep, t) -> None:
+        """The kv rows at these slots must hold the item sidecar's (episode_id, t_in_ep) there (as check_neck)."""
+        self._check_side("kv_buffer", rows, ep, t)
+
+    def kv_rows(self, rows, check: bool = True) -> dict:
+        """kv rows of these ring slots -> {field: array [len(rows), ...]}; check: aligned with the item sidecar."""
+        rows = np.asarray(rows, np.int64).reshape(-1)
+        out = self.kv.read(rows)
+        if check:
+            self.check_kv(rows, out["episode_id"], out["t_in_ep"])
+        return out
 
     def _open_step(self):
         for f in STEP_FIELDS:
@@ -244,6 +280,8 @@ class LangSource:
         self._open_step()
         if self._neck is not None:   # after the lines: the writer publishes every header before the line
             self._neck.refresh()
+        if self._kv is not None:
+            self._kv.refresh()
         rs, A = self.rs, self.rs.buf.arrays
         mixed = np.zeros(rs._rows.size, dtype=bool)
         mixed[rs._mixed] = True
@@ -364,13 +402,16 @@ class LangSource:
     def check_neck(self, rows: np.ndarray, ep: np.ndarray, t: np.ndarray) -> None:
         """The neck rows at these ring slots must hold the item sidecar's (episode_id, t_in_ep) there: a rollback
         or resume mirrored on one side only shows here, on the CPU (FUSION_PLAN R6)."""
+        self._check_side("neck_buffer", rows, ep, t)
+
+    def _check_side(self, name: str, rows: np.ndarray, ep: np.ndarray, t: np.ndarray) -> None:
         A = self.rs.buf.arrays
         rows = np.asarray(rows, np.int64)
         want_e, want_t = np.asarray(A["episode_id"][rows], np.int64), np.asarray(A["t_in_ep"][rows], np.int64)
         bad = np.flatnonzero((np.asarray(ep, np.int64) != want_e) | (np.asarray(t, np.int64) != want_t))
         if bad.size:
             b = int(bad[0])
-            raise RuntimeError(f"{self.root}: neck_buffer row {int(rows[b])} holds episode {int(ep[b])} tick "
+            raise RuntimeError(f"{self.root}: {name} row {int(rows[b])} holds episode {int(ep[b])} tick "
                                f"{int(t[b])}, item_buffer episode {int(want_e[b])} tick {int(want_t[b])} ({bad.size} "
                                "of the rows read): the sidecars are out of lockstep; check with "
                                "scripts/lang/check_shards.py")
@@ -391,14 +432,20 @@ class LangSampler:
     neck: also gather the version-2 neck rows of the 5 frames (``neck`` / ``neck_idx``, module docstring); a
     source without neck_buffer/ is a ValueError. episodes_per_task = N > 0: draw only from the first N episodes
     of each (task, embodiment) (``_episode_subset``), for the training sampler of the scene-count curve.
+    kv (V6): also gather the prefix keys / values of frames t and t+1 (``kv`` = {"k", "v", "episode_id",
+    "t_in_ep"} with one entry per unique (source, ring row), ``kv_idx`` int64 [B, 2]); a source without kv_buffer/
+    is a ValueError. Every source must come from the config's encoder, with one scene width; a probe sampler's
+    item token masks must be as wide as the scene tokens (ref_mask).
     """
 
     def __init__(self, roots, cfg, tasks=None, embodiments=None, seed: int = 0, probe: bool = False,
                  n_threads: int = 8, split: str = "train", max_rows: dict | None = None, neck: bool = False,
-                 episodes_per_task: int = 0):
+                 episodes_per_task: int = 0, kv: bool = False):
         self.cfg = cfg
         self.k = int(cfg.k_prev)
         self.with_neck = bool(neck)
+        self.with_kv = bool(kv)
+        self.probe = bool(probe)
         self.episodes_per_task = int(episodes_per_task)
         assert self.episodes_per_task >= 0, self.episodes_per_task
         self.sources = []
@@ -411,6 +458,7 @@ class LangSampler:
                              drop_stale_bead=getattr(cfg, "drop_stale_bead_rows", True))
             if src.rows.size and "scene_tokens" in src.step:
                 self._check_neck_source(src)
+                self._check_encoder_source(src)
                 self.sources.append(src)
             else:
                 print(f"[data] skipping {r}: no usable rows yet")
@@ -418,7 +466,6 @@ class LangSampler:
         self.tasks = None if tasks in (None, "all") else tuple(tasks)
         self.embodiments = None if embodiments in (None, "all") else tuple(embodiments)
         self.rng = np.random.default_rng(seed)
-        self.probe = bool(probe)
         self.split = split
         self.bank = language.load_bank()
         self.pool = ThreadPoolExecutor(max_workers=int(n_threads))
@@ -430,6 +477,7 @@ class LangSampler:
                          drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True))
         if src.rows.size and "scene_tokens" in src.step:
             self._check_neck_source(src)
+            self._check_encoder_source(src)
             self.sources.append(src)
             unique_source_names(self.sources)
             self.refresh(sources=False)
@@ -453,6 +501,25 @@ class LangSampler:
         if self.sources and fields != self.sources[0].neck.fields:
             raise ValueError(f"{src.root}: neck fields {fields} differ from {self.sources[0].root}'s "
                              f"{self.sources[0].neck.fields}")
+
+    def _check_encoder_source(self, src: LangSource) -> None:
+        """V6: the source's front end is the config's, its scene width the other sources', its item masks as wide
+        as its scene tokens (probe), and with kv on it has kv_buffer/."""
+        want = getattr(self.cfg, "encoder", "holobrain_gd")
+        if src.encoder != want:
+            raise ValueError(f"{src.root}: scene tokens of the {src.encoder} front end, this config's encoder is {want}")
+        width = int(src.step["scene_tokens"].shape[1])
+        if self.sources and width != int(self.sources[0].step["scene_tokens"].shape[1]):
+            raise ValueError(f"{src.root}: {width} scene tokens per frame, {self.sources[0].root} has "
+                             f"{int(self.sources[0].step['scene_tokens'].shape[1])}")
+        if self.probe and src.encoder == "holobrain_qwen":   # GD shards: 3 x 400 masks for 1200 tokens
+            buf = src.rs.buf
+            cells = int(getattr(buf, "n_cam", 3)) * int(getattr(buf, "n_tok", width // 3))
+            if cells != width:
+                raise ValueError(f"{src.root}: item token masks of {cells} cells per frame, {width} scene tokens "
+                                 "(the probe's ref_mask needs masks on the scene token grid)")
+        if self.with_kv:
+            src.kv   # opens it (read-only) and checks its capacity
 
     def refresh(self, sources: bool = True) -> int:
         if sources:
@@ -621,6 +688,37 @@ class LangSampler:
             self.sources[j].check_neck(rws[m], out["episode_id"][m], out["t_in_ep"][m])
         return out, idx
 
+    def _gather_kv(self, where: dict, B: int) -> tuple[dict, np.ndarray]:
+        """-> (kv {"k", "v", "episode_id", "t_in_ep": [U, ...]}, kv_idx int64 [B, 2]): the prefix rows of frames t
+        and t+1 (rows_of "row" / "next_row"), each unique (source, ring row) read once on the thread pool and
+        checked against the item sidecar. No random numbers."""
+        idx = np.empty((B, 2), dtype=np.int64)
+        uniq: dict[tuple[int, int], int] = {}
+        todo: list[tuple[int, int]] = []
+        for gi, bs in where.items():
+            j, i = int(self.sid[gi]), int(self.loc[gi])
+            rows = self.sources[j].rows_of(i)
+            for f, name in enumerate(("row", "next_row")):
+                u = uniq.get((j, rows[name]))
+                if u is None:
+                    u = uniq[(j, rows[name])] = len(todo)
+                    todo.append((j, rows[name]))
+                idx[bs, f] = u
+        fields = self.sources[todo[0][0]].kv.fields
+        out = {f: np.empty((len(todo),) + tuple(shp), dtype=dt) for f, (shp, dt) in fields.items()}
+
+        def fill(u):
+            j, row = todo[u]
+            for f, a in self.sources[j].kv.arrays.items():
+                out[f][u] = a[row]
+
+        list(self.pool.map(fill, range(len(todo))))
+        js, rws = (np.array([it[c] for it in todo], dtype=np.int64) for c in (0, 1))
+        for j in np.unique(js).tolist():
+            m = js == j
+            self.sources[j].check_kv(rws[m], out["episode_id"][m], out["t_in_ep"][m])
+        return out, idx
+
     def sample(self, B: int, rng=None, picks=None, pair_frac: float | None = None) -> dict:
         rng = rng or self.rng
         picks = picks if picks is not None else self.plan(B, rng, pair_frac)
@@ -633,6 +731,8 @@ class LangSampler:
                            where.items()))
         if self.with_neck:
             out["neck"], out["neck_idx"] = self._gather_neck(where, len(picks))
+        if self.with_kv:
+            out["kv"], out["kv_idx"] = self._gather_kv(where, len(picks))
         meta = {k: [] for k in ("sentence", "rule_id", "consequence", "task", "host", "embodiment", "source",
                                 "episode_id", "rule_col", "row", "next_row", "prev_row", "first_row", "next_prev_row",
                                 "t_in_ep")}

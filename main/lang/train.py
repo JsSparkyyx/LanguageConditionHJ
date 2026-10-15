@@ -164,6 +164,24 @@ def probe_neck(batch: dict) -> dict:
     return {"neck": SharedNeck({k: np.ascontiguousarray(v[used]) for k, v in table.items()}), "neck_idx": new}
 
 
+def probe_kv(batch: dict) -> dict:
+    """A probe set's prefix keys / values for frame t only (probes encode no t+1 stack), as a SharedNeck the
+    Prober's per-state sub-batches share; column 1 of kv_idx becomes -1 (qwen_words refuses it)."""
+    kidx = np.asarray(batch["kv_idx"], np.int64)
+    used, inv = np.unique(kidx[:, 0], return_inverse=True)
+    new = np.full_like(kidx, -1)
+    new[:, 0] = inv
+    table = neck_table(batch["kv"])
+    return {"kv": SharedNeck({k: np.ascontiguousarray(np.asarray(v)[used]) for k, v in table.items()}), "kv_idx": new}
+
+
+def make_qwen(cfg, device="cuda"):
+    """The trainer's frozen HoloBrain-Qwen text pass (V6): layer 0 and feat_mapping, without the vision tower."""
+    from .qwen_encoder import HoloBrainQwenEncoder
+
+    return HoloBrainQwenEncoder(device=device, attn=cfg.qwen_attn, vision=False)
+
+
 def neck_upload(rows: dict, device) -> dict:
     """numpy neck rows -> device tensors of the five fusion fields, each in its stored dtype (fp16 maps stay fp16:
     the stage casts each chunk to fp32, so a batch's ~250 frames take 0.7 GB, not 1.5), staged through pinned
@@ -259,9 +277,11 @@ class LangTrainer:
     def __init__(self, cfg: LangConfig, run_dir: Path, data_roots, val_roots=(), text_caches=(),
                  tasks=None, embodiments=None, use_wandb: bool = True, seed: int = 0, probe_n: int = 512,
                  name: str | None = None, prefetch: bool = True, device: str = "cuda", text_encoder=None,
-                 max_rows: dict | None = None, fusion=None):
+                 max_rows: dict | None = None, fusion=None, qwen=None):
         """fusion: a FusionStage-like object (fuse(neck, words, wmask)) to use with cfg.scene_fusion instead of
-        building one from the checkpoint (shared by run_sanity's trainers; the CPU tests' stub)."""
+        building one from the checkpoint (shared by run_sanity's trainers; the CPU tests' stub). qwen (V6): a
+        HoloBrainQwenEncoder-like object (encode_text(kv, sentences, kv_index), blank_kv(), ckpt_id) to use with
+        encoder holobrain_qwen instead of building the text pass (shared with rounds collection; the CPU stub)."""
         self.cfg, self.run = cfg, Path(run_dir).resolve()
         self.dev = device
         self.run.mkdir(parents=True, exist_ok=True)
@@ -275,8 +295,9 @@ class LangTrainer:
         # from the first train_episodes_per_task episodes per (task, embodiment)
         self.sampler = LangSampler(data_roots, cfg, tasks=tasks, embodiments=embodiments, seed=seed, n_threads=16,
                                    max_rows=max_rows, neck=bool(cfg.scene_fusion),
-                                   episodes_per_task=int(cfg.train_episodes_per_task))
-        n_tok = self.sampler.sources[0].step["scene_tokens"].shape[1] if self.sampler.sources else 1200
+                                   episodes_per_task=int(cfg.train_episodes_per_task), kv=cfg.qwen)
+        n_tok = (self.sampler.sources[0].step["scene_tokens"].shape[1] if self.sampler.sources
+                 else cfg.scene_tokens_per_frame)
         self.policy_enc = LangPolicyEncoder(cfg, n_tok=n_tok).to(device)
         self.actor = make_actor(cfg).to(device)
         self.critics = LangTwinCritic(cfg).to(device)
@@ -289,15 +310,28 @@ class LangTrainer:
         self.opt_e = torch.optim.Adam(self.policy_enc.parameters(), lr=cfg.lr)
         self.opt_c = torch.optim.Adam(self.critics.parameters(), lr=cfg.lr)
         self.opt_a = torch.optim.Adam(self.actor.parameters(), lr=cfg.lr)
-        self.text = TextStore(text_caches, cfg.text_backend, device, extra_path=self.run / "text_cache_extra.pt",
-                              backend_paths=cfg.backend_paths, encoder=text_encoder)
+        # V6: the words come from HoloBrain-Qwen's layer 0 against each frame's stored prefix (qwen_words), no store
+        self.text = None if cfg.qwen else TextStore(text_caches, cfg.text_backend, device,
+                                                     extra_path=self.run / "text_cache_extra.pt",
+                                                     backend_paths=cfg.backend_paths, encoder=text_encoder)
         self.prefetch = PrefetchSampler(self.sampler, cfg.batch_size, seed=seed + 1) if prefetch else None
         # probes measure the Section 8.2 quantities whatever the run's own sentence control is: real sentences
         # (no --shuffle-text) and a random rule per sample (no --relabel fixed) (review M3), on every validation
         # episode (no E6 subset)
         probe_cfg = dataclasses.replace(cfg, shuffle_text=False, relabel="random", train_episodes_per_task=0)
         self.val_sampler = LangSampler(val_roots, probe_cfg, tasks=tasks, embodiments=embodiments, seed=seed + 2,
-                                       probe=True, neck=bool(cfg.scene_fusion)) if val_roots else None
+                                       probe=True, neck=bool(cfg.scene_fusion), kv=cfg.qwen) if val_roots else None
+        self.qwen = None
+        if cfg.qwen:
+            self.qwen = qwen if qwen is not None else make_qwen(cfg, device)
+            for smp in (self.sampler, self.val_sampler):
+                for src in (smp.sources if smp is not None else ()):
+                    got = src.kv.header.get("ckpt_id")
+                    if got is not None and got != self.qwen.ckpt_id:
+                        raise ValueError(f"{src.root}: kv rows of HoloBrain-Qwen checkpoint {got}, the text pass is "
+                                         f"{self.qwen.ckpt_id} (never mix checkpoints)")
+        self._qwen_passes = 0       # sentence passes of the training steps since the last log (V6)
+        self.last_qwen_passes = 0
         # V5: HoloBrain's frozen fusion stage, a plain object next to the model (never a submodule of what is
         # optimised, deep-copied for the target or saved); its weights come from the HoloBrain checkpoint
         self.fusion = None
@@ -328,12 +362,15 @@ class LangTrainer:
             except Exception as exc:
                 print(f"[lang-train] wandb disabled ({exc})")
         print(f"[lang-train] run {self.run} config {cfg.hash()} bank {cfg.bank_hash} | rows {len(self.sampler)} "
-              f"from {len(self.sampler.sources)} sources | text cache {len(self.text)} | params "
+              f"from {len(self.sampler.sources)} sources | text cache {len(self.text) if self.text is not None else '-'} | params "
               f"enc {n_params(self.policy_enc.parameters())} critics {n_params(self.critics.parameters())} "
               f"actor {n_params(self.actor.parameters())}")
         if self.fusion is not None:
             print(f"[lang-train] scene_fusion: frozen fusion stage {cfg.fusion_dtype}, chunk {cfg.fusion_chunk}, "
                   f"fused words {cfg.fused_words}")
+        if self.qwen is not None:
+            print(f"[lang-train] encoder holobrain_qwen: {n_tok} scene tokens per frame, words from layer 0 against "
+                  f"the {cfg.qwen_words_prefix} prefix, checkpoint {self.qwen.ckpt_id}, attn {cfg.qwen_attn}")
         if cfg.train_episodes_per_task:
             print(f"[lang-train] train_episodes_per_task {cfg.train_episodes_per_task}: episodes "
                   + ", ".join(f"{t}/{e} {n}" for (t, e), n in self.sampler.episode_counts().items()))
@@ -359,6 +396,12 @@ class LangTrainer:
                                    "(LangTrainer.fused)")
             if self.cfg.fused_words:
                 words = g("w_fused")   # frame t's fused words; t+1's for the target, never t's (review R5)
+        if self.qwen is not None:
+            # V6: each frame's own words (layer 0 reads that frame's prefix); the target reads frame t+1's
+            if suffix not in b.get("_qwen", ()):
+                raise RuntimeError(f"encoder holobrain_qwen: the batch has no words for frames{suffix or ' (live)'} "
+                                   "(LangTrainer.qwen_words)")
+            words, wmask = g("w_qwen"), g("wm_qwen")
         kw = ({"ref_center": _t(g("ref_center"), dev=d), "ref_valid": _t(g("ref_center_valid"), torch.bool, d)}
               if getattr(self.cfg, "oracle_ref_tag", False) else {})   # V3 (round 3 E2)
         enc = mod(_t(g("state_tokens"), dev=d), _t(g("body_tokens"), dev=d), _t(g("link_pos"), dev=d),
@@ -410,15 +453,77 @@ class LangTrainer:
         out["_fused"] = ("", "_next") if target else ("",)
         return out
 
+    def qwen_words(self, b: dict, sentences=None, target: bool = True) -> dict:
+        """V6 (encoder holobrain_qwen): a shallow copy of b with each sample's words from HoloBrain-Qwen's layer 0,
+        the sentence read against the stored prefix keys / values of its frame (qwen_words_prefix "frame") or of
+        the black-image prefix ("blank").
+
+        One text pass per unique (prefix row, sentence) over frame t (kv_idx column 0) and, with target, frame t+1
+        (column 1): the two members of a pair share the row, not the sentence. Writes w_qwen / wm_qwen (frame t) and
+        w_qwen_next / wm_qwen_next (t+1) and the "_qwen" marker. Frozen, no grad, in the encoder's precision (bf16),
+        outside the TF32 block (the rollout runs the same pass). No-op under GD."""
+        if self.qwen is None:
+            return b
+        from .kv_buffer import rows_to_kv
+
+        sents = list(b["sentence"] if sentences is None else sentences)
+        cols = (0, 1) if target else (0,)
+        blank = getattr(self.cfg, "qwen_words_prefix", "frame") == "blank"
+        if not blank:
+            if "kv" not in b or "kv_idx" not in b:
+                raise ValueError("encoder holobrain_qwen: the batch has no prefix rows (a sampler built without kv)")
+            kidx = np.asarray(b["kv_idx"], np.int64)
+            if bool((kidx[:, list(cols)] < 0).any()):
+                raise ValueError("encoder holobrain_qwen: no prefix rows for some frames (a probe set: frame t only)")
+        passes, entry, who = {}, [], []
+        p = np.full((len(sents), 2), -1, np.int64)
+        for i, s in enumerate(sents):
+            for c in cols:
+                key = (-1 if blank else int(kidx[i, c]), s)
+                if key not in passes:
+                    passes[key] = len(entry)
+                    entry.append(key[0])
+                    who.append(s)
+                p[i, c] = passes[key]
+        with torch.no_grad():
+            if blank:
+                kv, index = self.qwen.blank_kv(), torch.zeros(len(entry), dtype=torch.long)
+            else:
+                table = neck_table(b["kv"])
+                used, inv = np.unique(np.asarray(entry, np.int64), return_inverse=True)
+                cuda = str(self.dev).startswith("cuda")
+                arrs = []
+                for k in ("k", "v"):
+                    t = torch.from_numpy(np.ascontiguousarray(np.asarray(table[k])[used]))
+                    arrs.append(t.pin_memory() if cuda else t)
+                kv, index = rows_to_kv(arrs[0], arrs[1], device=self.dev), torch.as_tensor(inv.reshape(-1))
+            words, wmask = self.qwen.encode_text(kv, who, kv_index=index.to(self.dev))
+        self.last_qwen_passes = len(entry)
+        pt = torch.as_tensor(p, dtype=torch.long, device=words.device)
+        out = dict(b)
+        out["w_qwen"], out["wm_qwen"] = words[pt[:, 0]], wmask[pt[:, 0]]
+        if target:
+            out["w_qwen_next"], out["wm_qwen_next"] = words[pt[:, 1]], wmask[pt[:, 1]]
+        out["_qwen"] = ("", "_next") if target else ("",)
+        return out
+
     # --------------------------------------------------------------- update --
     def grad_step(self, b: dict | None = None, log: bool = False) -> dict:
         if b is None:
             b = self.prefetch.next() if self.prefetch is not None else self.sampler.sample(self.cfg.batch_size)
             self._last_rng_after = b.get("_rng_after")
         t0 = self.timer.mark()
-        # outside TF32: a sentence missing from the cache is encoded here and cached for collection and probes
-        # too, so it must be encoded in fp32 (review round 3, C8)
-        words, wmask = self.text.lookup(b["sentence"], splits=["train"] * len(b["sentence"]))
+        if self.qwen is not None:
+            # V6, outside the TF32 block: the frozen text pass in the encoder's own precision, as the rollout runs it
+            q0 = self.timer.mark()
+            b = self.qwen_words(b)
+            self.timer.add("qwen_text", q0, self.timer.mark())
+            self._qwen_passes += self.last_qwen_passes
+            words, wmask = b["w_qwen"], b["wm_qwen"]
+        else:
+            # outside TF32: a sentence missing from the cache is encoded here and cached for collection and probes
+            # too, so it must be encoded in fp32 (review round 3, C8)
+            words, wmask = self.text.lookup(b["sentence"], splits=["train"] * len(b["sentence"]))
         if self.fusion is not None:
             # V5, also outside the TF32 block: the stage sets its own precision (cfg.fusion_dtype), the one the
             # evaluation and the rollout use, so training never sees other fused tokens than deployment
@@ -539,9 +644,10 @@ class LangTrainer:
         sens = (self.critics.qmin(enc_d, r1, Jlin, Jang, ji) - self.critics.qmin(enc_d, r2, Jlin, Jang, ji)).abs().mean()
         out["critic/action_sens_rel"] = float(sens / torch.minimum(q1, q2).abs().mean().clamp_min(1e-9))
         out.update(self.sampler.health())
-        miss = self.text.miss_frac()
-        out["data/text_miss_frac"] = miss.get("all", 0.0)
-        out.update({f"data/text_miss_frac/{sp}": v for sp, v in miss.items() if sp != "all"})
+        if self.text is not None:
+            miss = self.text.miss_frac()
+            out["data/text_miss_frac"] = miss.get("all", 0.0)
+            out.update({f"data/text_miss_frac/{sp}": v for sp, v in miss.items() if sp != "all"})
         now = time.perf_counter()
         dt = now - self.t_last
         wait = self.prefetch.wait_s if self.prefetch is not None else 0.0
@@ -555,6 +661,9 @@ class LangTrainer:
         if "fusion" in spans:   # frames per step: fusion_ms / fusion_frames is the cost of one frame-pass
             out["perf/fusion_frames"] = self._fusion_frames / max(spans["fusion"][1], 1)
         self._fusion_frames = 0
+        if "qwen_text" in spans:   # sentence passes per step (V6): qwen_text_ms / qwen_passes per pass
+            out["perf/qwen_passes"] = self._qwen_passes / max(spans["qwen_text"][1], 1)
+        self._qwen_passes = 0
         # repeats per training episode so far (FUSION_PLAN C1: every E5 / E6 table reports it)
         n_ep = sum(self.sampler.episode_counts().values())
         out["data/samples_per_episode"] = self.step * int(self.cfg.batch_size) / max(n_ep, 1)
@@ -565,9 +674,11 @@ class LangTrainer:
         collection), so perf/* and data/text_miss_frac describe training steps only (review M9)."""
         self.t_last = time.perf_counter()
         self.wait_last = self.prefetch.wait_s if self.prefetch is not None else 0.0
-        self.text.stats.clear()
+        if self.text is not None:
+            self.text.stats.clear()
         self.timer.clear()
         self._fusion_frames = 0
+        self._qwen_passes = 0
 
     def pause_prefetch(self) -> None:
         """Stop the prefetch thread and rewind its RNG to the last consumed batch."""
@@ -582,7 +693,11 @@ class LangTrainer:
 
         was = self.policy_enc.training
         self.policy_enc.eval(), self.critics.eval()
-        words, wmask = self.text.lookup(sentences, splits=["probe"] * len(sentences))
+        if self.qwen is not None:   # V6: THESE sentences against frame t's prefix (the probes vary the sentence)
+            sub = self.qwen_words(sub, sentences=list(sentences), target=False)
+            words, wmask = sub["w_qwen"], sub["wm_qwen"]
+        else:
+            words, wmask = self.text.lookup(sentences, splits=["probe"] * len(sentences))
         # V5: the frames fused with THESE sentences (the shuffled / paraphrase probes change the fused tokens too)
         sub = self.fused(sub, words, wmask, sentences=list(sentences), target=False)
         stores = set_probe(self.policy_enc, True) if probe else []
@@ -607,6 +722,8 @@ class LangTrainer:
             self.prober = Prober(self.val_sampler, n=self.probe_n)
             if "neck" in self.prober.batch:   # V5: frames t, t-k, 0 only, one table the per-state sub-batches share
                 self.prober.batch.update(probe_neck(self.prober.batch))
+            if "kv" in self.prober.batch:     # V6: frame t's prefix rows only, one shared table
+                self.prober.batch.update(probe_kv(self.prober.batch))
         t0 = time.time()
         out = self.prober.run(self.probe_forward, self.run / "probes", self.step)
         if getattr(self.cfg, "aux_target_loss", False):
@@ -621,7 +738,11 @@ class LangTrainer:
         sub = self.val_sampler.sample(n)
         was = self.policy_enc.training
         self.policy_enc.eval()
-        words, wmask = self.text.lookup(sub["sentence"], splits=["probe"] * len(sub["sentence"]))
+        if self.qwen is not None:
+            sub = self.qwen_words(sub, target=False)
+            words, wmask = sub["w_qwen"], sub["wm_qwen"]
+        else:
+            words, wmask = self.text.lookup(sub["sentence"], splits=["probe"] * len(sub["sentence"]))
         sub = self.fused(sub, words, wmask, target=False)
         enc, _, _, _ = self.encode(sub, words, wmask)
         self.policy_enc.train(was)
@@ -646,7 +767,9 @@ class LangTrainer:
                   "text_backend": self.cfg.text_backend, "step": self.step, "round": self.round,
                   "switches": self.cfg.path_switches(),
                   # what the weights were trained on (review round 3, B1): evaluations group on it
-                  "bead_h_train": _bead_h_of(self.sampler.sources), "identity": dict(self.identity)})
+                  "bead_h_train": _bead_h_of(self.sampler.sources), "identity": dict(self.identity),
+                  "encoder": self.cfg.encoder,
+                  **({"qwen_ckpt_id": self.qwen.ckpt_id} if self.qwen is not None else {})})
         return d
 
     def _publish(self, obj, p: Path) -> Path:
@@ -666,7 +789,8 @@ class LangTrainer:
 
     def save_ckpt(self, name: str = "checkpoint.pt") -> Path:
         p = self._publish(self.ckpt_dict(), self.run / name)
-        self.text.save_extra()
+        if self.text is not None:
+            self.text.save_extra()
         return p
 
     def load_weights(self, path, strict_switches: bool = True) -> None:
@@ -675,6 +799,10 @@ class LangTrainer:
             raise ValueError(f"{path}: switches {ck.get('switches')} != {self.cfg.path_switches()}")
         if ck.get("text_backend") != self.cfg.text_backend:
             raise ValueError(f"{path}: text backend {ck.get('text_backend')} != {self.cfg.text_backend}")
+        # V6: no parameter depends on the scene width, so a GD checkpoint would load strictly into a Qwen model
+        theirs_enc = (ck.get("lang_config") or {}).get("encoder", "holobrain_gd")
+        if theirs_enc != self.cfg.encoder:
+            raise ValueError(f"{path}: trained on the {theirs_enc} front end, this run has {self.cfg.encoder}")
         # V5 adds no parameter, so the parts cannot tell: weights trained on unfused tokens (or cached words) are no
         # start for fused ones, and back
         theirs, mine = fusion_flags(ck.get("lang_config") or {}), fusion_flags(self.cfg.to_dict())
@@ -704,7 +832,8 @@ class LangTrainer:
               else (self.prefetch.rng_state() if self.prefetch is not None else None),
               "lang_config": self.cfg.to_dict(), **self.identity, **(extra or {})}
         p = self._publish(st, self.run / "state.pt")
-        self.text.save_extra()
+        if self.text is not None:
+            self.text.save_extra()
         return p
 
     def load_state(self, path=None) -> dict:
@@ -828,8 +957,9 @@ def run_sanity(args) -> int:
               else caches_of(args.data) + caches_of(args.val or []))
     from .data import LangSampler
 
-    base = LangSampler(roots, cfg0, seed=0, neck=bool(cfg0.scene_fusion))
+    base = LangSampler(roots, cfg0, seed=0, neck=bool(cfg0.scene_fusion), kv=cfg0.qwen)
     stage = make_fusion(cfg0)   # V5: one frozen stage for the fusing trainers below (None when off)
+    qwen = make_qwen(cfg0) if cfg0.qwen else None   # V6: one frozen text pass for every trainer below
     rng = np.random.default_rng(0)
     picks = base.plan(cfg0.batch_size, rng, pair_frac=1.0)       # 32 pairs from mixed rows
     batch = base.sample(cfg0.batch_size, rng, picks=picks)
@@ -845,7 +975,11 @@ def run_sanity(args) -> int:
         b = dict(batch)
         b["sentence"] = sentences
         with torch.no_grad():
-            words, wmask = tr.text.lookup(b["sentence"])
+            if tr.qwen is not None:
+                b = tr.qwen_words(b)
+                words, wmask = b["w_qwen"], b["wm_qwen"]
+            else:
+                words, wmask = tr.text.lookup(b["sentence"])
             b = tr.fused(b, words, wmask)
             enc, Jlin, Jang, ji = tr.encode(b, words, wmask)
             q1, q2, _, _ = tr.critics(enc, _t(b["dtheta"], dev=tr.dev), Jlin, Jang, ji)
@@ -863,7 +997,8 @@ def run_sanity(args) -> int:
         return target_rank_acc(qm, y.cpu().numpy(), batch["pair"]), lab["lang/pair_rank_acc"]
 
     def overfit(tag, cfg, shuffle: bool, steps: int):
-        tr = LangTrainer(cfg, res_dir / tag, roots, (), caches, use_wandb=False, prefetch=False, seed=0, fusion=stage)
+        tr = LangTrainer(cfg, res_dir / tag, roots, (), caches, use_wandb=False, prefetch=False, seed=0, fusion=stage,
+                         qwen=qwen)
         eval_rng = np.random.default_rng(12345)
         hist = []
         for s in range(steps):
@@ -905,7 +1040,8 @@ def run_sanity(args) -> int:
     # switches off: the sentence cannot change Q (text_sens exactly 0). With scene_fusion the fused tokens carry the
     # sentence whatever the switches, so the check runs with the fusion off too (the shards' stored tokens)
     off = dataclasses.replace(cfg0, scene_fusion=False, **{k: False for k in cfg0.path_switches()})
-    tr = LangTrainer(off, res_dir / "switches_off", roots, (), caches, use_wandb=False, prefetch=False, seed=0)
+    tr = LangTrainer(off, res_dir / "switches_off", roots, (), caches, use_wandb=False, prefetch=False, seed=0,
+                     qwen=qwen)
     for _ in range(int(args.switch_steps)):
         tr.grad_step(log=False)
     with torch.no_grad():
@@ -942,7 +1078,8 @@ def add_common(p):
                    help="comma list or 'all' (default ur5-wsg: one embodiment); a resumed run keeps the saved choice")
     p.add_argument("--relabel", choices=("paired", "random", "fixed"), default=None)
     p.add_argument("--shuffle-text", action="store_true")
-    p.add_argument("--text-backend", choices=("holobrain_bert", "bert_raw", "sentence_generic"), default=None)
+    p.add_argument("--text-backend", choices=("holobrain_bert", "bert_raw", "sentence_generic", "holobrain_qwen"),
+                   default=None)
     for s in ("scene", "body", "film", "queries", "rtoken"):
         p.add_argument(f"--no-{s}", action="store_true", help=f"lang_{s} off")
     p.add_argument("--no-wandb", action="store_true")

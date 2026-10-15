@@ -151,7 +151,7 @@ def check_v6(root: Path, hdr: dict, side_hdr: dict, lines: list[dict], ep_side, 
         elif not qwen and width == 297:
             bad.append("scene width 297 (the Qwen grid) in a shard that does not say encoder holobrain_qwen")
         cells = int(side_hdr.get("n_cam", 3)) * int(side_hdr.get("n_tok", -1))
-        if cells != width:
+        if qwen and cells != width:   # the probe's ref_mask needs masks on the scene grid (GD shards: 3 x 400 = 1200)
             bad.append(f"item sidecar n_cam x n_tok = {cells}, the scene width is {width}")
     if qwen:
         off = [d for d in lines if not d.get("skipped") and d.get("encoder") != "holobrain_qwen"]

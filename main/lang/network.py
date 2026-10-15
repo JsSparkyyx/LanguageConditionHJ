@@ -34,7 +34,7 @@ HEADS = 8
 FFN_DIM = 1024
 N_FRAMES = 3          # [t, t-k, 0]
 N_TOK_FRAME = 1200    # 3 cameras x 400 tokens, flattened within a frame
-TEXT_DIMS = {"holobrain_bert": 256, "bert_raw": 768, "sentence_generic": 768}
+TEXT_DIMS = {"holobrain_bert": 256, "bert_raw": 768, "sentence_generic": 768, "holobrain_qwen": 256}
 
 
 def ffn(dim: int = DIM, hidden: int = FFN_DIM) -> nn.Sequential:
@@ -102,7 +102,9 @@ class TextAdapter(nn.Module):
         self.q = nn.Parameter(torch.randn(self.K, DIM) * 0.02) if self.K else None
         self.pos_emb = nn.Parameter(torch.randn(L, DIM) * 0.02)
         backend = getattr(cfg, "text_backend", "holobrain_bert")
-        self.in_proj = nn.Identity() if (backend == "holobrain_bert" and d_in == DIM) else nn.Linear(d_in, DIM)
+        # HoloBrain's own 256-d words (BERT + text_feat_map, or V6's Qwen layer-0 feat_mapping) enter as they are
+        self.in_proj = (nn.Identity() if (backend in ("holobrain_bert", "holobrain_qwen") and d_in == DIM)
+                        else nn.Linear(d_in, DIM))
         self.blocks = nn.ModuleList([TextBlock() for _ in range(depth)])
         if getattr(cfg, "text_out_norm", False):   # V1 (round 3 E2): the outputs enter the model normalized
             self.norm_r0, self.norm_w = nn.RMSNorm(DIM), nn.RMSNorm(DIM)

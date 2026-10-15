@@ -234,6 +234,9 @@ class Models:
         path = run / ckpt if not Path(ckpt).is_absolute() else Path(ckpt)
         ck = torch.load(path, map_location="cuda", weights_only=False)
         self.cfg = LangConfig.from_dict(ck["lang_config"])
+        if self.cfg.qwen:
+            raise SystemExit(f"{path}: a V6 (HoloBrain-Qwen) checkpoint; closed-loop evaluation is not ported to the "
+                             "Qwen front end yet (qwen_impl.md 0)")
         self.step, self.sha = int(ck.get("step", 0)), ckpt_sha(path)   # round 3, B1
         self.pe = LangPolicyEncoder(self.cfg).cuda().eval()
         load_policy(self.pe, ck)

@@ -238,6 +238,9 @@ class Evaluator:
         ck = torch.load(self.run / ckpt if not Path(ckpt).is_absolute() else ckpt, map_location=device,
                         weights_only=False)
         self.cfg = LangConfig.from_dict(ck["lang_config"])
+        if self.cfg.qwen:
+            raise SystemExit("a V6 (HoloBrain-Qwen) checkpoint: offline evaluation is not ported to the Qwen front end "
+                             "yet (qwen_impl.md 0)")
         # provenance (review round 3, B1): what the weights were trained on, and which file they are
         self.bead_h_train = ck.get("bead_h_train") or "not recorded"
         from .train import CKPT_PARTS   # which model parts the checkpoint holds (round 4, item 1: V3 needs e_tag)

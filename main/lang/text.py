@@ -117,7 +117,7 @@ def make_encoder(backend: str, device: str = "cuda", backend_paths: dict | None 
 
 
 def text_dim(backend: str) -> int:
-    return 256 if backend == "holobrain_bert" else 768
+    return 256 if backend in ("holobrain_bert", "holobrain_qwen") else 768
 
 
 # ---------------------------------------------------------------------------

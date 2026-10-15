@@ -41,7 +41,7 @@ from . import ensure_item_path
 
 ensure_item_path()
 
-from .collect import InitLimit, read_lines, run_episodes, stage_deadline  # noqa: E402
+from .collect import InitLimit, item_n_tok, open_extras, read_lines, run_episodes, stage_deadline  # noqa: E402
 from .config import CANON_EMBODIMENTS, CANON_TASKS, round_offset  # noqa: E402
 from .train import EXIT_RESUME, LOG_EVERY, STATE_EVERY, LangTrainer, check_resume_identity, code_identity  # noqa: E402
 
@@ -75,8 +75,9 @@ class RoundSchedule:
 
 
 def make_ring(run: Path, cfg, rounds: int, episodes_per_round: int):
+    """The run's ring: StepBuffer + item sidecar (token masks on the config's encoder grid). V6's kv_buffer/ is
+    opened next to it by collect.open_extras (_run_rounds)."""
     from main.item_envs.item_buffer import ItemSidecarBuffer
-    from main.item_envs.masks import token_grid
     from main.train.buffer import StepBuffer
 
     ring = run / "ring"
@@ -87,7 +88,7 @@ def make_ring(run: Path, cfg, rounds: int, episodes_per_round: int):
         buf = StepBuffer(ring / "buffer")
         if not (ring / "item_buffer" / "header.json").exists() and len(buf) == 0:
             # the first launch died between the two creations (round 2 B2): pair a fresh sidecar
-            side = ItemSidecarBuffer.for_step_buffer(buf, n_tok=token_grid()[1])
+            side = ItemSidecarBuffer.for_step_buffer(buf, n_tok=item_n_tok(cfg))
         else:
             side = ItemSidecarBuffer(ring / "item_buffer")
         if side.capacity != buf.capacity:
@@ -98,7 +99,7 @@ def make_ring(run: Path, cfg, rounds: int, episodes_per_round: int):
                              f"(lang_config.json) or start a new run")
         return buf, side
     buf = StepBuffer(ring / "buffer", capacity=cap, header=cfg.to_dict())
-    side = ItemSidecarBuffer.for_step_buffer(buf, n_tok=token_grid()[1])
+    side = ItemSidecarBuffer.for_step_buffer(buf, n_tok=item_n_tok(cfg))
     return buf, side
 
 
@@ -140,8 +141,21 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                                "grad_steps_per_round": args.grad_steps_per_round})
     n_rounds, n_eps, n_steps = int(args.collect_rounds), int(args.episodes_per_round), int(args.grad_steps_per_round)
     ring_buf, ring_side = make_ring(run, cfg, n_rounds, n_eps)
+    # V6 (qwen_impl.md 8): one HoloBrain-Qwen front end per process, the trainer's text pass and the collection's
+    # frame encoder; the ring gains kv_buffer/ (no frames/), created, resumed and rolled back with the pair
+    qwen = getattr(trainer, "qwen", None) if trainer is not None else None
+    if cfg.qwen and qwen is None and trainer is None:
+        from .qwen_encoder import HoloBrainQwenEncoder
+
+        qwen = HoloBrainQwenEncoder(device="cuda", attn=cfg.qwen_attn, vision=True)
+    if cfg.qwen and qwen is None:
+        raise ValueError("encoder holobrain_qwen: the injected trainer has no qwen front end")
+    extras = (open_extras(run / "ring", ring_buf, kv_dims={"ckpt_id": qwen.ckpt_id, "attn": cfg.qwen_attn})
+              if cfg.qwen else {})
     tr = trainer if trainer is not None else LangTrainer(
-        cfg, run, roots, vals, caches, tasks=tasks, embodiments=embs, use_wandb=not args.no_wandb, seed=args.seed)
+        cfg, run, roots, vals, caches, tasks=tasks, embodiments=embs, use_wandb=not args.no_wandb, seed=args.seed,
+        qwen=qwen)
+    ring_rings = (ring_buf, ring_side, *extras.values())
     collect_fn = collect_fn or run_episodes
     sched = RoundSchedule(tasks or cfg.task_choices, embs or cfg.embodiment_choices, cfg.t1_hosts)
     rng_policy = np.random.default_rng(args.seed + 17)
@@ -164,18 +178,19 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                    "done": int(st.get("slots_done", 0)), "attempt": int(st.get("attempt_next", 0)),
                    "steps_target": st.get("steps_target")}
         n = int(st["ring_n"])
-        if (len(ring_buf), len(ring_side)) != (n, n):
+        if any(len(b) != n for b in ring_rings):
             # the episode in progress is collected again under the next seed (attempt + 1): rows a stalled
             # former writer might still add then carry another episode id (review round 3, C1)
-            print(f"[rounds] resume: ring {len(ring_buf)} -> {n} rows (the episode in progress is collected "
-                  "again, next seed)")
-            ring_buf.discard_to(n)
-            ring_side.discard_to(n)
-            ring_buf.flush(), ring_side.flush()
+            print(f"[rounds] resume: ring {[len(b) for b in ring_rings]} -> {n} rows (the episode in progress is "
+                  "collected again, next seed)")
+            for b in ring_rings:
+                b.discard_to(n)
+            for b in ring_rings:
+                b.flush()
             if pos is not None and pos["phase"] == "collect":
                 pos["attempt"] += 1
-        if (len(ring_buf), len(ring_side)) != (n, n):
-            raise SystemExit(f"{run}: ring at ({len(ring_buf)}, {len(ring_side)}) rows after the roll-back to {n}")
+        if any(len(b) != n for b in ring_rings):
+            raise SystemExit(f"{run}: ring at {[len(b) for b in ring_rings]} rows after the roll-back to {n}")
 
         def kept(d):   # episodes the restored state already contains
             rd = int(d.get("round", -1))
@@ -267,7 +282,8 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                                       attempt0=r_pos["attempt"], inits=inits,
                                       video_every=1 if (args.video_every and r % args.video_every == 0) else 0,
                                       video_filter_only=True, text_store=tr.text, log_prefix=f"[round {r}] ", slot_offset=k,
-                                      extra_line={"round": r}, round_metrics=(metrics, r), writer=writer)
+                                      extra_line={"round": r}, round_metrics=(metrics, r), writer=writer,
+                                      **({"qwen": qwen, "kv_buf": extras["_kv"]} if cfg.qwen else {}))
                 except InitLimit:
                     return stop(r_pos, f"init limit inside round ({inits['n']} inits)")
                 walls.append(time.time() - t_ep)
