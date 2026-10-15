@@ -23,12 +23,20 @@ with small injected pieces instead of copied methods.
   neck with each sentence into that sentence's own frame history.
   ``keep_neck`` (version-2 collection): every captured row carries its
   neck_buffer/ row (``_pending["_neck"]``, popped by NeckLockstepWriter).
+- V6 (qwen_impl.md 5): ``qwen`` (a HoloBrainQwenEncoder). Frames render at
+  308 x 252 (obs.qwen_obs) and encode through HoloBrain-Qwen (297 scene
+  tokens, the prefix keys / values ``_kv_now``); the robot state stays GD's.
+  The shim runs each sentence against the frame's prefix every call (the
+  words read the frame). ``keep_kv`` / ``keep_frames``: every captured row
+  carries its kv_buffer/ and frames/ rows (``_pending["_kv"]`` /
+  ``["_frames"]``, popped by SidecarLockstepWriter).
 """
 
 from __future__ import annotations
 
 import time
 from collections import deque
+from functools import partial
 
 import numpy as np
 
@@ -178,6 +186,8 @@ class LangPolicyShim:
         self.n_calls += 1
         if getattr(self.ro, "fusion", None) is not None:
             return self._call_fused(state, body_tokens, link_pos, body_mask, joint_index)
+        if getattr(self.ro, "qwen", None) is not None:
+            self._qwen_text()
         tok, pos = self._flat(tokens, pos_mean)
         st, sp = self.frames(tok, pos)
         ro = self.ro
@@ -189,6 +199,29 @@ class LangPolicyShim:
             self.enc_cf = (self.pe(state, body_tokens, link_pos, body_mask, joint_index, st, sp,
                                    text_out=ro.cf_text_out, **kw_b) if ro.cf_text_out is not None else None)
         return enc
+
+    def _qwen_text(self):
+        """V6: the episode's sentence (and the counterfactual one) against this frame's prefix keys / values, one
+        batch, then the text adapter: text_out / cf_text_out for this call. With qwen_words_prefix = "blank" the
+        words read the black-image prefix instead (the words-only control)."""
+        import torch
+
+        ro = self.ro
+        if ro.sentence is None:
+            raise RuntimeError("V6: no sentence; call set_instruction before run()")
+        t0 = time.perf_counter()
+        blank = getattr(getattr(ro, "cfg", None), "qwen_words_prefix", "frame") == "blank"
+        kv = ro.qwen.blank_kv() if blank else ro._kv_now
+        if kv is None:
+            raise RuntimeError("V6: no encoded frame yet (the prefix keys / values come from _encode_obs)")
+        cf = ro.cf_sentence is not None
+        words, wmask = ro.qwen.encode_text(kv, [ro.sentence] + ([ro.cf_sentence] if cf else []))
+        with torch.no_grad():
+            ro.text_out = self.pe.encode_text(words[:1], wmask[:1])
+            ro.cf_text_out = self.pe.encode_text(words[1:2], wmask[1:2]) if cf else None
+        timing = getattr(ro, "timing", None)
+        if timing is not None:
+            timing["text"] = timing.get("text", 0.0) + time.perf_counter() - t0
 
     def _call_fused(self, state, body_tokens, link_pos, body_mask, joint_index):
         """V5: this frame's neck fused with each sentence (one fuse call, the neck twice when a counterfactual is
@@ -230,8 +263,17 @@ class LangPolicyShim:
 
 class LangRolloutController(RolloutController):
     def __init__(self, *args, text_store=None, monitor_only: bool = False, fusion=None, keep_neck: bool = False,
-                 **kwargs):
+                 qwen=None, keep_kv: bool = False, keep_frames: bool = False, **kwargs):
         cfg0 = args[0] if args else kwargs.get("cfg")
+        cfg_qwen = bool(getattr(cfg0, "qwen", False))
+        if (qwen is not None) != cfg_qwen:
+            raise ValueError(f"encoder={getattr(cfg0, 'encoder', 'holobrain_gd')} in the config but qwen="
+                             f"{'an encoder' if qwen is not None else 'None'}: pass a HoloBrainQwenEncoder exactly "
+                             "when the config's encoder is holobrain_qwen")
+        if qwen is not None and (fusion is not None or keep_neck):
+            raise ValueError("V6 (qwen) has no GD neck: fusion / keep_neck are refused")
+        if (keep_kv or keep_frames) and qwen is None:
+            raise ValueError("keep_kv / keep_frames are the V6 sidecars: they need qwen")
         if getattr(cfg0, "oracle_ref_tag", False) and not monitor_only:
             raise SystemExit("oracle_ref_tag reads the named object's position from the simulator: an offline "
                              "measuring tool (review round 3, E2), never run in closed loop (monitor_only: Q is "
@@ -263,6 +305,12 @@ class LangRolloutController(RolloutController):
         self._neck_now = None       # the neck dict of the last encoded frame (captures and cache misses)
         self._neck_capture = None   # the neck of this capture's frame, until _collect_tick takes it
         self.text_words = self.cf_text_words = None   # fusion: (words, mask) of each sentence, from the text store
+        # V6 (qwen_impl.md 5): the frozen HoloBrain-Qwen front end and the sidecar rows of each capture
+        self.qwen = qwen
+        self.keep_kv, self.keep_frames = bool(keep_kv), bool(keep_frames)
+        self._kv_now = None          # (K, V) of the last encoded frame (captures and cache misses)
+        self._kv_capture = self._frames_capture = None   # this capture's rows, until _collect_tick takes them
+        self.sentence = self.cf_sentence = None
         super().__init__(*args, **kwargs)
         self.timing = {"build": time.perf_counter() - t0}
         self.trace["status"] = "ok"
@@ -270,7 +318,12 @@ class LangRolloutController(RolloutController):
             self.trace[k] = []
         env = self.env
         # timing seams (instance attributes only; restored by the env's close)
-        env.get_encoder_obs = _Timer(env.get_encoder_obs, self.timing, "render")
+        if self.qwen is not None:   # the base capture and the cache-miss path both render through it
+            from .obs import qwen_obs
+
+            env.get_encoder_obs = _Timer(partial(qwen_obs, env), self.timing, "render")
+        else:
+            env.get_encoder_obs = _Timer(env.get_encoder_obs, self.timing, "render")
         self._encode_obs = _Timer(self._encode_obs, self.timing, "encode")
         if self.policy_enc is not None and not isinstance(self.policy_enc, LangPolicyShim):
             from .network import LangPolicyEncoder
@@ -303,6 +356,17 @@ class LangRolloutController(RolloutController):
         shim = self.policy_enc
         if not isinstance(shim, LangPolicyShim):
             raise ValueError("set_instruction needs a LangPolicyEncoder policy (LangPolicyShim)")
+        if getattr(self, "qwen", None) is not None:
+            # V6: the words depend on the frame, so the shim runs the text pass every call; check the token budget now
+            for s in (sentence, cf_sentence):
+                if s is not None:
+                    self.qwen.instruction_ids(s)
+            self.text_out = self.cf_text_out = None
+            self.sentence, self.cf_sentence = sentence, cf_sentence
+            if rule_id is not None:
+                self.named_rule_id = rule_id
+            self.cf_rule_id = cf_rule_id
+            return
         fusion = getattr(self, "fusion", None)
         if fusion is not None and shim.n_pushed:
             raise RuntimeError(f"set_instruction after {shim.n_pushed} captured frame(s): with scene_fusion the frame "
@@ -346,6 +410,8 @@ class LangRolloutController(RolloutController):
         dict (fusion.encode_obs_with_neck: tokens and positions bit-identical to the base path), kept as _neck_now
         for the shim and, inside a capture only, as the capture's neck for _collect_tick (the base class's
         cache-miss encoding runs outside a capture and never reaches a buffer row)."""
+        if getattr(self, "qwen", None) is not None:
+            return self._encode_qwen(obs)
         if self.fusion is None and not self.keep_neck:
             return super()._encode_obs(obs)
         import torch
@@ -363,11 +429,56 @@ class LangRolloutController(RolloutController):
             self._neck_capture = neck
         return tokens, pos_mean, state, body
 
+    def _encode_qwen(self, obs):
+        """V6: HoloBrain-Qwen tokens [1, 3, 99, 256] / positions, GD's robot-state encoder and the body features.
+        Keeps the frame's prefix keys / values (_kv_now) and, inside a capture, the sidecar rows' sources."""
+        import torch
+
+        from .obs import encode_qwen_obs
+
+        if not obs.get("qwen"):
+            raise RuntimeError("V6: a GD observation bundle reached the Qwen encoder (get_encoder_obs not swapped?)")
+        with torch.no_grad():
+            tokens, pos_mean, kv = encode_qwen_obs(self.qwen, obs)
+            state = self.encoder.encode_joint_angles(
+                obs["joint_state"], self.kin, embodiedment_mat=obs["T_base2ego"],
+            ).squeeze(2)                          # [B, N, D]
+            body = self.extractor.extract()
+        self._kv_now = kv
+        if self._in_capture:
+            if self.keep_kv:
+                self._kv_capture = kv
+            if self.keep_frames:
+                self._frames_capture = (obs["native"], obs["T_base2ego"])
+        return tokens, pos_mean, state, body
+
     def _collect_tick(self, obs, h, diag, encoded):
         """keep_neck (version 2): the capture's neck row rides in the entry the base class stashes as _pending and
         writes one capture later (the last one in _flush_pending); NeckLockstepWriter pops it inside the same
         append. The row is made before the base call, so a failed conversion (fp16 overflow) leaves the previous
-        entry pending, as any tick error does (the episode is then rolled back at its end)."""
+        entry pending, as any tick error does (the episode is then rolled back at its end). V6 keep_kv /
+        keep_frames: the same for the kv_buffer/ and frames/ rows (SidecarLockstepWriter pops them)."""
+        rows = {}
+        if getattr(self, "qwen", None) is not None:
+            import torch
+
+            tok = encoded[0]
+            if not bool(torch.isfinite(tok).all()) or float(tok.abs().max()) > 6.0e4:
+                raise RuntimeError("V6: scene tokens outside the fp16 range (the StepBuffer stores them as fp16)")
+            if self.keep_kv:
+                kv, self._kv_capture = self._kv_capture, None
+                if kv is None:
+                    raise RuntimeError("keep_kv: this capture's encoding left no prefix keys / values")
+                from .kv_buffer import kv_to_row
+
+                rows["_kv"] = kv_to_row(*kv)
+            if self.keep_frames:
+                fr, self._frames_capture = self._frames_capture, None
+                if fr is None:
+                    raise RuntimeError("keep_frames: this capture's encoding left no native frames")
+                from .frames_buffer import frames_to_row
+
+                rows["_frames"] = frames_to_row(*fr)
         row = None
         if self.keep_neck:
             neck, self._neck_capture = self._neck_capture, None
@@ -380,6 +491,7 @@ class LangRolloutController(RolloutController):
         super()._collect_tick(obs, h, diag, encoded)
         if row is not None:
             self._pending["_neck"] = row   # after super(): _pending is this capture's entry
+        self._pending.update(rows)
 
     def _trace_rules(self):
         diag = self._last_diag
