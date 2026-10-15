@@ -40,13 +40,16 @@ class KvBuffer(RingSidecar):
 
     @classmethod
     def make_meta(cls, prefix_len: int = PREFIX_LEN, n_kv_heads: int = N_KV_HEADS, head_dim: int = HEAD_DIM,
-                  rope_next: int = ROPE_NEXT, ckpt_id: str | None = None, attn: str | None = None) -> dict:
+                  rope_next: int = ROPE_NEXT, ckpt_id: str | None = None, attn: str | None = None,
+                  encoder_version: int | None = None) -> dict:
         meta = {"prefix_len": int(prefix_len), "rope_next": int(rope_next), "n_kv_heads": int(n_kv_heads),
                 "head_dim": int(head_dim), "value_dtype": "bfloat16 bits in int16", "key_rope": "applied"}
         if ckpt_id is not None:
             meta["ckpt_id"] = str(ckpt_id)
         if attn is not None:
             meta["attn"] = str(attn)
+        if encoder_version is not None:   # HoloBrainQwenEncoder.ENCODER_VERSION; absent = 1 (rows of 2026-10-14)
+            meta["encoder_version"] = int(encoder_version)
         return meta
 
     @classmethod

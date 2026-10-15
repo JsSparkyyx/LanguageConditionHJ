@@ -150,7 +150,8 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
         qwen = HoloBrainQwenEncoder(device="cuda", attn=cfg.qwen_attn, vision=True)
     if cfg.qwen and qwen is None:
         raise ValueError("encoder holobrain_qwen: the injected trainer has no qwen front end")
-    extras = (open_extras(run / "ring", ring_buf, kv_dims={"ckpt_id": qwen.ckpt_id, "attn": cfg.qwen_attn})
+    extras = (open_extras(run / "ring", ring_buf, kv_dims={"ckpt_id": qwen.ckpt_id, "attn": cfg.qwen_attn,
+                                                           "encoder_version": getattr(qwen, "ENCODER_VERSION", None)})
               if cfg.qwen else {})
     tr = trainer if trainer is not None else LangTrainer(
         cfg, run, roots, vals, caches, tasks=tasks, embodiments=embs, use_wandb=not args.no_wandb, seed=args.seed,

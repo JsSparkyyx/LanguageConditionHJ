@@ -112,6 +112,10 @@ class HoloBrainQwenEncoder:
     HEAD_DIM = 128
     MAX_WORDS = 24
     PATCH = 28
+    # 1: the collection-time encoder of 2026-10-14 (rotary inv_freq rounded to bf16); 2: float32 inv_freq, as
+    # HoloBrain-Qwen (bit-identical to its own model with flash_attention_2 on one GPU type). Stored in kv_buffer/
+    # headers; the trainer refuses rows of another version (scripts/lang/qwen_recompute.py rewrites them)
+    ENCODER_VERSION = 2
 
     def __init__(self, ckpt_dir: str = QWEN_CKPT, base_dir: str = QWEN_BASE, device="cuda", attn: str = "sdpa",
                  vision: bool = True, text_chunk: int = 256):
@@ -134,7 +138,14 @@ class HoloBrainQwenEncoder:
         qcfg = Qwen2_5_VLConfig.from_pretrained(base_dir)
         qcfg.text_config.num_hidden_layers = 1
         vlm = Qwen2_5_VLForConditionalGeneration._from_config(qcfg, attn_implementation=attn, dtype=torch.bfloat16)
-        vlm.to(torch.bfloat16)   # all bf16 (HoloBrain's precision); the load below copies into these dtypes
+        # parameters bf16 (HoloBrain's precision; the load below copies into these dtypes), buffers untouched: the
+        # rotary inv_freq buffers stay float32, as in HoloBrain's from_pretrained build. A whole-model .to(bf16)
+        # (encoder version 1) rounded them and moved the vision RoPE angles by up to 0.06 rad: image features 6-9 %
+        # off HoloBrain's own on the same frame (pre-run review 2026-10-15)
+        with torch.no_grad():
+            for prm in vlm.parameters():
+                if prm.dtype != torch.bfloat16:
+                    prm.data = prm.data.to(torch.bfloat16)
         groups = {"vlm.": {}, "feat_mapping.": {}, "backbone_3d.": {}, "spatial_enhancer.": {}}
         mix = None
         with safe_open(st_path, framework="pt", device="cpu") as f:
@@ -178,6 +189,9 @@ class HoloBrainQwenEncoder:
                text_chunk, ckpt_id):
         self.device = torch.device(device)
         self.attn, self.ckpt_id, self.text_chunk = attn, str(ckpt_id), int(text_chunk)
+        rope = {n: b.dtype for n, b in vlm.named_buffers() if n.endswith("inv_freq")}
+        if any(dt != torch.float32 for dt in rope.values()):
+            raise RuntimeError(f"HoloBrain-Qwen: rotary inv_freq buffers must stay float32 (HoloBrain's build), got {rope}")
         for m in (vlm, feat_mapping, backbone_3d, spatial_enhancer):
             m.to(self.device)
             m.eval()            # one call per step: robo_orchard_lab's SwinTransformer.train returns None
@@ -360,4 +374,5 @@ class HoloBrainQwenEncoder:
         return self._blank
 
     def meta(self) -> dict:
-        return {"prefix_len": self.PREFIX_LEN, "rope_next": self.ROPE_NEXT, "ckpt_id": self.ckpt_id, "attn": self.attn}
+        return {"prefix_len": self.PREFIX_LEN, "rope_next": self.ROPE_NEXT, "ckpt_id": self.ckpt_id, "attn": self.attn,
+                "encoder_version": self.ENCODER_VERSION}

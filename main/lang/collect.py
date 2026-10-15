@@ -150,9 +150,10 @@ def open_extras(out_root: Path, buf, *, kv_dims: dict | None = None, frames: boo
             if sc.capacity != buf.capacity:
                 raise SystemExit(f"{root}: capacity {sc.capacity}, the StepBuffer's is {buf.capacity}")
             if key == "_kv":
-                for k in ("ckpt_id", "attn"):
-                    if kv_dims.get(k) is not None and sc.header.get(k) != kv_dims[k]:
-                        raise SystemExit(f"{root}: kv rows of {k} {sc.header.get(k)}, this process uses {kv_dims[k]}")
+                for k in ("ckpt_id", "attn", "encoder_version"):
+                    have = sc.header.get(k, 1 if k == "encoder_version" else None)
+                    if kv_dims.get(k) is not None and have != kv_dims[k]:
+                        raise SystemExit(f"{root}: kv rows of {k} {have}, this process uses {kv_dims[k]}")
         elif len(buf) == 0:
             sc = cls.for_step_buffer(buf, root=root, **(kv_dims if key == "_kv" else {}))
         else:
@@ -1009,7 +1010,8 @@ def plan_shard(args, kind: str):
 
         meta["encoder"] = cfg.encoder
         meta["kv"] = {"prefix_len": Q.PREFIX_LEN, "rope_next": Q.ROPE_NEXT,
-                      "ckpt_id": checkpoint_id(Path(QWEN_CKPT) / "model.safetensors"), "attn": cfg.qwen_attn}
+                      "ckpt_id": checkpoint_id(Path(QWEN_CKPT) / "model.safetensors"), "attn": cfg.qwen_attn,
+                      "encoder_version": Q.ENCODER_VERSION}
         meta["frames"] = bool(frames)
     if cfg.spawn_pool != "current":
         meta["spawn_pool"] = cfg.spawn_pool
@@ -1028,7 +1030,8 @@ def cmd_shard(args, kind: str) -> int:
         raise SystemExit(f"--out {out} is the replayed shard itself: a replay is written to a new root")
     g = meta["g"]
     v2 = int(meta.get("lang_version", 1)) >= 2
-    kv_dims = {"ckpt_id": meta["kv"]["ckpt_id"], "attn": meta["kv"]["attn"]} if cfg.qwen else None
+    kv_dims = ({"ckpt_id": meta["kv"]["ckpt_id"], "attn": meta["kv"]["attn"],
+                "encoder_version": int(meta["kv"].get("encoder_version", 1))} if cfg.qwen else None)
     capacity = int(len(slots) * cfg.max_steps_per_episode * 1.1) + 16
     # one writer per shard for this process's lifetime (review O1): a second process (a duplicated claim)
     # waits out a crashed writer's lock, then leaves the shard to the live one (exit 75: resumable)

@@ -333,6 +333,17 @@ class LangTrainer:
                     if got is not None and got != self.qwen.ckpt_id:
                         raise ValueError(f"{src.root}: kv rows of HoloBrain-Qwen checkpoint {got}, the text pass is "
                                          f"{self.qwen.ckpt_id} (never mix checkpoints)")
+                    # the front-end version and kernel the rows were computed with: the text pass reads them with its
+                    # own (version 1 rounded the RoPE buffers to bf16; scripts/lang/qwen_recompute.py rewrites rows)
+                    want_v = getattr(self.qwen, "ENCODER_VERSION", None)
+                    have_v = int(src.kv.header.get("encoder_version", 1))
+                    if want_v is not None and have_v != int(want_v):
+                        raise ValueError(f"{src.root}: kv rows of HoloBrain-Qwen front-end version {have_v}, this code is "
+                                         f"version {want_v}: recompute them (scripts/lang/qwen_recompute.py)")
+                    have_a = src.kv.header.get("attn")
+                    if want_v is not None and have_a is not None and have_a != cfg.qwen_attn:
+                        raise ValueError(f"{src.root}: kv rows computed with attention {have_a}, this run uses "
+                                         f"{cfg.qwen_attn}")
         self._qwen_passes = 0       # sentence passes of the training steps since the last log (V6)
         self.last_qwen_passes = 0
         # V5: HoloBrain's frozen fusion stage, a plain object next to the model (never a submodule of what is
