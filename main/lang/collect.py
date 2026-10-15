@@ -856,13 +856,21 @@ def _episode_items(root: Path) -> dict:
 
 
 ITEM_KEYS = ("item_id", "category", "color", "kind", "role", "half_extents", "obb_center_local", "mass")
+# episode_info fields that are OUTCOMES of the pre-roll before t = 0, not layout draws: T4's prepare_episode settles
+# the beads (physics) and grasps / levels / tilts with cuRobo plans (nondeterministic run to run), then records how
+# many beads it removed or trimmed, whether it re-grasped, fell back to the table grasp, aborted a levelling step,
+# and the tilt it reached (granular_carry.py). The layout fields next to them (carry_mode, n_beads_spawned,
+# interior_depth) are still compared. Measured on the V6 replays (2026-10-14): n_beads 129 / 133, 134 / 133, 133 / 115
+# for the same seeds.
+OUTCOME_INFO_KEYS = frozenset({"n_beads", "n_beads_removed", "n_beads_trimmed", "level_aborted", "held_regrasp",
+                               "held_fallback", "carry_tilt_eff_deg"})
 
 
 def replay_layout_mismatch(out: Path, src: Path, tol: float = 1e-5) -> list:
     """How the replayed episodes' scenes differ from the recorded ones (V6 layout check), per episode id: the item
     tables (ids, categories, colours, sizes, masses), T1's placements (item id, class, xyz within tol, asset and
-    model id where the source has them), the other tasks' layout / episode_info (the source's keys). [] = every
-    replayed episode stands on its recorded scene."""
+    model id where the source has them), the other tasks' layout / episode_info (the source's keys, without the
+    pre-roll outcomes OUTCOME_INFO_KEYS). [] = every replayed episode stands on its recorded scene."""
     src_lines = {int(d["episode_id"]): d for d in read_lines(Path(src) / "lang_episodes.jsonl") if not d.get("skipped")}
     src_items, new_items = _episode_items(src), _episode_items(out)
     diffs = []
@@ -894,7 +902,10 @@ def replay_layout_mismatch(out: Path, src: Path, tol: float = 1e-5) -> list:
                     diffs.append(f"episode {eid}: placement {x.get('item_id')} differs in {bad}")
         else:
             for key in ("layout", "episode_info"):
-                if key in sm and not _same(sm[key], nm.get(key), tol):
+                want = sm.get(key)
+                if key == "episode_info" and isinstance(want, dict):
+                    want = {k: v for k, v in want.items() if k not in OUTCOME_INFO_KEYS}
+                if key in sm and not _same(want, nm.get(key), tol):
                     diffs.append(f"episode {eid}: {key} differs")
     return diffs
 

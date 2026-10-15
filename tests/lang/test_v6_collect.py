@@ -209,6 +209,20 @@ def test_replay_layout_mismatch(tmp_path):
     t5b = dict(t5, scene_meta={"episode_info": {"referent": "block_0", "items": [{"h": 0.17, "color": "blue"}]}})
     write_shard(bad, [dict(t1, scene_meta={"placements": [dict(pl, xyz=[0.1, 0.21, 0.8])]}), t5b],
                 [(7, [dict(item, category="bottle")]), (8, [])])
+    t4 = {"episode_id": 9, "task": "granular_carry",
+          "scene_meta": {"episode_info": {"carry_mode": "table", "n_beads_spawned": 134, "interior_depth": 0.032,
+                                          "held_fallback": False, "n_beads_removed": 5, "n_beads": 129}}}
+    pre = tmp_path / "pre"           # T4's pre-roll outcomes may differ, its layout may not
+    write_shard(pre, [t4], [(9, [])])
+    t4_new = dict(t4, scene_meta={"episode_info": dict(t4["scene_meta"]["episode_info"], n_beads_removed=1,
+                                                       n_beads=133, held_fallback=True, carry_tilt_eff_deg=20.0)})
+    post = tmp_path / "post"
+    write_shard(post, [t4_new], [(9, [])])
+    assert C.replay_layout_mismatch(post, pre) == []
+    moved = tmp_path / "moved"
+    write_shard(moved, [dict(t4, scene_meta={"episode_info": dict(t4["scene_meta"]["episode_info"],
+                                                                  carry_mode="held")})], [(9, [])])
+    assert C.replay_layout_mismatch(moved, pre) == ["episode 9: episode_info differs"]
     diffs = C.replay_layout_mismatch(bad, src)
     assert any("placement obj_0 differs in ['xyz']" in d for d in diffs)
     assert any("item obj_0 differs in ['category']" in d for d in diffs)
