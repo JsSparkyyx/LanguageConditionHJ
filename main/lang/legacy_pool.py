@@ -48,6 +48,8 @@ def install_spawn_pool(name: str) -> None:
     global _ORIGINAL
     if name not in POOLS:
         raise ValueError(f"spawn_pool {name!r}: expected one of {POOLS}")
+    if name == "current" and _ORIGINAL is None:
+        return   # never switched in this process: nothing to restore (and no spawn import)
     spawn = _spawn()
     if _ORIGINAL is None:
         _ORIGINAL = spawn.t1_pool_entries

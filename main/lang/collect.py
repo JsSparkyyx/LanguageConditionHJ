@@ -23,6 +23,15 @@ sidecar (created, resumed, rolled back and flushed with the pair). ``--replay
         --replay data/lang/val_grounding/shard_g0 --out data/lang_v2/val_grounding/shard_g0
     python -m main.lang.collect warmup --lang-version 2 --embodiment ur5-wsg \\
         --tasks selective_avoid,gap_place --replay data/lang/warmup/shard_g0 --out data/lang_v2/warmup/shard_g0
+
+V6 (qwen_impl.md 6): ``--encoder holobrain_qwen`` collects with HoloBrain-Qwen's front end (297 scene tokens per
+frame, the kv_buffer/ sidecar with each frame's prefix keys / values, and by default the frames/ sidecar with the
+native renders); ``--spawn-pool pre_1012`` draws T1 objects from the pool before 2026-10-12, so a replay of a
+pre-10-12 shard places its recorded objects again (checked per episode: the layout check):
+
+    python -m main.lang.collect warmup --embodiment ur5-wsg --encoder holobrain_qwen --spawn-pool pre_1012 \\
+        --tasks selective_avoid,push_zone,tray_transport,gap_place --replay data/lang/warmup/shard_g0 \\
+        --out data/lang_qwen/warmup/shard_g0
 """
 
 from __future__ import annotations
@@ -80,15 +89,26 @@ def shard_schedule(tasks, emb: str, shard: int, n_shards: int, episodes_per_task
 # ---------------------------------------------------------------------------
 
 
+def item_n_tok(cfg) -> int:
+    """Token-mask cells per camera in the item sidecar: the scene token grid of the config's encoder."""
+    if getattr(cfg, "qwen", False):
+        from .qwen_masks import QWEN_N_TOK
+
+        return QWEN_N_TOK
+    from main.item_envs.masks import token_grid
+
+    return token_grid()[1]
+
+
 def make_pair(out_root: Path, cfg: LangConfig, capacity: int, *, neck: bool = False):
     """A fresh StepBuffer + lockstep sidecar under out_root (never reused). neck=True (version 2): also the
-    neck_buffer/ sidecar (same capacity and rows), returned third."""
+    neck_buffer/ sidecar (same capacity and rows), returned third. Under the Qwen encoder the sidecar's token masks
+    are on the 9 x 11 grid (99 cells per camera)."""
     from main.item_envs.item_buffer import ItemSidecarBuffer
-    from main.item_envs.masks import token_grid
     from main.train.buffer import StepBuffer
 
     buf = StepBuffer(out_root / "buffer", capacity=int(capacity), header=cfg.to_dict())
-    sidecar = ItemSidecarBuffer.for_step_buffer(buf, n_tok=token_grid()[1])
+    sidecar = ItemSidecarBuffer.for_step_buffer(buf, n_tok=item_n_tok(cfg))
     if not neck:
         return buf, sidecar
     from .neck_buffer import NeckBuffer
@@ -110,6 +130,35 @@ def open_neck(out_root: Path, buf):
     if len(buf) == 0:
         return NeckBuffer.for_step_buffer(buf)
     raise SystemExit(f"{out_root}: a version-2 shard with {len(buf)} rows and no neck_buffer/; refusing to resume")
+
+
+def open_extras(out_root: Path, buf, *, kv_dims: dict | None = None, frames: bool = False) -> dict:
+    """The V6 sidecars of a shard or ring, keyed as their rows ride in the StepBuffer entries: {"_kv": KvBuffer,
+    "_frames": FramesBuffer} (each only when asked for). Fresh next to an empty StepBuffer; otherwise reopened r+
+    with their own header (resume_point then rolls them back with the pair, as open_neck), refused when the kv rows
+    come from another HoloBrain-Qwen checkpoint or a sidecar is missing."""
+    from .frames_buffer import FramesBuffer
+    from .kv_buffer import KvBuffer
+
+    out = {}
+    for key, cls, want in (("_kv", KvBuffer, kv_dims is not None), ("_frames", FramesBuffer, frames)):
+        if not want:
+            continue
+        root = Path(out_root) / cls.DIRNAME
+        if (root / "header.json").exists():
+            sc = cls.reopen(root)
+            if sc.capacity != buf.capacity:
+                raise SystemExit(f"{root}: capacity {sc.capacity}, the StepBuffer's is {buf.capacity}")
+            if key == "_kv":
+                for k in ("ckpt_id", "attn"):
+                    if kv_dims.get(k) is not None and sc.header.get(k) != kv_dims[k]:
+                        raise SystemExit(f"{root}: kv rows of {k} {sc.header.get(k)}, this process uses {kv_dims[k]}")
+        elif len(buf) == 0:
+            sc = cls.for_step_buffer(buf, root=root, **(kv_dims if key == "_kv" else {}))
+        else:
+            raise SystemExit(f"{out_root}: {len(buf)} rows and no {cls.DIRNAME}/; refusing to resume")
+        out[key] = sc
+    return out
 
 
 def _jsonable(x):
@@ -189,7 +238,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                  inits: dict | None = None, video_every: int = 0, text_store=None,
                  max_retries: int = 5, log_prefix: str = "", slot_offset: int = 0,
                  with_masks: bool = True, deadline: float | None = None, extra_line: dict | None = None,
-                 round_metrics=None, writer=None, neck_buf=None, video_filter_only: bool = False) -> dict:
+                 round_metrics=None, writer=None, neck_buf=None, video_filter_only: bool = False,
+                 qwen=None, kv_buf=None, frames_buf=None) -> dict:
     """Run one episode per slot (task, emb, host) into (buf, sidecar).
 
     Episode i of the stream has seed = episode_id = episode_offset + attempt
@@ -209,6 +259,10 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     flushed and rolled back with the pair, and every line carries lang_version 2.
     video_filter_only: record videos of filter episodes only (rounds training; Yuxuan, 2026-10-11: the
     nominal-episode videos are not wanted in the training log). Warmup / validation keep every video.
+    qwen (V6): the HoloBrainQwenEncoder, exactly when cfg.encoder is holobrain_qwen, with kv_buf (its KvBuffer) and
+    optionally frames_buf (FramesBuffer): the controller keeps each capture's rows, ro.buf becomes a
+    SidecarLockstepWriter, the item masks are on the Qwen grid; the rings are guarded, synced, flushed and rolled
+    back with the pair. cfg.spawn_pool is installed before the first env.
     """
     import torch
 
@@ -228,7 +282,20 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         from .neck_buffer import NeckLockstepWriter
 
         extra_line = {**(extra_line or {}), "lang_version": int(cfg.lang_version)}
-    necks = (neck_buf,) if neck_buf is not None else ()
+    if (qwen is not None) != bool(getattr(cfg, "qwen", False)):
+        raise ValueError(f"encoder {getattr(cfg, 'encoder', 'holobrain_gd')} with qwen "
+                         f"{'given' if qwen is not None else 'None'}: the Qwen encoder runs exactly under its config")
+    if qwen is not None and kv_buf is None:
+        raise ValueError("the Qwen encoder writes its prefix keys / values: kv_buf is required")
+    if qwen is None and (kv_buf is not None or frames_buf is not None):
+        raise ValueError("kv_buf / frames_buf are the V6 sidecars: they need qwen")
+    extras = {k: b for k, b in (("_kv", kv_buf), ("_frames", frames_buf)) if b is not None}
+    if qwen is not None:
+        extra_line = {**(extra_line or {}), "encoder": cfg.encoder}
+    from .legacy_pool import install_spawn_pool
+
+    install_spawn_pool(getattr(cfg, "spawn_pool", "current"))
+    necks = ((neck_buf,) if neck_buf is not None else ()) + tuple(extras.values())
     out_root = Path(out_root).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
     jsonl = out_root / "lang_episodes.jsonl"
@@ -277,6 +344,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                     perturb_prob=cfg.perturb_prob, rng=np.random.RandomState(seed),
                     max_steps=10 * int(cfg.max_steps_per_episode),
                     controller_cls=RiskTickController, text_store=text_store, keep_neck=neck_buf is not None,
+                    qwen=qwen, keep_kv=kv_buf is not None, keep_frames=frames_buf is not None,
                 )
             except Exception as exc:
                 errors.append(f"seed {seed}: build {type(exc).__name__}: {exc}"[:300])
@@ -330,14 +398,22 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                     cf_sentence = language.sample_sentence(cf_rule, record, rng_ep, "train")
                 ro.set_instruction(sentence, cf_sentence, rule_id=named["rule_id"])
         n_before = len(buf)
-        if neck_buf is not None and (len(sidecar), len(neck_buf)) != (n_before, n_before):
+        if necks and any(len(b) != n_before for b in (sidecar, *necks)):
             ro.env.close()
-            raise RuntimeError(f"{out_root}: rings ({n_before}, {len(sidecar)}, {len(neck_buf)}) out of lockstep "
-                               f"before episode {seed}")
+            raise RuntimeError(f"{out_root}: rings ({n_before}, {len(sidecar)}, {[len(b) for b in necks]}) out of "
+                               f"lockstep before episode {seed}")
         ro.writer = writer
         wire_item_episode(ro, sidecar)
+        if qwen is not None:
+            from .qwen_masks import use_qwen_grid
+
+            use_qwen_grid(ro)   # the item sidecar's token masks on the 9 x 11 grid of the scene tokens
         if neck_buf is not None:
             ro.buf = NeckLockstepWriter(ro.buf, neck_buf)   # pops each entry's _neck inside the same append
+        if extras:
+            from .sidecar import SidecarLockstepWriter
+
+            ro.buf = SidecarLockstepWriter(ro.buf, extras)  # pops _kv / _frames inside the same append
         if not with_masks:
             ro.h_fn.with_masks = False
         if video_every and summary["episodes"] % int(video_every) == 0 and (not video_filter_only or named is not None):
@@ -501,14 +577,14 @@ def read_lines(jsonl: Path) -> list[dict]:
     return out
 
 
-def resume_point(out: Path, buf, sidecar, neck=None) -> tuple[int, int, int]:
+def resume_point(out: Path, buf, sidecar, *extras) -> tuple[int, int, int]:
     """(slots done, attempt, rows) of an interrupted shard; both rings are
     rolled back to the end of the last recorded episode (an episode killed
     mid-run, or flushed without its line, is discarded and collected again
     with the NEXT seed (attempt + 1): rows a stalled former writer might still add then carry another
     episode id than the new rows at the same positions, so check_shards sees them; review round 3, C1).
-    neck: a version-2 shard's NeckBuffer, checked and rolled back exactly like the item sidecar (its rows hold
-    episode_id / t_in_ep too)."""
+    extras: a version-2 shard's NeckBuffer, a V6 shard's KvBuffer / FramesBuffer (None entries are ignored), each
+    checked and rolled back exactly like the item sidecar (their rows hold episode_id / t_in_ep too)."""
     lines = read_lines(out / "lang_episodes.jsonl")
     done = len(lines)
     attempt = int(lines[-1]["attempt_next"]) if lines else 0
@@ -516,7 +592,7 @@ def resume_point(out: Path, buf, sidecar, neck=None) -> tuple[int, int, int]:
     for d in lines:
         if not d.get("skipped"):
             rows = int(d["rows"][1])
-    rings = (buf, sidecar) + ((neck,) if neck is not None else ())
+    rings = (buf, sidecar) + tuple(x for x in extras if x is not None)
     if any(len(b) < rows for b in rings):
         raise RuntimeError(f"{out}: rings {tuple(len(b) for b in rings)} shorter than the recorded rows {rows}")
     # every recorded episode's END rows must hold that episode (both buffers) with ticks 0 and n-1: this
@@ -731,11 +807,96 @@ def replay_plan(src: Path, kind: str, emb: str, tasks=None) -> dict:
     return {"meta": meta, "cfg": LangConfig.load(src / "config.json"), "slots": slots, "src_slots": src_slots}
 
 
+# collection fields a replay may change: what is stored per tick, never what happens in the episode
+REPLAY_FREE_FIELDS = frozenset({"lang_version", "encoder", "qwen_attn"})
+
+
 def config_drift(old, new) -> list:
-    """The collection fields (outside TRAIN_ONLY_FIELDS, lang_version aside) on which two configs differ."""
+    """The collection fields (outside TRAIN_ONLY_FIELDS and REPLAY_FREE_FIELDS) on which two configs differ."""
     a, b = (json.loads(json.dumps(c.to_dict(), default=str)) for c in (old, new))
     return sorted(k for k in set(a) | set(b)
-                  if k not in TRAIN_ONLY_FIELDS and k != "lang_version" and a.get(k) != b.get(k))
+                  if k not in TRAIN_ONLY_FIELDS and k not in REPLAY_FREE_FIELDS and a.get(k) != b.get(k))
+
+
+def legacy_replay(src_cfg, cfg) -> bool:
+    """A replay of a pre-10-12 shard with the pre-10-12 T1 pool (V6): its bank hash and spawn pool differ from the
+    source's by design (today's names, the old draws), and the layout check verifies the placements."""
+    from .legacy_pool import PRE_1012_BANK_HASH
+
+    return src_cfg.bank_hash == PRE_1012_BANK_HASH and getattr(cfg, "spawn_pool", "current") == "pre_1012"
+
+
+def _same(a, b, tol: float) -> bool:
+    """a's recorded content equals b's: dict keys of a only (b may record more), lists element-wise, floats within
+    tol, everything else exactly."""
+    if isinstance(a, dict):
+        return isinstance(b, dict) and all(k in b and _same(v, b[k], tol) for k, v in a.items())
+    if isinstance(a, (list, tuple)):
+        return isinstance(b, (list, tuple)) and len(a) == len(b) and all(_same(x, y, tol) for x, y in zip(a, b))
+    if isinstance(a, bool) or isinstance(b, bool) or a is None or b is None:
+        return a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) <= tol
+    return a == b
+
+
+def _episode_items(root: Path) -> dict:
+    """episode_id -> the item table item_buffer/episodes.jsonl recorded LAST for it (a rolled-back episode leaves a
+    stale line before its replacement)."""
+    out = {}
+    p = Path(root) / "item_buffer" / "episodes.jsonl"
+    if p.exists():
+        for ln in p.read_text().splitlines():
+            try:
+                d = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            out[int(d["episode_id"])] = d.get("items") or []
+    return out
+
+
+ITEM_KEYS = ("item_id", "category", "color", "kind", "role", "half_extents", "obb_center_local", "mass")
+
+
+def replay_layout_mismatch(out: Path, src: Path, tol: float = 1e-5) -> list:
+    """How the replayed episodes' scenes differ from the recorded ones (V6 layout check), per episode id: the item
+    tables (ids, categories, colours, sizes, masses), T1's placements (item id, class, xyz within tol, asset and
+    model id where the source has them), the other tasks' layout / episode_info (the source's keys). [] = every
+    replayed episode stands on its recorded scene."""
+    src_lines = {int(d["episode_id"]): d for d in read_lines(Path(src) / "lang_episodes.jsonl") if not d.get("skipped")}
+    src_items, new_items = _episode_items(src), _episode_items(out)
+    diffs = []
+    for d in read_lines(Path(out) / "lang_episodes.jsonl"):
+        if d.get("skipped"):
+            continue
+        eid = int(d["episode_id"])
+        s = src_lines.get(eid)
+        if s is None:
+            diffs.append(f"episode {eid}: not in the replayed shard")
+            continue
+        a, b = src_items.get(eid), new_items.get(eid)
+        if a is None or b is None or len(a) != len(b):
+            diffs.append(f"episode {eid}: item tables {None if a is None else len(a)} vs {None if b is None else len(b)}")
+        else:
+            for x, y in zip(a, b):
+                bad = [k for k in ITEM_KEYS if k in x and not _same(x[k], y.get(k), tol if k != "mass" else 1e-9)]
+                if bad:
+                    diffs.append(f"episode {eid}: item {x.get('item_id')} differs in {bad}")
+        sm, nm = s.get("scene_meta") or {}, d.get("scene_meta") or {}
+        if d.get("task") == "selective_avoid":
+            pa, pb = sm.get("placements") or [], nm.get("placements") or []
+            if len(pa) != len(pb):
+                diffs.append(f"episode {eid}: {len(pa)} recorded placements, {len(pb)} replayed")
+            for x, y in zip(pa, pb):
+                keys = ["item_id", "cls", "xyz"] + [k for k in ("asset", "model_id") if x.get(k) is not None]
+                bad = [k for k in keys if not _same(x.get(k), y.get(k), tol)]
+                if bad:
+                    diffs.append(f"episode {eid}: placement {x.get('item_id')} differs in {bad}")
+        else:
+            for key in ("layout", "episode_info"):
+                if key in sm and not _same(sm[key], nm.get(key), tol):
+                    diffs.append(f"episode {eid}: {key} differs")
+    return diffs
 
 
 def replay_rows_missing(d: dict) -> bool:
@@ -776,8 +937,19 @@ def plan_shard(args, kind: str):
     / g / offset / masks / task list, refused when today's collection config differs from its config."""
     tasks = None if args.tasks == "all" else tuple(args.tasks.split(","))
     replay = getattr(args, "replay", None)
+    enc = getattr(args, "encoder", None) or "holobrain_gd"
     cfg = LangConfig()
+    if enc != "holobrain_gd" or getattr(args, "spawn_pool", None) not in (None, "current") \
+            or getattr(args, "qwen_attn", None) not in (None, "sdpa"):
+        cfg = dataclasses.replace(cfg, encoder=enc, text_backend="holobrain_qwen" if enc == "holobrain_qwen"
+                                  else cfg.text_backend, spawn_pool=getattr(args, "spawn_pool", None) or "current",
+                                  qwen_attn=getattr(args, "qwen_attn", None) or "sdpa")
+    frames = getattr(args, "frames", None)
+    frames = cfg.qwen if frames is None else bool(frames)
+    if frames and not cfg.qwen:
+        raise SystemExit("--frames is a V6 (--encoder holobrain_qwen) sidecar")
     rp = None
+    legacy = False
     if replay:
         rp = replay_plan(Path(replay), kind, args.embodiment, tasks)
         src = rp["meta"]
@@ -790,6 +962,9 @@ def plan_shard(args, kind: str):
         # its task list too: the StepBuffer's task_id is the task's index in it
         cfg = dataclasses.replace(cfg, task_choices=tuple(rp["cfg"].task_choices))
         drift = config_drift(rp["cfg"], cfg)
+        legacy = legacy_replay(rp["cfg"], cfg)
+        if legacy:
+            drift = [k for k in drift if k not in ("bank_hash", "spawn_pool")]
         if drift:
             raise SystemExit(f"--replay: today's collection config differs from {Path(replay).resolve()}'s in {drift}: "
                              "the episodes would not be the recorded ones")
@@ -817,6 +992,17 @@ def plan_shard(args, kind: str):
             "h_code_v2": h_code_hash_v2(cfg.task_choices)}
     if v2:
         meta["lang_version"] = 2
+    if cfg.qwen:   # V6 (qwen_impl.md 4): what the extra sidecars hold
+        from .qwen_encoder import QWEN_CKPT, HoloBrainQwenEncoder as Q, checkpoint_id
+
+        meta["encoder"] = cfg.encoder
+        meta["kv"] = {"prefix_len": Q.PREFIX_LEN, "rope_next": Q.ROPE_NEXT,
+                      "ckpt_id": checkpoint_id(Path(QWEN_CKPT) / "model.safetensors"), "attn": cfg.qwen_attn}
+        meta["frames"] = bool(frames)
+    if cfg.spawn_pool != "current":
+        meta["spawn_pool"] = cfg.spawn_pool
+    if legacy:
+        meta["replay_bank_hash"] = rp["cfg"].bank_hash
     if rp is not None:
         meta["replay_of"] = str(Path(replay).resolve())
         meta["replay_slots"] = rp["src_slots"]
@@ -830,6 +1016,7 @@ def cmd_shard(args, kind: str) -> int:
         raise SystemExit(f"--out {out} is the replayed shard itself: a replay is written to a new root")
     g = meta["g"]
     v2 = int(meta.get("lang_version", 1)) >= 2
+    kv_dims = {"ckpt_id": meta["kv"]["ckpt_id"], "attn": meta["kv"]["attn"]} if cfg.qwen else None
     capacity = int(len(slots) * cfg.max_steps_per_episode * 1.1) + 16
     # one writer per shard for this process's lifetime (review O1): a second process (a duplicated claim)
     # waits out a crashed writer's lock, then leaves the shard to the live one (exit 75: resumable)
@@ -862,7 +1049,8 @@ def cmd_shard(args, kind: str) -> int:
         buf = StepBuffer(out / "buffer")
         sidecar = ItemSidecarBuffer(out / "item_buffer")
         neck = open_neck(out, buf) if v2 else None
-        done, attempt, rows = resume_point(out, buf, sidecar, neck)
+        extras = open_extras(out, buf, kv_dims=kv_dims, frames=bool(meta.get("frames"))) if cfg.qwen else {}
+        done, attempt, rows = resume_point(out, buf, sidecar, neck, *extras.values())
         print(f"[collect] resume {out.name}: {done}/{len(slots)} slots done, attempt {attempt}, rows {rows}")
     else:
         _check_fresh(out)
@@ -875,13 +1063,22 @@ def cmd_shard(args, kind: str) -> int:
             buf, sidecar, neck = make_pair(out, cfg, capacity, neck=True)
         else:
             (buf, sidecar), neck = make_pair(out, cfg, capacity), None
+        extras = open_extras(out, buf, kv_dims=kv_dims, frames=bool(meta.get("frames"))) if cfg.qwen else {}
         done, attempt = 0, 0
+    qwen = None
+    if cfg.qwen:   # built once per process
+        from .qwen_encoder import HoloBrainQwenEncoder
+
+        qwen = HoloBrainQwenEncoder(device="cuda", attn=cfg.qwen_attn)
+        if qwen.ckpt_id != kv_dims["ckpt_id"]:
+            raise SystemExit(f"HoloBrain-Qwen checkpoint {qwen.ckpt_id}, the shard records {kv_dims['ckpt_id']}")
     deadline = stage_deadline(args.time_budget)
     t0 = time.time()
     try:
         summary = run_episodes(cfg, out, slots[done:], offset, buf, sidecar, video_every=args.video_every,
                                log_prefix=f"[g{g}] ", slot_offset=done, attempt0=attempt,
-                               with_masks=with_masks, deadline=deadline, writer=writer, neck_buf=neck)
+                               with_masks=with_masks, deadline=deadline, writer=writer, neck_buf=neck,
+                               qwen=qwen, kv_buf=extras.get("_kv"), frames_buf=extras.get("_frames"))
         writer.check()
     except WriterLock.LockLost as exc:
         print(f"[collect] {exc} (exit 75)", flush=True)
@@ -891,6 +1088,8 @@ def cmd_shard(args, kind: str) -> int:
     summary["complete"] = len(lines) >= len(slots)
     if "replay_of" in meta and summary["complete"]:
         summary["replay_mismatch"] = replay_mismatch(lines, slots)   # [] = every slot holds its recorded episode
+        if "replay_bank_hash" in meta or cfg.qwen:   # V6: the scenes too (the old pool rebuilt, another encoder)
+            summary["replay_mismatch"] += replay_layout_mismatch(out, Path(meta["replay_of"]))
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     print(f"[collect] {'done' if summary['complete'] else 'paused'}: {summary}")
     if summary["inits"] >= cfg.max_inits_per_process:
@@ -944,6 +1143,13 @@ def main(argv=None) -> int:
         p.add_argument("--time-budget", type=float, default=None, help="seconds; then pause (exit 75)")
         p.add_argument("--lang-version", type=int, choices=(1, 2), default=1,
                        help="2: a version-2 shard, with the neck_buffer/ sidecar the frozen fusion reads (V5)")
+        p.add_argument("--encoder", choices=("holobrain_gd", "holobrain_qwen"), default="holobrain_gd",
+                       help="the frozen front end (V6: holobrain_qwen adds kv_buffer/ and, by default, frames/)")
+        p.add_argument("--frames", action=argparse.BooleanOptionalAction, default=None,
+                       help="the frames/ sidecar with the native renders (default: on under holobrain_qwen)")
+        p.add_argument("--spawn-pool", choices=("current", "pre_1012"), default="current",
+                       help="pre_1012: the T1 object pool before 2026-10-12 (replays of shards collected before it)")
+        p.add_argument("--qwen-attn", choices=("sdpa", "flash_attention_2", "eager"), default="sdpa")
         p.add_argument("--replay", default=None, metavar="SHARD",
                        help="collect a finished shard's recorded episodes again (task, host, episode id; all "
                             "statuses), one build each, with its masks setting; the new shard's slots and ids must "
