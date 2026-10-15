@@ -226,3 +226,39 @@ def test_plan_shard_accepts_a_pre_1012_replay():
     args.spawn_pool = "current"
     with pytest.raises(SystemExit, match="bank_hash"):
         C.plan_shard(args, "warmup")
+
+
+# ---------------------------------------------------------------------------------------------- check_shards --
+def _check_shards():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("check_shards_v6", REPO / "scripts" / "lang" / "check_shards.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_check_shards_v6(tmp_path, qwen_env):
+    cs = _check_shards()
+    cfg, root = qcfg(), tmp_path / "shard"
+    buf, side, kb, fb = rings(root, cfg)
+    C.run_episodes(cfg, root, [("gap_place", "ur5-wsg", None)] * 2, 5000, buf, side, encoder="stub",
+                   kins={"ur5-wsg": None}, qwen=object(), kv_buf=kb, frames_buf=fb)
+    (root / "shard.json").write_text(json.dumps({"encoder": "holobrain_qwen", "frames": True,
+                                                 "kv": {"ckpt_id": "c0"}}))
+    width = lambda bad: [b for b in bad if "width" not in b and "n_cam x n_tok" not in b]   # noqa: E731
+    bad = cs.check(root)
+    assert any("scene width 12, the Qwen encoder makes 297" in b for b in bad)   # the fake rows are 3 x 4 wide
+    assert width(bad) == []
+    (root / "shard.json").write_text(json.dumps({"encoder": "holobrain_qwen", "frames": False,
+                                                 "kv": {"ckpt_id": "c1"}}))
+    bad = width(cs.check(root))
+    assert any(b.startswith("frames/ present") for b in bad) and any("checkpoint c0" in b for b in bad)
+    (root / "shard.json").write_text(json.dumps({"encoder": "holobrain_qwen", "frames": True,
+                                                 "kv": {"ckpt_id": "c0"}}))
+    kb.arrays["t_in_ep"][3] = 7
+    kb.flush()
+    assert any("kv_buffer out of lockstep" in b for b in width(cs.check(root)))
+    lines = C.read_lines(root / "lang_episodes.jsonl")
+    (root / "lang_episodes.jsonl").write_text("".join(json.dumps({**d, "encoder": None}) + "\n" for d in lines))
+    assert any("do not name the Qwen encoder" in b for b in width(cs.check(root)))

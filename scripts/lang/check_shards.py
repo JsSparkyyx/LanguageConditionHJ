@@ -11,6 +11,12 @@ sidecar's episode_id and t_in_ep of that row; shard.json and every episode line 
 without neck_buffer/ must not claim version 2. A --replay shard: line i holds slot i's recorded episode, with rows,
 and its summary.json records no replay_mismatch.
 
+V6 shards (qwen_impl.md 6; shard.json "encoder": "holobrain_qwen"): kv_buffer/ and frames/ exist exactly as
+shard.json says (kv always, frames when "frames" is true), each with the StepBuffer's capacity, n and head and the
+item sidecar's episode_id / t_in_ep in every filled row, the kv rows of the recorded checkpoint; the scene width is
+297 tokens per frame under Qwen (and never 297 under GD), and the item sidecar's n_cam x n_tok equals it; every episode line
+names the encoder.
+
 --fusion-parity N (FUSION_PLAN R6; torch and a GPU): N random filled rows of every version-2 shard,
 FusionStage.unfused(neck rows) (the spatial enhancer on the stored fp16 neck maps) against the StepBuffer's
 stored scene_tokens / scene_pos of the same rows. A row whose relative mean error exceeds --parity-tol fails the
@@ -83,7 +89,74 @@ def check(root: Path) -> list[str]:
     if (n_buf, n_side) != (end, end) and lines:
         bad.append(f"headers n = ({n_buf}, {n_side}) but the last episode ends at {end}")
     bad += check_neck(root, hdr, side_hdr, lines, ep_side, t_side)
+    bad += check_v6(root, hdr, side_hdr, lines, ep_side, t_side)
     bad += check_replay(root, lines)
+    return bad
+
+
+def _lockstep(name: str, sc, hdr: dict, side_hdr: dict, ep_side, t_side) -> list[str]:
+    """A ring sidecar (sidecar.RingSidecar) against the StepBuffer and item sidecar headers and rows."""
+    bad = []
+    for other, h in (("StepBuffer", hdr), ("item sidecar", side_hdr)):
+        if (sc.capacity, sc.n, sc.head) != _ring(h):
+            bad.append(f"{name} capacity / n / head = ({sc.capacity}, {sc.n}, {sc.head}) but the {other}'s are {_ring(h)}")
+    filled = min(sc.n, sc.capacity, *_ring(side_hdr)[:2])
+    ep_n, t_n = (np.asarray(sc.arrays[k][:filled], np.int64) for k in ("episode_id", "t_in_ep"))
+    ep_i, t_i = np.asarray(ep_side[:filled], np.int64), np.asarray(t_side[:filled], np.int64)
+    off = np.flatnonzero((ep_n != ep_i) | (t_n != t_i))
+    if off.size:
+        r = int(off[0])
+        bad.append(f"{name} out of lockstep with item_buffer: {off.size} of {filled} filled rows differ, first row {r} "
+                   f"({name} episode {ep_n[r]} tick {t_n[r]}, item episode {ep_i[r]} tick {t_i[r]})")
+    return bad
+
+
+def check_v6(root: Path, hdr: dict, side_hdr: dict, lines: list[dict], ep_side, t_side) -> list[str]:
+    """The V6 checks (numpy only): the kv / frames sidecars as shard.json says, in lockstep; the scene width of the
+    encoder and the item masks' width."""
+    from main.lang.frames_buffer import FramesBuffer
+    from main.lang.kv_buffer import KvBuffer
+
+    bad = []
+    meta_p = root / "shard.json"
+    meta = json.loads(meta_p.read_text()) if meta_p.exists() else None
+    if meta is not None:
+        qwen = meta.get("encoder", "holobrain_gd") == "holobrain_qwen"
+        want = {"kv_buffer": qwen, "frames": qwen and bool(meta.get("frames"))}
+    else:   # a rounds ring: the StepBuffer's header carries the config
+        qwen = hdr.get("encoder", "holobrain_gd") == "holobrain_qwen"
+        want = {"kv_buffer": qwen, "frames": (root / "frames" / "header.json").exists()}
+    for d, cls in (("kv_buffer", KvBuffer), ("frames", FramesBuffer)):
+        present = (root / d / "header.json").exists()
+        if present != want[d]:
+            bad.append(f"{d}/ {'present' if present else 'missing'}, shard.json says "
+                       f"{'yes' if want[d] else 'no'} (encoder {meta.get('encoder', 'holobrain_gd') if meta else '?'})")
+            continue
+        if not present:
+            continue
+        try:
+            sc = cls(root / d)
+        except (OSError, ValueError, KeyError) as e:
+            bad.append(f"{d}: {e}")
+            continue
+        bad += _lockstep(d, sc, hdr, side_hdr, ep_side, t_side)
+        if d == "kv_buffer" and meta is not None and sc.header.get("ckpt_id") != (meta.get("kv") or {}).get("ckpt_id"):
+            bad.append(f"kv_buffer rows of checkpoint {sc.header.get('ckpt_id')}, shard.json says "
+                       f"{(meta.get('kv') or {}).get('ckpt_id')}")
+    tok_p = root / "buffer" / "scene_tokens.npy"
+    if tok_p.exists():
+        width = int(np.load(tok_p, mmap_mode="r").shape[1])
+        if qwen and width != 297:
+            bad.append(f"scene width {width}, the Qwen encoder makes 297")
+        elif not qwen and width == 297:
+            bad.append("scene width 297 (the Qwen grid) in a shard that does not say encoder holobrain_qwen")
+        cells = int(side_hdr.get("n_cam", 3)) * int(side_hdr.get("n_tok", -1))
+        if cells != width:
+            bad.append(f"item sidecar n_cam x n_tok = {cells}, the scene width is {width}")
+    if qwen:
+        off = [d for d in lines if not d.get("skipped") and d.get("encoder") != "holobrain_qwen"]
+        if off:
+            bad.append(f"{len(off)} episode lines do not name the Qwen encoder (first: episode {off[0].get('episode_id')})")
     return bad
 
 
