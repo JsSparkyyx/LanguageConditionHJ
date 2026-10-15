@@ -289,7 +289,10 @@ class LangTrainer:
         torch.manual_seed(seed)
         np.random.seed(seed)
         from .data import LangSampler, PrefetchSampler
+        from .legacy_pool import install_vocab
         from .text import TextStore
+
+        install_vocab(cfg.vocab)   # before the samplers name anything (RelabelSampler re-names records at load)
 
         # V5: version-2 shards' neck rows (a version-1 shard is a ValueError); E6: the training sampler alone draws
         # from the first train_episodes_per_task episodes per (task, embodiment)

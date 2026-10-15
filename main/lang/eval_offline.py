@@ -241,6 +241,9 @@ class Evaluator:
         if self.cfg.qwen:
             raise SystemExit("a V6 (HoloBrain-Qwen) checkpoint: offline evaluation is not ported to the Qwen front end "
                              "yet (qwen_impl.md 0)")
+        from .legacy_pool import install_vocab
+
+        install_vocab(self.cfg.vocab)   # the vocabulary the checkpoint trained with, before anything is named
         # provenance (review round 3, B1): what the weights were trained on, and which file they are
         self.bead_h_train = ck.get("bead_h_train") or "not recorded"
         from .train import CKPT_PARTS   # which model parts the checkpoint holds (round 4, item 1: V3 needs e_tag)

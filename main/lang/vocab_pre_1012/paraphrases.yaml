@@ -1,0 +1,271 @@
+# Paraphrase bank for relabeling (docs/item_envs/relabeling.md).
+#
+# Keys are the relabeling consequence names (language.SPEC_CONSEQUENCE maps
+# the rules.Consequence values onto them). Placeholders: {obj} / {region} are
+# filled by language.describe() WITH their article ("the red cup", "the green
+# zone"); {material} is a bare particle word (rice, beads, beans). Templates
+# never contain digits. The split is by TEMPLATE: a heldout template is never
+# used in training with any object (splits.yaml heldout_phrase_templates are
+# among the heldout ones here — tests/item_envs/test_language.py checks).
+#
+# Set / pair rules ("don't touch any cup", "leave the cup and the cylinder
+# where they are") have no paraphrases here: their h is recorded, but the
+# sampler does not draw them.
+
+avoid:
+  train:
+    - "don't touch {obj}"
+    - "avoid {obj}"
+    - "keep away from {obj}"
+    - "do not touch {obj}"
+    - "don't bump into {obj}"
+    - "don't hit {obj}"
+    - "steer clear of {obj}"
+    - "keep the arm away from {obj}"
+    - "make sure you don't touch {obj}"
+    - "don't brush against {obj}"
+    - "go around {obj}"
+    - "don't make contact with {obj}"
+    - "keep clear of {obj}"
+    - "never touch {obj}"
+    - "don't knock into {obj}"
+    - "be careful not to touch {obj}"
+    - "leave {obj} untouched"
+    - "stay clear of {obj}"
+    - "don't come into contact with {obj}"
+    - "avoid touching {obj}"
+    - "keep a safe distance from {obj}"
+    - "don't run into {obj}"
+    - "move around {obj} without touching it"
+    - "watch out for {obj}"
+  heldout:
+    - "stay away from {obj}"
+    - "hands off {obj}"
+    - "don't lay a finger on {obj}"
+    - "{obj} must not be touched"
+    - "give {obj} a wide berth"
+    - "don't graze {obj}"
+
+upright:
+  train:
+    - "don't knock over {obj}"
+    - "keep {obj} upright"
+    - "make sure {obj} doesn't tip"
+    - "don't tip over {obj}"
+    - "don't let {obj} fall over"
+    - "keep {obj} standing up"
+    - "make sure {obj} stays upright"
+    - "don't topple {obj}"
+    - "don't let {obj} tip over"
+    - "be careful not to knock over {obj}"
+    - "{obj} should stay upright"
+    - "don't make {obj} fall"
+    - "keep {obj} from falling over"
+    - "make sure {obj} does not fall"
+    - "don't push over {obj}"
+    - "don't let {obj} topple"
+    - "keep {obj} on its base"
+    - "don't tilt {obj} over"
+    - "avoid knocking over {obj}"
+    - "don't let {obj} lean over"
+    - "make sure {obj} doesn't topple"
+    - "keep {obj} vertical"
+    - "don't let {obj} go over"
+    - "careful, don't knock {obj} down"
+  heldout:
+    - "keep {obj} standing"
+    - "{obj} must not fall"
+    - "don't upset {obj}"
+    - "make sure {obj} remains upright"
+    - "prevent {obj} from tipping"
+    - "{obj} has to stay upright"
+
+stay:
+  train:
+    - "leave {obj} where it is"
+    - "don't disturb {obj}"
+    - "don't push {obj}"
+    - "keep {obj} in place"
+    - "don't shift {obj}"
+    - "leave {obj} alone"
+    - "don't nudge {obj}"
+    - "make sure {obj} stays put"
+    - "don't knock {obj} out of place"
+    - "keep {obj} where it is"
+    - "don't bump {obj}"
+    - "{obj} should stay where it is"
+    - "don't displace {obj}"
+    - "leave {obj} undisturbed"
+    - "don't shove {obj}"
+    - "make sure {obj} isn't moved"
+    - "keep {obj} still"
+    - "don't jostle {obj}"
+    - "avoid moving {obj}"
+    - "don't slide {obj}"
+    - "leave {obj} exactly where it is"
+    - "don't knock {obj}"
+    - "make sure {obj} doesn't move"
+    - "keep {obj} undisturbed"
+  heldout:
+    - "don't move {obj}"
+    - "{obj} must stay put"
+    - "don't make {obj} budge"
+    - "let {obj} be"
+    - "{obj} has to stay where it is"
+    - "don't rearrange {obj}"
+
+zone_exclude:
+  train:
+    - "keep {obj} out of {region}"
+    - "don't push {obj} into {region}"
+    - "don't let {obj} enter {region}"
+    - "keep {obj} away from {region}"
+    - "don't slide {obj} onto {region}"
+    - "make sure {obj} stays out of {region}"
+    - "don't move {obj} into {region}"
+    - "avoid pushing {obj} into {region}"
+    - "{obj} should not go into {region}"
+    - "keep {obj} off {region}"
+    - "don't put {obj} in {region}"
+    - "don't let {obj} touch {region}"
+    - "steer {obj} around {region}"
+    - "make sure {obj} never enters {region}"
+    - "don't push {obj} over {region}"
+    - "keep {obj} clear of {region}"
+    - "don't drive {obj} into {region}"
+    - "push {obj} around {region}"
+    - "don't let {obj} slide into {region}"
+    - "keep {obj} outside {region}"
+    - "don't run {obj} over {region}"
+    - "make sure {obj} doesn't end up in {region}"
+    - "don't drag {obj} into {region}"
+    - "keep {obj} from entering {region}"
+  heldout:
+    - "{obj} must stay off {region}"
+    - "{obj} must not enter {region}"
+    - "never push {obj} into {region}"
+    - "keep {region} free of {obj}"
+    - "{obj} has no business in {region}"
+    - "go around {region} with {obj}"
+
+zone_include:
+  train:
+    - "keep {obj} on {region}"
+    - "don't push {obj} off {region}"
+    - "don't let {obj} fall off {region}"
+    - "make sure {obj} stays on {region}"
+    - "don't knock {obj} off {region}"
+    - "keep {obj} from falling off {region}"
+    - "don't slide {obj} off {region}"
+    - "{obj} should stay on {region}"
+    - "don't push {obj} over the edge of {region}"
+    - "keep {obj} within {region}"
+    - "make sure {obj} doesn't leave {region}"
+    - "don't drop {obj} off {region}"
+    - "don't shove {obj} off {region}"
+    - "keep {obj} on top of {region}"
+    - "don't let {obj} slide off {region}"
+    - "make sure {obj} remains on {region}"
+    - "don't move {obj} off {region}"
+    - "avoid pushing {obj} off {region}"
+    - "don't send {obj} off {region}"
+    - "keep {obj} safely on {region}"
+    - "don't let {obj} drop off {region}"
+    - "make sure {obj} never falls off {region}"
+    - "don't push {obj} past the edge of {region}"
+    - "keep {obj} away from the edge of {region}"
+  heldout:
+    - "{obj} must stay on {region}"
+    - "never push {obj} off {region}"
+    - "{obj} must not fall off {region}"
+    - "keep {obj} inside {region}"
+    - "{obj} has to remain on {region}"
+    - "don't tip {obj} off {region}"
+
+contain_particles:
+  train:
+    - "don't spill the {material}"
+    - "don't spill any {material}"
+    - "make sure none of the {material} spills"
+    - "keep the {material} in the container"
+    - "don't drop any {material}"
+    - "be careful not to spill the {material}"
+    - "don't let any {material} fall out"
+    - "don't waste any {material}"
+    - "keep all the {material} inside"
+    - "make sure none of the {material} falls out"
+    - "don't let the {material} spill"
+    - "don't make a mess with the {material}"
+    - "don't scatter the {material}"
+    - "avoid spilling the {material}"
+    - "no {material} on the table"
+    - "don't get {material} on the table"
+    - "make sure the {material} stays in"
+    - "don't let any {material} escape"
+    - "keep the {material} from spilling"
+    - "don't lose any {material}"
+    - "don't spill {material} on the table"
+    - "careful with the {material}, don't spill it"
+    - "make sure none of the {material} ends up on the table"
+    - "keep every bit of the {material} in"
+  heldout:
+    - "the {material} must stay in the container"
+    - "don't let the {material} overflow"
+    - "keep the {material} contained"
+    - "spill none of the {material}"
+    - "don't splash the {material}"
+    - "avoid any {material} spilling"
+
+exclude_particles:
+  train:
+    - "keep the {material} out of {region}"
+    - "don't spill any {material} into {region}"
+    - "make sure none of the {material} ends up in {region}"
+    - "keep {region} clean"
+    - "don't get {material} in {region}"
+    - "keep the {material} off {region}"
+    - "don't let any {material} land in {region}"
+    - "don't pour {material} into {region}"
+    - "keep {region} free of {material}"
+    - "don't drop any {material} into {region}"
+    - "be careful not to spill {material} into {region}"
+    - "don't let the {material} fall into {region}"
+    - "keep {region} empty"
+    - "avoid getting {material} in {region}"
+    - "don't splash {material} into {region}"
+    - "make sure {region} stays clean"
+    - "no {material} in {region}"
+    - "don't spill on {region}"
+    - "keep the {material} away from {region}"
+    - "don't contaminate {region} with {material}"
+    - "don't let {material} into {region}"
+    - "make sure {region} gets no {material}"
+    - "don't scatter {material} into {region}"
+    - "keep {region} clear of {material}"
+    - "make sure no {material} end up in {region}"
+  heldout:
+    - "don't get any {material} in {region}"
+    - "{region} must stay clean"
+    - "not a single grain in {region}"
+    - "{region} must not get any {material}"
+    - "spare {region} from the {material}"
+    - "keep the {material} from reaching {region}"
+
+# Referent words never used in training (the "held-out referent words"
+# evaluation split): describe(words="heldout") uses only these nouns,
+# describe(words="train") never does.
+heldout_words:
+  - flask
+  - pill jar
+  - tin can
+  - crate
+  - glass
+  - juice box
+  - coffee bag
+  - tea carton
+  - pillar
+  - serving tray
+  - marked area
+  - saucer
+  - coffee mug
+  - grains

@@ -14,6 +14,7 @@ would build ``Path(None)`` and every episode build would fail).
 from __future__ import annotations
 
 import dataclasses
+import functools
 import hashlib
 import math
 import json
@@ -96,12 +97,16 @@ def check_stream(offset: int, attempt: int) -> int:
     return eid
 
 
-def bank_hash() -> str:
-    """Hash of the paraphrase bank, splits.yaml and the object names (written into every checkpoint)."""
+@functools.lru_cache(maxsize=None)
+def bank_hash(vocab: str = "current") -> str:
+    """Hash of the paraphrase bank, splits.yaml and the object names (written into every checkpoint), of the given
+    vocabulary (legacy_pool.vocab_files: "current" = today's files, "pre_1012" = the vanilla runs' files)."""
+    from .legacy_pool import vocab_files
+
+    objects, bank = vocab_files(vocab)
     h = hashlib.md5()
-    for p in (REPO / "envs/main/item_envs/language/paraphrases.yaml",
-              REPO / "envs/main/item_envs/configs/splits.yaml",
-              REPO / "envs/main/item_envs/configs/objects.yaml"):   # the object names too (2026-10-12)
+    for p in (bank, REPO / "envs/main/item_envs/configs/splits.yaml",
+              objects):   # the object names too (2026-10-12)
         h.update(p.read_bytes())
     return h.hexdigest()[:12]
 
@@ -206,6 +211,10 @@ class LangConfig(FrozenConfig):
     # legacy_category): replays of the pre-10-12 shards and new rounds then draw the layouts the vanilla runs saw.
     # Names still come from the current vocabulary
     spawn_pool: str = "current"
+    # The vocabulary (objects.yaml + paraphrases.yaml) of the whole process: "current" = today's files; "pre_1012" =
+    # the files before 2026-10-12, which both vanilla rounds runs use (legacy_pool.install_vocab: same physics, old
+    # T1 pool, old names, sampleable rules and held-out words). V6 pre-run review, 2026-10-15
+    vocab: str = "current"
 
     # --- sampling / relabeling ---
     shuffle_text: bool = False
@@ -258,8 +267,12 @@ class LangConfig(FrozenConfig):
         assert self.qwen_words_prefix in ("frame", "blank"), self.qwen_words_prefix
         assert self.qwen_attn in ("sdpa", "flash_attention_2", "eager"), self.qwen_attn
         assert self.spawn_pool in ("current", "pre_1012"), self.spawn_pool
-        if not self.bank_hash:
-            self.bank_hash = bank_hash()
+        assert self.vocab in ("current", "pre_1012"), self.vocab
+        # the bank hash of this config's vocabulary; a hash of another known vocabulary is a stale copy (a config
+        # built with dataclasses.replace from a default one), any other stored hash (a saved config) is kept
+        known = {bank_hash(v) for v in ("current", "pre_1012")}
+        if not self.bank_hash or (self.bank_hash in known and self.bank_hash != bank_hash(self.vocab)):
+            self.bank_hash = bank_hash(self.vocab)
 
     @property
     def recall_ticks(self) -> int:

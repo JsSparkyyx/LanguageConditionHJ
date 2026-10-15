@@ -292,8 +292,9 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     extras = {k: b for k, b in (("_kv", kv_buf), ("_frames", frames_buf)) if b is not None}
     if qwen is not None:
         extra_line = {**(extra_line or {}), "encoder": cfg.encoder}
-    from .legacy_pool import install_spawn_pool
+    from .legacy_pool import install_spawn_pool, install_vocab
 
+    install_vocab(getattr(cfg, "vocab", "current"))   # before anything names an object (episode_record, rules)
     install_spawn_pool(getattr(cfg, "spawn_pool", "current"))
     necks = ((neck_buf,) if neck_buf is not None else ()) + tuple(extras.values())
     out_root = Path(out_root).resolve()
@@ -650,7 +651,7 @@ TRAIN_ONLY_FIELDS = frozenset({
 # Collection fields added after shards were written (V6, 2026-10-14). At these values they change nothing a
 # collection does, so collect_hash leaves them out and every shard written before them keeps its hash
 # (qwen_attn matters only with the Qwen encoder)
-NEUTRAL_COLLECT_FIELDS = {"encoder": "holobrain_gd", "spawn_pool": "current"}
+NEUTRAL_COLLECT_FIELDS = {"encoder": "holobrain_gd", "spawn_pool": "current", "vocab": "current"}
 
 
 def collect_fields(cfg) -> dict:
