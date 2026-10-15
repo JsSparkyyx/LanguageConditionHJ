@@ -9,8 +9,10 @@ actions, item sidecar). The only input difference is depth stored as fp16 (about
 
     scripts/lang/in_container.sh python scripts/lang/qwen_recompute.py <shard> [--attn flash_attention_2]
 
-Resumable (<shard>/recompute.json records the rows done, flushed every --flush-every batches); a different
-encoder version or kernel starts over. When every row is done it stamps kv_buffer/header.json (encoder_version,
+One frame per encode_frame call by default, as collection, the rounds ring and deployment encode: the bf16 front end
+is not batch-invariant (a cuBLAS bias GEMM in the vision MLP picks another algorithm for one frame than for several,
+and the 32 vision blocks grow the 1e-3 difference to 4-9 %; second review 2026-10-15). Resumable (<shard>/
+recompute.json records the rows done); a different encoder version, kernel or frames per call starts over. When every row is done it stamps kv_buffer/header.json (encoder_version,
 attn, recomputed) and shard.json (kv.encoder_version, kv.attn, recomputed). Run it on the GPU type the rounds run
 collects on (A40): the bf16 front end drifts a few percent across GPU types.
 Exit 0 = done, 75 = the shard is not finished collecting yet, or the stage deadline came (resume later).
@@ -66,7 +68,7 @@ def check_alignment(root: Path, n: int) -> None:
             raise RuntimeError(f"{root}: {side}/ is out of lockstep with item_buffer/")
 
 
-def recompute_shard(root, enc, *, batch: int = 8, deadline: float | None = None, flush_every: int = 25,
+def recompute_shard(root, enc, *, batch: int = 1, deadline: float | None = None, flush_every: int = 200,
                     log=print) -> int:
     """Rewrite the shard's encoder outputs with ``enc`` (encode_frame, ENCODER_VERSION, attn, ckpt_id). -> 0 done,
     75 not finished collecting / stopped at the deadline."""
@@ -84,14 +86,14 @@ def recompute_shard(root, enc, *, batch: int = 8, deadline: float | None = None,
     meta = json.loads(meta_p.read_text())
     if meta.get("encoder") != "holobrain_qwen" or not meta.get("frames"):
         raise SystemExit(f"{root}: not a V6 shard with frames/ (encoder {meta.get('encoder')}, frames {meta.get('frames')})")
-    version, attn = int(enc.ENCODER_VERSION), str(enc.attn)
+    version, attn, batch = int(enc.ENCODER_VERSION), str(enc.attn), int(batch)
     if meta["kv"].get("ckpt_id") != enc.ckpt_id:
         raise SystemExit(f"{root}: kv rows of checkpoint {meta['kv'].get('ckpt_id')}, the encoder is {enc.ckpt_id}")
     prog_p = root / "recompute.json"
     prog = json.loads(prog_p.read_text()) if prog_p.exists() else {}
-    same = (prog.get("encoder_version"), prog.get("attn")) == (version, attn)
+    same = (prog.get("encoder_version"), prog.get("attn"), prog.get("frames_per_call")) == (version, attn, batch)
     if same and prog.get("complete"):
-        log(f"[recompute] {root}: done already (version {version}, {attn})")
+        log(f"[recompute] {root}: done already (version {version}, {attn}, {batch} frame(s) per call)")
         return 0
     n = int(json.loads((root / "buffer" / "header.json").read_text())["n"])
     kb, fb = KvBuffer.reopen(root / "kv_buffer"), FramesBuffer(root / "frames")
@@ -103,19 +105,20 @@ def recompute_shard(root, enc, *, batch: int = 8, deadline: float | None = None,
     if tok.shape[1:] != (enc.N_TOK, 256) or pos.shape[1:] != (enc.N_TOK, 3):
         raise RuntimeError(f"{root}: scene rows {tok.shape} / {pos.shape}")
     start = int(prog.get("rows_done", 0)) if same else 0
-    prog = {"encoder_version": version, "attn": attn, "ckpt_id": enc.ckpt_id, "n": n, "rows_done": start,
+    prog = {"encoder_version": version, "attn": attn, "frames_per_call": batch, "ckpt_id": enc.ckpt_id, "n": n,
+            "rows_done": start,
             "complete": False, "started": prog.get("started") if same else time.strftime("%F %T"),
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu", "commit": _commit()}
     _atomic_json(prog_p, prog)
     t0, k = time.time(), 0
-    for r0 in range(start, n, int(batch)):
+    for r0 in range(start, n, batch):
         if deadline is not None and time.time() > deadline - 120:
             _flush(tok, pos, kb)
             prog["rows_done"] = r0
             _atomic_json(prog_p, prog)
             log(f"[recompute] {root}: deadline at row {r0}/{n}: later")
             return 75
-        rows = np.arange(r0, min(n, r0 + int(batch)))
+        rows = np.arange(r0, min(n, r0 + batch))
         fr = fb.read(rows)
         ins = [frame_inputs(fr, f) for f in range(len(rows))]
         with torch.no_grad():
@@ -135,16 +138,17 @@ def recompute_shard(root, enc, *, batch: int = 8, deadline: float | None = None,
             _atomic_json(prog_p, prog)
             log(f"[recompute] {root.name}: {prog['rows_done']}/{n} rows, {(time.time() - t0) / k:.2f} s/batch")
     _flush(tok, pos, kb)
-    stamp = {"encoder_version": version, "attn": attn, "at": time.strftime("%F %T"), "gpu": prog["gpu"],
-             "commit": prog["commit"], "rows": n}
-    kb.header.update({"encoder_version": version, "attn": attn, "recomputed": stamp})
+    stamp = {"encoder_version": version, "attn": attn, "frames_per_call": batch, "at": time.strftime("%F %T"),
+             "gpu": prog["gpu"], "commit": prog["commit"], "rows": n}
+    kb.header.update({"encoder_version": version, "attn": attn, "frames_per_call": batch, "recomputed": stamp})
     kb._write_header()
-    meta["kv"].update({"encoder_version": version, "attn": attn})
+    meta["kv"].update({"encoder_version": version, "attn": attn, "frames_per_call": batch})
     meta["recomputed"] = stamp
     _atomic_json(meta_p, meta)
     prog.update(rows_done=n, complete=True, finished=stamp["at"])
     _atomic_json(prog_p, prog)
-    log(f"[recompute] {root}: {n} rows rewritten (version {version}, {attn}) in {time.time() - t0:.0f} s")
+    log(f"[recompute] {root}: {n} rows rewritten (version {version}, {attn}, {batch} frame(s) per call) in "
+        f"{time.time() - t0:.0f} s")
     return 0
 
 
@@ -166,7 +170,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("shards", nargs="+")
     ap.add_argument("--attn", default="flash_attention_2", choices=("sdpa", "flash_attention_2", "eager"))
-    ap.add_argument("--batch", type=int, default=8, help="frames per encode_frame call (3 images each)")
+    ap.add_argument("--batch", type=int, default=1,
+                    help="frames per encode_frame call (3 images each); 1 = as collection and deployment encode")
     args = ap.parse_args(argv)
     import main.lang  # noqa: F401
     from main.lang.collect import stage_deadline

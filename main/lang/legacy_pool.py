@@ -150,3 +150,14 @@ def install_vocab(name: str) -> None:
 
 def installed_vocab() -> str:
     return _VOCAB["name"]
+
+
+def checkpoint_vocab(lang_config: dict) -> str:
+    """The vocabulary a saved config trained with: its vocab field, else "pre_1012" for configs saved before the
+    10-12 renaming (their bank hash is PRE_1012_BANK_HASH: both vanilla runs), else "current". For the evaluators;
+    LangConfig.from_dict keeps "current" as the default, since a default there would move the collect hash of every
+    saved shard config."""
+    d = lang_config or {}
+    if d.get("vocab"):
+        return str(d["vocab"])
+    return "pre_1012" if d.get("bank_hash") == PRE_1012_BANK_HASH else "current"

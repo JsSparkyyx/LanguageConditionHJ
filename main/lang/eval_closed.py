@@ -237,9 +237,16 @@ class Models:
         if self.cfg.qwen:
             raise SystemExit(f"{path}: a V6 (HoloBrain-Qwen) checkpoint; closed-loop evaluation is not ported to the "
                              "Qwen front end yet (qwen_impl.md 0)")
-        from .legacy_pool import install_vocab
+        from .legacy_pool import checkpoint_vocab, install_vocab
 
-        install_vocab(self.cfg.vocab)   # the vocabulary the checkpoint trained with, before anything is named
+        # the vocabulary the checkpoint trained with (a pre-10-12 config has no vocab field: its bank hash says), before
+        # anything is named
+        vocab = checkpoint_vocab(ck["lang_config"])
+        install_vocab(vocab)
+        if vocab != self.cfg.vocab:
+            import dataclasses
+
+            self.cfg = dataclasses.replace(self.cfg, vocab=vocab, bank_hash=self.cfg.bank_hash)
         self.step, self.sha = int(ck.get("step", 0)), ckpt_sha(path)   # round 3, B1
         self.pe = LangPolicyEncoder(self.cfg).cuda().eval()
         load_policy(self.pe, ck)

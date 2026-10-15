@@ -126,3 +126,14 @@ def test_a_replayed_record_gets_the_vanilla_words_back(old_vocab):
     lp.install_vocab("current")
     today = language.refresh_record(json.loads(REPLAY.read_text()))
     assert sum(flags(today).values()) == 4
+
+
+def test_checkpoint_vocab_reads_old_configs():
+    assert lp.checkpoint_vocab({"vocab": "pre_1012"}) == "pre_1012"
+    assert lp.checkpoint_vocab({"bank_hash": "693f7ef522ed"}) == "pre_1012"          # both vanilla runs' configs
+    assert lp.checkpoint_vocab({"bank_hash": bank_hash()}) == "current"
+    assert lp.checkpoint_vocab({}) == "current"
+    for run in ("rounds_ur5_g095_mlp", "rounds_ur5_g098"):
+        p = REPO / "runs" / "lang" / run / "lang_config.json"
+        if p.exists():
+            assert lp.checkpoint_vocab(json.loads(p.read_text())) == "pre_1012", run

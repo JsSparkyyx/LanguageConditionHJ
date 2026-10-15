@@ -41,6 +41,8 @@ it); the same set is rewritten in place, as before.
 
 from __future__ import annotations
 
+import dataclasses
+
 import argparse
 import json
 import os
@@ -241,9 +243,14 @@ class Evaluator:
         if self.cfg.qwen:
             raise SystemExit("a V6 (HoloBrain-Qwen) checkpoint: offline evaluation is not ported to the Qwen front end "
                              "yet (qwen_impl.md 0)")
-        from .legacy_pool import install_vocab
+        from .legacy_pool import checkpoint_vocab, install_vocab
 
-        install_vocab(self.cfg.vocab)   # the vocabulary the checkpoint trained with, before anything is named
+        # the vocabulary the checkpoint trained with (a pre-10-12 config has no vocab field: its bank hash says), before
+        # anything is named
+        vocab = checkpoint_vocab(ck["lang_config"])
+        install_vocab(vocab)
+        if vocab != self.cfg.vocab:
+            self.cfg = dataclasses.replace(self.cfg, vocab=vocab, bank_hash=self.cfg.bank_hash)
         # provenance (review round 3, B1): what the weights were trained on, and which file they are
         self.bead_h_train = ck.get("bead_h_train") or "not recorded"
         from .train import CKPT_PARTS   # which model parts the checkpoint holds (round 4, item 1: V3 needs e_tag)

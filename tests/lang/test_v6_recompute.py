@@ -99,6 +99,9 @@ def test_recompute_rewrites_every_row_and_stamps_the_headers(tmp_path):
     prog = json.loads((root / "recompute.json").read_text())
     assert prog["complete"] and prog["rows_done"] == n
     assert rc_mod.recompute_shard(root, enc, batch=4, log=lambda *_: None) == 0 and enc.frames == n   # done already
+    assert prog["frames_per_call"] == 4 and kb.header["frames_per_call"] == 4
+    assert rc_mod.recompute_shard(root, enc, log=lambda *_: None) == 0 and enc.frames == 2 * n      # 1 per call: again
+    assert json.loads((root / "recompute.json").read_text())["frames_per_call"] == 1
     ep = np.load(root / "buffer" / "episode_id.npy", mmap_mode="r")
     assert ep[:n].tolist() == [1000] * 6 + [1001] * 6          # nothing else moved
 
@@ -114,6 +117,9 @@ def test_recompute_resumes_after_the_deadline(tmp_path):
     enc2 = StubEnc()
     enc2.attn = "sdpa"                                          # another kernel: start over
     assert rc_mod.recompute_shard(root, enc2, batch=4, log=lambda *_: None) == 0 and enc2.frames == n
+    enc3 = StubEnc()
+    assert rc_mod.recompute_shard(root, enc3, batch=1, deadline=time.time() + 1e6, log=lambda *_: None) == 0
+    assert enc3.frames == n                                     # another frames-per-call: start over too
 
 
 def test_recompute_refuses_what_it_must(tmp_path):
