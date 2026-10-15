@@ -284,6 +284,15 @@ memory-heavy `test_shim_with_the_real_stage` left out). Steps 2 and 3 are queued
 `LanguageConditionHJ_qwenT` at 5a85771: `qwen_recon` on the A100 chain (`runs/lang_pipeline_e2`), `qwen_smoke` on
 the A40 chain (`runs/lang/qwen_smoke/smoke.sh`).
 
+Recon (A100-40GB, real weights, `runs/lang/qwen_recon/recon.json`), sdpa / flash_attention_2: (a) text pass vs the
+full prompt: relative mean difference 0.54-0.71 % / 0.57-0.70 %, max 0.04 / 0.03 (bf16 rounding; word norm about
+15.8); (b) image slots for two sentences: identical, and equal to the prefix pass; (c) batch vs single: 0.04-0.27 % /
+0.17-0.30 %; (d) the prefix ids equal the processor's for every sentence and for ""; (e) slots and token order as
+specified. encode_frame (3 images) 74 / 51 ms, 2.06 GB peak (weights 1.99 GB); encode_text 128 sentences 8.5 /
+7.6 ms. Qwen words have norm 15.8 +- 1.5 per token (BERT + text_feat_map: about 113); in_proj stays the identity
+as planned. Prefix keys reach |K| 94.5, values 3.5. The blank prefix changes the words by 7 % (relative mean). The
+run keeps sdpa.
+
 
 1. CPU: this contract's unit tests, the whole `tests/lang` suite.
 2. GPU recon (A100 / H200, no simulator): `qwen_recon.py`.
