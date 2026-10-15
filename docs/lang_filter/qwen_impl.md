@@ -51,7 +51,14 @@ about 4 %. The run therefore uses `qwen_attn = "flash_attention_2"`. Every repla
 (frames/), so `scripts/lang/qwen_recompute.py` rewrites buffer/scene_tokens, scene_pos and kv_buffer/{k, v} with
 version 2 on A40 (about 0.42 s per 8 frames) instead of re-simulating; kv headers record `encoder_version`, and the
 trainer refuses kv rows of another version or attention kernel. The finalize gate (runs/lang_qwen_data/finalize.sh)
-requires every shard recomputed.
+requires every shard recomputed. The recompute encodes ONE frame per call, as collection, the rounds ring and
+deployment do: the bf16 front end is not batch-invariant (a cuBLAS bias GEMM in the vision MLP, 3420 -> 1280, picks
+another algorithm for one frame than for several; the 32 vision blocks grow the 1e-3 difference to 4-9 % on tokens
+and V, measured on A100 and seen on A40; second review 2026-10-15), so batched rows would sit as far from the run's
+own features as the version-1 rows did. `frames_per_call` is in recompute.json, the kv header and shard.json, and
+the finalize gate requires 1. The evaluators install the vocabulary a checkpoint trained with
+(`legacy_pool.checkpoint_vocab`: a config without the field and with the pre-10-12 bank hash is "pre_1012", which
+covers both vanilla runs), so a later V6-vs-vanilla verification scores each model with its own words.
 
 **Front end built in `main/lang`, not through HoloBrain's class.** `HoloBrain_Qwen2_5_VL` hard-codes
 `flash_attention_2`, loads the full 36-layer 7.5 GB base before cutting it, resolves `vlm_pretrain` relative to
