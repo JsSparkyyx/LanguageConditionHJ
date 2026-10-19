@@ -1,0 +1,85 @@
+# vla_finetuning copy of RoboTwin assets/embodiments/ur5-wsg/curobo.yml (the safe demonstrator only).
+# Added, nothing else changed: an 'attached_object' link fixed to ee_link with 256 sphere slots, which
+# vla_finetuning/hand_model.py fills before every plan with spheres covering the WSG hand (the stock model
+# ends at ee_link: one 1 mm sphere) and the object the arm holds; its self-collision with the wrist and
+# forearm links is ignored (the hand is mounted on them).
+robot_cfg:
+  kinematics:
+    use_usd_kinematics: False
+    usd_path: null
+    usd_robot_root: null
+    isaac_usd_path: null
+    usd_flip_joints: {}
+    usd_flip_joint_limits: {}
+    urdf_path: /work/nvme/bifq/project/RoboTwin/assets/embodiments/ur5-wsg/ur5_wsg_gripper.urdf
+    asset_root_path: null
+    base_link: "base_link"
+    ee_link: "ee_link"
+    collision_link_names: [
+      "base_link",
+      "shoulder_link", 
+      "upper_arm_link",
+      "forearm_link",
+      "wrist_1_link",
+      "wrist_2_link",
+      "wrist_3_link",
+      "ee_link",
+      "attached_object"
+    ]
+    collision_spheres: /work/nvme/bifq/project/RoboTwin/assets/embodiments/ur5-wsg/collision_wsg.yml
+    collision_sphere_buffer: 0.004
+    extra_collision_spheres: {"attached_object": 256}
+    use_global_cumul: True
+    self_collision_ignore: {
+      "base_link": ["shoulder_link"],
+      "shoulder_link": ["upper_arm_link", "base_link"],
+      "upper_arm_link": ["forearm_link", "shoulder_link"],
+      "forearm_link": ["wrist_1_link", "upper_arm_link"],
+      "wrist_1_link": ["wrist_2_link", "forearm_link", "ee_link"],
+      "wrist_2_link": ["wrist_3_link", "wrist_1_link", "ee_link"],
+      "wrist_3_link": ["ee_link", "wrist_2_link", "wrist_1_link"],
+      "attached_object": ["ee_link", "wrist_3_link", "wrist_2_link", "wrist_1_link", "forearm_link"],
+    }
+
+    self_collision_buffer:
+      {
+        "base_link": 0.0,
+        "shoulder_link": 0.0,
+        "upper_arm_link": 0.0,
+        "forearm_link": 0.0,
+        "wrist_1_link": 0.0,
+        "wrist_2_link": 0.0,
+        "wrist_3_link": 0.0,
+        "ee_link": 0.0,
+        "attached_object": 0.0
+      }
+    mesh_link_names:
+      [
+      "base_link",
+      "shoulder_link",
+      "upper_arm_link",
+      "forearm_link",
+      "wrist_1_link",
+      "wrist_2_link",
+      "wrist_3_link",
+      "ee_link"
+      ]
+    
+    lock_joints: {}
+
+    extra_links: {"attached_object": {"parent_link_name": "ee_link", "link_name": "attached_object",
+                  "fixed_transform": [0, 0, 0, 1, 0, 0, 0], "joint_type": "FIXED", "joint_name": "attach_joint"}}
+    cspace:
+      joint_names: ["shoulder_pan_joint" 
+      ,"shoulder_lift_joint" 
+      ,"elbow_joint" 
+      ,"wrist_1_joint" 
+      ,"wrist_2_joint" 
+      ,"wrist_3_joint"]
+      retract_config: [0, 0, 0, 0, 0, 0]
+      null_space_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      cspace_distance_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      max_acceleration: 15.0
+      max_jerk: 500.0
+planner:
+  frame_bias: [0., 0., 0.]

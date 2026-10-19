@@ -240,15 +240,17 @@ class Evaluator:
         ck = torch.load(self.run / ckpt if not Path(ckpt).is_absolute() else ckpt, map_location=device,
                         weights_only=False)
         self.cfg = LangConfig.from_dict(ck["lang_config"])
-        if self.cfg.qwen:
-            raise SystemExit("a V6 (HoloBrain-Qwen) checkpoint: offline evaluation is not ported to the Qwen front end "
-                             "yet (qwen_impl.md 0)")
+        if self.cfg.qwen and (getattr(self.cfg, "scene_fusion", False) or getattr(self.cfg, "oracle_ref_tag", False)):
+            raise SystemExit("a V6 (HoloBrain-Qwen) checkpoint with scene_fusion / oracle_ref_tag: not supported here")
         from .legacy_pool import checkpoint_vocab, install_vocab
 
         # the vocabulary the checkpoint trained with (a pre-10-12 config has no vocab field: its bank hash says), before
         # anything is named
         vocab = checkpoint_vocab(ck["lang_config"])
         install_vocab(vocab)
+        from .test_words import install as no_banned_test_words
+
+        no_banned_test_words()   # never "rice" (beans, grains) in a test sentence (Yuxuan, 2026-10-19)
         if vocab != self.cfg.vocab:
             self.cfg = dataclasses.replace(self.cfg, vocab=vocab, bank_hash=self.cfg.bank_hash)
         # provenance (review round 3, B1): what the weights were trained on, and which file they are
@@ -293,11 +295,35 @@ class Evaluator:
                 self.pe.e_tag.zero_()
         self.critics = LangTwinCritic(self.cfg).to(device).eval()
         self.critics.load_state_dict(ck["critics"])
-        # the trainer's extras are read only; the evaluator writes its own file (review O7)
-        train_extra = [self.run / "text_cache_extra.pt"] if (self.run / "text_cache_extra.pt").exists() else []
-        self.text = TextStore(list(text_caches) + train_extra, self.cfg.text_backend, device,
-                              extra_path=self.run / "text_cache_extra_eval.pt", backend_paths=self.cfg.backend_paths,
-                              encoder=text_encoder)
+        # V6 (encoder holobrain_qwen): each (state, sentence)'s words come from HoloBrain-Qwen's layer 0 read against
+        # the stored prefix keys / values of the state's frame t, as LangTrainer.qwen_words computes them for the
+        # training and probe batches (2026-10-19: the train-scene vs new-scene grounding score of the Qwen run);
+        # no BERT text store
+        self.qwen = None
+        self.text = None
+        if self.cfg.qwen:
+            from .train import make_qwen
+
+            self.qwen = make_qwen(self.cfg, device)
+            for s in self.sources:
+                if s.encoder != "holobrain_qwen" or not s.has_kv:
+                    raise ValueError(f"{s.root}: not a HoloBrain-Qwen shard with kv_buffer/ (encoder {s.encoder})")
+                hdr = s.kv.header
+                if hdr.get("ckpt_id") not in (None, self.qwen.ckpt_id):
+                    raise ValueError(f"{s.root}: kv rows of HoloBrain-Qwen checkpoint {hdr.get('ckpt_id')}, the text "
+                                     f"pass is {self.qwen.ckpt_id}")
+                if int(hdr.get("encoder_version", 1)) != int(self.qwen.ENCODER_VERSION):
+                    raise ValueError(f"{s.root}: kv rows of front-end version {hdr.get('encoder_version', 1)}, this "
+                                     f"code is version {self.qwen.ENCODER_VERSION}")
+                if hdr.get("attn") not in (None, self.cfg.qwen_attn):
+                    raise ValueError(f"{s.root}: kv rows computed with attention {hdr.get('attn')}, the checkpoint "
+                                     f"uses {self.cfg.qwen_attn}")
+        else:
+            # the trainer's extras are read only; the evaluator writes its own file (review O7)
+            train_extra = [self.run / "text_cache_extra.pt"] if (self.run / "text_cache_extra.pt").exists() else []
+            self.text = TextStore(list(text_caches) + train_extra, self.cfg.text_backend, device,
+                                  extra_path=self.run / "text_cache_extra_eval.pt", backend_paths=self.cfg.backend_paths,
+                                  encoder=text_encoder)
         self.bank = language.load_bank()
         self.batch = int(batch)
         self.ckpt_step = int(ck.get("step", 0))
@@ -470,6 +496,33 @@ class Evaluator:
         return _t(b["scene_tokens"], dev=self.dev), _t(b["scene_pos"], dev=self.dev), words
 
     @torch.no_grad()
+    def qwen_words(self, keys, sentences):
+        """V6: words fp32 [N, 24, 256] and mask [N, 24] of each item's sentence read against its state's frame-t prefix
+        rows (one prefix per (source, ring row), read through LangSource.kv_rows, checked against the item sidecar),
+        or against the black-image prefix for a qwen_words_prefix "blank" checkpoint (LangTrainer.qwen_words)."""
+        from .kv_buffer import rows_to_kv
+
+        if getattr(self.cfg, "qwen_words_prefix", "frame") == "blank":
+            return self.qwen.encode_text(self.qwen.blank_kv(), list(sentences),
+                                         kv_index=torch.zeros(len(sentences), dtype=torch.long, device=self.dev))
+        if keys is None:
+            raise ValueError("a HoloBrain-Qwen checkpoint needs each item's state key (its frame's prefix rows)")
+        uniq, index = {}, []
+        for j, i in keys:
+            index.append(uniq.setdefault((j, int(self.sources[j].rows_of(i)["row"])), len(uniq)))
+        K, V = [None] * len(uniq), [None] * len(uniq)
+        by_src = defaultdict(list)
+        for (j, r), u in uniq.items():
+            by_src[j].append((r, u))
+        for j, lst in by_src.items():
+            lst.sort()                                   # memmap reads in ring order
+            got = self.sources[j].kv_rows([r for r, _ in lst])
+            for q, (_, u) in enumerate(lst):
+                K[u], V[u] = got["k"][q], got["v"][q]
+        kv = rows_to_kv(np.stack(K), np.stack(V), device=self.dev)
+        return self.qwen.encode_text(kv, list(sentences), kv_index=torch.as_tensor(index, device=self.dev))
+
+    @torch.no_grad()
     def q_batch(self, reads: list[dict], sentences: list[str], keys=None, cols=None) -> np.ndarray:
         from .train import _t
 
@@ -477,7 +530,7 @@ class Evaluator:
         # V5: the stored (unfused) scene frames are not used
         skip = SCENE_KEYS if self.fusion is not None else ()
         b = {k: np.stack([r[k] for r in reads]) for k in reads[0] if k not in skip}
-        words, wmask = self.text.lookup(sentences)
+        words, wmask = self.qwen_words(keys, sentences) if self.qwen is not None else self.text.lookup(sentences)
         kw = {}
         if getattr(self.cfg, "oracle_ref_tag", False):
             if keys is None or cols is None:
@@ -1347,7 +1400,8 @@ def main(argv=None) -> int:
                                                                else v) for k, v in data.items()}) + "\n")
     figures(M, rows, out)
     examples_md(ev, rows, out / "examples.md")
-    ev.text.save_extra()
+    if ev.text is not None:
+        ev.text.save_extra()
     print((out / "tables.md").read_text())
     return 0
 

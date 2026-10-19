@@ -1,0 +1,8 @@
+# data, training workspaces, exported models, the local BERT, results and logs stay out of git
+data/
+ws/
+models/
+ckpt/
+results/
+logs/
+__pycache__/

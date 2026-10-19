@@ -243,6 +243,9 @@ class Models:
         # anything is named
         vocab = checkpoint_vocab(ck["lang_config"])
         install_vocab(vocab)
+        from .test_words import install as no_banned_test_words
+
+        no_banned_test_words()   # never "rice" (beans, grains) in a test sentence (Yuxuan, 2026-10-19)
         if vocab != self.cfg.vocab:
             import dataclasses
 
