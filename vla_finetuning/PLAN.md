@@ -104,17 +104,12 @@ of the same kind, reporting the collision rate and the success rate.
     the object past the box.
   - All rates are per task and overall, with 95 % Wilson intervals, on the scenes that are valid in every
     row (`report.py --paired`).
-- **Rows** on the same scenes:
-  1. HoloBrain post_training_robotwin, before fine-tuning;
-  2. HoloBrain fine-tuned on the safe demonstrations;
-  3. reference: RoboTwin's expert with the obstacle-unaware planner (the careless nominal);
-  4. reference: the safe demonstrator itself, without the keep filter;
-  5. control (required): HoloBrain fine-tuned on obstacle-unaware successful demonstrations.
-     - Same seeds (`--seeds-from` the safe set), the same number per task, the same steps and the same
-       checkpoint rule.
-     - It separates "learned to avoid" from "learned these scenes": the base model never saw these
-       stretched layouts, so row 1 vs row 2 alone confounds the two.
-     - The primary contrast is row 2 vs row 5.
+- **What is tested** (Yuxuan, 2026-10-20: "we are not doing comparison, we just want to know if we are able to
+  fine-tune a VLA that is safe"): HoloBrain fine-tuned on the safe demonstrations, on the 250 test scenes; its
+  collision rate and success rate per task and overall. No control fine-tune on careless demonstrations, no
+  base-model or planner rows (the code for them stays: `evaluate.py --agent nominal|safe`, `make_matched.py`).
+- **Training data**: every kept safe demonstration (`data/demos_safe`, about 100 per task), packed into
+  `data/lmdb/safe` (`jobs/prep_data.sh`); job `jobs/finetune.sbatch` (4 A100, 15k steps, the final checkpoint).
 
 ## Compute
 
