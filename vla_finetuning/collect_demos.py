@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 import time
 import traceback
 from pathlib import Path
@@ -148,22 +149,26 @@ def keep_reason(res: dict, keep: str, keep_h: float) -> str:
         return "contact"
     if res["force20"]:
         return "force"
-    if not (res["min_h_cm"] >= 100.0 * keep_h):
+    if keep_h is not None and not (res["min_h_cm"] >= 100.0 * keep_h):
         return "too_close"
     return "kept"
 
 
-def _seed_iter(args, tried: set):
+def _seed_iter(args, counts: Counter, kept_seeds: set):
+    """Seeds to attempt. counts (attempts per seed so far) and kept_seeds are updated by the caller as it goes.
+    A seed range: each seed once. --seeds-from: the source's kept seeds in order, each retried up to
+    --tries-per-seed times until kept (the careless expert's outcome on one layout varies run to run: cuRobo
+    is nondeterministic), so the matched sets lose fewer layouts."""
     if args.seeds_from:
         src = C.read_jsonl(Path(args.seeds_from))
         seeds = [int(r["seed"]) for r in sorted((r for r in src if r.get("kept")), key=lambda r: r["episode"])]
         for s in seeds:
-            if s not in tried:
+            while s not in kept_seeds and counts[s] < args.tries_per_seed:
                 yield s
         return
     s = args.seed_start
     while s < args.seed_stop:
-        if s not in tried:
+        if counts[s] == 0:
             yield s
         s += args.seed_step
 
@@ -181,10 +186,13 @@ def main(argv=None) -> int:
     ap.add_argument("--seed-step", type=int, default=1)
     ap.add_argument("--seed-stop", type=int, default=C.SEED_BASE)
     ap.add_argument("--seeds-from", default=None, help="attempts.jsonl whose kept seeds to walk, in order")
+    ap.add_argument("--tries-per-seed", type=int, default=3, help="--seeds-from: attempts per seed until kept")
     ap.add_argument("--margin", type=float, default=0.01, help="box growth on every side for the planner (m)")
     ap.add_argument("--top-extra", type=float, default=0.0, help="extra box height for the planner (m)")
     ap.add_argument("--payload-margin", type=float, default=0.01, help="held-object growth in cuRobo (m)")
-    ap.add_argument("--keep-h", type=float, default=0.01, help="minimum h of a kept safe demo (m)")
+    ap.add_argument("--keep-h", type=float, default=None,
+                    help="also require min h >= this (m); off by default: h measures the held object by its box, and "
+                         "a round bowl's box corners read 'inside' the obstacle with nothing touching (smoke B4)")
     ap.add_argument("--cap-s", type=float, default=40.0, help="physics cap per attempt (s)")
     ap.add_argument("--max-attempts", type=int, default=40, help="attempts per process, then exit 75")
     ap.add_argument("--video-every", type=int, default=10, help="video of every k-th kept episode")
@@ -225,11 +233,15 @@ def main(argv=None) -> int:
                 p.unlink()
     seeds = [int(r["seed"]) for r in kept]
     write_seed_txt(d / "seed.txt", seeds)
-    tried = {int(r["seed"]) for r in rows}           # started-but-unfinished seeds count as tried
+    counts = Counter(int(r["seed"]) for r in rows if "started" in r)   # one "started" line per attempt
+    for r in rows:                                    # rows from before the "started" lines (smoke dirs)
+        if "reason" in r and not counts[int(r["seed"])]:
+            counts[int(r["seed"])] = 1
+    kept_seeds = {int(r["seed"]) for r in kept}
     n_rej_vid = sum(1 for r in done_rows if r.get("video") and not r.get("kept"))
     print(f"[collect] {args.task}/{args.config_name}: {len(kept)}/{args.target} kept, {len(done_rows)} attempts so far")
     n_proc, times = 0, []
-    seed_iter = _seed_iter(args, tried)
+    seed_iter = _seed_iter(args, counts, kept_seeds)
     checked_planner = False
     while len(kept) < args.target:
         seed = next(seed_iter, None)
@@ -248,6 +260,7 @@ def main(argv=None) -> int:
         row = {"task": args.task, "seed": seed, **settings}
         lock.check()
         C.append_jsonl(log, {"seed": seed, "started": time.strftime("%F %T")})
+        counts[seed] += 1
         C.set_global_seeds(seed)
         try:
             env = C.build_scene(args.task, seed)
@@ -313,6 +326,7 @@ def main(argv=None) -> int:
         if reason == "kept":
             seeds.append(seed)
             kept.append(row)
+            kept_seeds.add(seed)
         times.append(row["wall_s"])
         want_video = (reason == "kept" and args.video_every and row["episode"] % args.video_every == 0) or (
             reason != "kept" and rec is not None and rec.frames and n_rej_vid < args.rejected_videos)

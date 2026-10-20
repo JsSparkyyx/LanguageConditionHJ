@@ -107,24 +107,47 @@ def hand_spheres_world(entity) -> np.ndarray:
     return np.concatenate(out, 0)
 
 
-def payload_spheres_world(actor, budget: int, margin: float) -> np.ndarray:
+def payload_spheres_world(actor, budget: int, margin: float, label: str = "") -> np.ndarray:
     """Spheres inscribed in the held object's box (CrossSafe's OBB of the actor) grown by `margin`, with
     the largest radius up to 2 cm that fits in `budget` slots (a larger radius means fewer spheres)."""
     from main.envs.distance import _obb_from_actor
 
     origin, rot, half = _obb_from_actor(actor)
     half = np.asarray(half, np.float64) + float(margin)
-    T = np.eye(4)
-    T[:3, :3], T[:3, 3] = rot, origin
+    from main.envs.distance import _actor_entity_name
+
+    axis = round_axis(half, f"{label} {_actor_entity_name(actor)}")   # task attribute name + model name
     r = 0.02
     while True:
-        s = box_spheres(T, -half, half, r)
+        s = box_spheres(np.eye(4), -half, half, r)            # in the object's frame
+        if axis is not None:                                  # bowls, cups: drop the box's square corners
+            u, v = [k for k in range(3) if k != axis]
+            ru, rv = max(half[u] - s[0, 3], 1e-4), max(half[v] - s[0, 3], 1e-4)
+            s = s[(s[:, u] / ru) ** 2 + (s[:, v] / rv) ** 2 <= 1.0 + 1e-9]
         if len(s) <= budget or r > float(half.max()):
             if len(s) > budget:
                 print(f"[hand] payload needs {len(s)} spheres for {budget} slots: truncated")
-            return s[:budget]
+            s = s[:budget]
+            break
         r *= 1.15
+    pw = (rot @ s[:, :3].T).T + origin
+    return np.concatenate([pw, s[:, 3:4]], 1)
 
+
+ROUND = ("bowl", "cup", "mug", "plate")
+
+
+def round_axis(half, label: str = "") -> int | None:
+    """The symmetry axis of a round held object (the model name says bowl / cup / mug / plate): the axis whose
+    two other half extents are closest to each other (002_bowl 8.95 / 8.95 cm around its 2.6 cm axis). Other
+    objects (blocks, bread, the burger and fries) stay boxes: None. The spheres are then inscribed in the elliptic
+    cylinder around that axis (smoke B4, 10-19: the box corners of a grasped bowl overlapped the obstacle while the
+    bowl itself was 3 cm away, so every plan after the grasp started 'in collision')."""
+    if not any(k in str(label).lower() for k in ROUND):
+        return None
+    h = np.asarray(half, np.float64)
+    gaps = [abs(h[u] - h[v]) / max(h[u], h[v]) for u, v in ((1, 2), (0, 2), (0, 1))]
+    return int(np.argmin(gaps))
 
 def sync_arm(env, arm: str, payload_margin: float = 0.01, level: str = "full") -> dict:
     """Write the hand (+ held object) spheres of `arm` into its MotionGens' attached_object slots, in the
@@ -146,7 +169,7 @@ def sync_arm(env, arm: str, payload_margin: float = 0.01, level: str = "full") -
     held = (detect_held_by_arm(env) or {}).get(arm)
     n_pay = 0
     if held and level == "full":
-        p = payload_spheres_world(held[0], N_SLOTS - n_hand, payload_margin)
+        p = payload_spheres_world(held[0], N_SLOTS - n_hand, payload_margin, label=str(held[1]))
         n_pay = len(p)
         sph.append(p)
     allw = np.concatenate(sph, 0)

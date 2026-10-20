@@ -46,8 +46,12 @@ of the same kind, reporting the collision rate and the success rate.
   - no physical contact with the obstacle at **any physics step** (PhysX separation <= 0, anything but
     the table);
   - the contact force stayed under 20 N;
-  - the minimum h stayed at or above `keep_h` (1 cm). h is CrossSafe's signed distance from the robot's
-    collision spheres plus the held object to the obstacle box.
+  - (dropped 10-19) a minimum-h requirement: h measures the held object by its bounding box, so a round
+    bowl's box corners read "inside" the obstacle while nothing touches (smoke B4). Real contact at every
+    physics step is the criterion; min h is still recorded.
+  - Round held objects (bowls, cups) are modelled in cuRobo by spheres inside their elliptic cylinder, not
+    their box (`hand_model.round_axis`). If cuRobo still finds a plan's start in collision, that one plan is
+    retried without the held object, then without the hand; the contact check above still applies.
 - **Recording**: frames are taken where RoboTwin's own collector takes them. Its executors call
   `task._take_picture()` every `save_freq` = 15 physics steps of a motion (16.7 Hz), plus once at the
   start and once at the end of every motion. That is the spacing of HoloBrain's RoboTwin training data,
