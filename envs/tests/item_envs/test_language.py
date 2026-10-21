@@ -30,10 +30,13 @@ def _keys(t: str) -> set:
 def test_bank_size_split_and_placeholders():
     bank = L.load_bank()
     assert set(L.SPEC_CONSEQUENCE.values()) == set(PLACEHOLDERS)
+    assert "zone_include" not in bank   # keep-on-the-table is never named (Yuxuan, 2026-10-20)
     for cons, allowed in PLACEHOLDERS.items():
+        if cons == "zone_include":
+            continue
         train, held = bank[cons]["train"], bank[cons]["heldout"]
-        assert len(train) + len(held) >= 30, cons  # "about 30 templates per consequence"
-        assert len(held) >= 5 and not set(train) & set(held), cons
+        assert len(train) == 4 and len(held) == 1, cons  # 4 training + 1 held-out (OOD) sentence (2026-10-20)
+        assert not set(train) & set(held), cons
         for t in train + held:
             assert not re.search(r"\d", t), t
             assert _keys(t) and _keys(t) <= allowed, (cons, t)
@@ -141,7 +144,8 @@ def test_sentence_splits_and_particles():
     assert all("little balls" in x for x in L.sentences(spill, s, "heldout_word"))
     keep = _rule("exclude_particles", {"particles": 0}, {"region": 0})
     out = L.sentences(keep, s, "train")
-    assert "keep the beads out of the green bin" in out and "keep the green box clean" in out
+    assert "keep the beads out of the green bin" in out and "don't drop any balls into the green box" in out
+    assert not any(x.startswith("no ") for x in out)   # the held-out sentence
     assert L.sentences(_rule("avoid", {"objects": [0, 1]}, set=True), s) == []  # set rules: none
     rng = np.random.default_rng(0)
     assert L.sample_sentence(keep, s, rng) in out
@@ -157,21 +161,21 @@ def test_record_from_meta_columns_and_params():
         "regions": [{"region_id": "table_top", "color": None}, {"region_id": "zone_red", "color": "red"}],
         "rules": [
             {"rule_id": "outside|push_0|zone_red", "consequence": "outside", "item_ids": ["push_0"],
-             "region_ids": ["zone_red"], "params": {}, "phrases": ["keep the box out of the red zone"], "split": "train"},
+             "region_ids": ["zone_red"], "params": {}, "phrases": ["keep the box out of the red mat"], "split": "train"},
             {"rule_id": "stay|obstacle_0|-", "consequence": "stay", "item_ids": ["obstacle_0"], "region_ids": [],
-             "params": {"d_tol": 0.015, "theta_tol": float(np.deg2rad(10))}, "phrases": ["don't disturb the cylinder"],
+             "params": {"d_tol": 0.015, "theta_tol": float(np.deg2rad(10))}, "phrases": ["don't move the cylinder"],
              "split": "train"},
         ],
     }
     rec = L.record_from_meta(meta, 12)
     assert rec["episode_id"] == 12 and rec["active_rule"] == 1
-    assert rec["active_instruction"] == "don't disturb the cylinder"
+    assert rec["active_instruction"] == "don't move the cylinder"
     z, st = rec["rules"]
     assert z["consequence"] == "zone_exclude" and z["subject"] == {"object": 0} and z["reference"] == {"region": 1}
     assert st["params"]["disp_max_m"] == 0.015 and st["params"]["tilt_max_deg"] == pytest.approx(10.0)
     assert st["params"]["h_unit"] == 0.015 and z["params"]["h_unit"] == 0.05
     assert z["sampleable"] and st["sampleable"]
-    assert "keep the yellow box out of the red zone" in L.sentences(z, rec)
+    assert "keep the yellow box out of the red mat" in L.sentences(z, rec)   # mats are only "mat" (2026-10-20)
 
 
 def test_rule_phrases_skip_heldout_words():

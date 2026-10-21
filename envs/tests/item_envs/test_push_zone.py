@@ -180,6 +180,9 @@ def test_push_rule_semantics():
         consequence, item_part, region_part = rid.split("|")
         assert rule.consequence.value == consequence
         assert item_part != "decoy_0"  # the non-push-group candidate gets no rules
+        if consequence == "inside":   # keep-on-the-table is never named (Yuxuan, 2026-10-20): no wording
+            assert rule.phrases == [], rule.phrases
+            continue
         assert rule.phrases, f"{rid} rendered no phrases"
         for phrase in rule.phrases:
             assert not any(c.isdigit() for c in phrase), phrase

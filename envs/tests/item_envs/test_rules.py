@@ -331,6 +331,9 @@ def test_render_phrases_no_digits_all_consequences():
     ]
     for rule in cases:
         phrases = render_phrases(rule, OBJECTS_CFG, np.random.RandomState(0), n=3)
+        if rule.consequence == "inside":   # keep-on-the-table is never named (2026-10-20)
+            assert phrases == [], phrases
+            continue
         assert phrases, rule.rule_id
         for phrase in phrases:
             assert not any(c.isdigit() for c in phrase), phrase
@@ -342,7 +345,8 @@ def test_render_phrases_avoid_templates_and_determinism():
     b = render_phrases(rule, OBJECTS_CFG, np.random.RandomState(1), n=3)
     assert a == b
     for phrase in a:
-        assert any(phrase.startswith(p) for p in ("don't touch the", "avoid the", "stay away from the"))
+        assert any(phrase.startswith(p) for p in ("don't touch the", "avoid the", "keep away from the", "don't hit the",
+                                                  "don't bump into the"))
         assert any(nm in phrase for nm in ("bottle", "flask"))
 
 
@@ -394,8 +398,8 @@ def test_render_phrases_particles_inside_names_no_region():
                  params={"category": "beads", "categories": ("beads",), "colors": (None,)})
     phrases = render_phrases(rule, OBJECTS_CFG, np.random.RandomState(0), n=3)
     assert phrases
-    assert all(p.startswith("don't spill the") for p in phrases)
-    assert any("beans" in p or "rice" in p or "grains" in p or "beads" in p for p in phrases)
+    # 2026-10-20: no spill sentence names a container ("keep the beads in the container" read as "don't pour")
+    assert all("bowl" not in p and "container" not in p for p in phrases), phrases
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +410,7 @@ SPLITS = {
     "heldout_item_categories": ["pill_bottle", "sauce_can", "tea_box"],
     "heldout_colors": ["purple", "orange", "cyan"],
     "heldout_regions": ["laptop"],
-    "heldout_phrase_templates": ["stay away from the {item}", "don't get any {item} in the {region}"],
+    "heldout_phrase_templates": ["don't bump into the {item}", "no {item} in the {region}"],
 }
 
 
@@ -447,11 +451,11 @@ def test_assign_split_heldout_region_and_precedence():
 
 
 def test_assign_split_heldout_phrase_template():
-    rule = _rule("avoid", phrases=["stay away from the bottle"])
+    rule = _rule("avoid", phrases=["don't bump into the bottle"])
     assert assign_split(rule, SPLITS) == "heldout_phrase"
     rule = _rule("particles_outside", item_ids=("beads",), region_ids=("zone_red",),
                  params={"category": "beads", "categories": ("beads",), "colors": (None,)},
-                 phrases=["don't get any beans in the red zone"])
+                 phrases=["no beads in the red mat"])
     assert assign_split(rule, SPLITS) == "heldout_phrase"
     assert assign_split(_rule("avoid", phrases=["avoid the bottle"]), SPLITS) == "train"
     assert assign_split(_rule("avoid"), None) == "train"
@@ -460,13 +464,13 @@ def test_assign_split_heldout_phrase_template():
 def test_resolve_splits_merges_all_under_task():
     splits_yaml = {
         "selective_avoid": {"heldout_item_categories": ["tea_box"], "heldout_colors": ["cyan"]},
-        "all": {"heldout_phrase_templates": ["stay away from the {item}"]},
+        "all": {"heldout_phrase_templates": ["don't bump into the {item}"]},
     }
     merged = resolve_splits(splits_yaml, "selective_avoid")
     assert merged == {
         "heldout_item_categories": ["tea_box"],
         "heldout_colors": ["cyan"],
-        "heldout_phrase_templates": ["stay away from the {item}"],
+        "heldout_phrase_templates": ["don't bump into the {item}"],
     }
     assert resolve_splits(None, "nothing") == {}
 
@@ -506,7 +510,7 @@ def test_objects_yaml_structure_and_v3_mass_ranges():
     for boxed in ("drink_box", "tea_box", "coffee_box"):
         assert cfg["categories"][boxed]["mass_range"] == [0.05, 0.30], boxed
     assert cfg["categories"]["beads"]["mass_range"] == [0.0005, 0.002]
-    assert set(cfg["categories"]["beads"]["synonyms"]) == {"balls", "small balls", "little balls"}   # 2026-10-12
+    assert set(cfg["categories"]["beads"]["synonyms"]) == {"balls", "little balls"}   # plain names, 2026-10-20
     # 6 training colors + 3 heldout
     assert len(cfg["colors"]["train"]) == 6
     assert set(cfg["colors"]["heldout"]) == {"purple", "orange", "cyan"}
@@ -535,8 +539,10 @@ def test_splits_yaml_is_v3_excerpt():
         "tray_transport": {"heldout_colors": ["purple", "orange", "cyan"]},  # T5 (2026-10-04)
         "clean_pour": {"heldout_colors": ["purple", "orange", "cyan"]},  # T6 (2026-10-04)
         "gap_place": {"heldout_colors": ["purple", "orange", "cyan"]},  # T7 (2026-10-04)
-        "all": {
-            "heldout_phrase_templates": ["stay away from the {item}", "don't get any {item} in the {region}"],
+        "all": {  # the held-out (OOD) sentence of each named rule (2026-10-20)
+            "heldout_phrase_templates": ["don't bump into the {item}", "don't let the {item} move", "make sure the {item} stays standing",
+                                         "don't let the {item} touch the {region}", "no {item} on the table",
+                                         "no {item} in the {region}"],
         },
     }
 
@@ -730,8 +736,8 @@ def test_region_phrases_never_use_a_name_another_scene_region_answers_to():
     for rid, color in (("outside|push_0|zone_red", "red"), ("outside|push_0|zone_blue", "blue")):
         assert rules[rid].phrases
         for phrase in rules[rid].phrases:
-            assert f"{color} zone" in phrase or f"{color} mat" in phrase or f"{color} marked area" in phrase, phrase
-    assert any("table" in p for p in rules["inside|push_0|table_top"].phrases)
+            assert f"{color} mat" in phrase, phrase   # plain names (2026-10-20): mats are only "mat"
+    assert rules["inside|push_0|table_top"].phrases == []   # keep-on-the-table is never named (2026-10-20)
 
 
 def test_particle_rule_region_set_each_gives_one_rule_per_region():
@@ -769,11 +775,11 @@ def test_heldout_template_holds_out_phrases_not_the_rule():
 
     real = yaml.safe_load((Path(__file__).resolve().parents[2] / "main" / "item_envs" / "configs" / "objects.yaml")
                           .read_text(encoding="utf-8"))
-    splits = {"heldout_phrase_templates": ["stay away from the {item}"]}
+    splits = {"heldout_phrase_templates": ["don't bump into the {item}"]}
     cfg = {"rules": [{"consequence": "avoid", "items": {"role": "candidate"}, "margin": 0.0}]}
     items = {f"can_{k}": ItemSpec(item_id=f"can_{k}", entity=object(), category="can", color=c, role="candidate")
              for k, c in enumerate(["red", "blue", "green", "yellow"])}
-    held = re.compile(r"stay away from the .+")
+    held = re.compile(r"don't bump into the .+")
     for r in enumerate_rules(items, {}, cfg, objects_cfg=real, splits_cfg=splits):
         assert r.split == "train", r.rule_id
         assert r.phrases and not any(held.fullmatch(p) for p in r.phrases), r.phrases

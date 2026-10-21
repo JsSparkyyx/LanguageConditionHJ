@@ -1,0 +1,374 @@
+{
+ "zone_exclude": [
+  {
+   "task": "push_zone",
+   "train": [
+    "don't let the coffee carton go into the green mat",
+    "keep the coffee carton off the green mat"
+   ],
+   "heldout": [
+    "don't let the coffee box touch the green mat"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "train": [
+    "don't push the coffee box onto the red mat",
+    "keep the coffee carton out of the red mat"
+   ],
+   "heldout": [
+    "don't let the coffee box touch the red mat"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "train": [
+    "keep the coffee carton off the yellow mat",
+    "keep the coffee box out of the yellow mat"
+   ],
+   "heldout": [
+    "don't let the coffee box touch the yellow mat"
+   ]
+  }
+ ],
+ "upright": [
+  {
+   "task": "tray_transport",
+   "train": [
+    "don't let the red block fall over",
+    "don't tip over the red brick"
+   ],
+   "heldout": [
+    "make sure the red block stays standing"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "train": [
+    "keep the short green brick upright",
+    "don't tip over the short green block"
+   ],
+   "heldout": [
+    "make sure the green block stays standing"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "train": [
+    "don't let the short brick fall over",
+    "don't tip over the blue block"
+   ],
+   "heldout": [
+    "make sure the blue block stays standing"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "train": [
+    "don't tip over the red brick",
+    "don't let the red block fall over"
+   ],
+   "heldout": [
+    "make sure the red block stays standing"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "train": [
+    "keep the tall yellow block upright",
+    "don't let the tall yellow block fall over"
+   ],
+   "heldout": [
+    "make sure the yellow block stays standing"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "train": [
+    "don't tip over the red block",
+    "keep the tall red block upright"
+   ],
+   "heldout": [
+    "make sure the red block stays standing"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "train": [
+    "keep the cylinder upright",
+    "don't tip over the cylinder"
+   ],
+   "heldout": [
+    "make sure the cylinder stays standing"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "train": [
+    "don't knock over the blue cylinder",
+    "don't knock over the cylinder"
+   ],
+   "heldout": [
+    "make sure the cylinder stays standing"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "train": [
+    "don't tip over the cup",
+    "keep the cup upright"
+   ],
+   "heldout": [
+    "make sure the cup stays standing"
+   ]
+  }
+ ],
+ "contain_particles": [
+  {
+   "task": "granular_carry",
+   "train": [
+    "don't get any balls on the table",
+    "don't drop any balls"
+   ],
+   "heldout": [
+    "no beads on the table"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "train": [
+    "don't drop any balls",
+    "don't spill the beads"
+   ],
+   "heldout": [
+    "no beads on the table"
+   ]
+  },
+  {
+   "task": "granular_pour",
+   "train": [
+    "don't get any beads on the table",
+    "don't drop any balls"
+   ],
+   "heldout": [
+    "no beads on the table"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "train": [
+    "don't spill any beads",
+    "don't spill any balls"
+   ],
+   "heldout": [
+    "no beads on the table"
+   ]
+  },
+  {
+   "task": "granular_pour",
+   "train": [
+    "don't drop any balls",
+    "don't get any balls on the table"
+   ],
+   "heldout": [
+    "no beads on the table"
+   ]
+  },
+  {
+   "task": "granular_carry",
+   "train": [
+    "don't get any beads on the table",
+    "don't drop any balls"
+   ],
+   "heldout": [
+    "no beads on the table"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "train": [
+    "don't get any balls on the table",
+    "don't drop any balls"
+   ],
+   "heldout": [
+    "no beads on the table"
+   ]
+  },
+  {
+   "task": "granular_pour",
+   "train": [
+    "don't drop any beads",
+    "don't spill the beads"
+   ],
+   "heldout": [
+    "no beads on the table"
+   ]
+  },
+  {
+   "task": "granular_carry",
+   "train": [
+    "don't drop any beads",
+    "don't spill any beads"
+   ],
+   "heldout": [
+    "no beads on the table"
+   ]
+  }
+ ],
+ "stay": [
+  {
+   "task": "gap_place",
+   "train": [
+    "don't move the blue block",
+    "make sure the blue block stays in place"
+   ],
+   "heldout": [
+    "don't let the blue block move"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "train": [
+    "don't move the red brick",
+    "make sure the red block stays in place"
+   ],
+   "heldout": [
+    "don't let the red block move"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "train": [
+    "make sure the yellow block stays in place",
+    "don't move the yellow block"
+   ],
+   "heldout": [
+    "don't let the yellow block move"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "train": [
+    "leave the tall cylinder where it is",
+    "leave the black tall cylinder where it is"
+   ],
+   "heldout": [
+    "don't let the cylinder move"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "train": [
+    "leave the can where it is",
+    "leave the soda can where it is"
+   ],
+   "heldout": [
+    "don't let the can move"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "train": [
+    "keep the tall cylinder where it is",
+    "keep the black cylinder where it is"
+   ],
+   "heldout": [
+    "don't let the cylinder move"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "train": [
+    "don't move the white box",
+    "keep the white box where it is"
+   ],
+   "heldout": [
+    "don't let the box move"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "train": [
+    "leave the cylinder where it is",
+    "don't move the blue tall cylinder"
+   ],
+   "heldout": [
+    "don't let the cylinder move"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "train": [
+    "don't move the cup",
+    "keep the cup where it is"
+   ],
+   "heldout": [
+    "don't let the cup move"
+   ]
+  }
+ ],
+ "exclude_particles": [
+  {
+   "task": "clean_pour",
+   "train": [
+    "don't spill any beads into the blue plate",
+    "keep the beads out of the blue plate"
+   ],
+   "heldout": [
+    "no beads in the blue plate"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "train": [
+    "don't spill any balls into the green plate",
+    "don't spill any beads into the green plate"
+   ],
+   "heldout": [
+    "no beads in the green plate"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "train": [
+    "keep the balls out of the blue plate",
+    "don't drop any beads into the blue plate"
+   ],
+   "heldout": [
+    "no beads in the blue plate"
+   ]
+  }
+ ],
+ "avoid": [
+  {
+   "task": "selective_avoid",
+   "train": [
+    "don't hit the tall cylinder",
+    "avoid the black cylinder"
+   ],
+   "heldout": [
+    "don't bump into the cylinder"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "train": [
+    "keep away from the can",
+    "keep away from the soda can"
+   ],
+   "heldout": [
+    "don't bump into the can"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "train": [
+    "don't hit the white box",
+    "avoid the box"
+   ],
+   "heldout": [
+    "don't bump into the box"
+   ]
+  }
+ ]
+}

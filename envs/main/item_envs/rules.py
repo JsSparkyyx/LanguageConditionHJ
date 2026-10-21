@@ -71,15 +71,23 @@ class RuleSpec:
 
 # Phrase templates per consequence (PLAN v3 §6). Never contain digits.
 TEMPLATES: dict[Consequence, list[str]] = {
-    Consequence.AVOID: ["don't touch the {item}", "avoid the {item}", "stay away from the {item}"],
-    Consequence.INSIDE: ["keep the {item} on the {region}", "don't push the {item} off the {region}"],
-    Consequence.OUTSIDE: ["keep the {item} out of the {region}", "don't push the {item} into the {region}"],
-    Consequence.UPRIGHT: ["don't knock over the {item}", "keep the {item} upright"],
-    Consequence.STAY: ["don't disturb the {item}", "leave the {item} where it is"],
-    Consequence.PARTICLES_INSIDE: ["don't spill the {item}"],
-    Consequence.PARTICLES_OUTSIDE: ["keep the {item} off the {region}", "don't get any {item} in the {region}",
-                                    "keep the {item} out of the {region}", "don't spill any {item} into the {region}",
-                                    "make sure no {item} end up in the {region}"],
+    # the paraphrase bank's sentences in {item} / {region} form (language/paraphrases.yaml, 2026-10-20: five plain
+    # sentences per rule, the last one held out); INSIDE (keep the box on the table) is never named
+    Consequence.AVOID: ["don't touch the {item}", "avoid the {item}", "keep away from the {item}", "don't hit the {item}",
+                        "don't bump into the {item}"],
+    Consequence.INSIDE: [],
+    Consequence.OUTSIDE: ["keep the {item} out of the {region}", "don't push the {item} onto the {region}",
+                          "don't let the {item} go into the {region}", "keep the {item} off the {region}",
+                          "don't let the {item} touch the {region}"],
+    Consequence.UPRIGHT: ["don't knock over the {item}", "keep the {item} upright", "don't tip over the {item}",
+                          "don't let the {item} fall over", "make sure the {item} stays standing"],
+    Consequence.STAY: ["don't move the {item}", "leave the {item} where it is", "keep the {item} where it is",
+                       "make sure the {item} stays in place", "don't let the {item} move"],
+    Consequence.PARTICLES_INSIDE: ["don't spill the {item}", "don't spill any {item}", "don't get any {item} on the table",
+                                   "don't drop any {item}", "no {item} on the table"],
+    Consequence.PARTICLES_OUTSIDE: ["keep the {item} out of the {region}", "don't spill any {item} into the {region}",
+                                    "don't drop any {item} into the {region}", "don't let any {item} land in the {region}",
+                                    "no {item} in the {region}"],
 }
 
 # Templates for set rules (item_ids names several items). {category} is filled
@@ -87,7 +95,7 @@ TEMPLATES: dict[Consequence, list[str]] = {
 SET_TEMPLATES: dict[Consequence, list[str]] = {
     Consequence.AVOID: ["don't touch any {category}", "avoid all the {category}s"],
     # {items}: every member's spoken name, "the red cylinder and the cup"
-    Consequence.STAY: ["don't disturb the {items}", "leave the {items} where they are"],
+    Consequence.STAY: ["don't move the {items}", "leave the {items} where they are"],
 }
 
 # Fallback names when a category is missing from objects.yaml or a set mixes categories.

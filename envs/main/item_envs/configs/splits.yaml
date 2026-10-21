@@ -25,4 +25,6 @@ clean_pour:  # T6 (2026-10-04): colors only, mirroring the other tasks — final
 gap_place:  # T7 (2026-10-04): colors only, mirroring the other tasks — final list is the human's call
   heldout_colors: [purple, orange, cyan]
 all:
-  heldout_phrase_templates: ["stay away from the {item}", "don't get any {item} in the {region}"]
+  # the held-out (OOD) sentence of each named rule (paraphrases.yaml, 2026-10-20)
+  heldout_phrase_templates: ["don't bump into the {item}", "don't let the {item} move", "make sure the {item} stays standing",
+                             "don't let the {item} touch the {region}", "no {item} on the table", "no {item} in the {region}"]

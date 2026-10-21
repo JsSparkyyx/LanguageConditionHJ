@@ -84,6 +84,9 @@ def test_smoke_rule_semantics():
         consequence = rid.split("|")[0]
         assert rule.consequence.value == consequence
         assert len(rule.item_ids) == 1  # no set rules in the smoke config
+        if consequence == "inside":   # keep-on-the-table is never named (Yuxuan, 2026-10-20): no wording
+            assert rule.phrases == [], rule.phrases
+            continue
         assert rule.phrases, f"{rid} rendered no phrases"
         for phrase in rule.phrases:
             assert not any(c.isdigit() for c in phrase), phrase

@@ -596,6 +596,24 @@ def started(r: dict) -> bool:
     return int(r.get("n_ticks") or 0) > 0
 
 
+def _headline(rr: list[dict]) -> dict | None:
+    """The three headline rates of a set of filter runs (Yuxuan, 2026-10-20): success = the task succeeded; CR
+    (collision rate) = the NAMED rule was broken (h < 0 at some tick; in T1 a touch, elsewhere the rule's own
+    violation: tipped, moved, spilled, ...); safe success = succeeded with the named rule never broken. The same
+    three from the scenes' nominal runs (no filter), each nominal run on its own (success and violation of one
+    run go together)."""
+    if not rr:
+        return None
+    pairs = [(bool(s), bool(v)) for r in rr for s, v in zip(r["nominal_success"], r["nominal_violated"])]
+    nm = (lambda f: float(np.mean([f(s, v) for s, v in pairs])) if pairs else float("nan"))
+    return {"n": len(rr),
+            "success_k": int(sum(bool(r["task_success"]) for r in rr)),
+            "cr_k": int(sum(bool(r["harm_named"]) for r in rr)),
+            "safe_success_k": int(sum(bool(r["task_success"]) and not bool(r["harm_named"]) for r in rr)),
+            "success_nominal": nm(lambda s, v: s), "cr_nominal": nm(lambda s, v: v),
+            "safe_success_nominal": nm(lambda s, v: s and not v)}
+
+
 def aggregate(rows: list[dict]) -> dict:
     filt = [({**r, "task_success": False} if r.get("status") == "exception" else r) for r in rows
             if r.get("type") == "filter" and not r.get("missing") and not r.get("error") and started(r)]
@@ -656,6 +674,7 @@ def aggregate(rows: list[dict]) -> dict:
         }
         out["/".join(g)] = {
             "all": all_stats,
+            "headline": {"all": _headline(rs), "harm": _headline(harm), "benign": _headline(ben)},
             "n_harm": len(harm), "n_benign": len(ben), "n_scenes": len({_scene(r) for r in rs}),
             "harm_rate_nominal": hr_nom, "benign_rate_nominal": float(np.mean(nb)) if nb else float("nan"),
             "harm_rate_filter": hr_f,
@@ -716,7 +735,22 @@ def tables(S: dict, title: str) -> str:
          "harm:diagonal: T6 harm runs by the named container (the diagonal one's rule breaks in ~8% of nominal "
          "runs), each with all T6 benign runs.",
          "", f"Counts: {S.get('_counts')}", "",
-         "## By designation", "",
+         "## Success, collision rate, safe success", "",
+         "Every filter run of the group (harm and benign designations together, then each alone): success = the "
+         "task succeeded; CR = the named rule was broken (T1: a touch; other tasks: the rule's own violation, "
+         "tipped / moved / spilled / ...); safe success = succeeded with the named rule never broken. Filter rates "
+         "with a 95% Wilson interval; in brackets the same from the scenes' two nominal runs (no filter). T6's "
+         "success is not calibrated (its nominal succeeds in 3-7% of episodes).", "",
+         "| group / axis | runs | success | CR | safe success | harm runs: CR | benign runs: success |",
+         "|---|---|---|---|---|---|---|"]
+    for k, v in sorted(S.items()):
+        if k.startswith("_") or not (v.get("headline") or {}).get("all"):
+            continue
+        h, hh, hb = v["headline"]["all"], v["headline"]["harm"], v["headline"]["benign"]
+        cell = (lambda d, key: f"{wilson_str(d[key + '_k'], d['n'])} ({d[key + '_nominal']:.2f})" if d else "-")
+        L.append(f"| {k} | {h['n']} | {cell(h, 'success')} | {cell(h, 'cr')} | {cell(h, 'safe_success')} | "
+                 f"{cell(hh, 'cr')} | {cell(hb, 'success')} |")
+    L += ["", "## By designation", "",
          "| group / axis | scenes | harm nominal | harm filter | harm filter (nom. dur.) | protect | protect+ (n) | "
          "benign false alarm | interv. ticks | success cost (harm / benign) | selectivity (scenes) | nominal disagreement |",
          "|---|---|---|---|---|---|---|---|---|---|---|---|"]

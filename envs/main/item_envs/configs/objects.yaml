@@ -51,9 +51,9 @@ categories:
   coffee_box:   {names: [coffee box], synonyms: [coffee carton], mass_range: [0.05, 0.30]}
   box:          {names: [box], synonyms: [], mass_range: [0.05, 0.15], colored: true}
   cylinder:     {names: [cylinder, tall cylinder], synonyms: [], mass_range: [0.05, 0.20], colored: true}
-  beads:        {names: [beads], synonyms: [balls, small balls, little balls], mass_range: [0.0005, 0.002], friction_range: [0.1, 0.3]}  # per particle; T2 — slippery (static mu 0.1-0.3, user review 8): the bed slides out of the mug at smaller tilts
-  carry_beads:  {names: [beads], synonyms: [balls, small balls, little balls], mass_range: [0.0003, 0.0008]}  # per particle; T4 (a brim-full bowl of 1.25 g beads slipped out of the rim pinch, diag d40)
-  small_beads:  {names: [beads], synonyms: [balls, small balls, little balls], mass_range: [0.00015, 0.0006]}  # per particle, r = 4 mm (T4 option; mass ~ r^3)
+  beads:        {names: [beads], synonyms: [balls, little balls], mass_range: [0.0005, 0.002], friction_range: [0.1, 0.3]}  # per particle; T2 — slippery (static mu 0.1-0.3, user review 8): the bed slides out of the mug at smaller tilts
+  carry_beads:  {names: [beads], synonyms: [balls, little balls], mass_range: [0.0003, 0.0008]}  # per particle; T4 (a brim-full bowl of 1.25 g beads slipped out of the rim pinch, diag d40)
+  small_beads:  {names: [beads], synonyms: [balls, little balls], mass_range: [0.00015, 0.0006]}  # per particle, r = 4 mm (T4 option; mass ~ r^3)
   bowl:         {names: [bowl], synonyms: [], mass_range: [0.10, 0.40]}
   carry_bowl:   {names: [bowl], synonyms: [], mass_range: [0.10, 0.20]}   # T4's carried bowl: a single rim pinch slips above ~0.3 kg + beads
   tray:         {names: [tray], synonyms: [serving tray], mass_range: [0.25, 0.45], friction_range: [0.3, 0.4], dynamic_ratio: 0.95}   # T5's dragged tray (primitive): slides on the table without stick-slip jolts (d68: 1.3-1.6 m/s^2 jerks at the slowest drag)
@@ -101,10 +101,10 @@ assets:
   prim_tall_cylinder: {category: cylinder, colored: true, radius: [0.02, 0.035], height: [0.10, 0.18]}
 
 regions:
-  table_top:         {names: [table], synonyms: [tabletop]}
-  zone:              {names: [zone, mat], synonyms: [marked area], colored: true}
+  table_top:         {names: [table], synonyms: []}   # plain names (Yuxuan 2026-10-20)
+  zone:              {names: [mat], synonyms: [], colored: true}   # plain names (2026-10-20): was zone / mat / marked area
   laptop:            {names: [laptop], synonyms: [laptop computer]}
   bowl_src_interior: {names: [source bowl, bowl], synonyms: []}
   target_interior:   {names: [target, target container], synonyms: [container]}
-  bin:               {names: [bin, box], synonyms: [], colored: true}       # T6 neighbour: open-top primitive bin (region id bin_<color>)
-  plate:             {names: [plate, dish], synonyms: [], colored: true}  # T6 neighbour: flat primitive plate (region id plate_<color>)
+  bin:               {names: [bin], synonyms: [], colored: true}   # 2026-10-20: not 'box' (the boxes of T1 / T3)       # T6 neighbour: open-top primitive bin (region id bin_<color>)
+  plate:             {names: [plate], synonyms: [], colored: true}   # 2026-10-20: was plate / dish  # T6 neighbour: flat primitive plate (region id plate_<color>)

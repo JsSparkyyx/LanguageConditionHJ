@@ -1,0 +1,973 @@
+{
+ "zone_include": [
+  {
+   "task": "push_zone",
+   "episode": 60000000,
+   "rule": "inside|push_0|table_top",
+   "n_train": 96,
+   "train": [
+    "don't slide the coffee box off the tabletop",
+    "don't shove the coffee box off the table",
+    "keep the coffee carton safely on the tabletop",
+    "don't let the coffee carton slide off the tabletop"
+   ],
+   "heldout_template": [
+    "the coffee box must stay on the table",
+    "the coffee box must stay on the tabletop"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "push_zone",
+   "episode": 62000002,
+   "rule": "inside|push_0|table_top",
+   "n_train": 96,
+   "train": [
+    "make sure the coffee carton doesn't leave the tabletop",
+    "don't push the coffee box off the tabletop",
+    "don't slide the coffee carton off the tabletop",
+    "keep the coffee box on top of the table"
+   ],
+   "heldout_template": [
+    "the coffee box must stay on the table",
+    "the coffee box must stay on the tabletop"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "push_zone",
+   "episode": 64000001,
+   "rule": "inside|push_0|table_top",
+   "n_train": 96,
+   "train": [
+    "don't let the coffee carton slide off the tabletop",
+    "don't shove the coffee box off the tabletop",
+    "don't let the coffee carton drop off the table",
+    "make sure the coffee carton stays on the tabletop"
+   ],
+   "heldout_template": [
+    "the coffee box must stay on the table",
+    "the coffee box must stay on the tabletop"
+   ],
+   "heldout_word": []
+  }
+ ],
+ "zone_exclude": [
+  {
+   "task": "push_zone",
+   "episode": 60000000,
+   "rule": "outside|push_0|zone_green",
+   "n_train": 96,
+   "train": [
+    "keep the coffee box out of the green mat",
+    "keep the coffee box outside the green mat",
+    "don't slide the coffee box onto the green zone",
+    "keep the coffee carton clear of the green zone"
+   ],
+   "heldout_template": [
+    "the coffee box must stay off the green zone",
+    "the coffee box must stay off the green mat"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "push_zone",
+   "episode": 60000000,
+   "rule": "outside|push_0|zone_red",
+   "n_train": 96,
+   "train": [
+    "push the coffee box around the red zone",
+    "don't drag the coffee carton into the red zone",
+    "make sure the coffee box never enters the red zone",
+    "keep the coffee box clear of the red zone"
+   ],
+   "heldout_template": [
+    "the coffee box must stay off the red zone",
+    "the coffee box must stay off the red mat"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "push_zone",
+   "episode": 60000000,
+   "rule": "outside|push_0|zone_yellow",
+   "n_train": 96,
+   "train": [
+    "keep the coffee box out of the yellow zone",
+    "don't let the coffee carton slide into the yellow mat",
+    "keep the coffee carton clear of the yellow mat",
+    "keep the coffee box off the yellow mat"
+   ],
+   "heldout_template": [
+    "the coffee box must stay off the yellow zone",
+    "the coffee box must stay off the yellow mat"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "push_zone",
+   "episode": 62000002,
+   "rule": "outside|push_0|zone_yellow",
+   "n_train": 192,
+   "train": [
+    "don't push the coffee carton over the yellow mat",
+    "keep the coffee box outside the mat",
+    "keep the coffee carton outside the zone",
+    "push the coffee box around the zone"
+   ],
+   "heldout_template": [
+    "the coffee box must stay off the zone",
+    "the coffee box must stay off the yellow zone"
+   ],
+   "heldout_word": []
+  }
+ ],
+ "upright": [
+  {
+   "task": "tray_transport",
+   "episode": 60000001,
+   "rule": "upright|block_0|-",
+   "n_train": 144,
+   "train": [
+    "don't tilt the tall block over",
+    "don't let the tall block fall over",
+    "make sure the tall block doesn't topple",
+    "don't tilt the tall red brick over"
+   ],
+   "heldout_template": [
+    "keep the red block standing",
+    "keep the tall block standing"
+   ],
+   "heldout_word": [
+    "don't knock over the red rectangular block",
+    "don't knock over the tall rectangular block"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "episode": 60000001,
+   "rule": "upright|block_1|-",
+   "n_train": 144,
+   "train": [
+    "don't topple the green block",
+    "keep the short brick from falling over",
+    "don't make the green brick fall",
+    "keep the short green brick upright"
+   ],
+   "heldout_template": [
+    "keep the green block standing",
+    "keep the short block standing"
+   ],
+   "heldout_word": [
+    "don't knock over the green rectangular block",
+    "don't knock over the short rectangular block"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "episode": 60000003,
+   "rule": "upright|block_0|-",
+   "n_train": 144,
+   "train": [
+    "don't push over the short blue block",
+    "avoid knocking over the blue block",
+    "be careful not to knock over the blue block",
+    "don't make the blue block fall"
+   ],
+   "heldout_template": [
+    "keep the blue block standing",
+    "keep the short block standing"
+   ],
+   "heldout_word": [
+    "don't knock over the blue rectangular block",
+    "don't knock over the short rectangular block"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "episode": 60000003,
+   "rule": "upright|block_1|-",
+   "n_train": 96,
+   "train": [
+    "don't let the tall red brick tip over",
+    "keep the red block on its base",
+    "don't let the red brick go over",
+    "don't let the red brick topple"
+   ],
+   "heldout_template": [
+    "keep the red block standing",
+    "keep the tall red block standing"
+   ],
+   "heldout_word": [
+    "don't knock over the red rectangular block",
+    "don't knock over the tall red rectangular block"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "episode": 60000003,
+   "rule": "upright|block_2|-",
+   "n_train": 96,
+   "train": [
+    "be careful not to knock over the yellow block",
+    "make sure the yellow brick doesn't topple",
+    "make sure the tall yellow brick does not fall",
+    "don't tip over the yellow block"
+   ],
+   "heldout_template": [
+    "keep the yellow block standing",
+    "keep the tall yellow block standing"
+   ],
+   "heldout_word": [
+    "don't knock over the yellow rectangular block",
+    "don't knock over the tall yellow rectangular block"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "episode": 61000003,
+   "rule": "upright|block_0|-",
+   "n_train": 144,
+   "train": [
+    "be careful not to knock over the red block",
+    "don't let the tall brick lean over",
+    "keep the red block vertical",
+    "don't let the red brick tip over"
+   ],
+   "heldout_template": [
+    "keep the red block standing",
+    "keep the tall block standing"
+   ],
+   "heldout_word": [
+    "don't knock over the red rectangular block",
+    "don't knock over the tall rectangular block"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "episode": 61000003,
+   "rule": "upright|block_1|-",
+   "n_train": 144,
+   "train": [
+    "keep the blue block vertical",
+    "keep the short blue block standing up",
+    "don't let the blue block lean over",
+    "don't tip over the short blue block"
+   ],
+   "heldout_template": [
+    "keep the blue block standing",
+    "keep the short block standing"
+   ],
+   "heldout_word": [
+    "don't knock over the blue rectangular block",
+    "don't knock over the short rectangular block"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "episode": 61000004,
+   "rule": "upright|obstacle_0|-",
+   "n_train": 96,
+   "train": [
+    "the tall cylinder should stay upright",
+    "keep the tall cylinder from falling over",
+    "don't let the tall cylinder topple",
+    "be careful not to knock over the black tall cylinder"
+   ],
+   "heldout_template": [
+    "keep the cylinder standing",
+    "keep the black cylinder standing"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "gap_place",
+   "episode": 61000005,
+   "rule": "upright|block_0|-",
+   "n_train": 96,
+   "train": [
+    "keep the tall blue brick on its base",
+    "don't knock over the tall blue block",
+    "don't topple the tall blue block",
+    "keep the blue brick vertical"
+   ],
+   "heldout_template": [
+    "keep the blue block standing",
+    "keep the tall blue block standing"
+   ],
+   "heldout_word": [
+    "don't knock over the blue rectangular block",
+    "don't knock over the tall blue rectangular block"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "episode": 63000002,
+   "rule": "upright|obstacle_0|-",
+   "n_train": 96,
+   "train": [
+    "keep the cylinder from falling over",
+    "make sure the blue cylinder stays upright",
+    "keep the blue tall cylinder on its base",
+    "don't let the tall cylinder go over"
+   ],
+   "heldout_template": [
+    "keep the cylinder standing",
+    "keep the blue cylinder standing"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "push_zone",
+   "episode": 63000002,
+   "rule": "upright|obstacle_1|-",
+   "n_train": 24,
+   "train": [
+    "don't let the cup lean over",
+    "be careful not to knock over the cup",
+    "don't knock over the cup",
+    "make sure the cup doesn't tip"
+   ],
+   "heldout_template": [
+    "keep the cup standing",
+    "the cup must not fall"
+   ],
+   "heldout_word": [
+    "don't knock over the mug",
+    "keep the mug upright"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "episode": 64000001,
+   "rule": "upright|obstacle_0|-",
+   "n_train": 96,
+   "train": [
+    "don't topple the tall cylinder",
+    "don't tilt the blue cylinder over",
+    "keep the tall cylinder upright",
+    "careful, don't knock the cylinder down"
+   ],
+   "heldout_template": [
+    "keep the cylinder standing",
+    "keep the blue cylinder standing"
+   ],
+   "heldout_word": []
+  }
+ ],
+ "contain_particles": [
+  {
+   "task": "granular_carry",
+   "episode": 60000002,
+   "rule": "particles_inside|beads|bowl_src_interior",
+   "n_train": 72,
+   "train": [
+    "make sure the beads stays in",
+    "don't spill the beads",
+    "make sure none of the small balls spills",
+    "keep every bit of the balls in"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "episode": 60000004,
+   "rule": "particles_inside|beads|bowl_src_interior+target_interior",
+   "n_train": 72,
+   "train": [
+    "don't spill any balls",
+    "don't spill beads on the table",
+    "make sure the beads stays in",
+    "don't spill any small balls"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "granular_pour",
+   "episode": 60000006,
+   "rule": "particles_inside|beads|bowl_src_interior+target_interior",
+   "n_train": 72,
+   "train": [
+    "don't lose any beads",
+    "don't let the balls spill",
+    "don't lose any small balls",
+    "careful with the beads, don't spill it"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "episode": 60000000,
+   "rule": "particles_inside|beads|bowl_src_interior+target_interior",
+   "n_train": 72,
+   "train": [
+    "make sure none of the beads ends up on the table",
+    "don't drop any balls",
+    "don't spill any beads",
+    "don't let any small balls escape"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "granular_pour",
+   "episode": 60000001,
+   "rule": "particles_inside|beads|bowl_src_interior+target_interior",
+   "n_train": 72,
+   "train": [
+    "keep the beads from spilling",
+    "don't make a mess with the small balls",
+    "make sure none of the beads ends up on the table",
+    "no small balls on the table"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "granular_carry",
+   "episode": 60000002,
+   "rule": "particles_inside|beads|bowl_src_interior",
+   "n_train": 72,
+   "train": [
+    "careful with the small balls, don't spill it",
+    "don't spill any beads",
+    "don't make a mess with the small balls",
+    "don't drop any balls"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "episode": 61000000,
+   "rule": "particles_inside|beads|bowl_src_interior+target_interior",
+   "n_train": 72,
+   "train": [
+    "make sure none of the small balls ends up on the table",
+    "no beads on the table",
+    "keep every bit of the beads in",
+    "keep all the beads inside"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "granular_pour",
+   "episode": 61000002,
+   "rule": "particles_inside|beads|bowl_src_interior+target_interior",
+   "n_train": 72,
+   "train": [
+    "keep all the balls inside",
+    "keep every bit of the balls in",
+    "don't lose any beads",
+    "make sure none of the balls ends up on the table"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "granular_carry",
+   "episode": 61000006,
+   "rule": "particles_inside|beads|bowl_src_interior",
+   "n_train": 72,
+   "train": [
+    "keep all the beads inside",
+    "don't get balls on the table",
+    "don't spill any balls",
+    "no balls on the table"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "granular_pour",
+   "episode": 61000000,
+   "rule": "particles_inside|beads|bowl_src_interior+target_interior",
+   "n_train": 72,
+   "train": [
+    "keep the beads from spilling",
+    "avoid spilling the beads",
+    "make sure none of the beads ends up on the table",
+    "keep the beads in the container"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "granular_carry",
+   "episode": 61000001,
+   "rule": "particles_inside|beads|bowl_src_interior",
+   "n_train": 72,
+   "train": [
+    "be careful not to spill the beads",
+    "don't spill small balls on the table",
+    "be careful not to spill the balls",
+    "don't drop any small balls"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "episode": 61000002,
+   "rule": "particles_inside|beads|bowl_src_interior+target_interior",
+   "n_train": 72,
+   "train": [
+    "don't let any balls fall out",
+    "keep the small balls from spilling",
+    "don't spill balls on the table",
+    "avoid spilling the small balls"
+   ],
+   "heldout_template": [
+    "the beads must stay in the container",
+    "the balls must stay in the container"
+   ],
+   "heldout_word": [
+    "don't spill the little balls",
+    "don't spill any little balls"
+   ]
+  }
+ ],
+ "stay": [
+  {
+   "task": "gap_place",
+   "episode": 60000003,
+   "rule": "stay|block_0|-",
+   "n_train": 144,
+   "train": [
+    "make sure the short blue block stays put",
+    "don't knock the short brick out of place",
+    "the blue brick should stay where it is",
+    "don't bump the blue block"
+   ],
+   "heldout_template": [
+    "don't move the blue block",
+    "don't move the short block"
+   ],
+   "heldout_word": [
+    "leave the blue rectangular block where it is",
+    "leave the short rectangular block where it is"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "episode": 60000003,
+   "rule": "stay|block_1|-",
+   "n_train": 96,
+   "train": [
+    "don't displace the tall red block",
+    "keep the red block still",
+    "don't knock the red brick",
+    "don't knock the tall red block out of place"
+   ],
+   "heldout_template": [
+    "don't move the red block",
+    "don't move the tall red block"
+   ],
+   "heldout_word": [
+    "leave the red rectangular block where it is",
+    "leave the tall red rectangular block where it is"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "episode": 60000003,
+   "rule": "stay|block_2|-",
+   "n_train": 96,
+   "train": [
+    "the tall yellow brick should stay where it is",
+    "keep the yellow brick still",
+    "leave the tall yellow brick undisturbed",
+    "don't knock the yellow block out of place"
+   ],
+   "heldout_template": [
+    "don't move the yellow block",
+    "don't move the tall yellow block"
+   ],
+   "heldout_word": [
+    "leave the yellow rectangular block where it is",
+    "leave the tall yellow rectangular block where it is"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "episode": 61000001,
+   "rule": "stay|obj_0|-",
+   "n_train": 96,
+   "train": [
+    "don't knock the tall cylinder",
+    "don't shift the black cylinder",
+    "keep the cylinder in place",
+    "don't push the tall cylinder"
+   ],
+   "heldout_template": [
+    "don't move the cylinder",
+    "don't move the black cylinder"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "selective_avoid",
+   "episode": 61000001,
+   "rule": "stay|obj_2|-",
+   "n_train": 48,
+   "train": [
+    "make sure the can doesn't move",
+    "leave the can where it is",
+    "leave the can exactly where it is",
+    "make sure the can isn't moved"
+   ],
+   "heldout_template": [
+    "don't move the can",
+    "don't move the soda can"
+   ],
+   "heldout_word": [
+    "leave the beverage can where it is",
+    "don't disturb the beverage can"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "episode": 61000004,
+   "rule": "stay|obstacle_0|-",
+   "n_train": 96,
+   "train": [
+    "don't shift the black cylinder",
+    "leave the black tall cylinder where it is",
+    "don't slide the cylinder",
+    "don't jostle the black cylinder"
+   ],
+   "heldout_template": [
+    "don't move the cylinder",
+    "don't move the black cylinder"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "gap_place",
+   "episode": 61000005,
+   "rule": "stay|block_0|-",
+   "n_train": 96,
+   "train": [
+    "don't nudge the tall blue block",
+    "make sure the blue block doesn't move",
+    "don't knock the blue block",
+    "the tall blue brick should stay where it is"
+   ],
+   "heldout_template": [
+    "don't move the blue block",
+    "don't move the tall blue block"
+   ],
+   "heldout_word": [
+    "leave the blue rectangular block where it is",
+    "leave the tall blue rectangular block where it is"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "episode": 62000005,
+   "rule": "stay|obj_0|-",
+   "n_train": 48,
+   "train": [
+    "avoid moving the white box",
+    "leave the box undisturbed",
+    "keep the box undisturbed",
+    "keep the white box where it is"
+   ],
+   "heldout_template": [
+    "don't move the box",
+    "don't move the white box"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "selective_avoid",
+   "episode": 62000005,
+   "rule": "stay|obj_2|-",
+   "n_train": 48,
+   "train": [
+    "don't knock the soda can out of place",
+    "don't push the can",
+    "don't push the soda can",
+    "leave the can where it is"
+   ],
+   "heldout_template": [
+    "don't move the can",
+    "don't move the soda can"
+   ],
+   "heldout_word": [
+    "leave the beverage can where it is",
+    "don't disturb the beverage can"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "episode": 63000002,
+   "rule": "stay|obstacle_0|-",
+   "n_train": 96,
+   "train": [
+    "don't bump the cylinder",
+    "the tall cylinder should stay where it is",
+    "make sure the blue cylinder stays put",
+    "keep the blue cylinder undisturbed"
+   ],
+   "heldout_template": [
+    "don't move the cylinder",
+    "don't move the blue cylinder"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "push_zone",
+   "episode": 63000002,
+   "rule": "stay|obstacle_1|-",
+   "n_train": 24,
+   "train": [
+    "keep the cup still",
+    "make sure the cup stays put",
+    "keep the cup undisturbed",
+    "leave the cup where it is"
+   ],
+   "heldout_template": [
+    "don't move the cup",
+    "the cup must stay put"
+   ],
+   "heldout_word": [
+    "leave the mug where it is",
+    "don't disturb the mug"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "episode": 64000001,
+   "rule": "stay|obstacle_0|-",
+   "n_train": 96,
+   "train": [
+    "don't nudge the blue cylinder",
+    "don't slide the cylinder",
+    "keep the cylinder still",
+    "don't nudge the tall cylinder"
+   ],
+   "heldout_template": [
+    "don't move the cylinder",
+    "don't move the blue cylinder"
+   ],
+   "heldout_word": []
+  }
+ ],
+ "exclude_particles": [
+  {
+   "task": "clean_pour",
+   "episode": 60000004,
+   "rule": "particles_outside|beads|plate_blue",
+   "n_train": 201,
+   "train": [
+    "don't let any balls land in the blue dish",
+    "keep the small balls away from the blue dish",
+    "don't scatter small balls into the blue plate",
+    "keep the beads off the blue saucer"
+   ],
+   "heldout_template": [
+    "don't get any beads in the blue plate",
+    "don't get any balls in the blue plate"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "clean_pour",
+   "episode": 60000004,
+   "rule": "particles_outside|beads|plate_green",
+   "n_train": 201,
+   "train": [
+    "don't drop any small balls into the green dish",
+    "don't let small balls into the green plate",
+    "keep the green saucer free of small balls",
+    "make sure the green plate gets no beads"
+   ],
+   "heldout_template": [
+    "don't get any beads in the green plate",
+    "don't get any balls in the green plate"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "clean_pour",
+   "episode": 60000000,
+   "rule": "particles_outside|beads|plate_blue",
+   "n_train": 201,
+   "train": [
+    "avoid getting small balls in the blue saucer",
+    "make sure no small balls end up in the blue saucer",
+    "don't drop any small balls into the blue dish",
+    "don't spill any balls into the blue plate"
+   ],
+   "heldout_template": [
+    "don't get any beads in the blue plate",
+    "don't get any balls in the blue plate"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "clean_pour",
+   "episode": 60000000,
+   "rule": "particles_outside|beads|plate_green",
+   "n_train": 201,
+   "train": [
+    "make sure the green plate stays clean",
+    "don't splash balls into the green plate",
+    "don't scatter small balls into the green dish",
+    "don't pour beads into the green dish"
+   ],
+   "heldout_template": [
+    "don't get any beads in the green plate",
+    "don't get any balls in the green plate"
+   ],
+   "heldout_word": []
+  }
+ ],
+ "avoid": [
+  {
+   "task": "selective_avoid",
+   "episode": 61000001,
+   "rule": "avoid|obj_0|-",
+   "n_train": 96,
+   "train": [
+    "go around the cylinder",
+    "don't brush against the tall cylinder",
+    "stay clear of the tall cylinder",
+    "don't make contact with the black tall cylinder"
+   ],
+   "heldout_template": [
+    "stay away from the cylinder",
+    "stay away from the black cylinder"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "selective_avoid",
+   "episode": 61000001,
+   "rule": "avoid|obj_2|-",
+   "n_train": 48,
+   "train": [
+    "avoid the soda can",
+    "don't brush against the soda can",
+    "stay clear of the soda can",
+    "steer clear of the soda can"
+   ],
+   "heldout_template": [
+    "stay away from the can",
+    "stay away from the soda can"
+   ],
+   "heldout_word": [
+    "don't touch the beverage can",
+    "avoid the beverage can"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "episode": 62000005,
+   "rule": "avoid|obj_0|-",
+   "n_train": 48,
+   "train": [
+    "don't knock into the box",
+    "keep clear of the white box",
+    "don't hit the box",
+    "avoid the white box"
+   ],
+   "heldout_template": [
+    "stay away from the box",
+    "stay away from the white box"
+   ],
+   "heldout_word": []
+  },
+  {
+   "task": "selective_avoid",
+   "episode": 62000005,
+   "rule": "avoid|obj_2|-",
+   "n_train": 48,
+   "train": [
+    "don't come into contact with the soda can",
+    "do not touch the can",
+    "don't brush against the soda can",
+    "avoid the can"
+   ],
+   "heldout_template": [
+    "stay away from the can",
+    "stay away from the soda can"
+   ],
+   "heldout_word": [
+    "don't touch the beverage can",
+    "avoid the beverage can"
+   ]
+  }
+ ]
+}

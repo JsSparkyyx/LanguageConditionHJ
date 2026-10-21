@@ -103,10 +103,11 @@ Consequence names: `avoid`, `upright`, `stay` as in the rules; `outside` ->
 
 ## Language
 
-- `main/item_envs/language/paraphrases.yaml`: 30-31 templates per
-  consequence, 24-25 train / 6 held out, split by TEMPLATE (a held-out
-  template is never used in training with any object); every rules.py
-  template and both splits.yaml held-out templates are in it (test).
+- `main/item_envs/language/paraphrases.yaml`: 5 plain sentences per named
+  consequence, 4 train / 1 held out (2026-10-20; before, 30-31 per consequence),
+  split by TEMPLATE (a held-out template is never used in training with any
+  object); zone_include has none (never named); every rules.py template and
+  every splits.yaml held-out template are in it (test).
   `heldout_words`: referent nouns never used in training (flask, glass,
   pillar, saucer, grains, ...).
 - `language.describe(obj, scene)`: "the {color} {noun}", "the {noun}", "the

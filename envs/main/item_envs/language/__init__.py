@@ -26,7 +26,7 @@ __all__ = [
     "SPEC_CONSEQUENCE", "load_bank", "episode_record", "describe", "describe_region",
     "materials", "sentences", "sample_sentence", "sampleable", "refresh_record", "load_model_ids",
 ]
-NAMES_VERSION = 2   # 2026-10-12: names checked against renders, per-model names (objects.yaml assets)
+NAMES_VERSION = 3   # 2026-10-12: names checked against renders, per-model names (objects.yaml assets); 3 (2026-10-20): plain region names, regions re-named at load
 
 # rules.Consequence value -> relabeling consequence name (the bank's keys)
 SPEC_CONSEQUENCE = {
@@ -409,6 +409,13 @@ def refresh_record(record: dict, model_ids: dict | None = None, objects_cfg: dic
     rules and every rule's sampleable flag."""
     cfg = objects_cfg if objects_cfg is not None else _objects_cfg()
     model_ids = model_ids or {}
+    # the regions' words too (episode_record stores them from objects.yaml regions): a record collected before a
+    # region rename (2026-10-20: zone / marked area -> mat, bin / box -> bin, plate / dish / saucer -> plate) keeps
+    # its old words otherwise
+    regions_cfg = cfg.get("regions", {}) or {}
+    for r in record.get("regions") or []:
+        key, entry = _region_key(r["region_id"], regions_cfg)
+        r["kind"], r["names"] = key, _words(entry) or [key.replace("_", " ")]
     for o in record["objects"]:
         asset, mid = model_ids.get(o["item_id"], (o.get("asset"), o.get("model_id")))
         _name_object(o, cfg, record.get("task"), asset, mid)

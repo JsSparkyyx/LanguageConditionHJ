@@ -1,0 +1,131 @@
+<title>Constraint Sentence Review</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&family=IBM+Plex+Mono:wght@400&display=swap">
+<style>
+/* Layout: one reading column; a card per named rule (what it measures, 4 training + 1 OOD sentence, real fill-ins). */
+:root {
+  --bg: #f5f7f8; --panel: #ffffff; --fg: #1d2529; --muted: #5b6970; --line: #dce3e6; --accent: #1f6f73;
+  --slot-bg: #e3f1f1; --slot-fg: #165457; --ood-bg: #fbf0d9; --ood-fg: #85580d;
+  --display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12181b; --panel: #192125; --fg: #e3e9ec; --muted: #9aa8af; --line: #2b363b; --accent: #6cc3c7;
+  --slot-bg: #1f3a3c; --slot-fg: #a6e0e2; --ood-bg: #3d2f12; --ood-fg: #ecc574; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12181b; --panel: #192125; --fg: #e3e9ec; --muted: #9aa8af; --line: #2b363b; --accent: #6cc3c7;
+  --slot-bg: #1f3a3c; --slot-fg: #a6e0e2; --ood-bg: #3d2f12; --ood-fg: #ecc574; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font: 15px/1.55 var(--body); }
+.wrap { max-width: 960px; margin: 0 auto; padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2 { font-family: var(--display); font-weight: 600; margin: 0; text-wrap: balance; }
+h1 { font-size: 30px; } h2 { font-size: 21px; }
+h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; font-weight: 600; }
+.lede { color: var(--muted); max-width: 72ch; margin: 10px 0 0; }
+.changes { margin: 18px 0 0; padding: 12px 16px 12px 34px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.changes li + li { margin-top: 4px; }
+.slot { background: var(--slot-bg); color: var(--slot-fg); border-radius: 4px; padding: 0 4px; font-family: var(--mono); font-size: 13px; }
+.grid { display: grid; gap: 14px; margin-top: 22px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px 16px; scroll-margin-top: 16px; }
+.card header { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.card header code { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+.tasks { margin: 4px 0 0; color: var(--accent); font-size: 14px; }
+.measures { margin: 6px 0 0; max-width: 80ch; }
+.cols { display: grid; grid-template-columns: 2fr 1fr; gap: 6px 22px; }
+.cols > div { min-width: 0; }
+ol { margin: 0; padding-left: 20px; }
+ol.ood li { background: var(--ood-bg); color: var(--ood-fg); border-radius: 6px; padding: 1px 8px; list-style-position: inside; margin-left: -20px; }
+ul.ex { margin: 0; padding-left: 18px; font-style: italic; }
+.task { font-style: normal; color: var(--muted); font-family: var(--mono); font-size: 12px; margin-left: 4px; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin-top: 10px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+footer { margin-top: 36px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 12px; }
+@media (max-width: 640px) { .cols { grid-template-columns: 1fr; } }
+</style>
+<div class="wrap">
+  <h1>Constraint Sentence Review</h1>
+  <p class="lede">The sentences the filter is trained and tested with, after the 2026-10-20 rewrite: five plain sentences
+    for each named rule, four for training and one held out for the out-of-distribution test. A
+    <span class="slot">obj</span> / <span class="slot">region</span> / <span class="slot">material</span> slot is filled from
+    the scene ("the red block", "the green mat", "beads").</p>
+  <ul class="changes">
+    <li>211 wordy templates replaced by 30 plain ones (6 rules x 5).</li>
+    <li>"Don't move" never says touch, bump or knock: in T1 the same object also has "don't touch".</li>
+    <li>"Don't spill" never says "keep the beads in": in T2 and T6 they are poured out on purpose.</li>
+    <li>Keep-on-the-table is no longer named (it is still measured, never used).</li>
+    <li>Plain slot words: mat, bin, plate, table; beads are "beads" or "balls" ("little balls" only in the held-out word test).
+      Old recordings are re-named to these words when they are loaded.</li>
+  </ul>
+  <div class="grid">
+<section class="card" id="avoid">
+  <header><h2>Don&#x27;t touch</h2><code>avoid</code></header>
+  <p class="tasks">T1 selective_avoid</p>
+  <p class="measures">Neither the arm nor the object it is holding may come within 1 cm of the named object&#x27;s real shape. Touching it is the violation; moving it is not required.</p>
+  <div class="cols">
+    <div><h3>Training (4)</h3><ol><li>don&#x27;t touch <span class="slot">obj</span></li><li>avoid <span class="slot">obj</span></li><li>keep away from <span class="slot">obj</span></li><li>don&#x27;t hit <span class="slot">obj</span></li></ol></div>
+    <div><h3>OOD test (1)</h3><ol class="ood"><li>don&#x27;t bump into <span class="slot">obj</span></li></ol></div>
+  </div>
+  <h3>In real scenes</h3><ul class="ex"><li>don&#x27;t hit the tall cylinder <span class="task">selective_avoid</span></li><li>OOD: don&#x27;t bump into the cylinder <span class="task">selective_avoid</span></li><li>keep away from the can <span class="task">selective_avoid</span></li><li>OOD: don&#x27;t bump into the can <span class="task">selective_avoid</span></li><li>don&#x27;t hit the white box <span class="task">selective_avoid</span></li><li>OOD: don&#x27;t bump into the box <span class="task">selective_avoid</span></li></ul>
+</section>
+<section class="card" id="stay">
+  <header><h2>Don&#x27;t move</h2><code>stay</code></header>
+  <p class="tasks">T1 selective_avoid, T3 push_zone, T7 gap_place</p>
+  <p class="measures">The named object must not be moved more than 3 cm (T1), 1.5 cm (T3) or 2 cm (T7); tipping it counts as moving it. Touching it, or a small push that moves it less than the limit, is allowed. In T1 the same object always also has an avoid rule (don&#x27;t touch).</p>
+  <div class="cols">
+    <div><h3>Training (4)</h3><ol><li>don&#x27;t move <span class="slot">obj</span></li><li>leave <span class="slot">obj</span> where it is</li><li>keep <span class="slot">obj</span> where it is</li><li>make sure <span class="slot">obj</span> stays in place</li></ol></div>
+    <div><h3>OOD test (1)</h3><ol class="ood"><li>don&#x27;t let <span class="slot">obj</span> move</li></ol></div>
+  </div>
+  <h3>In real scenes</h3><ul class="ex"><li>don&#x27;t move the blue block <span class="task">gap_place</span></li><li>OOD: don&#x27;t let the blue block move <span class="task">gap_place</span></li><li>don&#x27;t move the red brick <span class="task">gap_place</span></li><li>OOD: don&#x27;t let the red block move <span class="task">gap_place</span></li><li>make sure the yellow block stays in place <span class="task">gap_place</span></li><li>OOD: don&#x27;t let the yellow block move <span class="task">gap_place</span></li></ul>
+</section>
+<section class="card" id="upright">
+  <header><h2>Don&#x27;t tip over</h2><code>upright</code></header>
+  <p class="tasks">T3 push_zone, T5 tray_transport, T7 gap_place</p>
+  <p class="measures">The named object must not tilt more than 10 degrees. In T3 and T7 the same object also has a stay rule (don&#x27;t move it).</p>
+  <div class="cols">
+    <div><h3>Training (4)</h3><ol><li>don&#x27;t knock over <span class="slot">obj</span></li><li>keep <span class="slot">obj</span> upright</li><li>don&#x27;t tip over <span class="slot">obj</span></li><li>don&#x27;t let <span class="slot">obj</span> fall over</li></ol></div>
+    <div><h3>OOD test (1)</h3><ol class="ood"><li>make sure <span class="slot">obj</span> stays standing</li></ol></div>
+  </div>
+  <h3>In real scenes</h3><ul class="ex"><li>don&#x27;t let the red block fall over <span class="task">tray_transport</span></li><li>OOD: make sure the red block stays standing <span class="task">tray_transport</span></li><li>keep the short green brick upright <span class="task">tray_transport</span></li><li>OOD: make sure the green block stays standing <span class="task">tray_transport</span></li><li>don&#x27;t let the short brick fall over <span class="task">gap_place</span></li><li>OOD: make sure the blue block stays standing <span class="task">gap_place</span></li></ul>
+</section>
+<section class="card" id="zone_exclude">
+  <header><h2>Keep out of a mat</h2><code>zone_exclude</code></header>
+  <p class="tasks">T3 push_zone</p>
+  <p class="measures">The box being pushed must never enter the named mat, at any moment (passing over it counts, not only where it ends).</p>
+  <div class="cols">
+    <div><h3>Training (4)</h3><ol><li>keep <span class="slot">obj</span> out of <span class="slot">region</span></li><li>don&#x27;t push <span class="slot">obj</span> onto <span class="slot">region</span></li><li>don&#x27;t let <span class="slot">obj</span> go into <span class="slot">region</span></li><li>keep <span class="slot">obj</span> off <span class="slot">region</span></li></ol></div>
+    <div><h3>OOD test (1)</h3><ol class="ood"><li>don&#x27;t let <span class="slot">obj</span> touch <span class="slot">region</span></li></ol></div>
+  </div>
+  <h3>In real scenes</h3><ul class="ex"><li>don&#x27;t let the coffee carton go into the green mat <span class="task">push_zone</span></li><li>OOD: don&#x27;t let the coffee box touch the green mat <span class="task">push_zone</span></li><li>don&#x27;t push the coffee box onto the red mat <span class="task">push_zone</span></li><li>OOD: don&#x27;t let the coffee box touch the red mat <span class="task">push_zone</span></li><li>keep the coffee carton off the yellow mat <span class="task">push_zone</span></li><li>OOD: don&#x27;t let the coffee box touch the yellow mat <span class="task">push_zone</span></li></ul>
+</section>
+<section class="card" id="contain_particles">
+  <header><h2>Don&#x27;t spill</h2><code>contain_particles</code></header>
+  <p class="tasks">T2 granular_pour, T4 granular_carry, T6 clean_pour (the spill rule)</p>
+  <p class="measures">No bead may land outside the containers. T4: the beads stay in the carried bowl. T2 and T6: the beads are POURED from the mug into the target bowl on purpose; a bead in either container is fine, a bead on the table is the violation.</p>
+  <div class="cols">
+    <div><h3>Training (4)</h3><ol><li>don&#x27;t spill the <span class="slot">material</span></li><li>don&#x27;t spill any <span class="slot">material</span></li><li>don&#x27;t get any <span class="slot">material</span> on the table</li><li>don&#x27;t drop any <span class="slot">material</span></li></ol></div>
+    <div><h3>OOD test (1)</h3><ol class="ood"><li>no <span class="slot">material</span> on the table</li></ol></div>
+  </div>
+  <h3>In real scenes</h3><ul class="ex"><li>don&#x27;t get any balls on the table <span class="task">granular_carry</span></li><li>OOD: no beads on the table <span class="task">granular_carry</span></li><li>don&#x27;t drop any balls <span class="task">clean_pour</span></li><li>OOD: no beads on the table <span class="task">clean_pour</span></li><li>don&#x27;t get any beads on the table <span class="task">granular_pour</span></li><li>OOD: no beads on the table <span class="task">granular_pour</span></li></ul>
+</section>
+<section class="card" id="exclude_particles">
+  <header><h2>Keep beads out of a bin or plate</h2><code>exclude_particles</code></header>
+  <p class="tasks">T6 clean_pour</p>
+  <p class="measures">No bead may land in the named bin or plate next to the target bowl (the beads are meant for the bowl).</p>
+  <div class="cols">
+    <div><h3>Training (4)</h3><ol><li>keep the <span class="slot">material</span> out of <span class="slot">region</span></li><li>don&#x27;t spill any <span class="slot">material</span> into <span class="slot">region</span></li><li>don&#x27;t drop any <span class="slot">material</span> into <span class="slot">region</span></li><li>don&#x27;t let any <span class="slot">material</span> land in <span class="slot">region</span></li></ol></div>
+    <div><h3>OOD test (1)</h3><ol class="ood"><li>no <span class="slot">material</span> in <span class="slot">region</span></li></ol></div>
+  </div>
+  <h3>In real scenes</h3><ul class="ex"><li>don&#x27;t spill any beads into the blue plate <span class="task">clean_pour</span></li><li>OOD: no beads in the blue plate <span class="task">clean_pour</span></li><li>don&#x27;t spill any balls into the green plate <span class="task">clean_pour</span></li><li>OOD: no beads in the green plate <span class="task">clean_pour</span></li><li>keep the balls out of the blue plate <span class="task">clean_pour</span></li><li>OOD: no beads in the blue plate <span class="task">clean_pour</span></li></ul>
+</section></div>
+  <h2 style="margin-top:34px">Slot words</h2>
+  <p class="lede">Beads: beads, balls, little balls ("little balls" is the
+    held-out word). Object names are the 10-12 list (unchanged).</p>
+  <div class="tablewrap"><table><thead><tr><th>Region</th><th>Names</th><th>Synonyms</th></tr></thead><tbody><tr><td>table_top</td><td>table</td><td>-</td></tr><tr><td>zone</td><td>mat</td><td>-</td></tr><tr><td>bin</td><td>bin</td><td>-</td></tr><tr><td>plate</td><td>plate</td><td>-</td></tr></tbody></table></div>
+  <footer>Generated 2026-10-20 from envs/main/item_envs/language/paraphrases.yaml and configs/objects.yaml by
+    docs/lang_filter/template_review/build_final.py. Example sentences come from recorded validation scenes, re-named
+    with today's words.</footer>
+</div>

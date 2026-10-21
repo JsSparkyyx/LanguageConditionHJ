@@ -94,8 +94,19 @@ Seven tasks, built, calibrated and validated (`envs/docs/item_envs/tasks_overvie
   - Batches balance harmful and benign rules.
   - Half of each batch is **paired**: the same transition twice, with a harmful and a benign rule.
 - Sentences are generated at sample time from the record and the paraphrase bank
-  (`language/paraphrases.yaml`: about 30 templates per consequence, split by template). Referent
-  phrases must pick out exactly one item in the scene.
+  (`language/paraphrases.yaml`, split by template). Referent phrases must pick out exactly one item in
+  the scene.
+  - **Five plain everyday sentences per rule, four for training and one held out for the OOD test**
+    (Yuxuan, 2026-10-20: the earlier ~30 per rule were wordy, AI-sounding phrasings; review page
+    `docs/lang_filter/template_review/`). Each sentence says what its rule measures: "stay" never says
+    touch / bump / knock (in T1 the same object also has "avoid", which is exactly "don't touch"); the
+    spill rule never says "keep the beads in" (T2 / T6 pour them out on purpose); every bin / plate
+    sentence names the beads.
+  - **zone_include (keep the box on the table) is never named** (not needed, 2026-10-20): it has no
+    sentences, so it is never sampleable; its h is still recorded.
+  - Slot words are plain names (2026-10-20): mats "mat", bins "bin", plates "plate", the table "table",
+    beads "beads" / "balls" ("little balls" is the held-out word). `language.refresh_record` re-names the
+    regions of old records too.
 - Held-out splits:
   - `heldout_template`: templates never used in training;
   - `heldout_word`: referent nouns never used in training;
