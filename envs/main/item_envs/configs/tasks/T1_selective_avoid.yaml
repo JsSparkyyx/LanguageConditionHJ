@@ -25,6 +25,16 @@ objects: {k: [2, 3], max_on_path: 2,   # at most 3 extra objects (Yuxuan 2026-10
           distinct_categories: true,   # user 2026-10-05: no repeated category in a scene, none of the host's (every candidate nameable)
           min_robot_clearance: 0.02}   # m at t = 0 (after the settle): the avoid buffer 1 cm + 1 cm (3/194 layouts started inside the buffer)
 corridor_t: [0.22, 0.48]
+# nominal_mode="safe" (runner, 2026-10-22: the expert for safe demonstrations): cuRobo plans around the protected
+# objects (the named rule's, or every extra object when no rule is named; their boxes grown by 1 cm, as in the
+# collision-avoidance demos) with the WSG hand and the held object modelled (safe_plan.py), no fallback planner; the
+# risky motions at the gentle 0.6 speed. Keep rule (the demo collector's, Yuxuan): no contact with a protected object
+# at any physics step (the filter's 1 cm buffer is not required; 2 cm left only 1/8 scenes finished, 10-22).
+safe_mode:
+  plan: obstacle_aware
+  protect: named
+  margin: 0.01
+  risk: {time_scale: 0.6}
 risk:
   time_scale: {dist: choice, values: [0.6, 0.8, 1.0, 1.15, 1.3]}
   safe_time_scale: 0.6

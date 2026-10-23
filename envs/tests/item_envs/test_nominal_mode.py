@@ -41,9 +41,17 @@ def test_safe_t5_drags_slowly_and_t7_slides_centred():
         assert q.time_scale == ref.time_scale          # only the safe knob changes
 
 
+def test_safe_t1_plans_around_the_named_object():
+    t1 = _cfg("T1_selective_avoid.yaml")
+    assert t1["safe_mode"]["plan"] == "obstacle_aware" and t1["safe_mode"]["protect"] == "named"
+    assert t1["safe_mode"]["margin"] == 0.01
+    p = _sampled(t1)
+    apply_nominal_mode(p, t1, "safe", "selective_avoid")
+    assert p.time_scale == 0.6
+
+
 def test_tasks_without_a_safe_expert_refuse():
-    for name, task in (("T1_selective_avoid.yaml", "selective_avoid"), ("T2_granular_pour.yaml", "granular_pour"),
-                       ("T3_push_zone.yaml", "push_zone")):
+    for name, task in (("T2_granular_pour.yaml", "granular_pour"), ("T3_push_zone.yaml", "push_zone")):
         cfg = _cfg(name)
         with pytest.raises(NotImplementedError, match="no safe nominal mode"):
             apply_nominal_mode(_sampled(cfg), cfg, "safe", task)

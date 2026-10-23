@@ -81,6 +81,7 @@ from .logger import (  # noqa: E402
 )
 from .regions import Region, container_region, table_region, zone_region  # noqa: E402
 from .registry import get_task_entry  # noqa: E402
+from . import safe_plan  # noqa: E402
 from .risk import RiskParams, sample_risk  # noqa: E402
 from .rules import Consequence, enumerate_rules, resolve_splits  # noqa: E402
 from .spawn import spawn_candidates  # noqa: E402
@@ -128,11 +129,15 @@ class ItemEpisodeRunner:
         task_cfg_path: str | None = None,
         video_fps: float = 25.0,
         nominal_mode: str = "careless",
+        protect: list[str] | None = None,
     ):
         self.entry = get_task_entry(task)
         if nominal_mode not in NOMINAL_MODES:
             raise ValueError(f"nominal_mode must be one of {NOMINAL_MODES}, got {nominal_mode!r}")
         self.nominal_mode = nominal_mode
+        self.protect = None if protect is None else [str(i) for i in protect]   # safe mode: item ids to plan around
+        self.safe_plan_info: dict | None = None
+        self._safe_uninstall = None
         if render not in ("full", "none"):
             raise ValueError(f"render must be 'full' or 'none', got {render!r}")
         self.task_name = task
@@ -184,6 +189,10 @@ class ItemEpisodeRunner:
             _merge_risk_override(self.risk_params, self.risk_override)
 
         CuroboIKController.install()
+        safe = self.task_cfg.get("safe_mode") or {}
+        world_aware = self.nominal_mode == "safe" and safe.get("plan") == "obstacle_aware"
+        if world_aware:   # the hand + held-object slots must be in the planner model before the Env builds it
+            safe_plan.install_safe_yml()
         task_name = self.host if self.entry.kind == "host" else self.entry.robotwin_task
         env = Env(
             task_name,
@@ -291,10 +300,24 @@ class ItemEpisodeRunner:
         # held detection keys on per_scene_id (C++-assigned, wrapper-stable)
         self._item_psids = {int(entity_of(s).per_scene_id): s.item_id for s in self.items}
 
+        # safe nominal mode, obstacle-aware planning (T1, 2026-10-22): the protected items are the cuRobo world and
+        # the hand + held object are modelled before every plan; hooks first, so the controller wraps them
+        if world_aware:
+            protected = self._protected_items(safe)
+            self.safe_plan_info = {
+                "protected": [s.item_id for s in protected],
+                "cuboids": safe_plan.push_protected_world(env.robot, protected, float(safe.get("margin", 0.02))),
+            }
+            safe_plan.PlanStatusLog.install(env.robot)
+            safe_plan.PlanStatusLog.sink = []
+            self.safe_plan_info["plan_status"] = safe_plan.PlanStatusLog.sink   # the failures, for meta
+            self._safe_uninstall = safe_plan.install_plan_hooks(env, status_sink=safe_plan.PlanStatusLog.sink)
+
         if build_controller:
             self.ctrl = RiskTickController(
                 env, risky_skill_labels=tuple(self.task_cfg.get("risky_skill_labels", ()) or ())
             )
+            self.ctrl.world_aware_only = world_aware   # no mplib screw / world-Z fallback: they ignore the world
             self.ctrl.attach()
         # time-scale convention (see robotwin_tasks/_item_utils.py): the runner
         # installs the scales; risky(task) / the T1 skill path switch between them
@@ -336,7 +359,30 @@ class ItemEpisodeRunner:
         # RolloutController, which never calls _play) gets it too.
         task.scene.step()
 
+    def _protected_items(self, safe: dict) -> list:
+        """The items the safe mode plans around: ``protect`` overrides; safe_mode.protect "named" = the active
+        rule's items (all candidates when no rule is active), "candidates" = every extra object."""
+        if self.protect is not None:
+            want = set(self.protect)
+        elif safe.get("protect", "named") == "named" and self.active_rule_id is not None:
+            rule = next((r for r in self.rules if r.rule_id == self.active_rule_id), None)
+            if rule is None:
+                raise ValueError(f"active rule {self.active_rule_id!r} not in this scene")
+            want = set(rule.item_ids)
+        else:
+            want = {s.item_id for s in self.items if s.role == "candidate"}
+        out = [s for s in self.items if s.item_id in want]
+        if not out:
+            raise ValueError(f"safe mode: no item to protect (wanted {sorted(want)})")
+        return out
+
     def close(self) -> None:
+        if self._safe_uninstall is not None:
+            try:
+                self._safe_uninstall()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[runner] safe-plan hooks: {exc}")
+            self._safe_uninstall = None
         if self.env is not None:
             try:
                 self.env.close()
@@ -450,6 +496,8 @@ class ItemEpisodeRunner:
 
         meta.risk = self.risk_params.as_dict()
         meta.diag["nominal_mode"] = self.nominal_mode
+        if self.safe_plan_info is not None:
+            meta.diag["safe_plan"] = self.safe_plan_info
         meta.physics = _jsonable_physics(self.physics_sample)
         meta.items = [item_spec_dict(s) for s in self.items]
         meta.regions = [region_dict(r) for r in self.regions]

@@ -40,8 +40,7 @@ checked.
 - [ ] OOD scenes with the held-out colours for T3 / T5 / T7 (T1 has the "heldout" pool; the other tasks draw their
   colours in their task files and have no switch yet).
 - [x] 10-22 revision round checked (trial collection runs/lang/smoke_1022: 5 tasks + 2 OOD T1 scenes, records,
-  sentences, splits; 361 lang + 231 env tests) and committed as f1d2488. [ ] Push: the GitHub token in GH_TOKEN is
-  rejected (401, expired since the 10-20 push); needs a new token from Yuxuan.
+  sentences, splits; 361 lang + 231 env tests) and committed as f1d2488; pushed 10-22 with the new token (with 4c6a158).
 - [ ] When Yuxuan says go: re-collect the warmup and validation data of T1, T3, T5, T7
   (old shards hold the old objects, colours and layouts; T2 is unchanged); cancel the three round jobs and
   resubmit (`runs/lang/rounds_1020/launch.sh` as the template, new run names).
@@ -83,8 +82,15 @@ checked.
   - [x] 10-22 runner plumbing: `ItemEpisodeRunner(nominal_mode="safe")` (default "careless" unchanged), the task
     yaml's `safe_mode:` section; T5 safe = time_scale 0.5, T7 safe = place_offset 0; tests/item_envs/test_nominal_mode.py.
     10-22 sim check on today's scenes (runs/lang/safe_mode_1022): T5 8/8 and T7 8/8 finished with no rule broken;
-  - [ ] T1 safe: the named object (in the way) in cuRobo's world with the WSG hand + held-object model (from
-    vla_finetuning/hand_model.py), 2 cm margin, stock executor; keep = no contact with it at any physics step;
+  - [x] 10-22 T1 safe (runs/lang/safe_mode_1022/check_t1.py): `safe_plan.py` puts the
+    protected objects (named rule's, else all extra objects; `protect=` overrides) in cuRobo's world, +2 cm, with the
+    WSG hand + held object as attached spheres (copied from vla_finetuning/hand_model.py, which could import it now);
+    RiskTickController.world_aware_only: no mplib fallback, branch-flip re-plans with cuRobo only; risky speed 0.6;
+    keep = no contact with a protected object at any physics step (`safe_plan.contact_with`);
+    First check (8 scenes, the object on the path protected): careless touched it 5/8, finished 2/8; safe touched it
+    0/8 but finished 1/8 (4 plan failures, 3 "no grasp pose"). Fixes: cuRobo status log for the start-in-collision
+    fallback, margin 2 -> 1 cm. Rerun (check_t1_v2): safe finished 4/8 with 0/8 touches (careless finished without
+    touching it 1/8); the failures are "no grasp pose" (2, one also fails careless) and IK_FAIL at the target (2);
   - [ ] T3 safe: route around the in-the-way element (waypoints + a pusher that follows them, lifting the hand at
     corners);
   - [ ] T2 safe: find where beads leave in a gentle pour (saved runs first), then a pour with zero beads out;

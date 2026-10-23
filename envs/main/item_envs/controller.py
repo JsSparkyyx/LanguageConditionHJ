@@ -66,6 +66,8 @@ class RiskTickController(TickChunkedController):
         self.retime_log: list[dict] = []  # one entry per retimed plan
         self.v_ratio_events: list[dict] = []  # subset with v_ratio > 1 (never clipped)
         self.n_plan_failures: int = 0
+        # safe nominal mode (obstacle-aware): cuRobo against its world only, no mplib fallback (it ignores the world)
+        self.world_aware_only: bool = False
         # realized-vs-commanded tracking (see module docstring)
         self._user_tick_hook = None
         self._tracking_enabled = False
@@ -142,6 +144,25 @@ class RiskTickController(TickChunkedController):
         recorded as a plan failure; flinging the payload is not).
         """
         task = getattr(self.env, "task", None)
+        if self.world_aware_only:
+            # the safe mode's world holds the protected items: the screw / world-Z fallbacks of the parent and the
+            # local screw path plan without it, so a failed cuRobo plan stays a failure (the demo is dropped)
+            self._n_plan += 1
+            nominal = self._left_plan if arm == "left" else self._right_plan
+            plan_kw = {k: v for k, v in kw.items() if not str(k).startswith("_cehj")}
+            result = nominal(target_pose, **plan_kw)
+            ok = bool(result) and result.get("status") == "Success"
+            print(f"[risk_tick] plan #{self._n_plan} {arm} world-aware curobo={'ok' if ok else (result or {}).get('status')}")
+            # an IK branch flip (see _avoid_branch_flip) is fixed by re-planning with the same world-aware cuRobo
+            # only: the screw path there would ignore the protected items
+            best, best_travel = result, (_max_joint_travel(result) if ok else 0.0)
+            for _ in range(BRANCH_FLIP_REPLANS if best_travel > BRANCH_FLIP_TRAVEL else 0):
+                again = nominal(target_pose, **plan_kw)
+                if again and again.get("status") == "Success" and _max_joint_travel(again) < best_travel:
+                    best, best_travel = again, _max_joint_travel(again)
+                if best_travel <= BRANCH_FLIP_TRAVEL:
+                    break
+            return best
         if not getattr(task, "plan_local", False):
             result = super()._plan_body(arm, target_pose, **kw)
             return self._avoid_branch_flip(arm, target_pose, result, **kw)
