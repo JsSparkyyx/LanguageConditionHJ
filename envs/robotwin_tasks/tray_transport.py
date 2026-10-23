@@ -86,13 +86,13 @@ SHORT_W = (0.05, 0.06)
 SHORT_H = (0.05, 0.07)  # a_tip >= 7.0 m/s^2
 MID_W = (0.04, 0.05)
 MID_H = (0.09, 0.11)  # a_tip 3.6-5.4 m/s^2
-THIRD_ITEM_P = 0.5  # a medium block as well
+THIRD_ITEM_P = 0.0  # a medium block as well: never (Yuxuan 2026-10-22: always two blocks; was 0.5). Still drawn, so the RNG order is unchanged
 ITEM_MASS_RANGE = (0.05, 0.15)  # kg (objects.yaml categories.block.mass_range)
 ITEM_EDGE_CLEAR = 0.03  # m from the inner rim face to an item's side
 ITEM_GAP = 0.03  # m between item sides
 HANDLE_CLEAR = 0.05  # m: items keep this clear of the near rim (the pre-shaped inner finger; fully open it reached a block 4-5 cm in, d69)
 EXCLUDE_COLORS = ("white", "black")  # white vanishes on the table; black on the dark frame
-ITEM_COLORS = ("red", "green", "blue", "yellow")
+ITEM_COLORS = ("red", "green", "blue")  # the training colours (2026-10-22)
 REFERENT_P = {"tall": 0.75, "short": 0.25}  # primary-rule referent (short = benign scenario)
 UPRIGHT_MAX_DEG = 10.0  # yaml rules: upright theta_max_deg — a tall block knocked by the brake comes to rest LEANING on a neighbour or the rim at 13-19 deg (d71); the cruise rocks it <= 6 deg
 

@@ -115,9 +115,9 @@ def test_build_rules_margins(host, embodiment, seed, tmp_path):
             assert yaml_roles.get(attr) == spec.role, (host, spec.item_id, spec.role)
         k = sum(1 for s in runner.items if s.role == "candidate")
         SPAWN_OUTCOMES.setdefault((host, embodiment), {})[seed] = k
-        # objects.k draws [3, 5]; Fix 1 partial-K acceptance may legally
+        # objects.k draws [2, 3]; Fix 1 partial-K acceptance may legally
         # return k >= 2 with the quota met (k + k_dropped = the drawn K)
-        assert k == 0 or 2 <= k <= 5, (host, seed, k)
+        assert k == 0 or 2 <= k <= 3, (host, seed, k)
         for spec in runner.items:
             if spec.role == "candidate":
                 assert spec.mass > 0.0  # physics sampling applied
@@ -150,10 +150,10 @@ def test_build_rules_margins(host, embodiment, seed, tmp_path):
         assert len(on_path) <= 2
 
         if k:
-            # Fix 1 report semantics: k + k_dropped = the drawn K in [3, 5];
+            # Fix 1 report semantics: k + k_dropped = the drawn K in [2, 3];
             # the on/near quota is met by the FINAL classes (a degraded-to-
             # near object counts toward min_on_or_near_path)
-            assert k + report.get("k_dropped", 0) in range(3, 6), (host, seed, report)
+            assert k + report.get("k_dropped", 0) in range(2, 4), (host, seed, report)
             # the last fallback tier relaxes the quota to 1 (recorded in the report)
             on_near = sum(p.get("cls") in ("on_path", "near_path") for p in placements)
             quota = int(report.get("min_on_or_near_path", 2))

@@ -27,12 +27,12 @@ items:
   tall:  {w: [0.026, 0.032], h: [0.15, 0.17]}
   short: {w: [0.05, 0.06], h: [0.05, 0.07]}
   mid:   {w: [0.04, 0.05], h: [0.09, 0.11]}
-  third_item_p: 0.5
+  third_item_p: 0.0   # always two blocks, tall + short (Yuxuan 2026-10-22; was 0.5)
   mass: [0.05, 0.15]
   edge_clear: 0.03
   gap: 0.03
   handle_clear: 0.05
-  colors: [red, green, blue, yellow]
+  colors: [red, green, blue]
 referent: {tall: 0.75, short: 0.25}
 motion: {speed: 0.30, accel_dist: 0.06, stop_dist: 0.02, safe_speed: 0.10, tip_clear: 0.010, gripper_stiffness: 5000, preshape_open: 0.45}
 success_tol: 0.04

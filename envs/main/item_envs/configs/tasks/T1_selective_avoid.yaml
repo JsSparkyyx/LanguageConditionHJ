@@ -14,9 +14,12 @@ embodiments: [ur5-wsg, franka-panda]
 # first-ok placement is kept and vis_fallback=true recorded (gate tolerates
 # 5%). Fused single pass after the ur5 A/B showed the two-loop version
 # regressed near_path (0.959 -> 0.897); Bridges re-validation pending.
-objects: {k: [3, 5], max_on_path: 2, min_on_or_near_path: 2, near_path_offset: [0.02, 0.06],
+objects: {k: [2, 3], max_on_path: 2,   # at most 3 extra objects (Yuxuan 2026-10-22; was 3-5); 2 = the on/near quota
+          min_on_or_near_path: 2, near_path_offset: [0.02, 0.06],
           off_path_min_dist: 0.10, min_separation: 0.03, static_objects: false,
-          on_path_max_r_xy: 0.035, near_path_max_r_xy: 0.035,
+          on_path_max_r_xy: 0.06, near_path_max_r_xy: 0.06,   # 2026-10-22 (was 0.035): wine glasses 1 / 2 and the bottles fit
+          # on the path. Sweep of 100 layouts (runs/lang/corpus_render): 0.035 / 0.06 / 0.16 left 9 / 8 / 14 layouts empty;
+          # books and kettles never fit on or near the path at any of them (they stand off the path only)
           off_path_visible_only: true,
           near_path_visible_only: true, on_path_visible_only: true,
           distinct_categories: true,   # user 2026-10-05: no repeated category in a scene, none of the host's (every candidate nameable)

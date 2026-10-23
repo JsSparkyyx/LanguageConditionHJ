@@ -49,7 +49,7 @@ from . import REPO, ensure_item_path
 
 ensure_item_path()
 
-from .config import CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, LangConfig, eval_seed  # noqa: E402
+from .config import CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, TRAIN_TASKS, LangConfig, eval_seed  # noqa: E402
 
 NOMINAL_RUNS = 2
 MAX_REDRAWS = 7
@@ -413,7 +413,7 @@ def child(args) -> int:
     kins, inits = {}, {"n": 0}
     cache_dir = REPO / "runs/lang/_nominal_cache"
     axes = [] if args.axes in ("", "none") else args.axes.split(",")   # none: nominal + control runs only
-    tasks = CANON_TASKS if args.tasks == "all" else tuple(args.tasks.split(","))
+    tasks = TRAIN_TASKS if args.tasks == "all" else tuple(args.tasks.split(","))
     crashes = defaultdict(int)
     cr_path = out_dir / f"crashes_{tag}.json"
     if cr_path.exists():
@@ -906,7 +906,7 @@ def main(argv=None) -> int:
     ap.add_argument("--ckpt", default="checkpoint_final.pt")
     ap.add_argument("--scenes-per-combo", type=int, default=20)
     ap.add_argument("--axes", default="train,heldout_template")
-    ap.add_argument("--tasks", default="all")
+    ap.add_argument("--tasks", default="all", help="comma list; all = the five training tasks (TRAIN_TASKS)")
     ap.add_argument("--embodiments", default="trained",
                     help="'trained' (the run's lang_config.json, default), 'all', or a comma list")
     ap.add_argument("--embodiment", default=None)

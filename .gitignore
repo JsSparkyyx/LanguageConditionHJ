@@ -32,3 +32,6 @@ data/
 
 # wandb local run dirs
 wandb/
+# VLM weights and logs (2026-10-22); VLM/README.md and VLM/*.py are tracked
+VLM/*/
+!VLM/

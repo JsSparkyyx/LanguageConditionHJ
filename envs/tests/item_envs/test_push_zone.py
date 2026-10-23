@@ -212,8 +212,8 @@ def test_push_rule_semantics():
     for phrase in pair_stay.phrases:
         assert "bottle" in phrase or "cylinder" in phrase, phrase
         assert " and " in phrase, phrase
-    # splits.yaml: tea_box is a heldout item category for push_zone
-    assert by_id["inside|push_1|table_top"].split == "heldout_item"
+    # no held-out categories since 2026-10-22 (held-out models and colours instead)
+    assert by_id["inside|push_1|table_top"].split == "train"
     assert by_id["inside|push_0|table_top"].split == "train"
 
 

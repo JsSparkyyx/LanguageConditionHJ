@@ -30,6 +30,10 @@ from . import REPO
 # single-task or single-embodiment run evaluates on the same seeds as `full`
 CANON_TASKS = ("selective_avoid", "granular_pour", "push_zone", "granular_carry",
                "tray_transport", "clean_pour", "gap_place")
+# the tasks new runs train, collect and evaluate on (Yuxuan 2026-10-22: T4 granular_carry and T6 clean_pour
+# dropped, "we don't need that much tasks"). Their episodes stay in the shards and CANON_TASKS keeps their
+# indices; runs saved with all seven keep them
+TRAIN_TASKS = tuple(t for t in CANON_TASKS if t not in ("granular_carry", "clean_pour"))
 CANON_EMBODIMENTS = ("ur5-wsg", "franka-panda")
 CANON_T1_HOSTS = ("place_container_plate", "place_burger_fries", "stack_blocks_two",
                   "stack_bowls_two", "place_bread_basket")  # registry order (host_tasks)
@@ -121,7 +125,7 @@ class LangConfig(FrozenConfig):
     # --- tasks and embodiments (FrozenConfig fields, new defaults) ---
     task: str = "selective_avoid"
     embodiment: str = "ur5-wsg"
-    task_choices: tuple = CANON_TASKS
+    task_choices: tuple = TRAIN_TASKS
     embodiment_choices: tuple = CANON_EMBODIMENTS
     t1_hosts: tuple = CANON_T1_HOSTS
     # control ticks per episode (x 10 physics steps); Phase 0 measured the
@@ -206,10 +210,11 @@ class LangConfig(FrozenConfig):
     # Qwen encoder only: the vision tower's and layer 0's attention kernel (numerics only): sdpa | flash_attention_2 |
     # eager (eager returns attention weights, E7)
     qwen_attn: str = "sdpa"
-    # T1 candidate pool. "current" = objects.yaml as it is. "pre_1012" = the pool before the 2026-10-12 renaming
-    # (068_boxdrink ids 0-3 as drink_box, 086_woodenblock ids 0-4, rebuilt from objects.yaml's legacy_ids /
-    # legacy_category): replays of the pre-10-12 shards and new rounds then draw the layouts the vanilla runs saw.
-    # Names still come from the current vocabulary
+    # T1 candidate pool. "current" = objects.yaml as it is (the hand-picked corpus from 2026-10-22, training models
+    # and colours only). "heldout" = the OOD scenes: only the held-out models (objects.yaml heldout_ids) and the
+    # held-out colours, every rule in the heldout_item split. "pre_1012" = the pool before the 2026-10-12 renaming
+    # (068_boxdrink ids 0-3 as drink_box, 086_woodenblock ids 0-4, from vocab_pre_1012/objects.yaml): replays of the
+    # pre-10-12 shards draw the layouts the vanilla runs saw. Names still come from the current vocabulary
     spawn_pool: str = "current"
     # The vocabulary (objects.yaml + paraphrases.yaml) of the whole process: "current" = today's files; "pre_1012" =
     # the files before 2026-10-12, which both vanilla rounds runs use (legacy_pool.install_vocab: same physics, old
@@ -266,7 +271,7 @@ class LangConfig(FrozenConfig):
             "mask_special_tokens assumes BERT's [CLS] / [SEP]"
         assert self.qwen_words_prefix in ("frame", "blank"), self.qwen_words_prefix
         assert self.qwen_attn in ("sdpa", "flash_attention_2", "eager"), self.qwen_attn
-        assert self.spawn_pool in ("current", "pre_1012"), self.spawn_pool
+        assert self.spawn_pool in ("current", "pre_1012", "heldout"), self.spawn_pool
         assert self.vocab in ("current", "pre_1012"), self.vocab
         # the bank hash of this config's vocabulary; a hash of another known vocabulary is a stale copy (a config
         # built with dataclasses.replace from a default one), any other stored hash (a saved config) is kept

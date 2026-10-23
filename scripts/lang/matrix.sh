@@ -18,10 +18,10 @@ declare -A FLAGS=(
   [noscene]="--no-scene" [nobody]="--no-body" [nofilm]="--no-film" [noqueries]="--no-queries" [nortoken]="--no-rtoken"
   [bertraw]="--text-backend bert_raw" [generic]="--text-backend sentence_generic"
 )
-for t in selective_avoid granular_pour push_zone granular_carry tray_transport clean_pour gap_place; do
+for t in selective_avoid granular_pour push_zone tray_transport gap_place; do   # T4 / T6 dropped 2026-10-22
   FLAGS[pertask_$t]="--tasks $t"
 done
-ORDER="full fixedrule randrelabel shuffled noscene nobody nofilm noqueries nortoken bertraw generic pertask_selective_avoid pertask_granular_pour pertask_push_zone pertask_granular_carry pertask_tray_transport pertask_clean_pour pertask_gap_place"
+ORDER="full fixedrule randrelabel shuffled noscene nobody nofilm noqueries nortoken bertraw generic pertask_selective_avoid pertask_granular_pour pertask_push_zone pertask_tray_transport pertask_gap_place"
 for name in $ORDER; do
   if [ -n "$ONLY" ] && [[ ",$ONLY," != *",$name,"* ]]; then continue; fi
   run=runs/lang/lang_${name}_off_${STAMP}

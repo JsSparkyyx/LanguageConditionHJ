@@ -256,7 +256,7 @@ def _train_words(names: list[str]) -> list[str]:
 def assign_split(rule: RuleSpec, splits_cfg: dict) -> str:
     """Split for a rule from the task's section of splits.yaml merged with "all".
 
-    Precedence: heldout_item (any member category or color) > heldout_region >
+    Precedence: heldout_item (a held-out model, or any member category or color) > heldout_region >
     heldout_phrase > "train". Category/color match against the per-member
     naming metadata in params and fall back to tokens of each item_id ("-"
     normalized to "_"). heldout_phrase matches when a rule phrase could have
@@ -270,6 +270,8 @@ def assign_split(rule: RuleSpec, splits_cfg: dict) -> str:
         tokens |= {t.replace("-", "_") for t in iid.split("_")}
     for cat in categories:
         tokens |= {cat, cat.replace("-", "_")}
+    if rule.params.get("heldout_model"):
+        return "heldout_item"
     heldout_categories = set(splits_cfg.get("heldout_item_categories", []) or [])
     if heldout_categories & tokens:
         return "heldout_item"
@@ -368,6 +370,8 @@ def _naming_meta(members: tuple) -> dict:
     categories = tuple(str(it.category) for it in members)
     colors = tuple(getattr(it, "color", None) for it in members)
     meta: dict = {"categories": categories, "colors": colors}
+    if any(getattr(it, "heldout_model", False) for it in members):
+        meta["heldout_model"] = True   # a member is a held-out model (never in training scenes, 2026-10-22)
     if len(set(categories)) == 1:
         meta["category"] = categories[0]
     if len(set(colors)) == 1 and colors[0]:

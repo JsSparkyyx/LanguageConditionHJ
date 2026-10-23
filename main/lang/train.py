@@ -1087,7 +1087,8 @@ def add_common(p):
     p.add_argument("--data", nargs="+", required=True)
     p.add_argument("--val", nargs="*", default=[])
     p.add_argument("--run", required=True)
-    p.add_argument("--tasks", default="all")
+    p.add_argument("--tasks", default="all",
+                   help="comma list or 'all' (the five training tasks, TRAIN_TASKS); a resumed run keeps the saved choice")
     p.add_argument("--embodiments", default="ur5-wsg",
                    help="comma list or 'all' (default ur5-wsg: one embodiment); a resumed run keeps the saved choice")
     p.add_argument("--relabel", choices=("paired", "random", "fixed"), default=None)

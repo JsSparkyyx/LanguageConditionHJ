@@ -870,6 +870,8 @@ def _item_from_meta(d: dict) -> ItemSpec:
     )
     if d.get("size"):
         spec.size = str(d["size"])
+    if d.get("heldout_model"):
+        spec.heldout_model = True   # a held-out model (spawn's "heldout" pool): rules.assign_split -> heldout_item
     return spec
 
 

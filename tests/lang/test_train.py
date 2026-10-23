@@ -137,7 +137,7 @@ def test_training_defaults_to_one_embodiment_and_resume_keeps_the_saved_one(tmp_
     import argparse
     from types import SimpleNamespace
 
-    from main.lang.config import CANON_EMBODIMENTS
+    from main.lang.config import CANON_EMBODIMENTS, CANON_TASKS, TRAIN_TASKS
     from main.lang.train import add_common, config_from_args, trained_subsets
 
     p = argparse.ArgumentParser()
@@ -146,13 +146,13 @@ def test_training_defaults_to_one_embodiment_and_resume_keeps_the_saved_one(tmp_
     assert args.embodiments == "ur5-wsg"
     cfg = config_from_args(args)
     assert cfg.embodiment_choices == ("ur5-wsg",)
-    assert trained_subsets(cfg) == (None, ("ur5-wsg",))
+    assert trained_subsets(cfg) == (TRAIN_TASKS, ("ur5-wsg",))   # the five tasks: T4 / T6 rows of old shards are skipped
     cfg_all = config_from_args(p.parse_args(["--data", "d", "--run", str(tmp_path / "run"), "--embodiments", "all"]))
-    assert cfg_all.embodiment_choices == CANON_EMBODIMENTS and trained_subsets(cfg_all) == (None, None)
+    assert cfg_all.embodiment_choices == CANON_EMBODIMENTS and trained_subsets(cfg_all) == (TRAIN_TASKS, None)
     # a run started on both embodiments resumes on both, though the default flag is now ur5-wsg
     run = tmp_path / "old"
     run.mkdir()
-    LangConfig().save(run / "lang_config.json")
+    dataclasses.replace(LangConfig(), task_choices=CANON_TASKS).save(run / "lang_config.json")   # seven tasks
     (run / "state.pt").write_bytes(b"x")
     old = config_from_args(SimpleNamespace(**{**vars(args), "run": str(run), "resume": True}))
     assert trained_subsets(old) == (None, None)

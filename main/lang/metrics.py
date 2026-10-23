@@ -413,10 +413,11 @@ class LangRoundMetrics:
         # columns for the embodiments the run collects on (a one-embodiment run has no empty columns)
         embs = [e for e in CANON_EMBODIMENTS if any(r.get("embodiment") == e for r in self.rows)] or list(CANON_EMBODIMENTS)
         cols = [(e, d) for e in embs for d in ("harm", "benign", "all")]
+        tasks = [t for t in CANON_TASKS if any(r.get("task") == t for r in self.rows)] or list(CANON_TASKS)   # rows run
         paths = []
         for metric in ("harm_named", "any_intervention", "intervention_rate", "task_success"):
-            M = np.full((len(CANON_TASKS), len(cols)), np.nan)
-            for i, t in enumerate(CANON_TASKS):
+            M = np.full((len(tasks), len(cols)), np.nan)
+            for i, t in enumerate(tasks):
                 for j, (e, d) in enumerate(cols):
                     v = [float(r[metric]) for r in self.rows if self.ran(r)
                          and r["task"] == t and r["embodiment"] == e and (d == "all" or r["designation"] == d)]
@@ -425,7 +426,7 @@ class LangRoundMetrics:
             fig, ax = plt.subplots(figsize=(8, 4))
             im = ax.imshow(M, vmin=0, vmax=1, cmap="viridis")
             ax.set_xticks(range(len(cols)), [f"{e[:5]}\n{d}" for e, d in cols], fontsize=7)
-            ax.set_yticks(range(len(CANON_TASKS)), CANON_TASKS, fontsize=7)
+            ax.set_yticks(range(len(tasks)), tasks, fontsize=7)
             for i in range(M.shape[0]):
                 for j in range(M.shape[1]):
                     if M[i, j] == M[i, j]:

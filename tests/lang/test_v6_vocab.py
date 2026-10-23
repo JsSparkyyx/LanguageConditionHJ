@@ -61,7 +61,11 @@ def test_old_vocab_gives_the_legacy_pool(old_vocab):
 
     old_pool = spawn.t1_pool_entries(physics.load_objects_cfg())
     lp.install_vocab("current")
-    rebuilt = lp.legacy_entries(spawn.t1_pool_entries(physics.load_objects_cfg()))
+    try:   # since 2026-10-22 the pre_1012 switch reads the old file's pool (today's file holds another corpus)
+        lp.install_spawn_pool("pre_1012")
+        rebuilt = spawn.t1_pool_entries(physics.load_objects_cfg())
+    finally:
+        lp.install_spawn_pool("current")
     assert [e["asset"] for e in old_pool] == [e["asset"] for e in rebuilt]
     for a, b in zip(old_pool, rebuilt):
         assert (a.get("ids"), a.get("category")) == (b.get("ids"), b.get("category")), a["asset"]
@@ -78,7 +82,8 @@ def test_physics_fields_of_both_files_are_equal():
         c = cur["categories"].get(cat) or {}
         for k in ("mass_range", "friction_range", "dynamic_ratio", "colored"):
             assert e.get(k) == c.get(k), (cat, k)
-    assert old.get("colors") == cur.get("colors") and old.get("t1_pool") == cur.get("t1_pool")
+    # the colours and the T1 pool changed on 2026-10-22 (the hand-picked corpus); the pre_1012 pool keeps the old ones
+    assert old.get("colors") != cur.get("colors") and old.get("t1_pool") != cur.get("t1_pool")
 
 
 def test_bank_hash_follows_the_vocab():

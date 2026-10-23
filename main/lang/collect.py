@@ -50,7 +50,7 @@ from . import ensure_item_path
 ensure_item_path()
 
 from .config import (  # noqa: E402
-    CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, LangConfig, check_stream, shard_g,
+    CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, TRAIN_TASKS, LangConfig, check_stream, shard_g,
     val_offset, valg_offset, warmup_offset,
 )
 
@@ -1121,7 +1121,7 @@ def cmd_recon(args) -> int:
     """Phase 0: `per_task` nominal episodes per task for one embodiment into a
     scratch root (round-robin T1 hosts), for the parity / timing checks."""
     cfg = LangConfig()
-    tasks = CANON_TASKS if args.tasks == "all" else tuple(args.tasks.split(","))
+    tasks = TRAIN_TASKS if args.tasks == "all" else tuple(args.tasks.split(","))
     out = Path(args.out).resolve()
     _check_fresh(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -1162,8 +1162,9 @@ def main(argv=None) -> int:
                        help="the frozen front end (V6: holobrain_qwen adds kv_buffer/ and, by default, frames/)")
         p.add_argument("--frames", action=argparse.BooleanOptionalAction, default=None,
                        help="the frames/ sidecar with the native renders (default: on under holobrain_qwen)")
-        p.add_argument("--spawn-pool", choices=("current", "pre_1012"), default="current",
-                       help="pre_1012: the T1 object pool before 2026-10-12 (replays of shards collected before it)")
+        p.add_argument("--spawn-pool", choices=("current", "pre_1012", "heldout"), default="current",
+                       help="pre_1012: the T1 object pool before 2026-10-12 (replays of shards collected before it); "
+                            "heldout: the OOD scenes (held-out models and colours only, 2026-10-22)")
         p.add_argument("--qwen-attn", choices=("sdpa", "flash_attention_2", "eager"), default="sdpa")
         p.add_argument("--replay", default=None, metavar="SHARD",
                        help="collect a finished shard's recorded episodes again (task, host, episode id; all "

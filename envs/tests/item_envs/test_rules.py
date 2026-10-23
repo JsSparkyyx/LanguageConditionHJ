@@ -512,8 +512,8 @@ def test_objects_yaml_structure_and_v3_mass_ranges():
     assert cfg["categories"]["beads"]["mass_range"] == [0.0005, 0.002]
     assert set(cfg["categories"]["beads"]["synonyms"]) == {"balls", "little balls"}   # plain names, 2026-10-20
     # 6 training colors + 3 heldout
-    assert len(cfg["colors"]["train"]) == 6
-    assert set(cfg["colors"]["heldout"]) == {"purple", "orange", "cyan"}
+    assert cfg["colors"]["train"] == ["red", "green", "blue"]
+    assert set(cfg["colors"]["heldout"]) == {"purple", "orange"}
     # names/synonyms never contain digits
     for key, entry in cfg["categories"].items():
         for nm in list(entry.get("names", [])) + list(entry.get("synonyms", [])):
@@ -522,23 +522,14 @@ def test_objects_yaml_structure_and_v3_mass_ranges():
 
 def test_splits_yaml_is_v3_excerpt():
     cfg = yaml.safe_load((CONFIGS / "splits.yaml").read_text())
-    assert cfg == {
-        "selective_avoid": {
-            "heldout_item_categories": ["pill_bottle", "sauce_can", "tea_box"],
-            "heldout_colors": ["purple", "orange", "cyan"],
-        },
-        "granular_pour": {
-            "heldout_regions": ["laptop"],
-            "heldout_colors": ["purple", "orange", "cyan"],
-        },
-        "push_zone": {
-            "heldout_colors": ["purple", "orange", "cyan"],
-            "heldout_item_categories": ["tea_box"],
-        },
-        "granular_carry": {"heldout_colors": ["purple", "orange", "cyan"]},  # T4 (2026-10-03)
-        "tray_transport": {"heldout_colors": ["purple", "orange", "cyan"]},  # T5 (2026-10-04)
-        "clean_pour": {"heldout_colors": ["purple", "orange", "cyan"]},  # T6 (2026-10-04)
-        "gap_place": {"heldout_colors": ["purple", "orange", "cyan"]},  # T7 (2026-10-04)
+    assert cfg == {   # 2026-10-22: colours 3 + 2, no held-out categories (held-out models: objects.yaml heldout_ids)
+        "selective_avoid": {"heldout_colors": ["purple", "orange"]},
+        "granular_pour": {"heldout_regions": ["laptop"], "heldout_colors": ["purple", "orange"]},
+        "push_zone": {"heldout_colors": ["purple", "orange"]},
+        "granular_carry": {"heldout_colors": ["purple", "orange"]},  # T4 (2026-10-03)
+        "tray_transport": {"heldout_colors": ["purple", "orange"]},  # T5 (2026-10-04)
+        "clean_pour": {"heldout_colors": ["purple", "orange"]},  # T6 (2026-10-04)
+        "gap_place": {"heldout_colors": ["purple", "orange"]},  # T7 (2026-10-04)
         "all": {  # the held-out (OOD) sentence of each named rule (2026-10-20)
             "heldout_phrase_templates": ["don't bump into the {item}", "don't let the {item} move", "make sure the {item} stays standing",
                                          "don't let the {item} touch the {region}", "no {item} on the table",
@@ -555,6 +546,9 @@ def test_task_yamls_parse_and_rule_entries_enumerate():
     t1 = yaml.safe_load((CONFIGS / "tasks" / "T1_selective_avoid.yaml").read_text())
     assert t1["task"] == "selective_avoid"
     items, _ = t1_scene()
+    for it in (items.values() if isinstance(items, dict) else items):
+        if it.item_id == "pill_0":
+            it.heldout_model = True   # a held-out model (2026-10-22: held-out models replace held-out categories)
     rules = enumerate_rules(
         items, {}, t1, objects_cfg=objects_cfg,
         splits_cfg=resolve_splits(splits_yaml, "selective_avoid"), rng=np.random.RandomState(0),
@@ -611,7 +605,7 @@ def test_task_yamls_parse_and_rule_entries_enumerate():
     items = {**items, "tea_0": make_item("tea_0", "tea_box", group="push")}
     rules = enumerate_rules(items, regions, t3, splits_cfg=resolve_splits(splits_yaml, "push_zone"))
     by_id = {r.rule_id: r for r in rules}
-    assert by_id["inside|tea_0|table_top"].split == "heldout_item"
+    assert by_id["inside|tea_0|table_top"].split == "train"   # no held-out categories since 2026-10-22
 
 
 def test_entity_of_duck_typing():

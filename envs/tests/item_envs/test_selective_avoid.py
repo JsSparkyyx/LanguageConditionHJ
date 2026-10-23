@@ -83,7 +83,7 @@ def test_yaml_required_keys():
     for key in ("k", "max_on_path", "min_on_or_near_path", "near_path_offset",
                 "off_path_min_dist", "min_separation", "static_objects"):
         assert key in objects, key
-    assert objects["k"] == [3, 5]
+    assert objects["k"] == [2, 3]
     assert objects["static_objects"] is False
     assert cfg["corridor_t"] == [0.22, 0.48]
     # risk knobs per PLAN v3 §7 T1
@@ -324,11 +324,11 @@ def test_enumerate_rules_params():
 
 def test_enumerate_rules_splits():
     rules = {r.rule_id: r for r in t1_rules()}
-    # splits.yaml selective_avoid: heldout categories pill_bottle/sauce_can/
-    # tea_box — none present here, so everything is train or heldout_phrase
+    # no held-out model here, so everything is train or heldout_phrase
     assert rules["avoid|cup_0|-"].split in ("train", "heldout_phrase")
     items = t1_items()
     items["pill_0"] = make_item("pill_0", "pill_bottle")
+    items["pill_0"].heldout_model = True   # a held-out model (spawn's "heldout" pool, 2026-10-22)
     with_pill = {r.rule_id: r for r in t1_rules(items)}
     assert with_pill["avoid|pill_0|-"].split == "heldout_item"
 

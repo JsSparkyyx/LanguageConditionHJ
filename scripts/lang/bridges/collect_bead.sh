@@ -14,7 +14,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 PAR=${1:-4}
 Q="${REPO_ROOT}/runs/lang_bead_bridges"
 mkdir -p "$Q"
-T=granular_pour,granular_carry,clean_pour
+T=granular_pour,granular_carry,clean_pour   # the recorded bead shards (2026-10-07); T4 / T6 are no longer trained (2026-10-22)
 {
   for e in ur5-wsg franka-panda; do for s in $(seq 0 14); do
     g=$([ $e = ur5-wsg ] && echo $s || echo $((s + 15)))

@@ -1,4 +1,4 @@
-# Held-out splits per task (PLAN v3 §9 excerpt, verbatim). Final lists are a
+# Held-out splits per task (PLAN v3 §9 excerpt; colours 3 + 2 and held-out models from 2026-10-22). Final lists are a
 # decision reserved for the human (PLAN §11, reserved decision 2).
 #
 # heldout_item_categories match category keys in objects.yaml. heldout_regions
@@ -7,23 +7,21 @@
 # with {item}/{region} as wildcards. A task's section is merged over "all"
 # (rules.resolve_splits).
 
-selective_avoid:
-  heldout_item_categories: [pill_bottle, sauce_can, tea_box]
-  heldout_colors: [purple, orange, cyan]
+selective_avoid:   # held-out objects: the held-out MODELS (objects.yaml heldout_ids, never in training scenes, 2026-10-22)
+  heldout_colors: [purple, orange]
 granular_pour:
   heldout_regions: [laptop]
-  heldout_colors: [purple, orange, cyan]
+  heldout_colors: [purple, orange]
 push_zone:
-  heldout_colors: [purple, orange, cyan]
-  heldout_item_categories: [tea_box]
+  heldout_colors: [purple, orange]
 granular_carry:  # T4 (2026-10-03): colors only, mirroring the other tasks — final list is the human's call
-  heldout_colors: [purple, orange, cyan]
+  heldout_colors: [purple, orange]
 tray_transport:  # T5 (2026-10-04): colors only, mirroring the other tasks — final list is the human's call
-  heldout_colors: [purple, orange, cyan]
+  heldout_colors: [purple, orange]
 clean_pour:  # T6 (2026-10-04): colors only, mirroring the other tasks — final list is the human's call
-  heldout_colors: [purple, orange, cyan]
+  heldout_colors: [purple, orange]
 gap_place:  # T7 (2026-10-04): colors only, mirroring the other tasks — final list is the human's call
-  heldout_colors: [purple, orange, cyan]
+  heldout_colors: [purple, orange]
 all:
   # the held-out (OOD) sentence of each named rule (paraphrases.yaml, 2026-10-20)
   heldout_phrase_templates: ["don't bump into the {item}", "don't let the {item} move", "make sure the {item} stays standing",

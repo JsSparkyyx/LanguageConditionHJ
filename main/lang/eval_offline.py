@@ -60,7 +60,7 @@ ensure_item_path()
 from main.item_envs import language  # noqa: E402
 from main.item_envs.item_buffer import FAILS_SOON_H  # noqa: E402
 
-from .config import CANON_TASKS, LangConfig  # noqa: E402
+from .config import CANON_TASKS, TASK_SHORT, TRAIN_TASKS, LangConfig  # noqa: E402
 from .data import BEAD_TASKS, LangSource, stable_hash  # noqa: E402
 from .scene_roles import referent  # noqa: E402
 
@@ -1022,8 +1022,14 @@ def _ci(m: dict, key: str, nd: int = 2) -> str:
     return f"{v:.{nd}f} [{c[0]:.{nd}f}, {c[1]:.{nd}f}]" if c and c[0] == c[0] else f"{v:.{nd}f}"
 
 
+def scored_tasks(M: dict) -> list:
+    """The tasks with scored pairs, in CANON order (a five-task run has no empty T4 / T6 columns)."""
+    return [t for t in CANON_TASKS if any(k.endswith(f"/task/{t}") for k in M)] or list(CANON_TASKS)
+
+
 def tables_md(M: dict, title: str, gamma: float = 0.95, recall_ticks: int = 14) -> str:
     sym = lambda ax, g: M.get(f"{ax}/symmetric/{g}", {})  # noqa: E731
+    tasks = scored_tasks(M)
     L = [f"# Offline language probe: {title}", "",
          "rank_acc = P[Q(harmful rule) < Q(benign rule)] over symmetric pairs at the same state (chance 0.5), "
          "labels from fails_soon (h < 0 within 25 ticks); ties count 0.5. [ ] = episode-bootstrap 95% interval "
@@ -1032,13 +1038,13 @@ def tables_md(M: dict, title: str, gamma: float = 0.95, recall_ticks: int = 14) 
          "sentences): a code check, not a result. "
          f"States whose 25-tick window runs past a time-capped episode's end are left out "
          f"({M.get('train/_censored_pairs', {}).get('n', 0)} training-axis pairs).", "",
-         "| axis | pooled | task macro | " + " | ".join(f"T{i + 1}" for i in range(len(CANON_TASKS))) + " | referent | consequence |",
-         "|---|---|---|" + "---|" * len(CANON_TASKS) + "---|---|"]
+         "| axis | pooled | task macro | " + " | ".join(TASK_SHORT[t] for t in tasks) + " | referent | consequence |",
+         "|---|---|---|" + "---|" * len(tasks) + "---|---|"]
     for ax in AXES:
         p = sym(ax, "pooled")
         cells = [f"{_ci(p, 'rank_acc', 3)} ({p['n_pairs']} / {p['n_episodes']})" if p else "–",
                  f"{p['rank_acc_task_macro']:.3f}" if p.get("rank_acc_task_macro") is not None else "–"]
-        for t in CANON_TASKS:
+        for t in tasks:
             m = sym(ax, f"task/{t}")
             cells.append(f"{m['rank_acc']:.2f} ({m['n_pairs']})" if m else "–")
         cells.append(f"{_ci(p, 'rank_acc_referent')} ({p['n_referent']})" if p.get("rank_acc_referent") is not None else "–")
@@ -1050,7 +1056,7 @@ def tables_md(M: dict, title: str, gamma: float = 0.95, recall_ticks: int = 14) 
           "chance, e.g. a benign rule that sits below 1 all episode), and the sentence prior (words only, no scene) "
           "shows how much of the order the words alone give; model - prior is paired, on the same pairs.", "",
           "| task | state | model (pairs / episodes) | h now | sentence prior | model - prior |", "|---|---|---|---|---|---|"]
-    for t in CANON_TASKS:
+    for t in tasks:
         for st_, name in (("violated", "already broken"), ("not_yet", "not yet")):
             m = sym("train", f"task_state/{t}/{st_}")
             if m:
@@ -1164,6 +1170,7 @@ def tables_md(M: dict, title: str, gamma: float = 0.95, recall_ticks: int = 14) 
 
 
 def figures(M: dict, rows: list[dict], out: Path) -> None:
+    tasks = scored_tasks(M)
     try:
         import matplotlib
 
@@ -1174,10 +1181,10 @@ def figures(M: dict, rows: list[dict], out: Path) -> None:
     fig, ax = plt.subplots(figsize=(8, 3.5))
     w = 0.15
     for k, a in enumerate(AXES):
-        ys = [M.get(f"{a}/symmetric/task/{t}", {}).get("rank_acc", np.nan) for t in CANON_TASKS]
-        ax.bar(np.arange(len(CANON_TASKS)) + (k - 2) * w, ys, w, label=a)
+        ys = [M.get(f"{a}/symmetric/task/{t}", {}).get("rank_acc", np.nan) for t in tasks]
+        ax.bar(np.arange(len(tasks)) + (k - 2) * w, ys, w, label=a)
     ax.axhline(0.5, color="k", lw=0.8, ls="--")
-    ax.set_xticks(range(len(CANON_TASKS)), [f"T{i + 1}" for i in range(len(CANON_TASKS))])
+    ax.set_xticks(range(len(tasks)), [TASK_SHORT[t] for t in tasks])
     ax.set_ylim(0, 1)
     ax.set_ylabel("rank_acc")
     ax.legend(fontsize=7, ncol=5)
@@ -1337,7 +1344,7 @@ def main(argv=None) -> int:
     ap.add_argument("--batch", type=int, default=96)
     ap.add_argument("--embodiments", default="trained",
                     help="validation embodiments scored: 'trained' (the run's, default), 'all', or a comma list")
-    ap.add_argument("--tasks", default="all", help="validation tasks scored (comma list)")
+    ap.add_argument("--tasks", default="all", help="validation tasks scored (comma list; all = the five training tasks, TRAIN_TASKS)")
     ap.add_argument("--seeing-vs-selecting", action="store_true",
                     help="also write seeing_vs_selecting.{json,md} (review round 3, Part II E0b)")
     ap.add_argument("--out-name", default=None, help="output directory name under eval_offline/ (default: ckpt)")
@@ -1360,7 +1367,7 @@ def main(argv=None) -> int:
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.val)
     embs = args.embodiments if args.embodiments in ("trained", "all") else tuple(args.embodiments.split(","))
     ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch, embodiments=embs,
-                   tasks=None if args.tasks == "all" else args.tasks.split(","), zero_tag=args.zero_tag,
+                   tasks=TRAIN_TASKS if args.tasks == "all" else args.tasks.split(","), zero_tag=args.zero_tag,
                    fuse_cache=args.fuse_cache)
     # before scoring (review F5): never replace another set's results in place without --force
     out = Path(args.run) / "eval_offline" / (args.out_name or Path(args.ckpt).stem)

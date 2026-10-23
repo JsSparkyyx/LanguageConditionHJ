@@ -34,7 +34,7 @@ items:
   bystander_dx: [0.08, 0.11]                      # beside the slot, away from the payload's start
   bystander_dy: [-0.03, 0.03]
   mass: [0.05, 0.15]
-  colors: [red, green, blue, yellow]
+  colors: [red, green, blue]
 referent: {hit: 0.6, other: 0.25, bystander: 0.15}
 motion: {safe_speed: 0.10, slide_speed: 0.10, transit_clear: 0.04, grasp_depth: 0.025, pre_insert_clear: 0.04, place_clear: 0.004, jaw_margin: 0.03, gripper_stiffness: 5000}
 success_tol: 0.005   # payload centre within clearance + this of the slot along y (in the slot, between the flankers)

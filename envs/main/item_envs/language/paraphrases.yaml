@@ -79,12 +79,11 @@ exclude_particles:
 # Referent words never used in training (the "held-out referent words"
 # evaluation split): describe(words="heldout") uses only these nouns,
 # describe(words="train") never does.
-heldout_words:   # one per category where a fitting word exists (names checked against renders, 2026-10-12)
+heldout_words:   # one per category where a fitting word exists (2026-10-22: the hand-picked T1 corpus)
   - plastic bottle
-  - pill jar
-  - beverage can
-  - mug
-  - tea carton
-  - rectangular block
+  - goblet
+  - milk
+  - fruit
+  - cube   # the coloured blocks of T5 / T7 (2026-10-22; was rectangular block)
   - serving tray
   - little balls

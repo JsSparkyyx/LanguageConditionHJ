@@ -981,7 +981,7 @@ def test_real_assets_bottom_rest_z():
     table_z = 0.75
     checked = 0
     for entry in pool:
-        for model_id in entry.get("ids") or [0]:
+        for model_id in list(entry.get("ids") or [0]) + list(entry.get("heldout_ids") or []):
             draw = _ObjectDraw(asset=entry["asset"], category=entry["category"],
                                model_id=int(model_id))
             aabb = spawn._mesh_aabb(draw.asset, draw.model_id)
@@ -998,9 +998,9 @@ def test_real_assets_bottom_rest_z():
             assert 0.0 <= offset <= 0.004, (
                 f"{draw.asset} id {model_id}: AABB bottom at {offset:+.4f} m rel. table")
             checked += 1
-    # the full pool: 57 ids of 10 types (2026-10-05), 54 since the names check of 2026-10-12 dropped 068_boxdrink
-    # id 0 and 086_woodenblock ids 1 / 2 (guard against a silently empty pool)
-    assert checked >= 52
+    # the hand-picked pool of 2026-10-22: 10 training + 4 held-out models of 4 types (guard against a silently empty
+    # pool; 54 ids of 10 types before)
+    assert checked == 14
 
 
 # ---------------------------------------------------------------------------
@@ -1429,13 +1429,12 @@ def test_layout_plan_distinct_categories():
 
 
 def test_t1_pool_is_ten_distinct_types():
-    """objects.yaml t1_pool (user 2026-10-05): 10 entries, and no category answers to another's name (mug's
-    "cup", sauce can's "can"). Since the names check of 2026-10-12, 068_boxdrink's models are bottles: 9
-    categories, bottle from two assets (still never twice in one scene)."""
+    """objects.yaml t1_pool: no category answers to another's name (mug's "cup", sauce can's "can"). The hand-picked
+    pool of 2026-10-22 (Yuxuan): 6 entries, 6 categories (book and kettle removed the same day)."""
     cfg = spawn.physics.load_objects_cfg()
     pool = spawn.t1_pool_entries(cfg)
     cats = [str(e["category"]) for e in pool]
-    assert len(pool) == 10 and len(set(cats)) == 9 and sorted(cats).count("bottle") == 2
+    assert len(pool) == 6 and len(set(cats)) == 6
     cats = sorted(set(cats))
     words = {c: set((cfg["categories"][c].get("names") or []) + (cfg["categories"][c].get("synonyms") or []))
              for c in cats}

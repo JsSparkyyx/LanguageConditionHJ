@@ -34,13 +34,19 @@ environments.
 Seven tasks, built, calibrated and validated (`envs/docs/item_envs/tasks_overview.md`; demo page
 "Named-Object Safety Tasks").
 
+**Five of them are used** (Yuxuan, 2026-10-22: "we don't need that much tasks"): T1, T2, T3, T5, T7. T4 and T6
+stay built and their episodes stay in the shards, but new runs train, collect and evaluate without them
+(`main/lang/config.py` `TRAIN_TASKS`, the default `task_choices`; `CANON_TASKS` keeps all seven, because the
+stored task ids and the evaluation seeds index it). Runs saved with all seven keep them. With T6 gone,
+`exclude_particles` (beads in a bin or plate) is never named, and the beads appear only in T2.
+
 | task | robot's job | what can go wrong | sampleable rules per episode |
 |---|---|---|---|
-| T1 `selective_avoid` | the 5 CrossSafe pick-and-place hosts with 3 to 5 extra objects of different types | arm or payload touches or moves an object | `avoid` and `stay` per extra object |
+| T1 `selective_avoid` | the 5 CrossSafe pick-and-place hosts with 2 to 3 extra objects of different types (3 to 5 before 2026-10-22) from the hand-picked pool: wine glass, milk box, apple, bottle, coloured box, coloured cylinder; a layout with no extra object has no rules and is skipped (new seed) | arm or payload touches or moves an object | `avoid` and `stay` per extra object |
 | T2 `granular_pour` | pour beads from a mug into a bowl | beads miss the bowl | one `contain_particles` |
 | T3 `push_zone` | push a box into a frame past mats and standing objects | box over a mat or off the table, object knocked or moved | `zone_include` (table), `zone_exclude` per mat, `upright` and `stay` per object |
 | T4 `granular_carry` | carry a full bowl of beads | sloshing out at a tilt or a sharp stop | one `contain_particles` |
-| T5 `tray_transport` | slide a tray with standing blocks | a fast stop tips the tall block | `upright` per block |
+| T5 `tray_transport` | slide a tray with two standing blocks (tall and short; a third, middle one before 2026-10-22) | a fast stop tips the tall block | `upright` per block |
 | T6 `clean_pour` | pour beads into a big bowl with small bins and plates around | beads land in a bin or plate | `exclude_particles` per bin or plate, plus the spill rule |
 | T7 `gap_place` | slide a block into a narrow gap | a neighbour is scraped, moved, or knocked | `upright` and `stay` per neighbour |
 
@@ -110,8 +116,18 @@ Seven tasks, built, calibrated and validated (`envs/docs/item_envs/tasks_overvie
 - Held-out splits:
   - `heldout_template`: templates never used in training;
   - `heldout_word`: referent nouns never used in training;
-  - `heldout_item`: colors and categories that training rules never name, though they appear in
-    training scenes.
+  - `heldout_item` (Yuxuan, 2026-10-22): objects never seen in training. Each T1 object type has 3 training
+    models and 1 held-out model (apple 1 + 1; `objects.yaml` `ids` / `heldout_ids`), and there are 3 training
+    colours (red, green, blue) and 2 held-out ones (purple, orange). Held-out models and colours never appear in
+    training scenes; the OOD scenes come from the "heldout" spawn pool (`cfg.spawn_pool`, T1: only held-out models,
+    primitives in held-out colours, every rule in this split). Until 2026-10-21 this split meant categories and
+    colours that training rules never named, although they stood in training scenes.
+- The object corpus (Yuxuan, 2026-10-22, chosen by hand): T1 candidates are the wine glass (088_wineglass), milk box
+  (038_milk-box), apple (035_apple), bottle (001_bottle), and the coloured box and tall cylinder (book and kettle
+  removed the same day: they never fit on or near the arm's path, so they were never at risk; the three models
+  wider than the 6 cm on-path limit, wine glass 0 and milk box 1 / 2, are shrunk to 87-90%, `objects.yaml`
+  `scale_by_id`); T3 pushes only the coloured box past coloured cylinders and mats; T5 / T7
+  use the coloured blocks; T2 the beads. Words: `objects.yaml`, held-out words in `paraphrases.yaml`.
 
 ## 4. Rejected approaches and why
 
@@ -253,7 +269,7 @@ Hardware: SO-101 or the UR5 setup, to be decided.
   reported as a baseline; the job scripts pass 0.95 (no `GAMMA` variable). The γ 0.9 models, the grounding
   report's official `lang_full_paired_off_1007` included, are historical references only. Runs keep the γ of
   their saved config, so old checkpoints still load.
-- Validation: 20 ur5-wsg episodes per task, all 7 tasks, masks on, their own episode ids (91M-100M) and text
+- Validation: 20 ur5-wsg episodes per task, all 7 tasks (T4 / T6 skipped from 2026-10-22), masks on, their own episode ids (91M-100M) and text
   cache (T1 / T7 in `data/lang/val_grounding`, T2-T6 in `data/lang/val20`).
 - Object reading (grounding), in this order, each step only if the previous one does not fix it (T1 and T7,
   ur5-wsg, 6,000 steps, 2 seeds, scored on "already harmed" and "not yet" pairs with intervals): (a) text
@@ -297,6 +313,7 @@ Hardware: SO-101 or the UR5 setup, to be decided.
     scenes and re-test; at the V0 level with E4 passed, the next lever is the data, not the architecture.
     Until then `scene_fusion` stays off by default, because every shard today is version 1.
 - T6 success: left as is (its nominal succeeds in 3-7% of episodes); success cost is not reported on T6.
+  (T6 is no longer used from 2026-10-22.)
 - Projection solver for deployment: deferred.
 - Novelty check needed against:
   - object-centric RL;

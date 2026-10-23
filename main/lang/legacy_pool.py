@@ -30,7 +30,7 @@ from pathlib import Path
 # the bank hash every pre-10-12 shard records: bank_hash() then covered paraphrases.yaml + splits.yaml only (the
 # same at ae5b02c and 7c2476d^; objects.yaml did not change between them)
 PRE_1012_BANK_HASH = "693f7ef522ed"
-POOLS = ("current", "pre_1012")
+POOLS = ("current", "pre_1012", "heldout")
 
 _ORIGINAL = None
 
@@ -56,8 +56,37 @@ def legacy_entries(entries: list[dict]) -> list[dict]:
     return out
 
 
+def heldout_entries(entries: list[dict], objects_cfg: dict) -> list[dict]:
+    """Today's pool entries -> the OOD pool (2026-10-22): every asset with ``heldout_ids`` draws only those models,
+    the primitives draw only the held-out colours, and assets without a held-out model are left out.
+    Every entry is flagged ``heldout``, so each rule of such a scene is in the heldout_item split."""
+    colors = list((objects_cfg.get("colors") or {}).get("heldout") or [])
+    out = []
+    for e in entries:
+        e = dict(e)
+        if str(e["asset"]).startswith("prim_"):
+            e["colors"] = colors
+        elif e.get("heldout_ids"):
+            e["ids"] = [int(i) for i in e["heldout_ids"]]
+        else:
+            continue
+        e["heldout"] = True
+        out.append(e)
+    return out
+
+
+def _old_pool() -> list[dict]:
+    """The pre-10-12 pool, from the old objects.yaml itself (vocab_pre_1012/): since 2026-10-22 today's file no
+    longer holds the old pool. The primitives keep the old six training colours."""
+    import yaml
+
+    old = yaml.safe_load((VOCAB_DIR / "objects.yaml").read_text())
+    colors = list((old.get("colors") or {}).get("train") or [])
+    return [{**e, "colors": colors} if str(e["asset"]).startswith("prim_") else e for e in _ORIGINAL(old)]
+
+
 def install_spawn_pool(name: str) -> None:
-    """Switch the process's T1 pool to ``name`` ("current" or "pre_1012")."""
+    """Switch the process's T1 pool to ``name`` ("current", "pre_1012" or "heldout": the OOD scenes)."""
     global _ORIGINAL
     if name not in POOLS:
         raise ValueError(f"spawn_pool {name!r}: expected one of {POOLS}")
@@ -70,9 +99,16 @@ def install_spawn_pool(name: str) -> None:
         spawn.t1_pool_entries = _ORIGINAL
         return
     original = _ORIGINAL
+    if name == "heldout":
+        def t1_pool_entries_heldout(objects_cfg: dict) -> list[dict]:
+            return heldout_entries(original(objects_cfg), objects_cfg)
+
+        t1_pool_entries_heldout.spawn_pool = "heldout"
+        spawn.t1_pool_entries = t1_pool_entries_heldout
+        return
 
     def t1_pool_entries_pre_1012(objects_cfg: dict) -> list[dict]:
-        return legacy_entries(original(objects_cfg))
+        return _old_pool()
 
     t1_pool_entries_pre_1012.spawn_pool = "pre_1012"
     spawn.t1_pool_entries = t1_pool_entries_pre_1012

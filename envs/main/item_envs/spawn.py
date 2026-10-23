@@ -13,7 +13,7 @@ measures the collision mesh AABB directly (``_mesh_aabb``).
 Layout (all draws from the CALLER's rng — ``np.random.RandomState(seed +
 4241)`` per PLAN v3 §2; this module never reseeds):
 
-- K ~ U{objects.k} (T1 yaml: 3-5). Per-object placement class:
+- K ~ U{objects.k} (T1 yaml: 2-3; 3-5 before 2026-10-22). Category uniform, then asset, model id, colour. Per-object placement class:
   **on-path** (corridor t ~ U(task_cfg.corridor_t = [0.22, 0.48]), at most
   ``max_on_path``), **near-path** (lateral offset ~ U(``near_path_offset``) =
   2-6 cm from the corridor, corridor parameter t ~ U(``near_path_t``) =
@@ -187,6 +187,7 @@ class _ObjectDraw:
     model_id: int | None = None  # mesh assets only
     color: str | None = None  # prims only
     size: np.ndarray | None = None  # prims only: box [sx, sy, sz] / cylinder [r, r, h] full extents
+    heldout: bool = False  # a held-out model / colour (the "heldout" pool's OOD scenes, 2026-10-22)
 
 
 CYL_STAND_QUAT = (0.7071067811865476, 0.0, -0.7071067811865476, 0.0)  # wxyz, R_y(-90deg): local x -> world z
@@ -226,6 +227,7 @@ class Placement:
             "model_id": self.draw.model_id,
             "category": self.draw.category,
             "color": self.draw.color,
+            "heldout": bool(self.draw.heldout),
             "xyz": [float(v) for v in np.asarray(self.xyz).reshape(3)],
             "corridor_t": None if self.corridor_t is None else float(self.corridor_t),
             "lateral": None if self.lateral is None else float(self.lateral),
@@ -279,12 +281,27 @@ def _draw_object(pool: list[dict], rng: np.random.RandomState, train_colors: lis
     return None
 
 
+def _pick_entry(pool: list[dict], rng: np.random.RandomState) -> dict:
+    """A pool entry: uniform over entries, or, when a category has several assets (as the book had on 2026-10-22,
+    043_book + 092_notebook), uniform over categories, then over that category's assets. A pool with one asset per category
+    keeps the original single draw (old pools replay the same objects)."""
+    cats = list(dict.fromkeys(str(e["category"]) for e in pool))
+    if len(cats) == len(pool):
+        return pool[int(rng.randint(len(pool)))]
+    cat = cats[int(rng.randint(len(cats)))]
+    group = [e for e in pool if str(e["category"]) == cat]
+    return group[int(rng.randint(len(group)))]
+
+
 def _draw_one(pool: list[dict], rng: np.random.RandomState, train_colors: list[str]) -> _ObjectDraw:
-    """Single uncapped draw (the original fixed-order sampler)."""
-    entry = pool[int(rng.randint(len(pool)))]
+    """Single uncapped draw (the original fixed-order sampler). An entry's own ``colors`` (the held-out pool's
+    primitives) replace the training colours; its ``heldout`` flag rides on the draw."""
+    entry = _pick_entry(pool, rng)
     asset = entry["asset"]
+    heldout = bool(entry.get("heldout", False))
     if asset.startswith("prim_"):
-        color = str(train_colors[int(rng.randint(len(train_colors)))]) if train_colors else None
+        colors = list(entry.get("colors") or train_colors)
+        color = str(colors[int(rng.randint(len(colors)))]) if colors else None
         if asset == "prim_box":
             sx_lo, sx_hi = (float(v) for v in entry.get("side_xy", [0.04, 0.08]))
             h_lo, h_hi = (float(v) for v in entry.get("height", [0.05, 0.15]))
@@ -297,10 +314,10 @@ def _draw_one(pool: list[dict], rng: np.random.RandomState, train_colors: list[s
             h_lo, h_hi = (float(v) for v in entry.get("height", [0.10, 0.18]))
             r = rng.uniform(r_lo, r_hi)
             size = np.array([2.0 * r, 2.0 * r, rng.uniform(h_lo, h_hi)], dtype=np.float64)
-        return _ObjectDraw(asset=asset, category=str(entry["category"]), color=color, size=size)
+        return _ObjectDraw(asset=asset, category=str(entry["category"]), color=color, size=size, heldout=heldout)
     ids = list(entry.get("ids") or [0])
     model_id = int(ids[int(rng.randint(len(ids)))])
-    return _ObjectDraw(asset=asset, category=str(entry["category"]), model_id=model_id)
+    return _ObjectDraw(asset=asset, category=str(entry["category"]), model_id=model_id, heldout=heldout)
 
 
 # ---------------------------------------------------------------------------
@@ -338,8 +355,15 @@ def _load_model_cfg_local(asset: str, model_id: int) -> dict:
     return {}
 
 
+def model_scale(asset: str, model_id) -> float:
+    """Extra size factor of one model on top of its json scale (objects.yaml assets ``scale_by_id``; 2026-10-22: the
+    models wider than the on-path size limit, shrunk to fit). 1.0 for every other model."""
+    a = (physics.load_objects_cfg().get("assets") or {}).get(str(asset)) or {}
+    return float((a.get("scale_by_id") or {}).get(int(model_id or 0), 1.0))
+
+
 def _mesh_aabb(asset: str, model_id: int) -> tuple[np.ndarray, np.ndarray] | None:
-    """Measured collision-mesh AABB (lo, hi) in the actor frame, json scale applied.
+    """Measured collision-mesh AABB (lo, hi) in the actor frame, json scale (times ``model_scale``) applied.
 
     Loads the SAME file create_actor collides with (collision/base<id>.glb ->
     base<id>.glb -> textured<id>.obj; scale from the model_data json, which
@@ -350,8 +374,9 @@ def _mesh_aabb(asset: str, model_id: int) -> tuple[np.ndarray, np.ndarray] | Non
     loaded — callers fall back to the json metadata.
     """
     key = (str(asset), int(model_id or 0))
-    if key in _MESH_AABB_CACHE:
-        return _MESH_AABB_CACHE[key]
+    factor = model_scale(*key)
+    if (key, factor) in _MESH_AABB_CACHE:
+        return _MESH_AABB_CACHE[(key, factor)]
     out = None
     cfg = _load_model_cfg_local(*key)
     scale = cfg.get("scale")
@@ -375,13 +400,13 @@ def _mesh_aabb(asset: str, model_id: int) -> tuple[np.ndarray, np.ndarray] | Non
             s = np.asarray(scale if scale is not None else [1.0, 1.0, 1.0],
                            dtype=np.float64).reshape(-1)
             s = np.full(3, abs(float(s[0]))) if s.size == 1 else np.abs(np.resize(s, 3))
-            verts = np.asarray(mesh.vertices, dtype=np.float64) * s
+            verts = np.asarray(mesh.vertices, dtype=np.float64) * s * factor
             if verts.size:
                 out = (verts.min(axis=0), verts.max(axis=0))
             break
     except Exception as exc:
         print(f"[spawn] mesh AABB load failed for {key[0]} id {key[1]}: {exc}")
-    _MESH_AABB_CACHE[key] = out
+    _MESH_AABB_CACHE[(key, factor)] = out
     return out
 
 
@@ -449,6 +474,7 @@ def _geometry_of(draw: _ObjectDraw) -> _Geometry:
         center, half = 0.5 * (lo + hi), 0.5 * (hi - lo)
     else:  # mesh unloadable: the old json-metadata path (obstacle.py semantics)
         center, half = ob.world_center_and_half(_load_model_cfg_local(asset, model_id))
+        center, half = center * model_scale(asset, model_id), half * model_scale(asset, model_id)
         if float(np.max(np.abs(half))) < 1e-6:
             half = np.array([0.051, 0.051, 0.052], dtype=np.float64)  # obstacle._model_half_extents
     r, quat = _stand_R_quat_for(asset, center, half)
@@ -952,14 +978,19 @@ def _spawn_one(task, placement: Placement, static: bool, objects_cfg: dict):
     else:
         r = _quat_wxyz_to_mat(np.asarray(geo.quat, dtype=np.float64))
         pose_xyz = xyz - r @ geo.center_local  # spawn_obstacle's center compensation
-        actor = create_actor(
-            task,
-            sapien.Pose(pose_xyz.tolist(), list(geo.quat)),
-            pl.draw.asset,
-            convex=True,
-            is_static=static,
-            model_id=int(pl.draw.model_id or 0),
-        )
+        factor = model_scale(pl.draw.asset, pl.draw.model_id)
+        if factor != 1.0:
+            actor = _create_actor_scaled(task, sapien.Pose(pose_xyz.tolist(), list(geo.quat)), pl.draw.asset,
+                                         int(pl.draw.model_id or 0), factor, static)
+        else:
+            actor = create_actor(
+                task,
+                sapien.Pose(pose_xyz.tolist(), list(geo.quat)),
+                pl.draw.asset,
+                convex=True,
+                is_static=static,
+                model_id=int(pl.draw.model_id or 0),
+            )
         if actor is None:  # mesh/json missing: spawn_obstacle's create_box fallback
             actor = create_box(
                 task,
@@ -975,8 +1006,48 @@ def _spawn_one(task, placement: Placement, static: bool, objects_cfg: dict):
     return actor
 
 
+def _create_actor_scaled(task, pose, asset: str, model_id: int, factor: float, is_static: bool):
+    """RoboTwin's create_actor (convex collision) with the json scale times ``factor``: RoboTwin's own function
+    replaces its scale argument by the json's, so a shrunk model needs its own builder. The returned Actor's
+    model_data has scale, extents and center times ``factor``. None when a file is missing (as create_actor)."""
+    import importlib
+    import json
+
+    ca = importlib.import_module("envs.utils.create_actor")   # the module: envs.utils re-exports the function by its name
+
+    scene, pose = ca.preprocess(task, pose)
+    modeldir = Path("assets/objects") / asset
+    files = []
+    for sub_dir in ("collision", "visual"):
+        f = ""
+        if (modeldir / sub_dir).exists():
+            f = ca.get_glb_or_obj_file(modeldir / sub_dir, model_id)
+        if f == "" or not f.exists():
+            f = ca.get_glb_or_obj_file(modeldir, model_id)
+        files.append(f)
+    collision_file, visual_file = files
+    json_path = modeldir / f"model_data{model_id}.json"
+    if not collision_file.exists() or not visual_file.exists() or not json_path.is_file():
+        return None
+    model_data = json.loads(json_path.read_text())
+    s = np.asarray(model_data.get("scale", [1.0, 1.0, 1.0]), dtype=np.float64).reshape(-1)
+    scale = [float(v) * factor for v in (np.full(3, s[0]) if s.size == 1 else np.resize(s, 3))]
+    model_data = {**model_data, "scale": scale}
+    for k in ("extents", "center"):
+        if k in model_data:
+            model_data[k] = [float(v) * factor for v in model_data[k]]
+    builder = scene.create_actor_builder()
+    builder.set_physx_body_type("static" if is_static else "dynamic")
+    builder.add_multiple_convex_collisions_from_file(filename=str(collision_file), scale=scale)
+    builder.add_visual_from_file(filename=str(visual_file), scale=scale)
+    mesh = builder.build(name=asset)
+    mesh.set_name(asset)
+    mesh.set_pose(pose)
+    return ca.Actor(mesh, model_data)
+
+
 def _spec_from(placement: Placement, actor, mass: float) -> ItemSpec:
-    return ItemSpec(
+    spec = ItemSpec(
         item_id=placement.item_id,
         entity=actor,
         category=placement.draw.category,
@@ -989,6 +1060,9 @@ def _spec_from(placement: Placement, actor, mass: float) -> ItemSpec:
         role="candidate",
         group=None,
     )
+    if placement.draw.heldout:
+        spec.heldout_model = True   # rules.assign_split: heldout_item
+    return spec
 
 
 def _remove_layout(env, specs: list[ItemSpec]) -> None:
@@ -1338,6 +1412,7 @@ def spawn_candidates(env, task_cfg: dict, rng: np.random.RandomState) -> tuple[l
                 "entity": s.entity,
                 "category": s.category,
                 "color": s.color,
+                "heldout_model": bool(getattr(s, "heldout_model", False)),
                 "kind": s.kind,
                 "role": s.role,
                 "group": s.group,

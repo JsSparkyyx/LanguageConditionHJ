@@ -110,11 +110,11 @@ def test_bare_head_noun_is_not_unique_next_to_a_compound():
 
 
 def test_heldout_words():
-    s = _scene([("cup", ["mug", "beaker"], "red", None)])
+    s = _scene([("wine glass", ["glass", "goblet"], "red", None)])
     train = L.describe(s["objects"][0], s, "train")
     held = L.describe(s["objects"][0], s, "heldout")
-    assert not any("mug" in p for p in train) and any("beaker" in p for p in train)
-    assert held and all("mug" in p for p in held)  # "mug" is a held-out word (names check, 2026-10-12)
+    assert not any("goblet" in p for p in train) and any(p.endswith(" glass") for p in train)
+    assert held and all("goblet" in p for p in held)  # "goblet" is a held-out word (the corpus of 2026-10-22)
 
 
 def test_describe_region_unique_and_not_an_object_name():

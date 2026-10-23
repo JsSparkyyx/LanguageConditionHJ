@@ -94,7 +94,7 @@ from ._item_utils import (
 N_PUSH = 1  # one push object per episode; its side is drawn per episode (PUSH_SIDES)
 PUSH_SIDES = ("left", "right")
 
-PUSH_OBJECT_POOL = ("prim_box", "113_coffee-box", "112_tea-box")
+PUSH_OBJECT_POOL = ("prim_box",)  # 2026-10-22: the coloured box only (was + 113_coffee-box, 112_tea-box)
 PRIM_SIDE_XY = (0.04, 0.08)  # prim box full side per horizontal axis (m)
 PRIM_HEIGHT = (0.03, 0.08)  # prim box full height (m)
 MESH_MODEL_IDS = {"113_coffee-box": (0, 1, 2, 3, 4, 5, 6), "112_tea-box": (0, 1, 2, 3, 4, 5), "021_cup": (0, 3, 5)}  # cup ids 1/2: json OBB 3 cm wider than the collision mesh
@@ -134,7 +134,7 @@ DETOUR_MARGIN = 0.02  # an avoid element needs a reachable, on-table detour lane
 ZONE_SIZE = (0.06, 0.09)  # zone full side per axis (m)
 ON_PATH_LAT = {"zone": 0.02}  # zones: max centre offset across the line (m)
 OBST_GLANCE = (0.5, 0.8)  # on-path obstacles: centre offset across the line = this x (box + obstacle half-widths), random side — an edge hit topples them OUT of the lane (dead-centre / shallow hits plowed them along, diag d23 seed 5, d25)
-OBSTACLE_POOL = ("021_cup", "prim_tall_cylinder")  # off-path obstacles (001_bottle: punt-ring bases tip in check_stable)
+OBSTACLE_POOL = ("prim_tall_cylinder",)  # off-path obstacles (2026-10-22: no 021_cup) (001_bottle: punt-ring bases tip in check_stable)
 ON_PATH_OBSTACLE_POOL = ("prim_tall_cylinder",)  # on-path obstacles topple when hit; cups slide along with the box and jam it
 PUSHER_HALF_ACROSS = 0.10  # swept half-width of the PUSHING HAND across the push line (franka hand ~20 cm along its finger axis, which push_to_goal turns across the push); off-path obstacles clear max(corridor half, this)
 CYLINDER_RADIUS = (0.02, 0.035)
@@ -144,7 +144,7 @@ EXCLUDE_COLORS = ("white",)  # every colored T3 item: white boxes / mats / cylin
 
 MASS_RANGES = {"box": (0.05, 0.15), "tea_box": (0.05, 0.30), "coffee_box": (0.05, 0.30), "cup": (0.05, 0.25), "cylinder": (0.05, 0.20)}
 
-TRAIN_COLORS = ("red", "green", "blue", "yellow", "white", "black")
+TRAIN_COLORS = ("red", "green", "blue")  # objects.yaml colors.train (2026-10-22)
 COLOR_RGB = {"red": (0.85, 0.10, 0.10), "green": (0.10, 0.70, 0.15), "blue": (0.15, 0.30, 0.90), "yellow": (0.95, 0.85, 0.10), "white": (0.95, 0.95, 0.95), "black": (0.08, 0.08, 0.08)}
 
 # conservative world-frame half-extent pads for placement (recon.md audit
@@ -303,6 +303,7 @@ class push_zone(Base_Task):
         z = TABLE_TOP_Z + float(self.table_z_bias)
         palette = [TRAIN_COLORS[int(i)] for i in np.random.permutation(len(TRAIN_COLORS))]
         self._palette_next = 0
+        self._kind_colors = {}   # kind -> colours given to that kind (no two mats / cylinders share one)
         self.push_objects = []
         self.zones = []
         self.bystanders = []  # the obstacles (role "bystander": upright / stay rules)
@@ -375,19 +376,25 @@ class push_zone(Base_Task):
             "goals": {rec["item_id"]: [float(v) for v in rec["goal_xy"]] for rec in self.push_objects},
         }
 
-    def _next_color(self, palette, exclude=EXCLUDE_COLORS):
+    def _next_color(self, palette, exclude=EXCLUDE_COLORS, kind=None):
         """Next unused palette color, skipping ``exclude`` (white items vanish
         on the white table)."""
+        used = self._kind_colors.setdefault(kind, [])
         for i in range(self._palette_next, len(palette)):
             if palette[i] not in exclude:
                 color = palette[i]
                 palette[self._palette_next], palette[i] = palette[i], palette[self._palette_next]
                 self._palette_next += 1
+                used.append(color)
                 return color
-        # palette exhausted: reuse (category words disambiguate)
+        # palette exhausted (3 colours since 2026-10-22, up to 4 coloured items): reuse a colour no item of the SAME
+        # kind has, so the category word tells them apart (two "zone_green" mats would share a region id)
         pool = [c for c in TRAIN_COLORS if c not in exclude]
+        pool = [c for c in pool if c not in used] or pool
         self._palette_next += 1
-        return pool[int(np.random.randint(len(pool)))]
+        color = pool[int(np.random.randint(len(pool)))]
+        used.append(color)
+        return color
 
     @staticmethod
     def _draw_kinds(mode, roles, n_off):
@@ -538,7 +545,7 @@ class push_zone(Base_Task):
         p, g = plan["p"], plan["g"]
         self._push_half_dir = float(plan["half_dir"])
         if asset == "prim_box":
-            color = self._next_color(palette)
+            color = self._next_color(palette, kind="box")
             obj = create_box(
                 scene=self,
                 pose=sapien.Pose([float(p[0]), float(p[1]), z + float(prim_half[2])]),
@@ -595,7 +602,7 @@ class push_zone(Base_Task):
 
     def _create_element(self, spec, xy, z, palette, n_obst, *, on_path, role, order):
         if spec["kind"] == "zone":
-            rid = self._create_zone(self._next_color(palette), xy, (2 * spec["hx"], 2 * spec["hy"]), z)
+            rid = self._create_zone(self._next_color(palette, kind="zone"), xy, (2 * spec["hx"], 2 * spec["hy"]), z)
         else:
             rid = self._create_obstacle(n_obst, spec["ob"], xy, z, palette)
             n_obst += 1
@@ -636,7 +643,7 @@ class push_zone(Base_Task):
     def _create_obstacle(self, j, spec, xy, z, palette):
         item_id = f"obstacle_{j}"
         if spec["asset"] == "prim_tall_cylinder":
-            color = self._next_color(palette)
+            color = self._next_color(palette, kind="cylinder")
             r, h = spec["r"], spec["h"]
             # SAPIEN cylinders run along LOCAL x: CYL_STAND_QUAT stands it up
             # (an identity pose spawns it lying down and it rolls off)
