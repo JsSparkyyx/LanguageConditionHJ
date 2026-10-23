@@ -262,8 +262,11 @@ def sentence_examples(shards, per_task: int = 20, seed: int = 0) -> dict:
     rng = np.random.default_rng(seed)
     recs = defaultdict(list)
     for s in shards:
+        mids = language.load_model_ids(s / "item_buffer")
         for f in sorted((s / "item_buffer" / "episodes").glob("*.json")):
-            r = json.loads(f.read_text())
+            # re-named with today's words and bank, as training reads it: a rule whose sentences were removed
+            # since (the spill rule, 2026-10-23) is no longer sampleable
+            r = language.refresh_record(json.loads(f.read_text()), mids.get(int(f.stem)))
             recs[r["task"]].append(r)
     out = {}
     for t, rs in recs.items():

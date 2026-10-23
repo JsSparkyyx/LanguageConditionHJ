@@ -108,6 +108,9 @@ def test_setup_margins_positive_at_t0(embodiment, seed, tmp_path):
         # rule table == the yaml's rules block over this scene
         assert [r.rule_id for r in runner.rules] == _expected_rule_ids(runner.items, runner.regions)
         for rule in runner.rules:
+            if rule.consequence.value == "inside":   # keep-on-the-table is never named (Yuxuan, 2026-10-20): no wording
+                assert rule.phrases == [], rule.phrases
+                continue
             assert rule.phrases
             for phrase in rule.phrases:
                 assert not any(c.isdigit() for c in phrase), phrase

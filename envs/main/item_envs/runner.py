@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import traceback
 from pathlib import Path
@@ -189,6 +190,7 @@ class ItemEpisodeRunner:
             _merge_risk_override(self.risk_params, self.risk_override)
 
         CuroboIKController.install()
+        use_own_robotwin_tasks()   # this checkout's task files, not whatever the shared RoboTwin/envs links point at
         safe = self.task_cfg.get("safe_mode") or {}
         world_aware = self.nominal_mode == "safe" and safe.get("plan") == "obstacle_aware"
         if world_aware:   # the hand + held-object slots must be in the planner model before the Env builds it
@@ -260,6 +262,7 @@ class ItemEpisodeRunner:
                         up_axis_local=d.get("up_axis_local"),
                         rim_height=d.get("rim_height", 0.0),
                         z_cap=d.get("z_cap"),
+                        z_floor=d.get("z_floor"),
                         color=(d.get("color") or None),
                         polygon=d.get("polygon"),
                         role=d.get("role"),
@@ -893,6 +896,31 @@ def rule_hs(rules, margins, counts=None) -> np.ndarray:
     return np.array([margin_fns.rule_h(r, m, c) for r, m, c in zip(rules, margins, counts)], dtype=np.float64)
 
 
+# this checkout's RoboTwin task files (envs/robotwin_tasks): RoboTwin imports envs.<task>
+ROBOTWIN_TASKS_DIR = Path(__file__).resolve().parents[2] / "robotwin_tasks"
+
+
+def use_own_robotwin_tasks() -> None:
+    """Make RoboTwin import this checkout's task files ahead of the RoboTwin/envs/<task>.py links (2026-10-23).
+
+    The links are shared by every job on the machine and can point at one checkout only, while jobs from different
+    checkouts (frozen worktrees) run side by side: the 10-20 runs need their own task files (their resume check
+    hashes them), newer code its own. Inserting envs/robotwin_tasks first on RoboTwin's ``envs.__path__`` makes
+    ``importlib.import_module("envs.<task>")`` and the task files' relative imports (_item_utils, granular_pour, ...)
+    resolve here, while RoboTwin's own modules (_base_task, utils, the host tasks) still come from RoboTwin/envs.
+    A task module already imported from elsewhere in this process would shadow ours: that is an error."""
+    import envs as robotwin_envs
+
+    own = str(ROBOTWIN_TASKS_DIR)
+    if own not in list(robotwin_envs.__path__):
+        robotwin_envs.__path__.insert(0, own)
+    root = ROBOTWIN_TASKS_DIR.resolve()
+    for name, mod in list(sys.modules.items()):
+        f = getattr(mod, "__file__", None) if name.startswith("envs.") else None
+        if f and (ROBOTWIN_TASKS_DIR / Path(f).name).exists() and Path(f).resolve().parent != root:
+            raise RuntimeError(f"{name} was imported from {Path(f).resolve()}, not from this checkout's {root}")
+
+
 NOMINAL_MODES = ("careless", "safe")
 
 
@@ -1096,7 +1124,7 @@ DEMO_GOALS = {
     "push_zone": "push the box into the dark frame",
     "granular_carry": "carry the bowl of beads to the dark frame",
     "tray_transport": "slide the tray into the dark frame",
-    "clean_pour": "pour the beads from the mug into the big bowl",
+    "clean_pour": "pour the beads from the mug into the {target} bowl",   # the target bowl's colour (2026-10-23)
     "gap_place": "slide the wooden block into the gap",
 }
 
@@ -1112,6 +1140,8 @@ def _demo_lines(runner: ItemEpisodeRunner, margins: np.ndarray, tick: int) -> li
     goal = DEMO_GOALS.get(runner.task_name, runner.task_name)
     if isinstance(goal, dict):
         goal = goal.get(getattr(runner, "host", None) or "", "pick and place")
+    if "{target}" in goal:   # T6: the target bowl is random (bowl_pour.target_color)
+        goal = goal.format(target=getattr(getattr(runner.env, "task", None), "target_color", None) or "target")
     rules = list(runner.rules)
     active = next((r for r in rules if r.rule_id == runner.active_rule_id), None)
     lines = [f"Task: {goal}"]

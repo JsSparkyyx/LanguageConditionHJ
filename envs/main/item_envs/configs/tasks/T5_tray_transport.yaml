@@ -48,7 +48,7 @@ safe_mode:
   risk: {time_scale: 0.5}
 
 rules:
-  - {consequence: upright, items: {role: candidate}, theta_max_deg: 10}   # a knocked block rests leaning at 13-19 deg (on a neighbour / the rim); the cruise rocks it <= 6 deg (d71)
+  - {consequence: upright, items: {role: candidate}, theta_max_deg: 45}   # Yuxuan 2026-10-23: 45 deg (was 10; with three blocks a knocked one rested leaning at 13-19 deg on a neighbour / the rim, d71; the cruise rocks it <= 6 deg)
 
 embodiment_overrides:
   # tip_len: EE origin -> closed fingertips (measured, T3 push_tip_len): the

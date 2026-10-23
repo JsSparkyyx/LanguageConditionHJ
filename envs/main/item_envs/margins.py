@@ -199,5 +199,9 @@ def _per_region_signed_dist(particle_xy_per_region: list[np.ndarray], regions) -
         if z_cap is not None and pts.shape[1] >= 3:
             # capped column: inside iff inside the polygon AND below the cap
             sd = np.minimum(sd, float(z_cap) - pts[:, 2])
+        z_floor = getattr(region, "z_floor", None)
+        if z_floor is not None and pts.shape[1] >= 3:
+            # floored column: inside iff also above the floor (a bead on the table against the outer wall is out)
+            sd = np.minimum(sd, pts[:, 2] - float(z_floor))
         cols.append(sd)
     return np.stack(cols, axis=0)

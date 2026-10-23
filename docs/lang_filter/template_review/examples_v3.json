@@ -1,0 +1,672 @@
+{
+ "avoid": [
+  {
+   "task": "selective_avoid",
+   "seed": 7100,
+   "rule_id": "avoid|obj_0|-",
+   "train": [
+    "avoid the milk box",
+    "avoid the milk carton"
+   ],
+   "heldout": [
+    "don't bump into the milk carton"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7100,
+   "rule_id": "avoid|obj_1|-",
+   "train": [
+    "avoid the blue box",
+    "don't touch the blue box"
+   ],
+   "heldout": [
+    "don't bump into the blue box"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7100,
+   "rule_id": "avoid|obj_2|-",
+   "train": [
+    "avoid the cylinder",
+    "don't hit the cylinder"
+   ],
+   "heldout": [
+    "don't bump into the tall cylinder"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7101,
+   "rule_id": "avoid|obj_0|-",
+   "train": [
+    "don't touch the tall cylinder",
+    "don't hit the cylinder"
+   ],
+   "heldout": [
+    "don't bump into the red tall cylinder"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7101,
+   "rule_id": "avoid|obj_1|-",
+   "train": [
+    "don't touch the apple",
+    "keep away from the apple"
+   ],
+   "heldout": [
+    "don't bump into the apple"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7102,
+   "rule_id": "avoid|obj_0|-",
+   "train": [
+    "avoid the box",
+    "avoid the green box"
+   ],
+   "heldout": [
+    "don't bump into the green box"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7102,
+   "rule_id": "avoid|obj_1|-",
+   "train": [
+    "avoid the apple",
+    "don't touch the apple"
+   ],
+   "heldout": [
+    "don't bump into the apple"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7102,
+   "rule_id": "avoid|obj_2|-",
+   "train": [
+    "don't hit the tall cylinder",
+    "avoid the cylinder"
+   ],
+   "heldout": [
+    "don't bump into the cylinder"
+   ]
+  }
+ ],
+ "stay": [
+  {
+   "task": "selective_avoid",
+   "seed": 7100,
+   "rule_id": "stay|obj_0|-",
+   "train": [
+    "keep the milk carton where it is",
+    "don't move the milk carton"
+   ],
+   "heldout": [
+    "don't let the milk carton move"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7100,
+   "rule_id": "stay|obj_1|-",
+   "train": [
+    "make sure the blue box stays in place",
+    "don't move the blue box"
+   ],
+   "heldout": [
+    "don't let the blue box move"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7100,
+   "rule_id": "stay|obj_2|-",
+   "train": [
+    "keep the green tall cylinder where it is",
+    "don't move the tall cylinder"
+   ],
+   "heldout": [
+    "don't let the cylinder move"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7101,
+   "rule_id": "stay|obj_0|-",
+   "train": [
+    "leave the red tall cylinder where it is",
+    "make sure the red cylinder stays in place"
+   ],
+   "heldout": [
+    "don't let the red tall cylinder move"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7101,
+   "rule_id": "stay|obj_1|-",
+   "train": [
+    "keep the apple where it is",
+    "leave the apple where it is"
+   ],
+   "heldout": [
+    "don't let the apple move"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7102,
+   "rule_id": "stay|obj_0|-",
+   "train": [
+    "keep the box where it is",
+    "make sure the green box stays in place"
+   ],
+   "heldout": [
+    "don't let the box move"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7102,
+   "rule_id": "stay|obj_1|-",
+   "train": [
+    "leave the apple where it is",
+    "don't move the apple"
+   ],
+   "heldout": [
+    "don't let the apple move"
+   ]
+  },
+  {
+   "task": "selective_avoid",
+   "seed": 7102,
+   "rule_id": "stay|obj_2|-",
+   "train": [
+    "keep the tall cylinder where it is",
+    "leave the cylinder where it is"
+   ],
+   "heldout": [
+    "don't let the cylinder move"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7100,
+   "rule_id": "stay|obstacle_0|-",
+   "train": [
+    "make sure the cylinder stays in place",
+    "make sure the tall cylinder stays in place"
+   ],
+   "heldout": [
+    "don't let the tall cylinder move"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7101,
+   "rule_id": "stay|obstacle_0|-",
+   "train": [
+    "leave the green cylinder where it is",
+    "keep the green tall cylinder where it is"
+   ],
+   "heldout": [
+    "don't let the green tall cylinder move"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7101,
+   "rule_id": "stay|obstacle_1|-",
+   "train": [
+    "leave the blue tall cylinder where it is",
+    "leave the blue cylinder where it is"
+   ],
+   "heldout": [
+    "don't let the blue tall cylinder move"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7102,
+   "rule_id": "stay|obstacle_0|-",
+   "train": [
+    "leave the red cylinder where it is",
+    "leave the red tall cylinder where it is"
+   ],
+   "heldout": [
+    "don't let the red tall cylinder move"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7102,
+   "rule_id": "stay|obstacle_1|-",
+   "train": [
+    "leave the blue cylinder where it is",
+    "don't move the blue tall cylinder"
+   ],
+   "heldout": [
+    "don't let the blue tall cylinder move"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7100,
+   "rule_id": "stay|block_0|-",
+   "train": [
+    "make sure the short red brick stays in place",
+    "keep the short red brick where it is"
+   ],
+   "heldout": [
+    "don't let the red block move"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7100,
+   "rule_id": "stay|block_1|-",
+   "train": [
+    "keep the short green block where it is",
+    "keep the green block where it is"
+   ],
+   "heldout": [
+    "don't let the short green brick move"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7101,
+   "rule_id": "stay|block_0|-",
+   "train": [
+    "keep the tall green block where it is",
+    "leave the green block where it is"
+   ],
+   "heldout": [
+    "don't let the green brick move"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7101,
+   "rule_id": "stay|block_1|-",
+   "train": [
+    "make sure the red brick stays in place",
+    "leave the red brick where it is"
+   ],
+   "heldout": [
+    "don't let the tall red brick move"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7101,
+   "rule_id": "stay|block_2|-",
+   "train": [
+    "keep the blue brick where it is",
+    "leave the blue block where it is"
+   ],
+   "heldout": [
+    "don't let the blue block move"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7102,
+   "rule_id": "stay|block_0|-",
+   "train": [
+    "don't move the tall red block",
+    "make sure the tall red block stays in place"
+   ],
+   "heldout": [
+    "don't let the tall block move"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7102,
+   "rule_id": "stay|block_1|-",
+   "train": [
+    "leave the blue block where it is",
+    "leave the short blue brick where it is"
+   ],
+   "heldout": [
+    "don't let the short brick move"
+   ]
+  }
+ ],
+ "zone_exclude": [
+  {
+   "task": "push_zone",
+   "seed": 7100,
+   "rule_id": "outside|push_0|zone_blue",
+   "train": [
+    "don't push the box onto the mat",
+    "don't push the red box onto the blue mat"
+   ],
+   "heldout": [
+    "don't let the red box touch the mat"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7101,
+   "rule_id": "outside|push_0|zone_red",
+   "train": [
+    "keep the blue box out of the mat",
+    "don't let the box go into the mat"
+   ],
+   "heldout": [
+    "don't let the blue box touch the mat"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7102,
+   "rule_id": "outside|push_0|zone_blue",
+   "train": [
+    "don't push the box onto the blue mat",
+    "don't let the green box go into the blue mat"
+   ],
+   "heldout": [
+    "don't let the box touch the mat"
+   ]
+  }
+ ],
+ "upright": [
+  {
+   "task": "push_zone",
+   "seed": 7100,
+   "rule_id": "upright|obstacle_0|-",
+   "train": [
+    "don't let the tall cylinder fall over",
+    "keep the green cylinder upright"
+   ],
+   "heldout": [
+    "make sure the cylinder stays standing"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7101,
+   "rule_id": "upright|obstacle_0|-",
+   "train": [
+    "don't knock over the green cylinder",
+    "keep the green cylinder upright"
+   ],
+   "heldout": [
+    "make sure the green tall cylinder stays standing"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7101,
+   "rule_id": "upright|obstacle_1|-",
+   "train": [
+    "keep the blue tall cylinder upright",
+    "don't let the blue tall cylinder fall over"
+   ],
+   "heldout": [
+    "make sure the blue cylinder stays standing"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7102,
+   "rule_id": "upright|obstacle_0|-",
+   "train": [
+    "don't knock over the red tall cylinder",
+    "don't knock over the red cylinder"
+   ],
+   "heldout": [
+    "make sure the red tall cylinder stays standing"
+   ]
+  },
+  {
+   "task": "push_zone",
+   "seed": 7102,
+   "rule_id": "upright|obstacle_1|-",
+   "train": [
+    "keep the blue cylinder upright",
+    "don't tip over the blue cylinder"
+   ],
+   "heldout": [
+    "make sure the blue cylinder stays standing"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "seed": 7100,
+   "rule_id": "upright|block_0|-",
+   "train": [
+    "keep the tall red block upright",
+    "keep the tall red brick upright"
+   ],
+   "heldout": [
+    "make sure the tall brick stays standing"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "seed": 7100,
+   "rule_id": "upright|block_1|-",
+   "train": [
+    "keep the short block upright",
+    "don't knock over the blue brick"
+   ],
+   "heldout": [
+    "make sure the blue brick stays standing"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "seed": 7101,
+   "rule_id": "upright|block_0|-",
+   "train": [
+    "don't knock over the tall brick",
+    "don't let the red block fall over"
+   ],
+   "heldout": [
+    "make sure the tall red brick stays standing"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "seed": 7101,
+   "rule_id": "upright|block_1|-",
+   "train": [
+    "don't knock over the short block",
+    "keep the short blue block upright"
+   ],
+   "heldout": [
+    "make sure the short blue brick stays standing"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "seed": 7102,
+   "rule_id": "upright|block_0|-",
+   "train": [
+    "keep the tall blue block upright",
+    "keep the blue brick upright"
+   ],
+   "heldout": [
+    "make sure the blue brick stays standing"
+   ]
+  },
+  {
+   "task": "tray_transport",
+   "seed": 7102,
+   "rule_id": "upright|block_1|-",
+   "train": [
+    "keep the green block upright",
+    "don't knock over the short block"
+   ],
+   "heldout": [
+    "make sure the green block stays standing"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7100,
+   "rule_id": "upright|block_0|-",
+   "train": [
+    "keep the short red block upright",
+    "keep the short red brick upright"
+   ],
+   "heldout": [
+    "make sure the red brick stays standing"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7100,
+   "rule_id": "upright|block_1|-",
+   "train": [
+    "keep the green block upright",
+    "don't knock over the green brick"
+   ],
+   "heldout": [
+    "make sure the green brick stays standing"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7101,
+   "rule_id": "upright|block_0|-",
+   "train": [
+    "don't knock over the green brick",
+    "don't let the green block fall over"
+   ],
+   "heldout": [
+    "make sure the tall green brick stays standing"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7101,
+   "rule_id": "upright|block_1|-",
+   "train": [
+    "don't knock over the tall red block",
+    "don't knock over the red block"
+   ],
+   "heldout": [
+    "make sure the red block stays standing"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7101,
+   "rule_id": "upright|block_2|-",
+   "train": [
+    "don't tip over the tall blue brick",
+    "keep the tall blue brick upright"
+   ],
+   "heldout": [
+    "make sure the blue brick stays standing"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7102,
+   "rule_id": "upright|block_0|-",
+   "train": [
+    "keep the tall red block upright",
+    "keep the red brick upright"
+   ],
+   "heldout": [
+    "make sure the red brick stays standing"
+   ]
+  },
+  {
+   "task": "gap_place",
+   "seed": 7102,
+   "rule_id": "upright|block_1|-",
+   "train": [
+    "keep the blue block upright",
+    "don't knock over the short block"
+   ],
+   "heldout": [
+    "make sure the blue block stays standing"
+   ]
+  }
+ ],
+ "exclude_particles": [
+  {
+   "task": "clean_pour",
+   "seed": 7100,
+   "rule_id": "particles_outside|beads|bowl_blue",
+   "train": [
+    "don't spill any beads into the blue bowl",
+    "don't spill any balls into the blue bowl"
+   ],
+   "heldout": [
+    "no balls in the blue bowl"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "seed": 7100,
+   "rule_id": "particles_outside|beads|bowl_green",
+   "train": [
+    "don't spill any beads into the green bowl",
+    "keep the balls out of the green bowl"
+   ],
+   "heldout": [
+    "no balls in the green bowl"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "seed": 7101,
+   "rule_id": "particles_outside|beads|bowl_green",
+   "train": [
+    "keep the balls out of the green bowl",
+    "don't let any beads land in the green bowl"
+   ],
+   "heldout": [
+    "no balls in the green bowl"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "seed": 7101,
+   "rule_id": "particles_outside|beads|bowl_white",
+   "train": [
+    "keep the beads out of the white bowl",
+    "don't spill any beads into the white bowl"
+   ],
+   "heldout": [
+    "no balls in the white bowl"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "seed": 7102,
+   "rule_id": "particles_outside|beads|bowl_blue",
+   "train": [
+    "don't spill any beads into the blue bowl",
+    "don't spill any balls into the blue bowl"
+   ],
+   "heldout": [
+    "no balls in the blue bowl"
+   ]
+  },
+  {
+   "task": "clean_pour",
+   "seed": 7102,
+   "rule_id": "particles_outside|beads|bowl_white",
+   "train": [
+    "don't spill any beads into the white bowl",
+    "keep the beads out of the white bowl"
+   ],
+   "heldout": [
+    "no beads in the white bowl"
+   ]
+  }
+ ]
+}

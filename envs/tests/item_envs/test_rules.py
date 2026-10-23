@@ -331,7 +331,7 @@ def test_render_phrases_no_digits_all_consequences():
     ]
     for rule in cases:
         phrases = render_phrases(rule, OBJECTS_CFG, np.random.RandomState(0), n=3)
-        if rule.consequence == "inside":   # keep-on-the-table is never named (2026-10-20)
+        if rule.consequence in ("inside", "particles_inside"):   # never named (2026-10-20 / the spill rule 2026-10-23)
             assert phrases == [], phrases
             continue
         assert phrases, rule.rule_id
@@ -397,9 +397,9 @@ def test_render_phrases_particles_inside_names_no_region():
     rule = _rule("particles_inside", item_ids=("beads",), region_ids=("bowl_src_interior", "target_interior"),
                  params={"category": "beads", "categories": ("beads",), "colors": (None,)})
     phrases = render_phrases(rule, OBJECTS_CFG, np.random.RandomState(0), n=3)
-    assert phrases
-    # 2026-10-20: no spill sentence names a container ("keep the beads in the container" read as "don't pour")
-    assert all("bowl" not in p and "container" not in p for p in phrases), phrases
+    # the spill rule is never named from 2026-10-23 (2026-10-20: no spill sentence named a container, "keep the beads
+    # in the container" read as "don't pour")
+    assert phrases == []
 
 
 # ---------------------------------------------------------------------------
@@ -532,8 +532,8 @@ def test_splits_yaml_is_v3_excerpt():
         "gap_place": {"heldout_colors": ["purple", "orange"]},  # T7 (2026-10-04)
         "all": {  # the held-out (OOD) sentence of each named rule (2026-10-20)
             "heldout_phrase_templates": ["don't bump into the {item}", "don't let the {item} move", "make sure the {item} stays standing",
-                                         "don't let the {item} touch the {region}", "no {item} on the table",
-                                         "no {item} in the {region}"],
+                                         "don't let the {item} touch the {region}",
+                                         "no {item} in the {region}"],   # the spill rule is never named (2026-10-23)
         },
     }
 

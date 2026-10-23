@@ -30,10 +30,11 @@ from . import REPO
 # single-task or single-embodiment run evaluates on the same seeds as `full`
 CANON_TASKS = ("selective_avoid", "granular_pour", "push_zone", "granular_carry",
                "tray_transport", "clean_pour", "gap_place")
-# the tasks new runs train, collect and evaluate on (Yuxuan 2026-10-22: T4 granular_carry and T6 clean_pour
-# dropped, "we don't need that much tasks"). Their episodes stay in the shards and CANON_TASKS keeps their
-# indices; runs saved with all seven keep them
-TRAIN_TASKS = tuple(t for t in CANON_TASKS if t not in ("granular_carry", "clean_pour"))
+# the tasks new runs train, collect and evaluate on: T1, T3, T5, T6, T7 (Yuxuan 2026-10-22: T4 granular_carry dropped,
+# "we don't need that much tasks"; 2026-10-23: T2 granular_pour replaced by the redesigned T6 clean_pour, three bowls,
+# since T2's one rule is not text-conditioned). The dropped tasks' episodes stay in the shards and CANON_TASKS keeps
+# their indices; runs saved with other task lists keep them
+TRAIN_TASKS = tuple(t for t in CANON_TASKS if t not in ("granular_carry", "granular_pour"))
 CANON_EMBODIMENTS = ("ur5-wsg", "franka-panda")
 CANON_T1_HOSTS = ("place_container_plate", "place_burger_fries", "stack_blocks_two",
                   "stack_bowls_two", "place_bread_basket")  # registry order (host_tasks)
@@ -233,6 +234,9 @@ class LangConfig(FrozenConfig):
     # bead-task rows (T2 / T4 / T6) of shards written before the bead-count h (2026-10-07, no
     # item_buffer/n_violating.npy) carry the old bead h: skip them (other tasks' rows are unchanged)
     drop_stale_bead_rows: bool = True
+    # T6 episodes of the 2026-10-04 design (bins / plates; the item key clean_pour is shared with the 2026-10-23
+    # three-bowl design) are skipped: the two designs never mix in training or validation
+    drop_old_t6_rows: bool = True
 
     # --- rounds / collection ---
     filter_release_margin: float = 0.0

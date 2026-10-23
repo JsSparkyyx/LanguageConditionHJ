@@ -1,7 +1,8 @@
 """One page for the training tasks, the constraint sentences and the object words (Yuxuan, 2026-10-22).
 
 Reads the bank (language/paraphrases.yaml), the corpus (configs/objects.yaml), the splits (configs/splits.yaml),
-the rule descriptions (template_review/flags.py), the recorded examples (template_review/examples_v2.json) and the
+the rule descriptions (template_review/flags.py), the filled-in examples (template_review/examples_v3.json: scenes built
+with the 2026-10-23 code by page_examples.py next to this file) and the
 object tiles cut from runs/lang/object_gallery (img/tiles.json), so the page matches the code.
 
     python docs/lang_filter/corpus_page/build.py    # -> index.html next to this file (images in img/)
@@ -24,14 +25,14 @@ import flags  # noqa: E402
 BANK = yaml.safe_load((ENV / "language/paraphrases.yaml").read_text())
 OBJ = yaml.safe_load((ENV / "configs/objects.yaml").read_text())
 SPLITS = yaml.safe_load((ENV / "configs/splits.yaml").read_text())
-EX = json.loads((REPO / "docs/lang_filter/template_review/examples_v2.json").read_text())
+EX = json.loads((REPO / "docs/lang_filter/template_review/examples_v3.json").read_text())
 TILES = json.loads((HERE / "img/tiles.json").read_text())
 HELD = set(BANK["heldout_words"])
 E = html.escape
 
-ORDER = ["avoid", "stay", "upright", "zone_exclude", "contain_particles"]   # exclude_particles was T6 only
+ORDER = ["avoid", "stay", "upright", "zone_exclude", "exclude_particles"]   # the spill rule is never named (2026-10-23)
 TITLE = {"avoid": "Don't touch", "stay": "Don't move", "upright": "Don't tip over", "zone_exclude": "Keep out of a mat",
-         "contain_particles": "Don't spill", "exclude_particles": "Keep beads out of a bin or plate"}
+         "contain_particles": "Don't spill", "exclude_particles": "Keep the beads out of a bowl"}
 
 # ------------------------------------------------------------------ tasks ----
 # Plain-language summaries of envs/docs/item_envs/tasks_overview.md and the task configs (configs/tasks/T*.yaml).
@@ -51,14 +52,6 @@ TASKS = [
            "1.0 at a 6 cm gap, 0 at 1 cm. Don't move: moved more than 3 cm (tilt counts as moving).",
          note="The one task where the rule is about contact, so a hand-made distance filter should match ours. "
               "Reported as the control task."),
-    dict(n=2, key="granular_pour", name="Don't spill",
-         job="Pour beads from a mug into a bowl.",
-         wrong="The pour is too fast, too high or off to the side, so beads miss the bowl and land on the table.",
-         rules=["contain_particles"], per="the beads (one rule)",
-         objects="A mug (6 mug models), a bowl, up to 120 beads of 6 mm. The mug and bowl are never named.",
-         inway="Only one rule, so the sentence does not change the answer here.",
-         h="The worst bead's depth inside the column above the mug or the bowl, in cm. Once beads are out it counts "
-           "them: one bead = -0.5, 20 or more = -1."),
     dict(n=3, key="push_zone", name="Push without harming the named thing",
          job="Push a coloured box across the table into a dark frame. Coloured mats and tall coloured cylinders "
              "lie on or beside the way.",
@@ -67,7 +60,8 @@ TASKS = [
          objects="Pushed: a coloured box. Standing: coloured tall cylinders. Mats in red, green or blue.",
          inway="Mats and objects on the push path.",
          h="Mat: the box footprint's distance to the mat edge, 1.0 per 5 cm, negative once a corner is over it. "
-           "Upright: (10 deg - tilt) / 10 deg. Don't move: (1.5 cm - moved) / 1.5 cm.",
+           "Upright: (45 deg - tilt) / 45 deg. Don't move: (1.5 cm - moved) / 1.5 cm, a 45 deg tilt counting like "
+           "1.5 cm.",
          note="Keep-the-box-on-the-table is still measured but never named (no sentences)."),
     dict(n=5, key="tray_transport", name="Don't let the named block fall",
          job="Slide a tray carrying two standing blocks to a target frame: one tall and thin, one short.",
@@ -75,7 +69,20 @@ TASKS = [
          rules=["upright"], per="each block",
          objects="A tray, a tall and a short block in red, green or blue (different colours).",
          inway="The tall block. The named block is the tall one in 75% of episodes, a short one in 25%.",
-         h="(10 deg - tilt) / 10 deg: 1 standing straight, 0 at 10 deg, -1 at 20 deg."),
+         h="(45 deg - tilt) / 45 deg: 1 standing straight, 0 at 45 deg, -1 lying flat (90 deg)."),
+    dict(n=6, key="clean_pour", name="Keep the beads out of the named bowl",
+         job="Pour the beads from a mug into the target bowl: one of three bowls (white, blue, green), picked at random "
+             "each episode. The other two stand next to it, 90 degrees apart.",
+         wrong="The pour aims 16-22 cm off, toward one of the other two bowls (they stand 9-12 cm from the target), "
+               "and beads land in that bowl in about 4 of 5 runs.",
+         rules=["exclude_particles"], per="bowl that is not the target (the table-spill rule is measured, never named)",
+         objects="A mug (6 mug models), three bowls (002_bowl base 5 white, 3 blue, 7 green; colours shuffled each "
+                 "episode), up to 120 red beads of 6 mm. The mug and the target bowl are never named.",
+         inway="The bowl the pour is aimed at (either of the two, 50/50). The named bowl is either of the two, also "
+               "50/50, so half of the episodes name the bowl being hit.",
+         h="The closest bead's distance from entering the column above the named bowl (up to 1.2 cm above its rim), "
+           "1.0 per 5 cm; once beads are in, it counts them: one bead = -0.5, 20 or more = -1.",
+         note="Redesigned 2026-10-23: before, a big bowl with small bins and plates around it."),
     dict(n=7, key="gap_place", name="Don't disturb the named block",
          job="Slide a wooden block into a narrow gap between two small standing blocks.",
          wrong="The slide is a bit off-centre, so the wooden block scrapes a neighbour and tips it or shoves it away.",
@@ -83,7 +90,7 @@ TASKS = [
          objects="The carried wooden block, two neighbours (a slim pillar or a short wide block) and sometimes a "
                  "bystander block, in red, green and blue.",
          inway="The neighbour the slide scrapes (named in 60% of episodes; the other neighbour 25%, the bystander 15%).",
-         h="(2 cm - moved) / 2 cm, with 10 deg of tilt counting like 2 cm. Upright: (10 deg - tilt) / 10 deg."),
+         h="(2 cm - moved) / 2 cm, with 45 deg of tilt counting like 2 cm. Upright: (45 deg - tilt) / 45 deg."),
 ]
 RULE_TASKS = {c: [t for t in TASKS if c in t["rules"]] for c in ORDER}
 USED = {t["key"] for t in TASKS}
@@ -149,7 +156,7 @@ def rule_card(c):
     <div><h4>Training (4)</h4><ol>{train}</ol></div>
     <div><h4>OOD test (1)</h4><ol class="oodl">{held}</ol></div>
   </div>
-  <h4>Filled in, from recorded scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
+  <h4>Filled in, from real scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
   <ul class="exs">{rows}</ul>
 </article>'''
 
@@ -179,7 +186,7 @@ NAMED = [
     ("block", "T5, T7", "primitive blocks, coloured, tall / short", "\"short\" / \"tall\" added when it picks one out"),
 ]
 NEVER = [("cup", "T1 job object (put the cup on the plate)"), ("wooden_block", "T1 job object (stack two blocks)"),
-         ("bowl", "T1 job object, T2 bowl"), ("pour_mug", "T2 pouring mug (039_mug)"),
+         ("bowl", "T1 job object; T6's target bowl"), ("pour_mug", "T6 pouring mug (039_mug)"),
          ("tray", "T1 job object, T5 tray"),
          ("hamburg", "T1 job object"), ("frenchfries", "T1 job object")]
 
@@ -197,7 +204,7 @@ def word_row(cat, where, models, note):
 TILE_TITLE = {"088_wineglass": "wine glass (088_wineglass)", "038_milk-box": "milk box (038_milk-box)",
               "043_book": "book (043_book)", "092_notebook": "book (092_notebook)", "035_apple": "apple (035_apple)",
               "091_kettle": "kettle (091_kettle)", "001_bottle": "bottle (001_bottle)",
-              "039_mug": "mug (039_mug), T2 pouring mug"}
+              "039_mug": "mug (039_mug), T6 pouring mug"}
 HELD_IDS = {a: set((OBJ["assets"][a].get("heldout_ids") or [])) for a in TILE_TITLE}
 ID_NOTE = {("088_wineglass", 0): "shrunk to 87%", ("038_milk-box", 1): "shrunk to 88%",
            ("038_milk-box", 2): "shrunk to 90%"}
@@ -244,8 +251,10 @@ def build():
                          f"<td>{', '.join(E(x) for x in CATS[c].get('synonyms') or []) or '<span class=dim>none</span>'}</td>"
                          f"<td>{E(w)}</td></tr>" for c, w in NEVER)
     reg_rows = (reg_row("zone", "T3", "red, green, blue", "keep the box out of it")
-                + reg_row("table_top", "T3", "-", "keep-the-box-on-the-table is measured but never named; "
-                                                   "\"on the table\" in the spill sentences is fixed text"))
+                + reg_row("bowl", "T6", "white, blue, green (the bowls' own colours)",
+                          "the two bowls that are not the target; no bead may land in the named one")
+                + reg_row("table_top", "T3, T6", "-", "keep-the-box-on-the-table (T3) and the table-spill rule (T6) are "
+                                                       "measured but never named"))
     ood_templates = "".join(f"<li>{tpl(BANK[c]['heldout'][0])} <span class=\"dim\">({E(TITLE[c])})</span></li>"
                             for c in ORDER)
     held_words = "".join(f'<span class="oodw">{E(w)}</span>' for w in BANK["heldout_words"])
@@ -368,7 +377,8 @@ footer {{ margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1p
   <h1>Named-Object Task Corpus</h1>
   <p class="lede">What the language-conditioned safety filter is trained on: the five table-top tasks, the sentences that
     name a rule, and the words used for objects, regions and beads, with the parts held out for the out-of-distribution
-    (OOD) tests. Everything below is read from the code (2026-10-20 sentence rewrite, five tasks from 2026-10-22).</p>
+    (OOD) tests. Everything below is read from the code (2026-10-20 sentence rewrite; tasks, objects and tilt limits of
+    2026-10-23).</p>
   <div class="facts"><span><b>{len(TASKS)}</b>tasks</span><span><b>{len(ORDER)}</b>named rules</span>
     <span><b>{n_train + n_held}</b>sentences ({n_train} training, {n_held} OOD)</span>
     <span><b>6</b>object types in the T1 pool</span><span><b>{len(HELD)}</b>held-out words</span></div>
@@ -380,8 +390,8 @@ footer {{ margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1p
     an item. A sentence names one rule; the filter must protect that item and leave the others alone. Every rule gives a
     safety number from -1 to 1: 1 = comfortably safe, 0 = the moment of harm, below 0 = harmed.</p>
   <p class="secintro">Robot: UR5 with the WSG gripper (all current training data). Five of the seven built tasks are
-    used from 2026-10-22: T4 (carry a bowl of beads) and T6 (keep beads out of a bin or plate) were dropped, so the task
-    numbers skip 4 and 6. The T1-only run trains on task 1 alone.
+    used: T4 (carry a bowl of beads) was dropped on 2026-10-22, and T2 (pour without spilling, one rule, so the sentence
+    changed nothing) was replaced on 2026-10-23 by the redesigned T6 (three bowls). The task numbers skip 2 and 4. The T1-only run trains on task 1 alone.
     "In the way" is decided by the scene layout and gives each named rule its harm or benign label for evaluation.</p>
   <div class="stack">{"".join(task_card(t) for t in TASKS)}</div>
 
@@ -449,8 +459,8 @@ footer {{ margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1p
 
   <footer>Built by docs/lang_filter/corpus_page/build.py from envs/main/item_envs/language/paraphrases.yaml,
     configs/objects.yaml, configs/splits.yaml and configs/tasks/, the rule notes in
-    docs/lang_filter/template_review/flags.py and recorded validation scenes (examples_v2.json, re-named with today's
-    words). Renders from runs/lang/object_gallery.</footer>
+    docs/lang_filter/template_review/flags.py and scenes built with today's code (examples_v3.json, from
+    docs/lang_filter/corpus_page/page_examples.py). Renders from runs/lang/object_gallery.</footer>
 </div>
 '''
 

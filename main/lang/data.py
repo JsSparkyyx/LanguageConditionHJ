@@ -126,6 +126,14 @@ def named_centers(A, rec: dict, rule: dict, slots) -> tuple[np.ndarray, np.ndarr
     return c, v
 
 
+def old_t6_record(rec: dict) -> bool:
+    """A T6 episode of the 2026-10-04 design (bins / plates around a deep bowl, robotwin_tasks/clean_pour.py): the
+    item key clean_pour is shared with the 2026-10-23 three-bowl design (bowl_pour.py), so the regions tell them
+    apart."""
+    return rec.get("task") == "clean_pour" and any(
+        str(g.get("region_id", "")).startswith(("bin_", "plate_")) for g in rec.get("regions") or [])
+
+
 def bead_h_of(sources) -> str:
     """Which bead h the bead-task rows of these sources carry: "count" (n_violating stored, 2026-10-07 on),
     "old" (soft-min / plain clip, only when drop_stale_bead_rows is off), "mixed", or "none" (no bead rows)."""
@@ -158,12 +166,14 @@ class LangSource:
     shard, opened on first use)."""
 
     def __init__(self, root, k_prev: int = 2, recall_horizon: int = 7, name: str | None = None,
-                 max_n: int | None = None, drop_stale_bead: bool = True):
+                 max_n: int | None = None, drop_stale_bead: bool = True, drop_old_t6: bool = True):
         self.root = Path(root).resolve()
         # written before the bead-count h: its bead-task rows hold the old bead h, never train on them
         self.old_bead_h = not (self.root / "item_buffer" / "n_violating.npy").exists()
         self.stale_bead = bool(drop_stale_bead) and self.old_bead_h
         self.n_stale_dropped = 0
+        self.drop_old_t6 = bool(drop_old_t6)   # the 2026-10-04 T6 design never trains with the 10-23 one
+        self.n_old_t6_dropped = 0
         self.name = name or self.root.name
         self.k = int(k_prev)
         self.recall_horizon = int(recall_horizon)
@@ -308,6 +318,16 @@ class LangSource:
             self.n_stale_dropped = int((~fresh).sum())
             for f in ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb"):
                 setattr(self, f, getattr(self, f)[fresh])
+        if self.drop_old_t6:
+            old = [int(e) for e in np.unique(self.eid) if old_t6_record(rs.records[int(e)])]
+            if old:
+                keep = ~np.isin(self.eid, old)
+                if not self.n_old_t6_dropped:
+                    print(f"[data] {self.name}: {len(old)} T6 episodes of the 2026-10-04 design (bins / plates) "
+                          "skipped (drop_old_t6_rows)", flush=True)
+                self.n_old_t6_dropped = int((~keep).sum())
+                for f in ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb"):
+                    setattr(self, f, getattr(self, f)[keep])
         self.recall = recall_labels(np.asarray(A["h_rules"]), np.asarray(A["episode_id"]),
                                     np.asarray(A["t_in_ep"]).astype(np.int64), rs.buf.n, self.recall_horizon)
         # drop cached frame 0 of episodes no longer in the ring
@@ -455,7 +475,8 @@ class LangSampler:
                 continue   # frozen dataset: shards started after the freeze are not part of it
             src = LangSource(r, self.k, int(cfg.recall_ticks),
                              max_n=self.max_rows.get(str(Path(r).resolve())),
-                             drop_stale_bead=getattr(cfg, "drop_stale_bead_rows", True))
+                             drop_stale_bead=getattr(cfg, "drop_stale_bead_rows", True),
+                             drop_old_t6=getattr(cfg, "drop_old_t6_rows", True))
             if src.rows.size and "scene_tokens" in src.step:
                 self._check_neck_source(src)
                 self._check_encoder_source(src)
@@ -474,7 +495,8 @@ class LangSampler:
 
     def add_source(self, root) -> None:
         src = LangSource(root, self.k, int(self.cfg.recall_ticks),
-                         drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True))
+                         drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True),
+                         drop_old_t6=getattr(self.cfg, "drop_old_t6_rows", True))
         if src.rows.size and "scene_tokens" in src.step:
             self._check_neck_source(src)
             self._check_encoder_source(src)

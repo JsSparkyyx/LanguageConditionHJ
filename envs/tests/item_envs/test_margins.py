@@ -307,3 +307,19 @@ def test_particle_margin_with_no_beads_is_safe():
     empty = [np.zeros((0, 2))]
     assert m_particles_inside(empty, [reg]) == float("inf") and m_particles_outside(empty, [reg]) == float("inf")
     assert particle_h(0, float("inf"), 0.01) == 1.0
+
+
+def test_particles_outside_floored_column_2026_10_23():
+    """A floored + capped container column (T6's bowls): a bead inside the footprint counts only between the floor
+    and the cap, so a bead resting on the table against the bowl's outer wall is not in the bowl."""
+    from main.item_envs.regions import Region, circle_polygon
+
+    region = Region(region_id="bowl_blue", kind="container", frame_fn=lambda: np.eye(4),
+                    polygon=circle_polygon(0.07, 16), z=0.0, z_band=0.01, nameable=True, z_cap=0.012, z_floor=-0.04)
+    inside = np.array([[0.0, 0.0, -0.03]])        # in the bowl, above its floor
+    on_table = np.array([[0.065, 0.0, -0.047]])   # inside the footprint, below the floor (on the table)
+    above = np.array([[0.0, 0.0, 0.05]])          # flying high over it
+    from main.item_envs.margins import _per_region_signed_dist
+    assert _per_region_signed_dist([inside], [region])[0, 0] > 0
+    assert _per_region_signed_dist([on_table], [region])[0, 0] < 0
+    assert _per_region_signed_dist([above], [region])[0, 0] < 0

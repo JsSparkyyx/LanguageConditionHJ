@@ -31,8 +31,10 @@ def test_bank_size_split_and_placeholders():
     bank = L.load_bank()
     assert set(L.SPEC_CONSEQUENCE.values()) == set(PLACEHOLDERS)
     assert "zone_include" not in bank   # keep-on-the-table is never named (Yuxuan, 2026-10-20)
+    # the spill rule is never named from 2026-10-23 (T2 left the training tasks; T6 names only its bowl rules)
+    assert bank["contain_particles"] == {"train": [], "heldout": []}
     for cons, allowed in PLACEHOLDERS.items():
-        if cons == "zone_include":
+        if cons in ("zone_include", "contain_particles"):
             continue
         train, held = bank[cons]["train"], bank[cons]["heldout"]
         assert len(train) == 4 and len(held) == 1, cons  # 4 training + 1 held-out (OOD) sentence (2026-10-20)
@@ -134,22 +136,25 @@ def _rule(cons, subject, reference=None, **kw):
 
 def test_sentence_splits_and_particles():
     bank = L.load_bank()
+    # T6 from 2026-10-23: three bowls, two of them named by colour; the spill rule has no sentence
     s = _scene([("beads", ["balls", "little balls"], None, None, "particle_set"), ("mug", [], None, None)],
-               [("bin", ["bin", "box"], "green"), ("bowl_src_interior", ["source bowl", "bowl"], None)])
-    spill = _rule("contain_particles", {"particles": 0}, {"regions": [1]})
-    train = L.sentences(spill, s, "train")
-    assert "don't spill the balls" in train and not any("little balls" in x for x in train)
-    held_t = L.sentences(spill, s, "heldout_template")
-    assert held_t and not set(held_t) & set(train)
-    assert all("little balls" in x for x in L.sentences(spill, s, "heldout_word"))
+               [("bowl", ["bowl"], "white"), ("bowl", ["bowl"], "blue"),
+                ("bowl_src_interior", ["source bowl", "bowl"], None)])
+    spill = _rule("contain_particles", {"particles": 0}, {"regions": [2]})
+    assert L.sentences(spill, s, "train") == [] and L.sentences(spill, s, "heldout_template") == []
     keep = _rule("exclude_particles", {"particles": 0}, {"region": 0})
     out = L.sentences(keep, s, "train")
-    assert "keep the beads out of the green bin" in out and "don't drop any balls into the green box" in out
+    assert "keep the beads out of the white bowl" in out and "don't drop any balls into the white bowl" in out
+    assert not any("the bowl" in x for x in out)   # two bowls: the colour picks one out
+    assert not any("little balls" in x for x in out)
+    assert all("little balls" in x for x in L.sentences(keep, s, "heldout_word"))
+    held_t = L.sentences(keep, s, "heldout_template")
+    assert held_t and all(x.startswith("no ") for x in held_t) and not set(held_t) & set(out)
     assert not any(x.startswith("no ") for x in out)   # the held-out sentence
     assert L.sentences(_rule("avoid", {"objects": [0, 1]}, set=True), s) == []  # set rules: none
     rng = np.random.default_rng(0)
     assert L.sample_sentence(keep, s, rng) in out
-    for x in train + out:
+    for x in out:
         assert not re.search(r"\d", x) and "{" not in x
 
 

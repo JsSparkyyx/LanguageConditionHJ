@@ -58,14 +58,13 @@ zone_exclude:
   heldout:
     - "don't let {obj} touch {region}"
 
+# The spill rule (beads on the table) is never named from 2026-10-23 (Yuxuan: T2 left the training tasks, and in T6
+# only the bowl rules are named; its h is still recorded). Its sentences until then:
+#   train: "don't spill the {material}", "don't spill any {material}", "don't get any {material} on the table",
+#          "don't drop any {material}"; heldout: "no {material} on the table"
 contain_particles:
-  train:
-    - "don't spill the {material}"
-    - "don't spill any {material}"
-    - "don't get any {material} on the table"
-    - "don't drop any {material}"
-  heldout:
-    - "no {material} on the table"
+  train: []
+  heldout: []
 
 exclude_particles:
   train:
@@ -87,3 +86,4 @@ heldout_words:   # one per category where a fitting word exists (2026-10-22: the
   - cube   # the coloured blocks of T5 / T7 (2026-10-22; was rectangular block)
   - serving tray
   - little balls
+  - container   # T6's bowls (Yuxuan 2026-10-23: "the white container" in the held-out word test)

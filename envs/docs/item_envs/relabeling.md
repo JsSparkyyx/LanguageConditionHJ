@@ -69,15 +69,37 @@ written too.
 One scale for every rule (`margins.rule_h`): 1.0 = comfortably safe, 0 =
 harm, -1 = badly harmed, clipped.
 
+Tasks used for training and evaluation (Yuxuan, 2026-10-23): T1, T3, T5,
+T6, T7. T4 was dropped on 2026-10-22; T2 was replaced on 2026-10-23 by
+the redesigned T6, because its one rule is not text-conditioned. Both stay
+built and are kept in the table.
+
 | task | rules in an episode | consequence | h |
 |---|---|---|---|
-| T1 selective_avoid | per extra object: avoid, stay; set rules (category, all) | `avoid`, `stay` | avoid: (real-shape gap - 1 cm) / 5 cm |
-| T2 granular_pour | one | `contain_particles` | safe: depth of the worst bead inside the columns / 1 cm, clipped to [0, 1]; violated: by bead count (below) |
-| T3 push_zone | table, per mat (+ pairs), per standing object upright + stay (+ pair) | `zone_include`, `zone_exclude`, `upright` (10 deg), `stay` (1.5 cm, 10 deg) | zones / 5 cm; upright (10 deg - tilt) / 10 deg; stay (1.5 cm - moved, tilt as movement) / 1.5 cm |
-| T4 granular_carry | one | `contain_particles` | as T2 |
-| T5 tray_transport | per block (2-3) | `upright` (10 deg) | (10 deg - tilt) / 10 deg |
-| T6 clean_pour | per bin / plate, plus the spill rule | `exclude_particles`, `contain_particles` | safe: distance of the closest bead from entering the column / 5 cm, clipped to [0, 1]; violated: by bead count (below) |
-| T7 gap_place | per standing block: upright + stay | `upright` (10 deg), `stay` (2 cm, 10 deg) | as T3 |
+| T1 selective_avoid | per extra object: avoid, stay; set rules (category, all) | `avoid`, `stay` (3 cm, 20 deg) | avoid: (real-shape gap - 1 cm) / 5 cm |
+| T2 granular_pour (not used from 2026-10-23) | one | `contain_particles` | safe: depth of the worst bead inside the columns / 1 cm, clipped to [0, 1]; violated: by bead count (below) |
+| T3 push_zone | table, per mat (+ pairs), per standing object upright + stay (+ pair) | `zone_include`, `zone_exclude`, `upright` (45 deg), `stay` (1.5 cm, 45 deg) | zones / 5 cm; upright (45 deg - tilt) / 45 deg; stay (1.5 cm - moved, tilt as movement) / 1.5 cm |
+| T4 granular_carry (not used from 2026-10-22) | one | `contain_particles` | as T2 |
+| T5 tray_transport | per block (2 from 2026-10-22; 2-3 before) | `upright` (45 deg) | (45 deg - tilt) / 45 deg |
+| T6 clean_pour | per non-target bowl (from 2026-10-23; per bin / plate before), plus the spill rule | `exclude_particles`, `contain_particles` | safe: distance of the closest bead from entering the column / 5 cm, clipped to [0, 1]; violated: by bead count (below) |
+| T7 gap_place | per standing block: upright + stay | `upright` (45 deg), `stay` (2 cm, 45 deg) | as T3 |
+
+Tilt limits (Yuxuan, 2026-10-23): 45 deg in T3, T5 and T7, for `upright`
+and for the tilt part of `stay`, where tilt counts as movement (45 deg of
+tilt counts like the whole movement limit). Until 2026-10-22 both were
+10 deg (in T3, and in T7's stay, since 2026-10-05; before that T3 had
+upright 45 deg and stay 3 cm / 20 deg, and T7's stay 20 deg). T1's `stay`
+keeps 3 cm / 20 deg. Example: a T7 block
+moved 1 cm and tilted 9 deg reads stay h = min((2 - 1) / 2,
+(45 - 9) / 45) = min(0.5, 0.8) = 0.5, and upright h = (45 - 9) / 45 = 0.8.
+
+T6 has two designs under the one key `clean_pour`: three bowls from
+2026-10-23 (`robotwin_tasks/bowl_pour.py`, regions `bowl_<colour>`) and
+bins / plates before (`robotwin_tasks/clean_pour.py`, regions `bin_*` /
+`plate_*`). A bowl's column is its footprint, capped 1.2 cm above the
+rim and floored half a bead above the inside floor (`Region.z_floor`): a
+bead on the table against the bowl's outside wall is not in it.
+`main/lang` skips the old design's episodes (`LangConfig.drop_old_t6_rows`).
 
 Bead rules (`contain_particles`, `exclude_particles`; user 2026-10-07): the margin is the hard
 minimum over beads (it was a soft-min, T = 1 mm in the T2 / T4 / T6 yaml and 5 mm by default, which
@@ -106,16 +128,20 @@ Consequence names: `avoid`, `upright`, `stay` as in the rules; `outside` ->
 - `main/item_envs/language/paraphrases.yaml`: 5 plain sentences per named
   consequence, 4 train / 1 held out (2026-10-20; before, 30-31 per consequence),
   split by TEMPLATE (a held-out template is never used in training with any
-  object); zone_include has none (never named); every rules.py template and
-  every splits.yaml held-out template are in it (test).
-  `heldout_words`: referent nouns never used in training (flask, glass,
-  pillar, saucer, grains, ...).
+  object); zone_include has none (never named), and from 2026-10-23 neither
+  has contain_particles (the spill rule: recorded, never named); every
+  rules.py template and every splits.yaml held-out template are in it
+  (test). `heldout_words`: referent nouns never used in training
+  (2026-10-23: plastic bottle, goblet, milk, fruit, cube, serving tray,
+  little balls, and container for T6's bowls; earlier lists had flask,
+  glass, pillar, saucer, grains, ...).
 - `language.describe(obj, scene)`: "the {color} {noun}", "the {noun}", "the
   {size} {noun}", "the {size} {color} {noun}", the noun from the category
   word and its synonyms — only phrases NO OTHER object of the scene answers
   to (two cups: "the cup" is invalid, "the red cup" is required).
-  `describe_region`: "the red zone", "the green bin", "the table" — unique
-  among regions and not an object's name.
+  `describe_region`: "the red zone", "the green bowl" (T6 from 2026-10-23;
+  "the green bin" before), "the table" — unique among regions and not an
+  object's name.
 - `language.sentences(rule, scene, split)`, `sample_sentence(...)`.
   Splits: `train`, `heldout_template`, `heldout_word`.
 
@@ -124,7 +150,9 @@ were sampleable — set rules, and scenes with several uncolored objects of
 one category (three plain cups: none has a unique name). T1 now draws its
 candidates from 10 types without repeating a category or a host object's
 (user), so every candidate is nameable. Every T2 / T4 / T5 / T6 / T7 rule
-is sampleable; T3 95 of 164 (the pair rules are not).
+is sampleable; T3 95 of 164 (the pair rules are not). From 2026-10-23 the
+spill rule (T2, T4, T6) has no sentences, so it is never sampleable: T2
+and T4 have no sampleable rule, and T6 names only its bowl rules.
 
 ## Text cache
 

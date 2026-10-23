@@ -696,8 +696,8 @@ def _source_of(path: Path, names) -> str:
 def h_code_hash_v2(tasks) -> str:
     """Hash of exactly what defines h for these tasks (review round 3, C6): margins, rules, the distance and
     shape code, regions, the object table, the robot's collision spheres, the h functions of runner.py and
-    margin_hook.py, the tasks' yaml files, the RoboTwin scene builders the task links actually point to
-    (resolved), and the distance mode (ITEM_DISTANCE). Unrelated edits to runner / item_buffer / margin_hook
+    margin_hook.py, the tasks' yaml files, the RoboTwin scene builders this checkout loads (its own
+    envs/robotwin_tasks, since 2026-10-23; before, the shared RoboTwin/envs links), and the distance mode (ITEM_DISTANCE). Unrelated edits to runner / item_buffer / margin_hook
     no longer refuse a resume. Recorded as `h_code_v2`; `h_code` (h_code_hash) stays for older shards / runs."""
     import hashlib
     import os
@@ -717,16 +717,34 @@ def h_code_hash_v2(tasks) -> str:
         add(f"collision_spheres/{f.name}", f.read_bytes())
     for f, names in H_FUNCS.items():
         add(f, _source_of(root / f, names).encode())
-    robotwin = REPO.parent / "RoboTwin" / "envs"
+    # the scene builders this checkout's runner loads (2026-10-23: runner.use_own_robotwin_tasks imports the
+    # checkout's envs/robotwin_tasks first, not the shared RoboTwin/envs links): each task's registered RoboTwin
+    # module (T6 clean_pour -> bowl_pour) and, followed through their relative imports, every local file they build
+    # on (granular_pour, _item_utils, push_zone, ...). Host tasks (T1) are RoboTwin's own files and add nothing.
+    import re
+
+    from main.item_envs.registry import ITEM_TASKS
+
+    own = REPO / "envs/robotwin_tasks"
+    seen: set = set()
+
+    def add_module(name: str) -> None:
+        f = own / f"{name}.py"
+        if name in seen or not f.exists():
+            return
+        seen.add(name)
+        src = f.read_bytes()
+        add(f"robotwin_tasks/{name}.py", src)
+        for dep in re.findall(rb"^from \.(\w+) import", src, re.M):
+            add_module(dep.decode())
+
     for t in sorted(tasks):
         for y in sorted((root / "configs/tasks").glob(f"*_{t}.yaml")):
             add(y.name, y.read_bytes())
-        link = robotwin / f"{t}.py"
-        if link.exists():
-            add(f"robotwin/{t}.py", link.resolve().read_bytes())
-    util = robotwin / "_item_utils.py"
-    if util.exists():
-        add("robotwin/_item_utils.py", util.resolve().read_bytes())
+        entry = ITEM_TASKS.get(t)
+        if entry is not None and entry.kind == "robotwin":
+            add_module(str(entry.robotwin_task))
+    add_module("_item_utils")
     add("ITEM_DISTANCE", (os.environ.get("ITEM_DISTANCE") or "shape").encode())   # robot_distance's default
     return h.hexdigest()[:12]
 

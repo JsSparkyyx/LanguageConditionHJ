@@ -117,10 +117,11 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
   <h1>Named-Object Task Corpus</h1>
   <p class="lede">What the language-conditioned safety filter is trained on: the five table-top tasks, the sentences that
     name a rule, and the words used for objects, regions and beads, with the parts held out for the out-of-distribution
-    (OOD) tests. Everything below is read from the code (2026-10-20 sentence rewrite, five tasks from 2026-10-22).</p>
+    (OOD) tests. Everything below is read from the code (2026-10-20 sentence rewrite; tasks, objects and tilt limits of
+    2026-10-23).</p>
   <div class="facts"><span><b>5</b>tasks</span><span><b>5</b>named rules</span>
     <span><b>25</b>sentences (20 training, 5 OOD)</span>
-    <span><b>6</b>object types in the T1 pool</span><span><b>7</b>held-out words</span></div>
+    <span><b>6</b>object types in the T1 pool</span><span><b>8</b>held-out words</span></div>
   <nav><a href="#tasks">Tasks</a><a href="#sentences">Sentences</a><a href="#objects">Objects</a>
     <a href="#regions">Regions, beads, colours</a><a href="#heldout">Held-out tests</a></nav>
 
@@ -129,8 +130,8 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
     an item. A sentence names one rule; the filter must protect that item and leave the others alone. Every rule gives a
     safety number from -1 to 1: 1 = comfortably safe, 0 = the moment of harm, below 0 = harmed.</p>
   <p class="secintro">Robot: UR5 with the WSG gripper (all current training data). Five of the seven built tasks are
-    used from 2026-10-22: T4 (carry a bowl of beads) and T6 (keep beads out of a bin or plate) were dropped, so the task
-    numbers skip 4 and 6. The T1-only run trains on task 1 alone.
+    used: T4 (carry a bowl of beads) was dropped on 2026-10-22, and T2 (pour without spilling, one rule, so the sentence
+    changed nothing) was replaced on 2026-10-23 by the redesigned T6 (three bowls). The task numbers skip 2 and 4. The T1-only run trains on task 1 alone.
     "In the way" is decided by the scene layout and gives each named rule its harm or benign label for evaluation.</p>
   <div class="stack">
 <article class="task" id="task-selective_avoid">
@@ -147,20 +148,6 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
     </dl><p class="note">The one task where the rule is about contact, so a hand-made distance filter should match ours. Reported as the control task.</p>
   </div>
 </article>
-<article class="task" id="task-granular_pour">
-  <figure><img src="img/scene_granular_pour.jpg" alt="Task 2 scene: granular_pour" loading="lazy" width="640" height="460"></figure>
-  <div class="tbody">
-    <header><span class="tnum">T2</span><h3>Don&#x27;t spill</h3><code>granular_pour</code></header>
-    <dl>
-      <dt>Robot's job</dt><dd>Pour beads from a mug into a bowl.</dd>
-      <dt>What goes wrong</dt><dd>The pour is too fast, too high or off to the side, so beads miss the bowl and land on the table.</dd>
-      <dt>Named rules</dt><dd><span class="chips"><a class="chip" href="#rule-contain_particles">Don&#x27;t spill</a></span> <span class="per">per the beads (one rule)</span></dd>
-      <dt>Objects</dt><dd>A mug (6 mug models), a bowl, up to 120 beads of 6 mm. The mug and bowl are never named.</dd>
-      <dt>In the way</dt><dd>Only one rule, so the sentence does not change the answer here.</dd>
-      <dt>Safety number</dt><dd>The worst bead&#x27;s depth inside the column above the mug or the bowl, in cm. Once beads are out it counts them: one bead = -0.5, 20 or more = -1.</dd>
-    </dl>
-  </div>
-</article>
 <article class="task" id="task-push_zone">
   <figure><img src="img/scene_push_zone.jpg" alt="Task 3 scene: push_zone" loading="lazy" width="640" height="460"></figure>
   <div class="tbody">
@@ -171,7 +158,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
       <dt>Named rules</dt><dd><span class="chips"><a class="chip" href="#rule-zone_exclude">Keep out of a mat</a><a class="chip" href="#rule-upright">Don&#x27;t tip over</a><a class="chip" href="#rule-stay">Don&#x27;t move</a></span> <span class="per">per each mat (keep the box out), each standing object (upright, stay)</span></dd>
       <dt>Objects</dt><dd>Pushed: a coloured box. Standing: coloured tall cylinders. Mats in red, green or blue.</dd>
       <dt>In the way</dt><dd>Mats and objects on the push path.</dd>
-      <dt>Safety number</dt><dd>Mat: the box footprint&#x27;s distance to the mat edge, 1.0 per 5 cm, negative once a corner is over it. Upright: (10 deg - tilt) / 10 deg. Don&#x27;t move: (1.5 cm - moved) / 1.5 cm.</dd>
+      <dt>Safety number</dt><dd>Mat: the box footprint&#x27;s distance to the mat edge, 1.0 per 5 cm, negative once a corner is over it. Upright: (45 deg - tilt) / 45 deg. Don&#x27;t move: (1.5 cm - moved) / 1.5 cm, a 45 deg tilt counting like 1.5 cm.</dd>
     </dl><p class="note">Keep-the-box-on-the-table is still measured but never named (no sentences).</p>
   </div>
 </article>
@@ -185,8 +172,22 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
       <dt>Named rules</dt><dd><span class="chips"><a class="chip" href="#rule-upright">Don&#x27;t tip over</a></span> <span class="per">per each block</span></dd>
       <dt>Objects</dt><dd>A tray, a tall and a short block in red, green or blue (different colours).</dd>
       <dt>In the way</dt><dd>The tall block. The named block is the tall one in 75% of episodes, a short one in 25%.</dd>
-      <dt>Safety number</dt><dd>(10 deg - tilt) / 10 deg: 1 standing straight, 0 at 10 deg, -1 at 20 deg.</dd>
+      <dt>Safety number</dt><dd>(45 deg - tilt) / 45 deg: 1 standing straight, 0 at 45 deg, -1 lying flat (90 deg).</dd>
     </dl>
+  </div>
+</article>
+<article class="task" id="task-clean_pour">
+  <figure><img src="img/scene_clean_pour.jpg" alt="Task 6 scene: clean_pour" loading="lazy" width="640" height="460"></figure>
+  <div class="tbody">
+    <header><span class="tnum">T6</span><h3>Keep the beads out of the named bowl</h3><code>clean_pour</code></header>
+    <dl>
+      <dt>Robot's job</dt><dd>Pour the beads from a mug into the target bowl: one of three bowls (white, blue, green), picked at random each episode. The other two stand next to it, 90 degrees apart.</dd>
+      <dt>What goes wrong</dt><dd>The pour aims 16-22 cm off, toward one of the other two bowls (they stand 9-12 cm from the target), and beads land in that bowl in about 4 of 5 runs.</dd>
+      <dt>Named rules</dt><dd><span class="chips"><a class="chip" href="#rule-exclude_particles">Keep the beads out of a bowl</a></span> <span class="per">per bowl that is not the target (the table-spill rule is measured, never named)</span></dd>
+      <dt>Objects</dt><dd>A mug (6 mug models), three bowls (002_bowl base 5 white, 3 blue, 7 green; colours shuffled each episode), up to 120 red beads of 6 mm. The mug and the target bowl are never named.</dd>
+      <dt>In the way</dt><dd>The bowl the pour is aimed at (either of the two, 50/50). The named bowl is either of the two, also 50/50, so half of the episodes name the bowl being hit.</dd>
+      <dt>Safety number</dt><dd>The closest bead&#x27;s distance from entering the column above the named bowl (up to 1.2 cm above its rim), 1.0 per 5 cm; once beads are in, it counts them: one bead = -0.5, 20 or more = -1.</dd>
+    </dl><p class="note">Redesigned 2026-10-23: before, a big bowl with small bins and plates around it.</p>
   </div>
 </article>
 <article class="task" id="task-gap_place">
@@ -199,7 +200,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
       <dt>Named rules</dt><dd><span class="chips"><a class="chip" href="#rule-upright">Don&#x27;t tip over</a><a class="chip" href="#rule-stay">Don&#x27;t move</a></span> <span class="per">per each neighbour</span></dd>
       <dt>Objects</dt><dd>The carried wooden block, two neighbours (a slim pillar or a short wide block) and sometimes a bystander block, in red, green and blue.</dd>
       <dt>In the way</dt><dd>The neighbour the slide scrapes (named in 60% of episodes; the other neighbour 25%, the bystander 15%).</dd>
-      <dt>Safety number</dt><dd>(2 cm - moved) / 2 cm, with 10 deg of tilt counting like 2 cm. Upright: (10 deg - tilt) / 10 deg.</dd>
+      <dt>Safety number</dt><dd>(2 cm - moved) / 2 cm, with 45 deg of tilt counting like 2 cm. Upright: (45 deg - tilt) / 45 deg.</dd>
     </dl>
   </div>
 </article></div>
@@ -222,28 +223,28 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
     <div><h4>Training (4)</h4><ol><li>don&#x27;t touch <span class="slot">obj</span></li><li>avoid <span class="slot">obj</span></li><li>keep away from <span class="slot">obj</span></li><li>don&#x27;t hit <span class="slot">obj</span></li></ol></div>
     <div><h4>OOD test (1)</h4><ol class="oodl"><li>don&#x27;t bump into <span class="slot">obj</span></li></ol></div>
   </div>
-  <h4>Filled in, from recorded scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
-  <ul class="exs"><li><span class="ex">don&#x27;t hit the tall cylinder</span><span class="ex">avoid the black cylinder</span><span class="ex ood">don&#x27;t bump into the cylinder</span><span class="etask">selective_avoid</span></li><li><span class="ex">keep away from the can</span><span class="ex">keep away from the soda can</span><span class="ex ood">don&#x27;t bump into the can</span><span class="etask">selective_avoid</span></li><li><span class="ex">don&#x27;t hit the white box</span><span class="ex">avoid the box</span><span class="ex ood">don&#x27;t bump into the box</span><span class="etask">selective_avoid</span></li></ul>
+  <h4>Filled in, from real scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
+  <ul class="exs"><li><span class="ex">avoid the milk box</span><span class="ex">avoid the milk carton</span><span class="ex ood">don&#x27;t bump into the milk carton</span><span class="etask">selective_avoid</span></li><li><span class="ex">avoid the blue box</span><span class="ex">don&#x27;t touch the blue box</span><span class="ex ood">don&#x27;t bump into the blue box</span><span class="etask">selective_avoid</span></li><li><span class="ex">avoid the cylinder</span><span class="ex">don&#x27;t hit the cylinder</span><span class="ex ood">don&#x27;t bump into the tall cylinder</span><span class="etask">selective_avoid</span></li></ul>
 </article>
 <article class="rule" id="rule-stay">
   <header><h3>Don&#x27;t move</h3><code>stay</code><span class="trefs"><a class="tref" href="#task-selective_avoid">T1</a> <a class="tref" href="#task-push_zone">T3</a> <a class="tref" href="#task-gap_place">T7</a></span></header>
-  <p class="measures">The named object must not be moved more than 3 cm (T1), 1.5 cm (T3) or 2 cm (T7); tipping it counts as moving it. Touching it, or a small push that moves it less than the limit, is allowed. In T1 the same object always also has an avoid rule (don&#x27;t touch).</p>
+  <p class="measures">The named object must not be moved more than 3 cm (T1), 1.5 cm (T3) or 2 cm (T7); tilting it counts as moving it (a 45 degree tilt counts as the whole limit in T3 and T7, 20 degrees in T1). Touching it, or a small push that moves it less than the limit, is allowed. In T1 the same object always also has an avoid rule (don&#x27;t touch).</p>
   <div class="cols">
     <div><h4>Training (4)</h4><ol><li>don&#x27;t move <span class="slot">obj</span></li><li>leave <span class="slot">obj</span> where it is</li><li>keep <span class="slot">obj</span> where it is</li><li>make sure <span class="slot">obj</span> stays in place</li></ol></div>
     <div><h4>OOD test (1)</h4><ol class="oodl"><li>don&#x27;t let <span class="slot">obj</span> move</li></ol></div>
   </div>
-  <h4>Filled in, from recorded scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
-  <ul class="exs"><li><span class="ex">don&#x27;t move the blue block</span><span class="ex">make sure the blue block stays in place</span><span class="ex ood">don&#x27;t let the blue block move</span><span class="etask">gap_place</span></li><li><span class="ex">leave the tall cylinder where it is</span><span class="ex">leave the black tall cylinder where it is</span><span class="ex ood">don&#x27;t let the cylinder move</span><span class="etask">selective_avoid</span></li><li><span class="ex">keep the tall cylinder where it is</span><span class="ex">keep the black cylinder where it is</span><span class="ex ood">don&#x27;t let the cylinder move</span><span class="etask">push_zone</span></li></ul>
+  <h4>Filled in, from real scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
+  <ul class="exs"><li><span class="ex">keep the milk carton where it is</span><span class="ex">don&#x27;t move the milk carton</span><span class="ex ood">don&#x27;t let the milk carton move</span><span class="etask">selective_avoid</span></li><li><span class="ex">make sure the cylinder stays in place</span><span class="ex">make sure the tall cylinder stays in place</span><span class="ex ood">don&#x27;t let the tall cylinder move</span><span class="etask">push_zone</span></li><li><span class="ex">make sure the short red brick stays in place</span><span class="ex">keep the short red brick where it is</span><span class="ex ood">don&#x27;t let the red block move</span><span class="etask">gap_place</span></li></ul>
 </article>
 <article class="rule" id="rule-upright">
   <header><h3>Don&#x27;t tip over</h3><code>upright</code><span class="trefs"><a class="tref" href="#task-push_zone">T3</a> <a class="tref" href="#task-tray_transport">T5</a> <a class="tref" href="#task-gap_place">T7</a></span></header>
-  <p class="measures">The named object must not tilt more than 10 degrees. In T3 and T7 the same object also has a stay rule (don&#x27;t move it).</p>
+  <p class="measures">The named object must not tilt more than 45 degrees (2026-10-23; 10 before). In T3 and T7 the same object also has a stay rule (don&#x27;t move it).</p>
   <div class="cols">
     <div><h4>Training (4)</h4><ol><li>don&#x27;t knock over <span class="slot">obj</span></li><li>keep <span class="slot">obj</span> upright</li><li>don&#x27;t tip over <span class="slot">obj</span></li><li>don&#x27;t let <span class="slot">obj</span> fall over</li></ol></div>
     <div><h4>OOD test (1)</h4><ol class="oodl"><li>make sure <span class="slot">obj</span> stays standing</li></ol></div>
   </div>
-  <h4>Filled in, from recorded scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
-  <ul class="exs"><li><span class="ex">don&#x27;t let the red block fall over</span><span class="ex">don&#x27;t tip over the red brick</span><span class="ex ood">make sure the red block stays standing</span><span class="etask">tray_transport</span></li><li><span class="ex">don&#x27;t let the short brick fall over</span><span class="ex">don&#x27;t tip over the blue block</span><span class="ex ood">make sure the blue block stays standing</span><span class="etask">gap_place</span></li><li><span class="ex">keep the cylinder upright</span><span class="ex">don&#x27;t tip over the cylinder</span><span class="ex ood">make sure the cylinder stays standing</span><span class="etask">push_zone</span></li></ul>
+  <h4>Filled in, from real scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
+  <ul class="exs"><li><span class="ex">don&#x27;t let the tall cylinder fall over</span><span class="ex">keep the green cylinder upright</span><span class="ex ood">make sure the cylinder stays standing</span><span class="etask">push_zone</span></li><li><span class="ex">keep the tall red block upright</span><span class="ex">keep the tall red brick upright</span><span class="ex ood">make sure the tall brick stays standing</span><span class="etask">tray_transport</span></li><li><span class="ex">keep the short red block upright</span><span class="ex">keep the short red brick upright</span><span class="ex ood">make sure the red brick stays standing</span><span class="etask">gap_place</span></li></ul>
 </article>
 <article class="rule" id="rule-zone_exclude">
   <header><h3>Keep out of a mat</h3><code>zone_exclude</code><span class="trefs"><a class="tref" href="#task-push_zone">T3</a></span></header>
@@ -252,18 +253,18 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
     <div><h4>Training (4)</h4><ol><li>keep <span class="slot">obj</span> out of <span class="slot">region</span></li><li>don&#x27;t push <span class="slot">obj</span> onto <span class="slot">region</span></li><li>don&#x27;t let <span class="slot">obj</span> go into <span class="slot">region</span></li><li>keep <span class="slot">obj</span> off <span class="slot">region</span></li></ol></div>
     <div><h4>OOD test (1)</h4><ol class="oodl"><li>don&#x27;t let <span class="slot">obj</span> touch <span class="slot">region</span></li></ol></div>
   </div>
-  <h4>Filled in, from recorded scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
-  <ul class="exs"><li><span class="ex">don&#x27;t let the coffee carton go into the green mat</span><span class="ex">keep the coffee carton off the green mat</span><span class="ex ood">don&#x27;t let the coffee box touch the green mat</span><span class="etask">push_zone</span></li><li><span class="ex">don&#x27;t push the coffee box onto the red mat</span><span class="ex">keep the coffee carton out of the red mat</span><span class="ex ood">don&#x27;t let the coffee box touch the red mat</span><span class="etask">push_zone</span></li><li><span class="ex">keep the coffee carton off the yellow mat</span><span class="ex">keep the coffee box out of the yellow mat</span><span class="ex ood">don&#x27;t let the coffee box touch the yellow mat</span><span class="etask">push_zone</span></li></ul>
+  <h4>Filled in, from real scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
+  <ul class="exs"><li><span class="ex">don&#x27;t push the box onto the mat</span><span class="ex">don&#x27;t push the red box onto the blue mat</span><span class="ex ood">don&#x27;t let the red box touch the mat</span><span class="etask">push_zone</span></li><li><span class="ex">keep the blue box out of the mat</span><span class="ex">don&#x27;t let the box go into the mat</span><span class="ex ood">don&#x27;t let the blue box touch the mat</span><span class="etask">push_zone</span></li><li><span class="ex">don&#x27;t push the box onto the blue mat</span><span class="ex">don&#x27;t let the green box go into the blue mat</span><span class="ex ood">don&#x27;t let the box touch the mat</span><span class="etask">push_zone</span></li></ul>
 </article>
-<article class="rule" id="rule-contain_particles">
-  <header><h3>Don&#x27;t spill</h3><code>contain_particles</code><span class="trefs"><a class="tref" href="#task-granular_pour">T2</a></span></header>
-  <p class="measures">No bead may land on the table. The beads are poured from the mug into the bowl on purpose: a bead in either container is fine, a bead on the table is the violation.</p>
+<article class="rule" id="rule-exclude_particles">
+  <header><h3>Keep the beads out of a bowl</h3><code>exclude_particles</code><span class="trefs"><a class="tref" href="#task-clean_pour">T6</a></span></header>
+  <p class="measures">No bead may land in the named bowl: one of the two bowls that are not the pour target (the beads are meant for the target bowl).</p>
   <div class="cols">
-    <div><h4>Training (4)</h4><ol><li>don&#x27;t spill the <span class="slot">material</span></li><li>don&#x27;t spill any <span class="slot">material</span></li><li>don&#x27;t get any <span class="slot">material</span> on the table</li><li>don&#x27;t drop any <span class="slot">material</span></li></ol></div>
-    <div><h4>OOD test (1)</h4><ol class="oodl"><li>no <span class="slot">material</span> on the table</li></ol></div>
+    <div><h4>Training (4)</h4><ol><li>keep the <span class="slot">material</span> out of <span class="slot">region</span></li><li>don&#x27;t spill any <span class="slot">material</span> into <span class="slot">region</span></li><li>don&#x27;t drop any <span class="slot">material</span> into <span class="slot">region</span></li><li>don&#x27;t let any <span class="slot">material</span> land in <span class="slot">region</span></li></ol></div>
+    <div><h4>OOD test (1)</h4><ol class="oodl"><li>no <span class="slot">material</span> in <span class="slot">region</span></li></ol></div>
   </div>
-  <h4>Filled in, from recorded scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
-  <ul class="exs"><li><span class="ex">don&#x27;t get any beads on the table</span><span class="ex">don&#x27;t drop any balls</span><span class="ex ood">no beads on the table</span><span class="etask">granular_pour</span></li><li><span class="ex">don&#x27;t drop any balls</span><span class="ex">don&#x27;t get any balls on the table</span><span class="ex ood">no beads on the table</span><span class="etask">granular_pour</span></li><li><span class="ex">don&#x27;t drop any beads</span><span class="ex">don&#x27;t spill the beads</span><span class="ex ood">no beads on the table</span><span class="etask">granular_pour</span></li></ul>
+  <h4>Filled in, from real scenes <span class="h4note">two training fills and the OOD fill of one rule</span></h4>
+  <ul class="exs"><li><span class="ex">don&#x27;t spill any beads into the blue bowl</span><span class="ex">don&#x27;t spill any balls into the blue bowl</span><span class="ex ood">no balls in the blue bowl</span><span class="etask">clean_pour</span></li><li><span class="ex">don&#x27;t spill any beads into the green bowl</span><span class="ex">keep the balls out of the green bowl</span><span class="ex ood">no balls in the green bowl</span><span class="etask">clean_pour</span></li><li><span class="ex">keep the balls out of the green bowl</span><span class="ex">don&#x27;t let any beads land in the green bowl</span><span class="ex ood">no balls in the green bowl</span><span class="etask">clean_pour</span></li></ul>
 </article></div>
 
   <h2 id="objects">Object corpus</h2>
@@ -277,7 +278,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
   <p class="secintro">They stand in the scenes and have names, so a phrase like "the cup" is rejected when one of them
     would also answer to it.</p>
   <div class="tablewrap"><table>
-    <thead><tr><th>Name</th><th>Synonyms</th><th>Where</th></tr></thead><tbody><tr><td><b>cup</b></td><td>mug</td><td>T1 job object (put the cup on the plate)</td></tr><tr><td><b>wooden block, block</b></td><td><span class=dim>none</span></td><td>T1 job object (stack two blocks)</td></tr><tr><td><b>bowl</b></td><td><span class=dim>none</span></td><td>T1 job object, T2 bowl</td></tr><tr><td><b>mug</b></td><td>cup</td><td>T2 pouring mug (039_mug)</td></tr><tr><td><b>tray</b></td><td>serving tray</td><td>T1 job object, T5 tray</td></tr><tr><td><b>hamburger</b></td><td>burger</td><td>T1 job object</td></tr><tr><td><b>french fries</b></td><td>fries</td><td>T1 job object</td></tr></tbody></table></div>
+    <thead><tr><th>Name</th><th>Synonyms</th><th>Where</th></tr></thead><tbody><tr><td><b>cup</b></td><td>mug</td><td>T1 job object (put the cup on the plate)</td></tr><tr><td><b>wooden block, block</b></td><td><span class=dim>none</span></td><td>T1 job object (stack two blocks)</td></tr><tr><td><b>bowl</b></td><td><span class=dim>none</span></td><td>T1 job object; T6&#x27;s target bowl</td></tr><tr><td><b>mug</b></td><td>cup</td><td>T6 pouring mug (039_mug)</td></tr><tr><td><b>tray</b></td><td>serving tray</td><td>T1 job object, T5 tray</td></tr><tr><td><b>hamburger</b></td><td>burger</td><td>T1 job object</td></tr><tr><td><b>french fries</b></td><td>fries</td><td>T1 job object</td></tr></tbody></table></div>
   <h3 style="margin-top:22px">The models</h3>
   <p class="secintro">Every model the tasks draw (chosen by hand on 2026-10-22). Each object type has three training
     models and one held-out model (the apple one and one); a held-out model, marked, never appears in a training scene.
@@ -287,11 +288,11 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
     book and the kettle were removed on 2026-10-22: they never fit on or near the arm's path, so they were never at
     risk. The objects used before 2026-10-22 (cups, cans, pill bottles, tea and coffee boxes, wooden blocks, drink
     bottles) are no longer drawn.</p>
-  <div class="gals"><div class="gal"><h4>wine glass (088_wineglass)</h4><div class="tiles"><figure class="tile"><img src="img/obj_088_wineglass_0.jpg" alt="088_wineglass id 0" loading="lazy"><figcaption>id 0 · shrunk to 87%</figcaption></figure><figure class="tile"><img src="img/obj_088_wineglass_1.jpg" alt="088_wineglass id 1" loading="lazy"><figcaption>id 1</figcaption></figure><figure class="tile"><img src="img/obj_088_wineglass_2.jpg" alt="088_wineglass id 2" loading="lazy"><figcaption>id 2</figcaption></figure><figure class="tile held"><img src="img/obj_088_wineglass_3.jpg" alt="088_wineglass id 3" loading="lazy"><figcaption>id 3<b> · held out</b></figcaption></figure></div></div><div class="gal"><h4>milk box (038_milk-box)</h4><div class="tiles"><figure class="tile"><img src="img/obj_038_milk-box_0.jpg" alt="038_milk-box id 0" loading="lazy"><figcaption>id 0</figcaption></figure><figure class="tile"><img src="img/obj_038_milk-box_1.jpg" alt="038_milk-box id 1" loading="lazy"><figcaption>id 1 · shrunk to 88%</figcaption></figure><figure class="tile"><img src="img/obj_038_milk-box_2.jpg" alt="038_milk-box id 2" loading="lazy"><figcaption>id 2 · shrunk to 90%</figcaption></figure><figure class="tile held"><img src="img/obj_038_milk-box_3.jpg" alt="038_milk-box id 3" loading="lazy"><figcaption>id 3<b> · held out</b></figcaption></figure></div></div><div class="gal"><h4>apple (035_apple)</h4><div class="tiles"><figure class="tile"><img src="img/obj_035_apple_0.jpg" alt="035_apple id 0" loading="lazy"><figcaption>id 0</figcaption></figure><figure class="tile held"><img src="img/obj_035_apple_1.jpg" alt="035_apple id 1" loading="lazy"><figcaption>id 1<b> · held out</b></figcaption></figure></div></div><div class="gal"><h4>bottle (001_bottle)</h4><div class="tiles"><figure class="tile"><img src="img/obj_001_bottle_0.jpg" alt="001_bottle id 0" loading="lazy"><figcaption>id 0</figcaption></figure><figure class="tile"><img src="img/obj_001_bottle_4.jpg" alt="001_bottle id 4" loading="lazy"><figcaption>id 4</figcaption></figure><figure class="tile"><img src="img/obj_001_bottle_13.jpg" alt="001_bottle id 13" loading="lazy"><figcaption>id 13</figcaption></figure><figure class="tile held"><img src="img/obj_001_bottle_16.jpg" alt="001_bottle id 16" loading="lazy"><figcaption>id 16<b> · held out</b></figcaption></figure></div></div><div class="gal"><h4>coloured box and tall cylinder (primitives)</h4><p class="small">Box sides 4-8 cm, 5-15 cm tall; cylinder radius 2-3.5 cm, 10-18 cm tall. Colour drawn from the training colours: <span class="sw"><i style="background:rgb(217,26,26)"></i>red</span><span class="sw"><i style="background:rgb(26,178,38)"></i>green</span><span class="sw"><i style="background:rgb(38,76,230)"></i>blue</span></p></div><div class="gal"><h4>mug (039_mug), T2 pouring mug</h4><div class="tiles"><figure class="tile"><img src="img/obj_039_mug_0.jpg" alt="039_mug id 0" loading="lazy"><figcaption>id 0</figcaption></figure><figure class="tile"><img src="img/obj_039_mug_1.jpg" alt="039_mug id 1" loading="lazy"><figcaption>id 1</figcaption></figure><figure class="tile"><img src="img/obj_039_mug_2.jpg" alt="039_mug id 2" loading="lazy"><figcaption>id 2</figcaption></figure><figure class="tile"><img src="img/obj_039_mug_5.jpg" alt="039_mug id 5" loading="lazy"><figcaption>id 5</figcaption></figure><figure class="tile"><img src="img/obj_039_mug_10.jpg" alt="039_mug id 10" loading="lazy"><figcaption>id 10</figcaption></figure><figure class="tile"><img src="img/obj_039_mug_11.jpg" alt="039_mug id 11" loading="lazy"><figcaption>id 11</figcaption></figure></div></div></div>
+  <div class="gals"><div class="gal"><h4>wine glass (088_wineglass)</h4><div class="tiles"><figure class="tile"><img src="img/obj_088_wineglass_0.jpg" alt="088_wineglass id 0" loading="lazy"><figcaption>id 0 · shrunk to 87%</figcaption></figure><figure class="tile"><img src="img/obj_088_wineglass_1.jpg" alt="088_wineglass id 1" loading="lazy"><figcaption>id 1</figcaption></figure><figure class="tile"><img src="img/obj_088_wineglass_2.jpg" alt="088_wineglass id 2" loading="lazy"><figcaption>id 2</figcaption></figure><figure class="tile held"><img src="img/obj_088_wineglass_3.jpg" alt="088_wineglass id 3" loading="lazy"><figcaption>id 3<b> · held out</b></figcaption></figure></div></div><div class="gal"><h4>milk box (038_milk-box)</h4><div class="tiles"><figure class="tile"><img src="img/obj_038_milk-box_0.jpg" alt="038_milk-box id 0" loading="lazy"><figcaption>id 0</figcaption></figure><figure class="tile"><img src="img/obj_038_milk-box_1.jpg" alt="038_milk-box id 1" loading="lazy"><figcaption>id 1 · shrunk to 88%</figcaption></figure><figure class="tile"><img src="img/obj_038_milk-box_2.jpg" alt="038_milk-box id 2" loading="lazy"><figcaption>id 2 · shrunk to 90%</figcaption></figure><figure class="tile held"><img src="img/obj_038_milk-box_3.jpg" alt="038_milk-box id 3" loading="lazy"><figcaption>id 3<b> · held out</b></figcaption></figure></div></div><div class="gal"><h4>apple (035_apple)</h4><div class="tiles"><figure class="tile"><img src="img/obj_035_apple_0.jpg" alt="035_apple id 0" loading="lazy"><figcaption>id 0</figcaption></figure><figure class="tile held"><img src="img/obj_035_apple_1.jpg" alt="035_apple id 1" loading="lazy"><figcaption>id 1<b> · held out</b></figcaption></figure></div></div><div class="gal"><h4>bottle (001_bottle)</h4><div class="tiles"><figure class="tile"><img src="img/obj_001_bottle_0.jpg" alt="001_bottle id 0" loading="lazy"><figcaption>id 0</figcaption></figure><figure class="tile"><img src="img/obj_001_bottle_4.jpg" alt="001_bottle id 4" loading="lazy"><figcaption>id 4</figcaption></figure><figure class="tile"><img src="img/obj_001_bottle_13.jpg" alt="001_bottle id 13" loading="lazy"><figcaption>id 13</figcaption></figure><figure class="tile held"><img src="img/obj_001_bottle_16.jpg" alt="001_bottle id 16" loading="lazy"><figcaption>id 16<b> · held out</b></figcaption></figure></div></div><div class="gal"><h4>coloured box and tall cylinder (primitives)</h4><p class="small">Box sides 4-8 cm, 5-15 cm tall; cylinder radius 2-3.5 cm, 10-18 cm tall. Colour drawn from the training colours: <span class="sw"><i style="background:rgb(217,26,26)"></i>red</span><span class="sw"><i style="background:rgb(26,178,38)"></i>green</span><span class="sw"><i style="background:rgb(38,76,230)"></i>blue</span></p></div><div class="gal"><h4>mug (039_mug), T6 pouring mug</h4><div class="tiles"><figure class="tile"><img src="img/obj_039_mug_0.jpg" alt="039_mug id 0" loading="lazy"><figcaption>id 0</figcaption></figure><figure class="tile"><img src="img/obj_039_mug_1.jpg" alt="039_mug id 1" loading="lazy"><figcaption>id 1</figcaption></figure><figure class="tile"><img src="img/obj_039_mug_2.jpg" alt="039_mug id 2" loading="lazy"><figcaption>id 2</figcaption></figure><figure class="tile"><img src="img/obj_039_mug_5.jpg" alt="039_mug id 5" loading="lazy"><figcaption>id 5</figcaption></figure><figure class="tile"><img src="img/obj_039_mug_10.jpg" alt="039_mug id 10" loading="lazy"><figcaption>id 10</figcaption></figure><figure class="tile"><img src="img/obj_039_mug_11.jpg" alt="039_mug id 11" loading="lazy"><figcaption>id 11</figcaption></figure></div></div></div>
 
   <h2 id="regions">Regions, beads and colours</h2>
   <div class="tablewrap"><table>
-    <thead><tr><th>Region</th><th>Task</th><th>Colours</th><th>Rule</th></tr></thead><tbody><tr><td><b>mat</b> <span class=tag>+ colour</span></td><td>T3</td><td>red, green, blue</td><td class="small">keep the box out of it</td></tr><tr><td><b>table</b></td><td>T3</td><td>-</td><td class="small">keep-the-box-on-the-table is measured but never named; &quot;on the table&quot; in the spill sentences is fixed text</td></tr></tbody></table></div>
+    <thead><tr><th>Region</th><th>Task</th><th>Colours</th><th>Rule</th></tr></thead><tbody><tr><td><b>mat</b> <span class=tag>+ colour</span></td><td>T3</td><td>red, green, blue</td><td class="small">keep the box out of it</td></tr><tr><td><b>bowl</b> <span class=tag>+ colour</span></td><td>T6</td><td>white, blue, green (the bowls' own colours)</td><td class="small">the two bowls that are not the target; no bead may land in the named one</td></tr><tr><td><b>table</b></td><td>T3, T6</td><td>-</td><td class="small">keep-the-box-on-the-table (T3) and the table-spill rule (T6) are measured but never named</td></tr></tbody></table></div>
   <div class="grid2">
     <div class="box"><h3>Beads</h3>
       <p>Training words: <b>beads</b>, <b>balls</b>. Held-out word:
@@ -306,9 +307,9 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
   <h2 id="heldout">Held-out tests</h2>
   <div class="grid2">
     <div class="box"><h3>Held-out sentence</h3><p>The OOD sentence of each rule. Training never uses it.</p>
-      <ol><li>don&#x27;t bump into <span class="slot">obj</span> <span class="dim">(Don&#x27;t touch)</span></li><li>don&#x27;t let <span class="slot">obj</span> move <span class="dim">(Don&#x27;t move)</span></li><li>make sure <span class="slot">obj</span> stays standing <span class="dim">(Don&#x27;t tip over)</span></li><li>don&#x27;t let <span class="slot">obj</span> touch <span class="slot">region</span> <span class="dim">(Keep out of a mat)</span></li><li>no <span class="slot">material</span> on the table <span class="dim">(Don&#x27;t spill)</span></li></ol></div>
+      <ol><li>don&#x27;t bump into <span class="slot">obj</span> <span class="dim">(Don&#x27;t touch)</span></li><li>don&#x27;t let <span class="slot">obj</span> move <span class="dim">(Don&#x27;t move)</span></li><li>make sure <span class="slot">obj</span> stays standing <span class="dim">(Don&#x27;t tip over)</span></li><li>don&#x27;t let <span class="slot">obj</span> touch <span class="slot">region</span> <span class="dim">(Keep out of a mat)</span></li><li>no <span class="slot">material</span> in <span class="slot">region</span> <span class="dim">(Keep the beads out of a bowl)</span></li></ol></div>
     <div class="box"><h3>Held-out word</h3><p>Nouns never used in training. The test fills the slot with these
-      only.</p><p><span class="oodw">plastic bottle</span><span class="oodw">goblet</span><span class="oodw">milk</span><span class="oodw">fruit</span><span class="oodw">cube</span><span class="oodw">serving tray</span><span class="oodw">little balls</span></p></div>
+      only.</p><p><span class="oodw">plastic bottle</span><span class="oodw">goblet</span><span class="oodw">milk</span><span class="oodw">fruit</span><span class="oodw">cube</span><span class="oodw">serving tray</span><span class="oodw">little balls</span><span class="oodw">container</span></p></div>
     <div class="box"><h3>Held-out object</h3><p>Objects that never appear in a training scene.</p>
       <ul><li>T1: one held-out model per object type (marked in the renders above)</li>
         <li>all tasks: anything purple or orange</li></ul>
@@ -318,6 +319,6 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px
 
   <footer>Built by docs/lang_filter/corpus_page/build.py from envs/main/item_envs/language/paraphrases.yaml,
     configs/objects.yaml, configs/splits.yaml and configs/tasks/, the rule notes in
-    docs/lang_filter/template_review/flags.py and recorded validation scenes (examples_v2.json, re-named with today's
-    words). Renders from runs/lang/object_gallery.</footer>
+    docs/lang_filter/template_review/flags.py and scenes built with today's code (examples_v3.json, from
+    docs/lang_filter/corpus_page/page_examples.py). Renders from runs/lang/object_gallery.</footer>
 </div>

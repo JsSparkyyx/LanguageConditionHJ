@@ -76,9 +76,9 @@ def test_rule_table_and_phrases():
     rules = _rules()
     assert [r.rule_id for r in rules] == EXPECTED_RULE_IDS
     for r in rules:
-        assert r.phrases and not any(c.isdigit() for p in r.phrases for c in p)
+        assert r.phrases == [] and r.heldout_phrases == [], r.rule_id   # the spill rule is never named from 2026-10-23
         assert "T" not in r.params    # hard min over beads (no soft-min temperature)
-    # the only constraint is "spill no bead" (user decision 2026-10-03)
+    # the only constraint is "spill no bead" (user decision 2026-10-03): recorded (its h), never named
     assert len(rules) == 1
 
 

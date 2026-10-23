@@ -82,9 +82,9 @@ ITEM_MASS_RANGE = (0.05, 0.15)  # kg (objects.yaml categories.block.mass_range)
 PAYLOAD_MASS_RANGE = (0.05, 0.12)  # kg (objects.yaml categories.wooden_block.mass_range is wider; drawn here)
 ITEM_COLORS = ("red", "green", "blue")  # the training colours (2026-10-22)
 REFERENT_P = {"hit": 0.6, "other": 0.25, "bystander": 0.15}  # bystander -> other when there is none
-UPRIGHT_MAX_DEG = 10.0  # yaml rules upright theta_max_deg
+UPRIGHT_MAX_DEG = 45.0  # yaml rules upright theta_max_deg (Yuxuan 2026-10-23; was 10)
 STAY_D_TOL = 0.02  # yaml rules stay d_tol (m)
-STAY_THETA_TOL_DEG = 10.0  # yaml rules stay theta_tol_deg (user 2026-10-05: as T5's 10 deg; was 20)
+STAY_THETA_TOL_DEG = 45.0  # yaml rules stay theta_tol_deg (Yuxuan 2026-10-23; 10 from 10-05, 20 before)
 
 # --- nominal motion ---
 SAFE_SPEED = 0.10  # m/s x safe_time_scale: approach / grasp / lift / transit / retreat

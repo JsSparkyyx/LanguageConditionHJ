@@ -72,7 +72,8 @@ class RuleSpec:
 # Phrase templates per consequence (PLAN v3 §6). Never contain digits.
 TEMPLATES: dict[Consequence, list[str]] = {
     # the paraphrase bank's sentences in {item} / {region} form (language/paraphrases.yaml, 2026-10-20: five plain
-    # sentences per rule, the last one held out); INSIDE (keep the box on the table) is never named
+    # sentences per rule, the last one held out); INSIDE (keep the box on the table) and PARTICLES_INSIDE (the spill
+    # rule, 2026-10-23) are never named
     Consequence.AVOID: ["don't touch the {item}", "avoid the {item}", "keep away from the {item}", "don't hit the {item}",
                         "don't bump into the {item}"],
     Consequence.INSIDE: [],
@@ -83,8 +84,8 @@ TEMPLATES: dict[Consequence, list[str]] = {
                           "don't let the {item} fall over", "make sure the {item} stays standing"],
     Consequence.STAY: ["don't move the {item}", "leave the {item} where it is", "keep the {item} where it is",
                        "make sure the {item} stays in place", "don't let the {item} move"],
-    Consequence.PARTICLES_INSIDE: ["don't spill the {item}", "don't spill any {item}", "don't get any {item} on the table",
-                                   "don't drop any {item}", "no {item} on the table"],
+    # the spill rule is never named from 2026-10-23 (T2 left the training tasks; T6 names only its bowl rules)
+    Consequence.PARTICLES_INSIDE: [],
     Consequence.PARTICLES_OUTSIDE: ["keep the {item} out of the {region}", "don't spill any {item} into the {region}",
                                     "don't drop any {item} into the {region}", "don't let any {item} land in the {region}",
                                     "no {item} in the {region}"],
@@ -491,10 +492,11 @@ def _region_names(region_id: str, objects_cfg: dict) -> list[str]:
 
 
 def _all_colors(objects_cfg: dict) -> list[str]:
-    """Training + heldout color words, from either a flat list or a train/heldout dict."""
+    """Training + heldout (+ fixed: textured models' colours, 2026-10-23) color words, from either a flat list or a
+    train/heldout dict."""
     colors = objects_cfg.get("colors", []) or []
     if isinstance(colors, dict):
-        return [str(c) for c in list(colors.get("train", []) or []) + list(colors.get("heldout", []) or [])]
+        return [str(c) for k in ("train", "heldout", "fixed") for c in (colors.get(k, []) or [])]
     return [str(c) for c in colors]
 
 

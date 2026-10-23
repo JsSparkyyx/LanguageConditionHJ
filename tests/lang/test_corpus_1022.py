@@ -22,7 +22,7 @@ def _pool(name):
 
 def test_training_pool_never_draws_a_heldout_model():
     cfg = physics.load_objects_cfg()
-    assert cfg["colors"] == {"train": ["red", "green", "blue"], "heldout": ["purple", "orange"]}
+    assert cfg["colors"] == {"train": ["red", "green", "blue"], "heldout": ["purple", "orange"], "fixed": ["white"]}
     pool = _pool("current")
     assert sorted({e["category"] for e in pool}) == ["apple", "bottle", "box", "cylinder", "milk_box", "wine_glass"]
     for e in pool:

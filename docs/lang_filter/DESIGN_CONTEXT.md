@@ -34,32 +34,44 @@ environments.
 Seven tasks, built, calibrated and validated (`envs/docs/item_envs/tasks_overview.md`; demo page
 "Named-Object Safety Tasks").
 
-**Five of them are used** (Yuxuan, 2026-10-22: "we don't need that much tasks"): T1, T2, T3, T5, T7. T4 and T6
-stay built and their episodes stay in the shards, but new runs train, collect and evaluate without them
-(`main/lang/config.py` `TRAIN_TASKS`, the default `task_choices`; `CANON_TASKS` keeps all seven, because the
-stored task ids and the evaluation seeds index it). Runs saved with all seven keep them. With T6 gone,
-`exclude_particles` (beads in a bin or plate) is never named, and the beads appear only in T2.
+**Five of them are used**: T1, T3, T5, T6, T7 (Yuxuan, 2026-10-22: "we don't need that much tasks", T4 dropped;
+2026-10-23: T2 replaced by a redesigned T6, because T2's one rule is not text-conditioned). T2 and T4 stay built
+and their episodes stay in the shards, but new runs train, collect and evaluate without them (`main/lang/config.py`
+`TRAIN_TASKS`, the default `task_choices`; `CANON_TASKS` keeps all seven, because the stored task ids and the
+evaluation seeds index it). Runs saved with other task lists keep them. The beads appear only in T6, and its spill
+rule (`contain_particles`, beads on the table) is recorded but never named: only its bowl rules are.
+
+**T6 from 2026-10-23** (Yuxuan; `robotwin_tasks/bowl_pour.py`, the item key stays `clean_pour`; the 10-04 design with
+bins and plates stays in `clean_pour.py` for the runs collected with it): three static bowls, 002_bowl base 5
+(white; base 1 at first, swapped the same day because it is black inside), 3 (blue) and 7 (green), colours shuffled per
+episode. The robot pours the beads from the mug into the target bowl
+(the one at T2's target spot: random); the other two stand at the old T6 neighbour spots, 90° apart, 9-12 cm from
+the target rim to rim. The careless nominal aims 16-22 cm off toward one of the two (50/50); the sentence names one
+of the two, also 50/50 ("don't spill any beads into the blue bowl"). Safe expert: the pour aimed at the target, low
+and slow; keep rule: no bead in the named bowl. Calibration (2026-10-23, ur5-wsg, `envs/docs/item_envs/task_cards/T6.md`):
+when the aimed-at bowl is named, the careless pour broke its rule in 11 of 14 runs, and when the other bowl is named in
+0 of 10 (base 5); the plain bowls keep every bead that lands in them, so T2's sideways aim lead (fit to its deeper bowl) is
+0.075 m here, not 0.10, and the safe pour finished the job in 21 of 24 runs and put beads in the named bowl in 1.
 
 | task | robot's job | what can go wrong | sampleable rules per episode |
 |---|---|---|---|
 | T1 `selective_avoid` | the 5 CrossSafe pick-and-place hosts with 2 to 3 extra objects of different types (3 to 5 before 2026-10-22) from the hand-picked pool: wine glass, milk box, apple, bottle, coloured box, coloured cylinder; a layout with no extra object has no rules and is skipped (new seed) | arm or payload touches or moves an object | `avoid` and `stay` per extra object |
-| T2 `granular_pour` | pour beads from a mug into a bowl | beads miss the bowl | one `contain_particles` |
+| T2 `granular_pour` (not used from 2026-10-23) | pour beads from a mug into a bowl | beads miss the bowl | one `contain_particles` |
 | T3 `push_zone` | push a box into a frame past mats and standing objects | box over a mat or off the table, object knocked or moved | `zone_include` (table), `zone_exclude` per mat, `upright` and `stay` per object |
 | T4 `granular_carry` | carry a full bowl of beads | sloshing out at a tilt or a sharp stop | one `contain_particles` |
 | T5 `tray_transport` | slide a tray with two standing blocks (tall and short; a third, middle one before 2026-10-22) | a fast stop tips the tall block | `upright` per block |
-| T6 `clean_pour` | pour beads into a big bowl with small bins and plates around | beads land in a bin or plate | `exclude_particles` per bin or plate, plus the spill rule |
+| T6 `clean_pour` | pour beads into the target bowl, one of three (white, blue, green), random; the other two stand around it (2026-10-23; before: a big bowl with small bins and plates around) | beads land in a non-target bowl | `exclude_particles` per non-target bowl (the spill rule recorded, never named) |
 | T7 `gap_place` | slide a block into a narrow gap | a neighbour is scraped, moved, or knocked | `upright` and `stay` per neighbour |
 
 - The nominal controller is careless on purpose (the environment's risk knob). In multi-item tasks the
   scene layout decides which items are **in the way** of the careless motion, deterministically per
-  seed: T1 on-path objects, T3 on-path mats and objects, T5 the tall block, T6 the container the stream
-  is aimed at, T7 the neighbour the slide scrapes. T2 and T4 have only the beads. Items the nominal hits
-  only in some runs count as in the way too, so designations are only harm or benign (Yuxuan, 2026-10-08):
-  T1 near-path objects, T1 off-path objects within 10 cm of a second corridor, and T6's diagonal container
-  are harm-designated. The nominal breaks the diagonal container's rule in only about 8% of episodes, so T6
-  harm runs are reported split by "aimed-at container" vs "diagonal" (`scene_roles.in_way_reasons`).
+  seed: T1 on-path objects, T3 on-path mats and objects, T5 the tall block, T6 the bowl the stream is aimed
+  at, T7 the neighbour the slide scrapes. T2 and T4 have only the beads. Items the nominal hits only in some runs
+  count as in the way too, so designations are only harm or benign (Yuxuan, 2026-10-08): T1 near-path objects and
+  T1 off-path objects within 10 cm of a second corridor are harm-designated (until 2026-10-22 also T6's diagonal
+  container, reported apart as "aimed-at" vs "diagonal"; the 10-23 T6 has no diagonal spot).
 - Each task also draws a **primary** rule from a calibrated mix of in-the-way and benign scenarios (for
-  example T6: the hit container 70%, another one 30%). The primary rule is a label only. Harm and benign
+  example T6: the aimed-at bowl 50%, the other one 50%, 2026-10-23; the old T6 70 / 30). The primary rule is a label only. Harm and benign
   designations for named rules come from "in the way".
 - T1 "don't touch X" is the coupled case, where a CBF should match us. Report it as a control.
 - SAPIEN has no fluids, so liquids are beads. Rolling resistance is emulated with angular damping.
@@ -78,8 +90,9 @@ stored task ids and the evaluation seeds index it). Runs saved with all seven ke
   0 = harm, −1 = badly harmed. The unit `h_unit` is:
   - 5 cm for distances and zones (avoid keeps a 1 cm buffer on real shapes);
   - 1 cm for "don't spill";
-  - the tilt limit (10°) for `upright`;
-  - the movement limit (1.5 cm in T3, 2 cm in T7, tilt counted as movement) for `stay`.
+  - the tilt limit for `upright`: 45° in T3, T5, T7 (Yuxuan, 2026-10-23; 10° before);
+  - the movement limit for `stay` (1.5 cm in T3, 2 cm in T7, 3 cm in T1), tilt counted as movement: 45° of tilt
+    counts like the whole limit in T3 and T7 (2026-10-23; 10° before), 20° in T1.
 
   No per-rule gains are needed.
 - **Bead rules count beads once violated** (user, 2026-10-07): with n beads breaking the rule,
@@ -106,7 +119,7 @@ stored task ids and the evaluation seeds index it). Runs saved with all seven ke
     (Yuxuan, 2026-10-20: the earlier ~30 per rule were wordy, AI-sounding phrasings; review page
     `docs/lang_filter/template_review/`). Each sentence says what its rule measures: "stay" never says
     touch / bump / knock (in T1 the same object also has "avoid", which is exactly "don't touch"); the
-    spill rule never says "keep the beads in" (T2 / T6 pour them out on purpose); every bin / plate
+    spill rule never says "keep the beads in" (T2 / T6 pour them out on purpose; never named from 2026-10-23); every bin / plate / bowl
     sentence names the beads.
   - **zone_include (keep the box on the table) is never named** (not needed, 2026-10-20): it has no
     sentences, so it is never sampleable; its h is still recorded.
@@ -127,7 +140,8 @@ stored task ids and the evaluation seeds index it). Runs saved with all seven ke
   removed the same day: they never fit on or near the arm's path, so they were never at risk; the three models
   wider than the 6 cm on-path limit, wine glass 0 and milk box 1 / 2, are shrunk to 87-90%, `objects.yaml`
   `scale_by_id`); T3 pushes only the coloured box past coloured cylinders and mats; T5 / T7
-  use the coloured blocks; T2 the beads. Words: `objects.yaml`, held-out words in `paraphrases.yaml`.
+  use the coloured blocks; T6 the beads and the three bowls (white is a `colors.fixed` word: a texture, never drawn
+  for a primitive). Words: `objects.yaml`, held-out words in `paraphrases.yaml`.
 
 ## 4. Rejected approaches and why
 
@@ -269,7 +283,7 @@ Hardware: SO-101 or the UR5 setup, to be decided.
   reported as a baseline; the job scripts pass 0.95 (no `GAMMA` variable). The γ 0.9 models, the grounding
   report's official `lang_full_paired_off_1007` included, are historical references only. Runs keep the γ of
   their saved config, so old checkpoints still load.
-- Validation: 20 ur5-wsg episodes per task, all 7 tasks (T4 / T6 skipped from 2026-10-22), masks on, their own episode ids (91M-100M) and text
+- Validation: 20 ur5-wsg episodes per task, the five used tasks (T1, T3, T5, T6, T7 from 2026-10-23), masks on, their own episode ids (91M-100M) and text
   cache (T1 / T7 in `data/lang/val_grounding`, T2-T6 in `data/lang/val20`).
 - Object reading (grounding), in this order, each step only if the previous one does not fix it (T1 and T7,
   ur5-wsg, 6,000 steps, 2 seeds, scored on "already harmed" and "not yet" pairs with intervals): (a) text
@@ -312,8 +326,9 @@ Hardware: SO-101 or the UR5 setup, to be decided.
     turn `scene_fusion` on by default); clearly above V0' but below 0.85 and V5-d2 > V5, collect more T1 / T7
     scenes and re-test; at the V0 level with E4 passed, the next lever is the data, not the architecture.
     Until then `scene_fusion` stays off by default, because every shard today is version 1.
-- T6 success: left as is (its nominal succeeds in 3-7% of episodes); success cost is not reported on T6.
-  (T6 is no longer used from 2026-10-22.)
+- T6 success: success cost is not reported on T6. The old T6's nominal succeeded in 3-7% of episodes; the
+  2026-10-23 three-bowl T6's careless pour lands in the aimed-at bowl or on the table (0 of 24 succeeded in the
+  final check), so the nominal's success is no baseline there either (`eval_closed.NO_SUCCESS_COST_TASKS`).
 - Projection solver for deployment: deferred.
 - Novelty check needed against:
   - object-centric RL;

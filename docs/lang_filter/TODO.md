@@ -41,9 +41,57 @@ checked.
   colours in their task files and have no switch yet).
 - [x] 10-22 revision round checked (trial collection runs/lang/smoke_1022: 5 tasks + 2 OOD T1 scenes, records,
   sentences, splits; 361 lang + 231 env tests) and committed as f1d2488; pushed 10-22 with the new token (with 4c6a158).
-- [ ] When Yuxuan says go: re-collect the warmup and validation data of T1, T3, T5, T7
+- [ ] 10-22 Yuxuan: submit the new runs WITHOUT cancelling the 10-20 ones. Running:
+  - frozen worktree LanguageConditionHJ_r1022 at 22b5b3a (superseded on 10-23: see A2);
+  - (10-23) RoboTwin task links: the shared RoboTwin/envs/<task>.py links point at the 10-20 runs' own copies
+    (LanguageConditionHJ_r1020) again, so their resume check (h_code_v2 hashes the linked files: c6e909dda672 /
+    9301411cc7c5, checked) passes and their scenes are their own; only bowl_pour.py links to main (they never load
+    it). Newer code no longer uses the links: runner.use_own_robotwin_tasks puts the checkout's envs/robotwin_tasks
+    first on RoboTwin's envs.__path__, and h_code_hash_v2 hashes those files. (From 10-22 18:00 to 10-23 13:45 the
+    links pointed at main / r1022, so the 10-20 runs' round collections in that window used the 10-22 T3 / T5 / T7
+    scenes, and a restart would have been refused.)
+  - chain stages d1022_vanilla / d1022_qwen in runs/lang_pipeline_vf/queue.txt (orchestrator pid 2997937 on
+    dt-login01): data/lang_1022/{warmup (15 shards, 150 eps), val (25), val20 (T2/T3/T5, 60), val_grounding (T1/T7,
+    40)} + text caches + check_shards -> READY; then data/lang_qwen_1022 (Qwen replays of the same shards,
+    flash_attention_2) -> READY. Commands runs/lang_1022_data/*.cmds, stage scripts there;
+  - login watcher runs/lang/rounds_1022/submit_when_ready.sh (log watcher.log) submits rounds_ur5_g095_1022,
+    rounds_t1_ur5_g095_1022, then rounds_ur5_qwen_g095_1022 (runs/lang/rounds_1022/launch.sh) when READY;
+  - the chain holds the one gpuA40x4-interactive slot: my own sim tests wait or use another partition.
+- [ ] (old item) re-collect the warmup and validation data of T1, T3, T5, T7
   (old shards hold the old objects, colours and layouts; T2 is unchanged); cancel the three round jobs and
   resubmit (`runs/lang/rounds_1020/launch.sh` as the template, new run names).
+
+## A2. 2026-10-23 changes (Yuxuan), before the collection resumes
+
+The 10-22 collection (chain stages d1022_*) is ON HOLD (runs/lang_pipeline_vf/state/hold.d1022_*): its data has T2
+and the old tilt limits. The watcher process had died (no run was submitted).
+- [x] Tilt limits 45 deg in T3 / T5 / T7: upright theta_max and stay theta_tol (tilt counted as movement).
+- [x] T2 replaced by a redesigned T6 in TRAIN_TASKS (T1, T3, T5, T6, T7).
+- [x] New T6 in envs/robotwin_tasks/bowl_pour.py (key clean_pour; old clean_pour.py untouched for the 10-20 runs):
+  three bowls 002_bowl 5 white / 3 blue / 7 green (base 1 at first: black inside, Yuxuan swapped it the same day),
+  colours shuffled, target at T2's target spot, others at the old T6 far / across spots; careless aims at one of the two (50/50); named bowl one of the two (50/50); only the
+  bowl rules are named (the spill rule recorded, never named); safe mode = aim 0, low, slow; colors.fixed: [white].
+- [x] Calibrate T6 (runs/lang/t6_1023, ur5-wsg; record in envs/docs/item_envs/task_cards/T6.md): the first check's
+  "splash into the other bowl" was beads lying on the table against the bowl (fixed: Region.z_floor); the plain
+  bowls keep every bead that lands in them, the safe pour's losses were misses (T2's sideways aim lead, fit to its
+  deep bowl, put the stream 3.4 cm past the centre). Chosen: gap 9-12 cm, ur5 roll_aim_side 0.075.
+- [x] Yuxuan 10-23: base 1 is black inside -> base 5 is the white bowl (taller: rim 6.9 cm, inner radius 6.0 cm).
+  Re-check on base 5 (24 + 24 runs): a 13-20 cm careless aim landed in the gap too often (8/14 named-aimed runs
+  harmed) -> aim error 16-22 cm: 11/14 harmed, 0/10 benign broken, no plan failures; safe 21/24 success, named bowl
+  1/24. Sim tests on A40: T6 8/8, T5 8/8, T7 8/8, phase-5 regression 2/2, nominal mode 5/5, non-sim 75/75;
+  test_push_zone_sim was stale since 10-20 (it asked keep-on-the-table for phrases): fixed, 42/42; phase-5
+  dryrun 6/6 (the A100 failures were cuRobo's GPU arch).
+- [x] T3 / T5 / T7 tilt check under 45 deg (check_tilt.py, 6 careless runs each): every knocked item ends at 90 deg
+  or more, standing ones stay under 10 deg; the cards say so.
+- [x] Independent review of the diff (findings 0-16, fixed).
+- [x] Docs: task cards, tasks_overview, relabeling, VANILLA_PLAN, safe_controllers, DESIGN_CONTEXT; corpus page v8
+  (T6 card and scene, examples re-made from today's scenes: template_review/examples_v3.json by
+  corpus_page/page_examples.py).
+- [x] Lang suite 361/361 (A40, 10-23).
+- [ ] Then: commit, frozen worktree LanguageConditionHJ_r1023, re-collect (T1, T3, T5, T6, T7: runs/lang_1023_data,
+  drafted from the 10-22 files, data/lang_1023 + data/lang_qwen_1023), resubmit the three runs (rounds_1023) -
+  waits for Yuxuan's go. data/lang_1022 (20 / 29 shards, T2 and the old tilt limits) is obsolete: ask before
+  deleting it.
 
 ## B. Evaluation of the new round trainings
 
@@ -93,7 +141,9 @@ checked.
     touching it 1/8); the failures are "no grasp pose" (2, one also fails careless) and IK_FAIL at the target (2);
   - [ ] T3 safe: route around the in-the-way element (waypoints + a pusher that follows them, lifting the hand at
     corners);
-  - [ ] T2 safe: find where beads leave in a gentle pour (saved runs first), then a pour with zero beads out;
+  - [x] (dropped 10-23: T2 left the task set) T2 safe;
+  - [x] 10-23 T6 safe mode (the pour aimed at the target, low and slow; ur5 aim lead fit to the plain bowls):
+    final check (base 5) 21/24 finished, 1/24 put beads in the named bowl (T6 card);
   - [ ] the demo collector for item scenes (vla_finetuning): frames every 15 physics steps, task instructions +
     the constraint sentence, the 80 / 20 split (in-the-way named + safe trajectory / not-in-the-way named +
     nominal trajectory), ur5-wsg, the HDF5 writer;

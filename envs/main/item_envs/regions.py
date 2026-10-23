@@ -34,6 +34,10 @@ class Region:
     # region (a container interior capped just above its rim: a bead flying
     # over a dish does not count as in it, one that drops in does — T6)
     z_cap: float | None = None
+    # particle rules only: a particle below region z = z_floor is NOT in the region either (2026-10-23: T6's bowl
+    # column, footprint radius = the outer wall + 2 mm, would otherwise count a bead lying on the table against the
+    # bowl's outside wall)
+    z_floor: float | None = None
     role: str | None = None  # rule selector tag (T6 "keep_clean" neighbours); None for the classic regions
 
     def __post_init__(self):
@@ -191,7 +195,7 @@ def zone_region(mat_actor, color: str | None, region_id: str | None = None, size
 
 def container_region(actor, rim_radius: float, region_id: str, up_axis_local=None, rim_height: float = 0.0,
                      z_cap: float | None = None, color: str | None = None, polygon=None,
-                     role: str | None = None) -> Region:
+                     role: str | None = None, z_floor: float | None = None) -> Region:
     """A container interior as a nameable region, following the actor every tick.
 
     The polygon is a 16-gon at the inner rim radius in the actor's up-axis
@@ -200,7 +204,7 @@ def container_region(actor, rim_radius: float, region_id: str, up_axis_local=Non
     RoboTwin glb convention (Y-up file frame; recon.md Q13 / v3 surprises).
     ``rim_height`` shifts the region origin along the up axis so the rim plane
     is region z = 0. ``z_cap`` (region frame, m above the rim plane) caps the
-    column for particle rules (Region.z_cap). ``polygon`` (region frame xy,
+    column for particle rules (Region.z_cap), ``z_floor`` floors it (Region.z_floor). ``polygon`` (region frame xy,
     CCW) replaces the default circle — a square bin's footprint (T6).
     """
     ent = entity_of(actor)
@@ -229,4 +233,5 @@ def container_region(actor, rim_radius: float, region_id: str, up_axis_local=Non
         role=role,
         entity=ent,
         z_cap=None if z_cap is None else float(z_cap),
+        z_floor=None if z_floor is None else float(z_floor),
     )

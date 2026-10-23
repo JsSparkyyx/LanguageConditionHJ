@@ -34,7 +34,7 @@ changes to environment physics, margins or rule tables.
 
 | piece | where | notes |
 |---|---|---|
-| 7 item tasks, registry, runner | `envs/main/item_envs/registry.py`, `runner.py`, `envs/robotwin_tasks/` | T1 hosts round-robin by seed |
+| 7 item tasks, registry, runner | `envs/main/item_envs/registry.py`, `runner.py`, `envs/robotwin_tasks/` | T1 hosts round-robin by seed. Five are used from 2026-10-23: T1, T3, T5, T6, T7 (Section 3.1) |
 | item-task collection with a lockstep sidecar | `main/train/collect.py` (`is_item_task`, `make_training_env` → `margin_hook.build_item_training_env`, `margin_hook.wire_item_episode`) | `env.obstacle` is the "has rules" marker. The reference for our episode loop (Section 7.1) |
 | per-tick labels of **every** rule | `ItemSidecarBuffer` in `<data>/item_buffer/` (`envs/main/item_envs/item_buffer.py`): `h_rules`, `fails_soon` (25 ticks), `margins`, `rule_valid`, `active_rule`, `t_in_ep`, `episode_id`, `token_masks`, item state | same row index as `<data>/buffer/` (StepBuffer) |
 | per-episode relabeling records | `<data>/item_buffer/episodes/{episode_id}.json` (`language.episode_record`) | objects, regions, rules with `sampleable` |
@@ -72,7 +72,7 @@ review before you continue. Judge with numbers. Videos are for humans.
 | mixed row | a row with at least one harmful and one benign sampleable rule |
 | in the way | an item the careless nominal is aimed at or will run into, read from the task's own scene metadata (Section 3.5). Deterministic per seed |
 | harm-designated / benign-designated rule | a rule (not a set or ambiguous rule) whose referent is / is not in the way. Referents that the nominal hits in some runs (formerly `unclear`) count as in the way since 2026-10-08 (Yuxuan), with their reason kept (`in_way_reasons`). Used to choose named rules in rounds (sampleable rules only) and in evaluation (rules eligible for the axis) |
-| primary rule | the environment's **scenario referent** (`active_rule_id="primary"`), drawn by each task from a calibrated mix of in-the-way and benign scenarios (for example T6: hit container 70%, other 30%), and in T3 sometimes a pair rule. Stored as a label only, never used to decide harm or benign |
+| primary rule | the environment's **scenario referent** (`active_rule_id="primary"`), drawn by each task from a calibrated mix of in-the-way and benign scenarios (for example T6: the aimed-at bowl 50%, the other one 50%, from 2026-10-23; the 2026-10-04 T6: hit container 70%, other 30%), and in T3 sometimes a pair rule. Stored as a label only, never used to decide harm or benign |
 | named rule | the rule a sentence refers to, in a training sample or a filter run |
 | frames t, t−k, 0 | scene tokens at the current tick, k ticks earlier (k = 2), and at the episode's first tick |
 | combo | (task, embodiment). T1 hosts are balanced inside T1's share |
@@ -207,13 +207,38 @@ allowed edit under `envs/`.
 
 | task | rules in an episode | consequences | h |
 |---|---|---|---|
-| T1 `selective_avoid` (5 CrossSafe hosts, 3 to 5 extra objects of different types) | per extra object: `avoid`, `stay`. Set rules (recorded, never sampled) | `avoid`, `stay` | avoid: (real-shape gap − 1 cm) / 5 cm |
-| T2 `granular_pour` | one | `contain_particles` | safe: depth of the worst bead inside the columns / 1 cm. Violated: −0.5 for one bead out, linearly to −1 at 20 beads (2026-10-07) |
-| T3 `push_zone` | table, per mat (+ pair rules), per standing object `upright` + `stay` (+ pair) | `zone_include`, `zone_exclude`, `upright` (10°), `stay` (1.5 cm, 10°) | zones / 5 cm. upright (10° − tilt) / 10°. stay (1.5 cm − moved, tilt as movement) / 1.5 cm |
-| T4 `granular_carry` | one | `contain_particles` | as T2 |
-| T5 `tray_transport` | per block (2 to 3) | `upright` (10°) | (10° − tilt) / 10° |
-| T6 `clean_pour` | per bin or plate, plus the spill rule | `exclude_particles`, `contain_particles` | safe: distance of the closest bead from entering the column / 5 cm. Violated: by bead count, as T2 |
-| T7 `gap_place` | per standing block: `upright` + `stay` | `upright` (10°), `stay` (2 cm, 10°) | as T3 |
+| T1 `selective_avoid` (5 CrossSafe hosts, 2 to 3 extra objects of different types; 3 to 5 before 2026-10-22) | per extra object: `avoid`, `stay`. Set rules (recorded, never sampled) | `avoid`, `stay` | avoid: (real-shape gap − 1 cm) / 5 cm |
+| T2 `granular_pour` (not used from 2026-10-23) | one | `contain_particles` | safe: depth of the worst bead inside the columns / 1 cm. Violated: −0.5 for one bead out, linearly to −1 at 20 beads (2026-10-07) |
+| T3 `push_zone` | table, per mat (+ pair rules), per standing object `upright` + `stay` (+ pair) | `zone_include`, `zone_exclude`, `upright` (45°), `stay` (1.5 cm, 45°) | zones / 5 cm. upright (45° − tilt) / 45°. stay (1.5 cm − moved, tilt as movement) / 1.5 cm |
+| T4 `granular_carry` (not used from 2026-10-22) | one | `contain_particles` | as T2 |
+| T5 `tray_transport` | per block (2; 2 to 3 before 2026-10-22) | `upright` (45°) | (45° − tilt) / 45° |
+| T6 `clean_pour` (three bowls from 2026-10-23) | per non-target bowl (per bin or plate in the 2026-10-04 design), plus the spill rule | `exclude_particles`, `contain_particles` | safe: distance of the closest bead from entering the column / 5 cm. Violated: by bead count, as T2 |
+| T7 `gap_place` | per standing block: `upright` + `stay` | `upright` (45°), `stay` (2 cm, 45°) | as T3 |
+
+**Tasks used** (Yuxuan, 2026-10-23): T1, T3, T5, T6, T7 (`main/lang/config.py` `TRAIN_TASKS`, the default
+`task_choices`). T4 was dropped on 2026-10-22. T2 was replaced on 2026-10-23 by the redesigned T6, because
+its one rule is not text-conditioned (the sentence changed nothing). Both stay built, and `CANON_TASKS` keeps
+all seven (the stored task ids and the evaluation seeds index it).
+
+**T6 from 2026-10-23** (`robotwin_tasks/bowl_pour.py`, the item key stays `clean_pour`; the 2026-10-04
+design with bins and plates stays in `clean_pour.py` for the runs collected with it, and `main/lang` skips its
+episodes, `drop_old_t6_rows`): three static bowls, 002_bowl base 5 (white), 3 (blue) and 7 (green), colours
+shuffled every episode. The robot pours the beads from the mug into the target bowl; the other two stand
+next to it, 90° apart. The careless nominal aims off toward one of the two (on ur5-wsg 50/50, on franka-panda
+always the `far` one), and the sentence names one of the two, 50/50 ("don't spill any beads into the blue
+bowl"). A bowl's column is capped 1.2 cm
+above its rim and floored half a bead above its inside floor. Calibrated 2026-10-23
+(`envs/docs/item_envs/task_cards/T6.md`): the other bowls 9-12 cm from the target rim to rim, the careless aim
+error 16-22 cm, and for ur5-wsg a smaller sideways aim lead than T2's (0.075 m, T2's was fit to its deeper bowl).
+
+**Tilt limits** (Yuxuan, 2026-10-23): 45° in T3, T5 and T7, for `upright` and for the tilt part of `stay`
+(45° of tilt counts like the whole movement limit, 1.5 cm in T3, 2 cm in T7). Until 2026-10-22 both were 10°
+(in T3, and in T7's `stay`, since 2026-10-05; before that T3 had `upright` 45° and `stay` 3 cm / 20°, and
+T7's `stay` 20°). T1's `stay` keeps 3 cm / 20°. Example: a T3 cylinder tilted 15° and not moved reads upright
+h = (45° − 15°) / 45° = 0.67, and stay h = 0.67 too.
+
+**The spill rule** (`contain_particles`, no bead on the table) is recorded but never named from 2026-10-23:
+it has no sentences.
 
 Only sampleable rules are ever named. T1, T3 and T7 have **two consequences on the same item** (avoid
 vs stay, upright vs stay). These are the consequence decisions Q2 measures.
@@ -255,7 +280,7 @@ vs stay, upright vs stay). These are the consequence decisions Q2 measures.
 7. **"Primary" is not "at risk".** Each task draws its primary referent from a scenario mix:
    - T3: roles A (violated), B (crossed, allowed), off-path, and pair rules in A-A scenes;
    - T5: tall 0.75 / short 0.25;
-   - T6: hit 0.7 / other 0.3;
+   - T6: hit 0.5 / other 0.5 (the 2026-10-23 three-bowl design; the 2026-10-04 design: hit 0.7 / other 0.3);
    - T7: hit 0.6 / other 0.25 / bystander 0.15.
 
    So harm and benign come from Section 3.5, not from `primary`.
@@ -315,16 +340,18 @@ them come from the task's own scene metadata, which is deterministic per seed:
 | task | in the way (and unclear) |
 |---|---|
 | T1 | candidates with `cls == "on_path"` in `runner._spawn_report["placements"]`. Unclear: `near_path` candidates (2 to 6 cm from the corridor, hit in some runs), and `off_path` candidates within `off_path_min_dist` (10 cm) of any other corridor of the host (`iter_corridors(env.task, TASK_SPECS[host])`), because `off_path` is measured from the longest corridor only and two-carry hosts have a second path |
-| T2, T4 | the bead set (one rule. The nominal spills with some probability) |
+| T2, T4 (not used from 2026-10-23 / 2026-10-22) | the bead set (one rule. The nominal spills with some probability) |
 | T3 | elements with `on_path == True` in `env.task.layout_info["elements"]` (roles A and B) |
 | T5 | the tall block (`size == "tall"` in the record) |
-| T6 | the hit container (`env.task.episode_info["hit"]`) and the bead set (beads that reach a neighbour are also outside the target, so the spill rule is at risk too). Unclear: the container in the diagonal `far_across` slot (`episode_info["neighbors"][k]["slot"]`, 45° from both outer slots, which splashes reach). The other outer slot is the task's own benign referent, 90° ± 20° away (each slot is jittered ±10°). Changed 2026-10-07 (review R1): the earlier cut at 90° of azimuth marked that benign container unclear in half the scenes. Records without slot names use a 67.5° cut |
+| T6, 2026-10-23 design (three bowls) | the hit bowl (`env.task.episode_info["hit"]`, the bowl the careless pour is aimed at) and the bead set (beads in a non-target bowl are outside the mug and the target too, so the spill rule is at risk; it is never named). The other bowl is benign. The two other bowls stand at the `far` and `across` slots only, so nothing is diagonal |
+| T6, 2026-10-04 design (bins and plates; its episodes are skipped by default, `drop_old_t6_rows`) | the hit container (`env.task.episode_info["hit"]`) and the bead set (beads that reach a neighbour are also outside the target, so the spill rule is at risk too). Unclear: the container in the diagonal `far_across` slot (`episode_info["neighbors"][k]["slot"]`, 45° from both outer slots, which splashes reach). The other outer slot is the task's own benign referent, 90° ± 20° away (each slot is jittered ±10°). Changed 2026-10-07 (review R1): the earlier cut at 90° of azimuth marked that benign container unclear in half the scenes. Records without slot names use a 67.5° cut |
 | T7 | the hit flanker (`env.task.episode_info["hit"]`) |
 
 The **referent** of a rule, for this purpose:
 - `avoid`, `upright`, `stay`: the subject item;
-- `zone_exclude`, `exclude_particles`: the reference region (the mat, the bin or plate);
-- `contain_particles`: the bead set;
+- `zone_exclude`, `exclude_particles`: the reference region (the mat; the bowl, or the bin or plate of the
+  2026-10-04 T6);
+- `contain_particles`: the bead set (recorded, never named from 2026-10-23);
 - `zone_include`: the table, which is never in the way (goals sit inside the table).
 
 Ids are the env's string ids (`item_id`, `region_id`). A record rule points to its referent by index
@@ -335,8 +362,9 @@ saved record per task checks the conversion.
 `designation(rule, record, roles) -> "harm" | "benign"`, for every rule that is not a set or ambiguous
 rule (evaluation names held-out rules too, which are never sampleable): **harm-designated** if its referent
 is in the way (the formerly unclear ones included since 2026-10-08), else **benign-designated**. Rounds name
-only sampleable rules (Section 7.1). T6 harm runs are reported split by aimed-at vs diagonal container (the
-diagonal one's rule breaks in about 8% of nominal episodes). Store every rule's designation
+only sampleable rules (Section 7.1). T6 harm runs of the 2026-10-04 design are reported split by aimed-at vs
+diagonal container (the diagonal one's rule breaks in about 8% of nominal episodes); the 2026-10-23 design has
+no diagonal spot. Store every rule's designation
 and the environment's `primary` / `referent_kind` in `lang_episodes.jsonl`.
 
 ---
@@ -407,7 +435,8 @@ Additions over `RelabelSampler`:
    share T1's draw.
 3. **Pairs from mixed rows, task-balanced.** `n_pair = round(pair_frac · B / 2)` (16 at B = 64,
    `pair_frac` 0.5). Each pair is one transition with one harmful and one benign sampleable rule. Tasks
-   without mixed rows (T2 and T4 have one rule) contribute no pairs. Log `data/pair_mixed_frac`, which
+   without mixed rows (T2 and T4 have one rule; neither is in the default `task_choices` from 2026-10-23)
+   contribute no pairs. Log `data/pair_mixed_frac`, which
    should be 1.0.
 4. **Single samples**: rule harmful with probability 0.5 when both kinds exist, as `RelabelSampler`.
 5. **Relabel modes**:
@@ -821,8 +850,9 @@ python -m main.lang.collect report data/lang/warmup
 ```
 
 - **Schedule**: `n_shards` must divide `episodes_per_task`. Each shard then runs `cycles =
-  episodes_per_task / n_shards` whole cycles over the 7 tasks (order within a cycle shuffled with seed
-  g), so every shard and the union are exactly balanced. T1's host in cycle c of shard i is
+  episodes_per_task / n_shards` whole cycles over the `task_choices` tasks (order within a cycle shuffled
+  with seed g; the 7 item tasks when this was written, T1, T3, T5, T6, T7 from 2026-10-23), so every shard
+  and the union are exactly balanced. T1's host in cycle c of shard i is
   `t1_hosts[(i · cycles + c) mod 5]`, balanced over the union when 5 divides `episodes_per_task` (30
   does).
 - **Fresh directory only**: the driver refuses a non-empty `--out`. Shards are sized to stay under 200
@@ -1109,7 +1139,8 @@ runner would pick `host_tasks[seed % 5]`, which disagrees with the seed formula.
    code hash, bank hash), shared by every checkpoint. Redraw a failed scene build at most 7 times (Section 4.2).
 2. **Named rules per axis**: `harm` = a harm-designated rule eligible for the axis (Section 9.1 table),
    `benign` = a benign-designated eligible rule, each chosen by a hash of (seed, axis). Each runs
-   independently, and a missing one is counted (T2 and T4 have no benign rule).
+   independently, and a missing one is counted (T2 and T4 have no benign rule; neither is used from
+   2026-10-23, and their one rule, the spill rule, is never named from that day).
 3. **Filter runs**: for each axis and available named rule, one sentence (chosen by a hash of seed and
    axis), one filtered episode on the nominal runs' used seed. The rule table and the designations must
    match the nominal runs' (else an error row). When both harm and benign exist, record `Q_cf` with the
@@ -1219,7 +1250,7 @@ question and the figures.
 
 | field | default | note |
 |---|---|---|
-| `task_choices` | the 7 item tasks | `--tasks` filters |
+| `task_choices` | `TRAIN_TASKS`: T1, T3, T5, T6, T7 (Yuxuan, 2026-10-23; the 7 item tasks when this plan was written, T1, T2, T3, T5, T7 on 2026-10-22) | `--tasks` filters |
 | `t1_hosts` | the 5 CrossSafe hosts | |
 | `embodiment_choices` | `ur5-wsg`, `franka-panda` | |
 | `item_host`, `item_risk`, `item_active_rule`, `item_out_root` | None, None, None, `"runs/item_envs"` | per-episode env overrides (Section 2), declared so `dataclasses.replace` keeps them. `item_out_root` must never be None |

@@ -114,7 +114,7 @@ def test_t2_rule_semantics():
     for rid, rule in by_id.items():
         assert rule.consequence.value == rid.split("|")[0]
         assert rule.item_ids == ("beads",), rid
-        assert rule.phrases, f"{rid} rendered no phrases"
+        assert rule.phrases == [], f"{rid}: the spill rule is never named from 2026-10-23"
         for phrase in rule.phrases:
             assert not any(c.isdigit() for c in phrase), phrase
         assert rule.split in ("train", "heldout_item", "heldout_region", "heldout_phrase")

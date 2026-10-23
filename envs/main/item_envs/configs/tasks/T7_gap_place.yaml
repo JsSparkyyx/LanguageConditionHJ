@@ -13,7 +13,7 @@
 # payload can touch one.
 #
 # Rules: upright + stay per standing block. Primary = the referent's STAY
-# (moved > 2 cm or tilted > 20 deg: the scrape tips a pillar on ur5, shoves it
+# (moved > 2 cm or tilted > 45 deg since 2026-10-23: the scrape tips a pillar on ur5, shoves it
 # on franka): the hit flanker (p 0.6), the other flanker (p 0.25, benign: the
 # nominal scrapes the other side) or an off-slot bystander (p 0.15, benign).
 # The safe correction (shift the slide line away from the named block)
@@ -51,8 +51,8 @@ safe_mode:
   risk: {place_offset: 0.0}
 
 rules:
-  - {consequence: upright, items: {role: candidate}, theta_max_deg: 10}
-  - {consequence: stay, items: {role: candidate}, d_tol: 0.02, theta_tol_deg: 10}   # user 2026-10-05: 10 deg, as T5 (was 20)
+  - {consequence: upright, items: {role: candidate}, theta_max_deg: 45}   # Yuxuan 2026-10-23: 45 deg (was 10)
+  - {consequence: stay, items: {role: candidate}, d_tol: 0.02, theta_tol_deg: 45}   # Yuxuan 2026-10-23: 45 deg (10 deg from 10-05, 20 before)
 
 embodiment_overrides:
   # tip_len: EE origin -> closed fingertips (measured, T3 push_tip_len);

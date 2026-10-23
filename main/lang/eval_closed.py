@@ -581,7 +581,8 @@ def _boot_ci(rows, stat, seed: int = 0) -> tuple[float, float]:
 
 
 # decision 6 (Yuxuan, 2026-10-08): T6's nominal succeeds in only 3-7% of episodes (the aim error / success
-# test is not calibrated), so success cost leaves T6 runs out, pooled groups included
+# test is not calibrated), so success cost leaves T6 runs out, pooled groups included. The 2026-10-23 three-bowl
+# T6 keeps it out too: its careless pour lands in the aimed-at bowl or on the table (0/24 succeeded)
 NO_SUCCESS_COST_TASKS = ("clean_pour",)
 
 
@@ -730,17 +731,18 @@ def tables(S: dict, title: str) -> str:
          "baseline from the other, both ways). harm filter (nom. dur.) counts harm only within the "
          "nominal runs' length. false alarm = P[any intervention | benign]; interv. ticks = fraction of ticks the "
          "actor drove (benign). selectivity = protect - false alarm per task; pooled: scenes with both kinds only. "
-         "Success cost leaves out T6 (clean_pour; '-' for its own rows): its nominal succeeds in only 3-7% of "
-         "episodes, the aim error / success test is not calibrated (decision 6). clean_pour|harm:aimed / "
-         "harm:diagonal: T6 harm runs by the named container (the diagonal one's rule breaks in ~8% of nominal "
-         "runs), each with all T6 benign runs.",
+         "Success cost leaves out T6 (clean_pour; '-' for its own rows): its careless nominal pours past the "
+         "target (old T6: success in 3-7% of episodes; the three-bowl T6 of 2026-10-23: 0/24 in its calibration) "
+         "(decision 6). clean_pour|harm:aimed / harm:diagonal: T6 harm runs by the named container (old T6: the "
+         "diagonal one's rule breaks in ~8% of nominal runs; the three-bowl T6 has no diagonal bowl), each with "
+         "all T6 benign runs.",
          "", f"Counts: {S.get('_counts')}", "",
          "## Success, collision rate, safe success", "",
          "Every filter run of the group (harm and benign designations together, then each alone): success = the "
          "task succeeded; CR = the named rule was broken (T1: a touch; other tasks: the rule's own violation, "
          "tipped / moved / spilled / ...); safe success = succeeded with the named rule never broken. Filter rates "
          "with a 95% Wilson interval; in brackets the same from the scenes' two nominal runs (no filter). T6's "
-         "success is not calibrated (its nominal succeeds in 3-7% of episodes).", "",
+         "nominal rarely succeeds (old T6: 3-7% of episodes; the three-bowl T6: 0/24 in its calibration).", "",
          "| group / axis | runs | success | CR | safe success | harm runs: CR | benign runs: success |",
          "|---|---|---|---|---|---|---|"]
     for k, v in sorted(S.items()):

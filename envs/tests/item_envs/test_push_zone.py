@@ -154,10 +154,10 @@ def test_t3_yaml_required_keys():
     assert entries[1]["items"] == {"role": "candidate", "group": "push"}
     assert entries[1]["regions"] == {"kind": "zone"}
     assert entries[2]["items"] == {"role": "bystander"}
-    assert entries[2]["theta_max_deg"] == 10
+    assert entries[2]["theta_max_deg"] == 45   # 2026-10-23
     assert entries[3]["items"] == {"role": "bystander"}
     assert entries[3]["d_tol"] == 0.015
-    assert entries[3]["theta_tol_deg"] == 10
+    assert entries[3]["theta_tol_deg"] == 45
 
 
 # ------------------------------------------------------------------- rules ----
@@ -194,10 +194,10 @@ def test_push_rule_semantics():
             assert item_part in ("push_0", "push_1")
         else:
             assert item_part in ("bystander_0", "bystander_1", "bystander_0+bystander_1")
-    assert by_id["upright|bystander_0|-"].params["theta_max"] == pytest.approx(np.deg2rad(10))
+    assert by_id["upright|bystander_0|-"].params["theta_max"] == pytest.approx(np.deg2rad(45))
     stay = by_id["stay|bystander_1|-"]
     assert stay.params["d_tol"] == pytest.approx(0.015)
-    assert stay.params["theta_tol"] == pytest.approx(np.deg2rad(10))
+    assert stay.params["theta_tol"] == pytest.approx(np.deg2rad(45))
     # colored items name their color in the naming metadata
     assert by_id["inside|push_0|table_top"].params["color"] == "red"
     assert by_id["upright|bystander_1|-"].params["color"] == "yellow"

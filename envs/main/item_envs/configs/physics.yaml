@@ -15,9 +15,12 @@ com_offset_xy: [-0.2, 0.2]         # × half extents, applied in x and y only (�
 # 2026-10-05 — the old per-consequence kappa table gave ranges ~4x apart:
 # T5's upright topped out at 2/rad x 10 deg = 0.35, distance rules at 1.0+):
 #   avoid / inside / outside / particles_outside   5 cm   (h = 20 x metres, CrossSafe's kappa)
-#   particles_inside ("don't spill")       1 cm   (a resting bead sits 1.0-1.2 cm inside)
-#   upright                                the rule's theta_max (10 deg -> 5.7/rad)
-#   stay                                   the rule's d_tol (tilt converted to metres)
+#   particles_inside ("don't spill")       1 cm   (a resting bead sits 1.0-1.2 cm inside; never named from 2026-10-23)
+#   upright                                the rule's theta_max (45 deg in T3 / T5 / T7 -> 1.27/rad,
+#                                          Yuxuan 2026-10-23; 10 deg -> 5.7/rad before)
+#   stay                                   the rule's d_tol (tilt converted to metres: a tilt of theta_tol
+#                                          counts like d_tol; theta_tol 45 deg in T3 / T7 from 2026-10-23,
+#                                          10 deg from 2026-10-05; T1 3 cm / 20 deg)
 # The clip at -1 replaces the old margin_floor table (beads rolling off the
 # table / objects launched by a contact glitch read -18 ... -464 unclipped;
 # audit 2026-10-04); the clip at +1 = "comfortably safe". Traces keep the raw

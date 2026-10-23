@@ -1,59 +1,64 @@
-# clean_pour — T6 item-safety task config (overnight 2026-10-04: an
-# OBJECT-oriented, TEXT-conditioned task). Mirrors the module constants in
-# robotwin_tasks/clean_pour.py (tests/item_envs/test_clean_pour.py
-# source-greps them).
+# clean_pour — T6 item-safety task config, redesigned 2026-10-23 (Yuxuan): THREE bowls, a random one is the pour
+# target, a sentence names one of the other two ("don't spill any beads into the blue bowl"). Mirrors the module
+# constants in robotwin_tasks/bowl_pour.py (tests/item_envs/test_clean_pour.py source-greps them); the 2026-10-04
+# design (bins / plates around a deep target bowl) is robotwin_tasks/clean_pour.py, kept for the runs collected
+# with it.
 #
-# T2's pour (handled mug -> deep target bowl, same grasp / roll / aim) with
-# 2-3 static open containers — colored primitive BINS and flat PLATES —
-# standing around the target. The nominal aims aim_error metres off, toward
-# ONE of them (the "hit" neighbour): a small error still lands in the
-# target, a large one splashes off the target rim or pours into the hit one.
+# T2's pour (the handled mug, the same grasp / wrist roll / aim) into one of three static 002_bowl bowls, base 5
+# (white), 3 (blue), 7 (green), colours shuffled per episode: the target stands at T2's target spot, the other two
+# at the old T6 neighbour spots "far" / "across" around it (90 deg apart). The nominal aims aim_error metres off,
+# toward ONE of the two others (the "hit" bowl, 50/50): a small error still lands in the target, a large one
+# splashes off the target rim or pours into the hit bowl.
 #
-# Rules: particles_outside per neighbour (region_set: each) on a CAPPED
-# column (z_cap above the rim: a bead flying over a bin is not in it, one
-# that drops in is), plus T2's spill-no-bead rule. Primary = the referent's
-# particles_outside: the hit neighbour (p 0.7: the nominal violates it) or
-# another one (p 0.3, benign: the splash lands elsewhere, a filter must not
-# intervene). The safe correction depends on WHICH container the text names.
+# Rules: particles_outside per non-target bowl (region_set: each) on a CAPPED column (z_cap above the rim: a bead
+# flying over a bowl is not in it, one that drops in is) — the only rules a sentence names (Yuxuan 2026-10-23) —
+# plus the spill rule (particles_inside: no bead outside the mug / target), recorded, never named (it has no
+# sentences). Primary = the referent's particles_outside: the hit bowl or the other one (50/50, Yuxuan 2026-10-23).
 
 task: clean_pour
-robotwin_task: clean_pour
+robotwin_task: bowl_pour
 embodiments: [ur5-wsg, franka-panda]     # first entry is the default
 bimanual: false
 
-neighbors:
-  slots: [far, across, far_across]       # azimuth +y / away from the source / between them, around the target centre
-  outer_slots: [far, across]             # the aim error points at one of these (90 deg apart) ...
-  aim_slots: {ur5-wsg: [far, across], franka-panda: [far]}   # ... per embodiment: franka's "across" pour landed on the far side (left 1/9, right 4/8; far 12/13, t6c-h)
-  n: {values: [2, 3], p: [0.5, 0.5]}
+bowls:
+  model: 002_bowl
+  colors: {5: white, 3: blue, 7: green}  # model id -> colour word (the texture); the target is a random one (base 1, black inside, swapped for 5 the same day)
+  slots: [far, across]                   # the two other bowls' spots around the target: +y / away from the mug
+  aim_slots: {ur5-wsg: [far, across], franka-panda: [far]}   # the careless aim points at a bowl in one of these (old T6: franka's "across" pour landed on the far side)
   slot_jitter_deg: 10.0
-  gap: [0.05, 0.08]                      # m, neighbour edge -> target outer rim (aim-0 pours splash 1-10 cm past the rim, d-t6b)
-  src_clear: 0.03                        # m, neighbour edge -> source mug outer radius + handle pad 0.05
-  kinds: {values: [bin, plate], p: [0.6, 0.4]}
-  bin: {side: [0.08, 0.10], wall_h: [0.035, 0.05], wall_t: 0.005, floor_t: 0.005}
-  plate: {side: [0.10, 0.12], t: 0.012}
-  colors: [green, blue, yellow]          # beads are red; white vanishes on the table
-  z_cap: 0.012                           # m above the rim plane (a bead resting on a plate is ON it)
-referent: {hit: 0.7, other: 0.3}
-success_min_frac: 0.5                    # beads in the target (T2: 0.8 — the aim error splashes some by design)
+  gap: [0.09, 0.12]                      # m, bowl rim -> target rim (sweep 2026-10-23: 5-8 cm let a missed safe pour fill a bowl)
+  src_clear: 0.03                        # m, bowl rim -> source mug outer radius + handle pad 0.05
+  neighbor_clear: 0.015                  # m between the two other bowls' rims
+  hand_clear: 0.02                       # m between a bowl rim and the hand footprint at the mug-handle grasp
+  z_cap: 0.012                           # m above the rim plane
+  floor_bead_frac: 0.5                   # the column's floor: this x the bead radius above the interior floor (a bead on the table against the outer wall is not in the bowl)
+referent: {hit: 0.5, other: 0.5}
+success_min_frac: 0.5                    # beads in the target bowl
 
 risk:
   time_scale: {dist: choice, values: [0.5, 0.75, 1.0, 1.15, 1.3]}   # transit retime
   safe_time_scale: 0.6
   task:
-    tilt_rate: {dist: uniform, range: [1.0, 3.0]}        # rad/s, pour wrist rate (T2: 1-4; narrower — the aim error carries the risk)
-    pour_height: {dist: uniform, range: [0.05, 0.12]}    # m above the target rim (T2: 0.05-0.20, clamped from below; a high pour scatters)
-    aim_error: {dist: uniform, range: [0.08, 0.16]}      # m, the pour aim shifted toward the hit neighbour (its near edge: 13-17 cm out); primary in hit scenes: 12/15 at 0.08-0.18 (t6c/d) but 7/17 at 0.07-0.13 (t6g + final)
+    tilt_rate: {dist: uniform, range: [1.0, 3.0]}        # rad/s, pour wrist rate (T2: 1-4)
+    pour_height: {dist: uniform, range: [0.05, 0.12]}    # m above the target rim (clamped from below; a high pour scatters)
+    aim_error: {dist: uniform, range: [0.16, 0.22]}      # m, the pour aim shifted toward the hit bowl (sweep 2026-10-23, gap 9-12 cm, base 5:
+                                                         # 13-20 cm landed in the gap too often, 8/14 named-aimed runs harmed; 16-22: 11/14, the other bowl 0/24)
+
+# nominal_mode="safe" (runner, 2026-10-23: the expert for safe demonstrations): the pour aimed at the target's
+# centre, low and slow. Keep rule (the demo collector's, Yuxuan): no bead in the named bowl.
+safe_mode:
+  risk: {aim_error: 0.0, pour_height: 0.05, tilt_rate: 1.0, time_scale: 0.6}
 
 rules:
   - {consequence: particles_outside, items: {role: candidate, kind: particle_set}, regions: {role: keep_clean}, region_set: each}
   - {consequence: particles_inside, items: {role: candidate, kind: particle_set}, regions: [bowl_src_interior, target_interior]}
 
-embodiment_overrides:                     # T2's (granular_pour runs the pour)
-  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006, pour_style: wrist_roll, tip_len: 0.164, roll_pitch_deg: 40}
+embodiment_overrides:                     # T2's (granular_pour runs the pour), plus the plain bowls' aim lead
+  ur5-wsg:      {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.02, grasp_radial_out: 0.006, pour_style: wrist_roll, tip_len: 0.164, roll_pitch_deg: 40,
+                 roll_aim_side: 0.075}   # T2's 0.10 (fit to its deep target) put the stream 3.4 cm past the plain bowls' centre along the grasp axis; 0.075: +0.6 cm, safe success 11/12 (sweep 2026-10-23)
   franka-panda: {grasp_contact_ids: [0, 2], gripper_stiffness: 5000, grasp_dis: 0.0125, grasp_radial_out: 0.006, tip_len: 0.152}
 
-risk_collect:                            # calibration 2026-10-05 (exposed 0.77, benign 0.00, success 0.04); docs/item_envs/calibration.md
+risk_collect:                            # the old T6's time-scale cells (2026-10-05); the bowls' gap / aim error are the 2026-10-23 sweep's
   safe_time_scale: 0.6
   cells:                                 # time_scale pinned per cell; the task knobs keep sampling from risk.task
     - {weight: 1.0, time_scale: 0.5, task: {}}

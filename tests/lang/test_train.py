@@ -146,7 +146,7 @@ def test_training_defaults_to_one_embodiment_and_resume_keeps_the_saved_one(tmp_
     assert args.embodiments == "ur5-wsg"
     cfg = config_from_args(args)
     assert cfg.embodiment_choices == ("ur5-wsg",)
-    assert trained_subsets(cfg) == (TRAIN_TASKS, ("ur5-wsg",))   # the five tasks: T4 / T6 rows of old shards are skipped
+    assert trained_subsets(cfg) == (TRAIN_TASKS, ("ur5-wsg",))   # the five tasks: T2 / T4 rows of old shards are skipped
     cfg_all = config_from_args(p.parse_args(["--data", "d", "--run", str(tmp_path / "run"), "--embodiments", "all"]))
     assert cfg_all.embodiment_choices == CANON_EMBODIMENTS and trained_subsets(cfg_all) == (TRAIN_TASKS, None)
     # a run started on both embodiments resumes on both, though the default flag is now ur5-wsg

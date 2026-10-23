@@ -1,15 +1,19 @@
 # Safe controllers for the item tasks (for safe-demonstration VLA fine-tuning)
 
 2026-10-22. Investigation only: no code, config or job was changed or run. Numbers come from the docs, the
-code and the saved 2026-10-05 runs (read with `jq`, nothing re-simulated).
+code and the saved 2026-10-05 runs (read with `jq`, nothing re-simulated). Updated 2026-10-23 (text only)
+for Yuxuan's decisions of that day: T2 replaced by a redesigned T6, and tilt limits of 45 deg in T3, T5, T7.
 
 Question: to fine-tune HoloBrain on SAFE demonstrations of every item task (not only collision avoidance),
 we need an expert per task that finishes the job without harming the items. What does each task's nominal
 do wrong, what would a safe expert have to guarantee, what already exists, what must be written, and how do
 we decide which demos to keep?
 
-Tasks in use: T1 `selective_avoid`, T2 `granular_pour`, T3 `push_zone`, T5 `tray_transport`, T7 `gap_place`.
-T4 and T6 were dropped (one paragraph, section 8).
+Tasks in use (Yuxuan, 2026-10-23): T1 `selective_avoid`, T3 `push_zone`, T5 `tray_transport`, T6 `clean_pour`
+(redesigned: three bowls, section 8.1), T7 `gap_place`. T2 `granular_pour` was replaced by the new T6 that day,
+because its one rule is not text-conditioned, so T2 is no longer a safe-demo task; section 5 stays as the
+record, and its pour is the one T6 uses. T4 was dropped on 2026-10-22 (section 8.2). When this was written
+(2026-10-22) the tasks were T1, T2, T3, T5, T7, with T4 and the old T6 dropped.
 
 ## Decisions (Yuxuan, 2026-10-22)
 
@@ -17,6 +21,7 @@ T4 and T6 were dropped (one paragraph, section 8).
 - **T1 keep rule**: no physical contact with any extra object (PhysX separation <= 0 at any physics step), as in
   the collision-avoidance demos. The filter's 1 cm safety buffer is not required.
 - **T2 keep rule**: no bead out, at all (zero beads on the table). A safe pour still has to be found first.
+  (T2 is no longer a safe-demo task from 2026-10-23.)
 - **T3 demos** (clarified the same day): every demo names one rule, and every demo keeps it.
   - 80%: the named rule is about an element **in the way** (a mat or cylinder on the push path). The demo is the
     SAFE trajectory: the push goes around that element.
@@ -27,6 +32,25 @@ T4 and T6 were dropped (one paragraph, section 8).
   scraped neighbour is named); 20% the named item is not in the way and the demo is the nominal trajectory.
 - **Where the code goes**: into `envs/`, as an additional mode of the nominal controller (the default careless
   mode stays as it is), not a separate package.
+- **T6 (Yuxuan, 2026-10-23)**: the redesigned T6 replaces T2. Its safe expert is the safe mode of the nominal
+  (`nominal_mode="safe"`): the pour aimed at the target bowl's centre, low and slow. Keep rule: no bead in the
+  named bowl (section 8.1).
+
+## Status (2026-10-23)
+
+Sections 1 to 10 are the plan of 2026-10-22. Since then the safe modes were built into `envs/`, as decided:
+`ItemEpisodeRunner(..., nominal_mode="safe")` pins each task yaml's `safe_mode` section (careless stays the
+default, and a seed builds the same scene in both modes).
+
+| task | safe mode | first check (ur5-wsg) |
+|---|---|---|
+| T5 tray | slow drag (`time_scale` 0.5), commit 4c6a158 | 8/8 clean |
+| T7 gap | centred slide (`place_offset` 0), commit 4c6a158 | 8/8 clean |
+| T1 avoid | obstacle-aware cuRobo: the protected objects in its world (+1 cm), the WSG hand and the held object as attached spheres, no mplib fallback (`envs/main/item_envs/safe_plan.py`), commit 22b5b3a | 4/8 finished the job, all 8 with no touch; careless touched the protected object in 5/8 |
+| T6 bowls | the pour aimed at the target's centre, low and slow (`T6_clean_pour.yaml` `safe_mode`), with the ur5 aim lead fit to the plain bowls | 21/24 finished; 1/24 put beads in the named bowl (section 8.1) |
+| T3 push | not built: needs the route planner (section 6) | - |
+
+Still missing: the T3 safe push, and the demo collector for the item scenes with the 80 / 20 split.
 
 ## 1. Short answer
 
@@ -36,7 +60,8 @@ T4 and T6 were dropped (one paragraph, section 8).
 | T7 gap | slide centred (`place_offset` 0) | exists: a knob. 40/40 clean in the safe-knob runs |
 | T1 avoid | plan around the objects (cuRobo world + the hand model of `vla_finetuning/`) | mostly exists for ONE box; needs a multi-object version |
 | T3 push | push along a detour (via points around the elements) | missing: a route planner and a pusher that follows it |
-| T2 pour | a pour that loses no bead | missing, and unclear if it can be done: even the gentlest pour spills (ur5 0/20 clean) |
+| T6 bowls (2026-10-23) | pour aimed at the target bowl's centre, low and slow; keep rule: no bead in the named bowl | exists: the safe nominal mode (`T6_clean_pour.yaml` `safe_mode`). Calibrated 2026-10-23: 21/24 finished, 1/24 broke the keep rule |
+| T2 pour (not a safe-demo task from 2026-10-23) | a pour that loses no bead | missing, and unclear if it can be done: even the gentlest pour spills (ur5 0/20 clean) |
 
 Everything also needs one shared piece: a demo collector for the item runner (frames, contact checks, keep
 rule, HoloBrain files, task instructions). The CrossSafe one (`vla_finetuning/collect_demos.py`) only knows
@@ -49,7 +74,8 @@ the one-box scenes.
 - **h_r(t)**: the safety number of rule r at tick t. `h = clip(margin / h_unit, -1, 1)`
   (`docs/lang_filter/DESIGN_CONTEXT.md:77`, `envs/main/item_envs/margins.py:69-133`). h >= 0 is safe,
   h < 0 is harmed. `margin` is the rule's own measure (a gap in metres, a tilt allowance, ...), `h_unit`
-  is 5 cm for distances and zones, 1 cm for beads, 10 deg for "upright", the movement limit for "stay".
+  is 5 cm for distances and zones, 1 cm for beads, the tilt limit for "upright" (45 deg in T3, T5, T7 from
+  2026-10-23; 10 deg when this was written), the movement limit for "stay".
   Example: a 3 cm gap under a 1 cm avoid buffer gives margin 0.02 m, h = 0.02 / 0.05 = 0.4.
   Bead rules count beads once broken: one bead out reads -0.5, 20 or more read -1
   (`DESIGN_CONTEXT.md:85`).
@@ -76,7 +102,9 @@ the one-box scenes.
 
   Caveat: the scenes changed since (2026-10-22: T1 now 2-3 extra objects from a new pool, big objects
   allowed on the path; T3 only the coloured box and cylinders; T5 always two blocks; 3 colours). The
-  direction of the numbers should hold; T1 and T3 need a fresh check.
+  direction of the numbers should hold; T1 and T3 need a fresh check. 2026-10-23: these runs were scored
+  with the 10 deg tilt limits; under 45 deg a rule that was safe stays safe, so the T3 / T5 / T7 harm
+  counts can only stay the same or fall. T2 is no longer used, and the redesigned T6 has no such runs yet.
 
 ## 3. What exists for all tasks, and what is missing
 
@@ -105,14 +133,15 @@ Missing (needed by every task):
    `ItemEpisodeRunner`, pin the safe knobs, check the protected items, apply the keep rule, write the same
    HDF5 files.
 2. **Frames.** `vla_finetuning` records by hooking `task._take_picture`, which RoboTwin's own executor calls
-   every 15 physics steps. T2, T3, T5 and T7 need `RiskTickController` (their via paths, local plans and
-   timed tilts live there, `envs/main/item_envs/controller.py:130-227`), and its tick-chunked executor
-   replaces `take_dense_action` and never calls `_take_picture` (no call in `main/envs/controller.py`).
-   So record from the `scene.step` hook every 15 physics steps instead (`PhysicsMonitor` already has an
-   `on_frame` callback for this, `common.py:265-299`). Check that `joint_action/vector` is still the
-   commanded target under that executor.
+   every 15 physics steps. T3, T5, T6 and T7 (and T2, whose pour T6 runs) need `RiskTickController` (their
+   via paths, local plans and timed tilts live there, `envs/main/item_envs/controller.py:130-227`), and its
+   tick-chunked executor replaces `take_dense_action` and never calls `_take_picture` (no call in
+   `main/envs/controller.py`). So record from the `scene.step` hook every 15 physics steps instead
+   (`PhysicsMonitor` already has an `on_frame` callback for this, `common.py:265-299`). Check that
+   `joint_action/vector` is still the commanded target under that executor.
 3. **Instructions.** RoboTwin has no instruction templates for `granular_pour`, `push_zone`,
-   `tray_transport` or `gap_place` (only the T1 hosts have them, `RoboTwin/description/task_instruction/`).
+   `tray_transport`, `bowl_pour` (T6 from 2026-10-23) or `gap_place` (only the T1 hosts have them,
+   `RoboTwin/description/task_instruction/`).
    Write a few per task. For named-rule demos, add the constraint sentence from the paraphrase bank
    (`envs/main/item_envs/language/paraphrases.yaml`).
 4. **ur5-wsg only.** HoloBrain's RoboTwin processor exists only for ur5-wsg (`vla_finetuning/PLAN.md:10-12`)
@@ -211,6 +240,11 @@ Will the task still succeed? Nominal success is 70 % (`calibration.md:31`). The 
 
 ## 5. T2 `granular_pour`: don't spill
 
+**Not a safe-demo task from 2026-10-23** (Yuxuan): T2 was replaced by the redesigned T6 (section 8.1). This
+section stays as the record. T6 runs the same pour (the grasp, roll, hold and set-down of 5.1; its own knob
+ranges and success bar are in 8.1), so the risks in 5.5 apply to it too. T6's keep rule asks only for a
+clean named bowl, not for zero beads on the table, the conflict of 5.2.
+
 ### 5.1 What the nominal does, and what makes it careless
 
 - Grasp the mug by its handle (both robots, yaml:24-25), lift, move to the pour point (risky), roll the
@@ -284,8 +318,9 @@ Effort: 16-40 h of research with an uncertain result, or about 1 h if the keep r
 
 ### 6.2 What a safe demo must guarantee
 
-- Rules (yaml:68-76): the box stays out of each mat, every cylinder stays upright (10 deg) and in place
-  (1.5 cm / 10 deg), pair rules, and the box stays on the table (recorded, never named).
+- Rules (yaml:68-76): the box stays out of each mat, every cylinder stays upright (45 deg) and in place
+  (1.5 cm / 45 deg), pair rules, and the box stays on the table (recorded, never named). The tilt limits are
+  Yuxuan's of 2026-10-23; when this was written they were 10 deg and 1.5 cm / 10 deg.
 - **Named-rule safe**:
   - B and B-B scenes (30 %): the nominal with `lateral_offset` 0 and `overshoot` 0 is already safe, since
     off-path elements stand well clear of the line (`push_zone.py:128-131`, `515`);
@@ -379,8 +414,9 @@ Will the task still succeed? Nominal success is 73 % (`calibration.md:33`); safe
   `time_scale` ∈ {0.75, 1.0, 1.15, 1.3} (yaml:54-60), so v = 0.225-0.39 m/s and braking 1.9-5.7 m/s².
   Since 2026-10-22 there are always two blocks (yaml:30): a tall one that tips at 1.5-2.1 m/s² and a short
   one that needs >= 7 m/s² (yaml:27-28). Speed is the only knob.
-- **Guarantee**: `upright` per block (10 deg, yaml:46). The short block never tips at any speed
-  (`envs/docs/item_envs/task_cards/T5.md:91-99`), so all-items safe = "tall block safe" = a slow drag.
+- **Guarantee**: `upright` per block (45 deg from Yuxuan, 2026-10-23, yaml:51; 10 deg when this was
+  written). The short block never tips at any speed (`envs/docs/item_envs/task_cards/T5.md:91-99`), so
+  all-items safe = "tall block safe" = a slow drag.
   Named-rule safe with the short block named allows full speed, but the tall block may fall. No conflict
   with success: 100 % at every speed (`calibration.md:35`).
 - **Exists**: `risk={"time_scale": 0.5}` gives v = 0.15 m/s and 0.84 m/s² of braking, below the tall
@@ -399,7 +435,8 @@ Will the task still succeed? Nominal success is 73 % (`calibration.md:33`); safe
   flanker (`gap_place.py:243-251`), lower it, slide it into the slot (risky, 0.10 m/s × time_scale,
   `gap_place.py:91`, `261-262`), release. Knobs: `place_offset` U[0.02, 0.05] m (yaml:46) and
   `time_scale` ∈ {0.5 ... 1.3} (yaml:43).
-- **Guarantee**: `upright` (10 deg) and `stay` (2 cm / 10 deg) per standing block (yaml:48-50).
+- **Guarantee**: `upright` (45 deg) and `stay` (2 cm / 45 deg) per standing block (Yuxuan, 2026-10-23,
+  yaml:54-55; 10 deg and 2 cm / 10 deg when this was written).
   A centred slide (`place_offset` 0) keeps both flankers clear: the gap per side is U[1.5, 2.5] cm
   (yaml:27), while ur5's placement error is <= 8 mm (`envs/docs/item_envs/task_cards/T7.md:98-104`). The
   bystander stands 8-11 cm past the end of the slide. So all-items safe and named-rule safe are the same
@@ -413,21 +450,48 @@ Will the task still succeed? Nominal success is 73 % (`calibration.md:33`); safe
   named-rule demos could slide slightly toward the UNnamed flanker, but the instruction must then name the
   protected block.
 
-## 8. T4 and T6 (dropped 2026-10-22)
+## 8. T6 `clean_pour` (redesigned 2026-10-23) and T4 (dropped 2026-10-22)
+
+### 8.1 T6 clean_pour, 2026-10-23 design: keep the beads out of the named bowl
+
+- **Nominal** (`envs/robotwin_tasks/bowl_pour.py`, built on `granular_pour`): T2's pour (section 5.1), from
+  the mug into the target bowl, one of three bowls (white, blue, green; the colours are shuffled every
+  episode). The other two stand next to the target, 90 deg apart. The aim is moved `aim_error` metres toward
+  one of them, the "hit" bowl (on ur5 either one, 50/50). Knobs (`T6_clean_pour.yaml`): `aim_error`
+  U[0.16, 0.22] m (the other bowls stand 9-12 cm from the target, rim to rim), `pour_height` U[0.05, 0.12] m,
+  `tilt_rate` U[1, 3] rad/s, `time_scale` on the transit. Success: >= 50 % of the beads in the target bowl.
+- **Guarantee**: the named bowl's rule, no bead in its column (its footprint, from half a bead above its
+  inside floor up to 1.2 cm above its rim). The named bowl is the hit bowl or the other one, 50/50. The
+  spill rule (no bead on the table) is recorded but never named, and the keep rule does not ask for it.
+- **Exists**: the safe mode of the nominal, `ItemEpisodeRunner(..., nominal_mode="safe")`, which pins the
+  yaml's `safe_mode.risk`: `aim_error` 0 (the pour aimed at the target's centre), `pour_height` 0.05 m (low;
+  the clamp from below of 5.1 still applies), `tilt_rate` 1 rad/s and `time_scale` 0.6 (slow).
+  **Missing**: nothing beyond the shared collector.
+- **Keep rule** (Yuxuan, 2026-10-23): no bead in the named bowl. Yield in the final check (24 ur5-wsg runs,
+  base 5 as the white bowl, `envs/docs/item_envs/task_cards/T6.md`): 21 finished the job (>= 50 % of the beads
+  in the target), and 1 put beads in the named bowl, so about 1 demo in 24 is dropped by the keep rule.
+- **Risk**: the plain target bowl keeps every bead that lands in its opening, so the only loss is where the
+  stream lands. T2's aim leads were fit to its deeper bowl; for these bowls the sideways lead is 0.075 m
+  (ur5-wsg), which centres the stream to within 1 cm. One scene (seed 6307, a left-arm pour) missed by about
+  14 cm in every setting tried. The run-to-run spread of T2 (5.5) applies too.
+
+### 8.2 T4, and the 2026-10-04 T6 (dropped 2026-10-22)
 
 T4 `granular_carry` (carry a bowl of beads): the existing knobs (`carry_tilt_deg` 0, time_scale 0.5) gave
 15/20 (ur5) and 18/20 (franka) clean episodes, 19-20/20 finished. That is a usable but imperfect safe
 expert: 2-6 beads still slosh out sometimes (`calibration.md:71`). T6 `clean_pour` (pour beside named bins):
 with `aim_error` 0, the named bin stayed clean in 18/20 per robot, but all rules held in only 1/20 (ur5)
-and 5/20 (franka). That is the T2 pour problem again. Nothing is planned for either.
+and 5/20 (franka). That is the T2 pour problem again. Nothing is planned for either. (On 2026-10-23 T6 came
+back, redesigned: 8.1.)
 
 ## 9. Risks shared by all tasks
 
 - **Test-time speed is not demo speed.** The VLA test executes each predicted joint target through
   RoboTwin's `take_action`, which plans every step with TOPP (time-optimal, from rest to rest)
   (`RoboTwin/envs/_base_task.py:1486-1580`, `vla_finetuning/evaluate.py:116-126`). A slow, smooth demo
-  (T5, T2's tilt) does not guarantee slow, smooth execution. Before training on T5, replay a kept demo's
-  recorded joint targets through `take_action` and measure the tray's braking (small new script).
+  (T5, the pour's tilt in T6, T2's before) does not guarantee slow, smooth execution. Before training on
+  T5, replay a kept demo's recorded joint targets through `take_action` and measure the tray's braking
+  (small new script).
 - **cuRobo nondeterminism**: the same seed gives a different motion. Retry seeds, and compare rates, never
   single seeds.
 - **Selection bias**: a demo set made only of layouts the expert could solve under-represents the hard
@@ -444,11 +508,13 @@ and 5/20 (franka). That is the T2 pour problem again. Nothing is planned for eit
 |---|---|---|---|---|
 | shared | demo collector for item scenes: runner build, safe knobs, physics-step contact / zone checks, per-tick h, frames every 15 physics steps, HDF5 + instructions | needs code (`vla_finetuning/items/`); reuses `vla_finetuning` pieces | 10-14 | all-items demos (no constraint sentence) or named-rule demos (sentence in the instruction)? ur5-wsg only? |
 | T1 avoid | RoboTwin expert + cuRobo world with every protected object (2 cm margin) + WSG hand / held-object model | one-box version exists (`vla_finetuning`); needs multi-object world, multi-object contact check, runner scene build | 8-12 | keep rule: contact only, or contact + avoid h >= 0 (the filter's 1 cm buffer)? |
-| T2 pour | none yet; first find where beads leave, then fix that stage or pour closed-loop | needs research; knobs alone fail (ur5 0/20 clean) | 16-40 (or ~1 if the bar is relaxed) | allow a few beads out (k = ?), change the scene, or drop T2 from the VLA set? |
+| T2 pour (not a safe-demo task from 2026-10-23) | none yet; first find where beads leave, then fix that stage or pour closed-loop | needs research; knobs alone fail (ur5 0/20 clean) | 16-40 (or ~1 if the bar is relaxed) | allow a few beads out (k = ?), change the scene, or drop T2 from the VLA set? Answered 2026-10-23: T2 left the task set |
 | T3 push | via-point detour around the elements to avoid; lift-and-reposition at corners; hand clearance beside cylinders | needs code: route planner + `push_via` (`push_to_goal`'s lane guard blocks detours); box lanes guaranteed by the layout, hand lanes not | 16-24 + pilot | skip layouts with no all-items route (bias), or only collect named-rule demos for T3? |
 | T5 tray | slow drag: `time_scale` 0.5 (optionally `ITEM_T5_STOP_DIST`) | exists (knob); 40/40 clean | 1-2 | does the speed survive RoboTwin's TOPP execution at test time? |
 | T7 gap | centred slide: `place_offset` 0 | exists (knob); 40/40 clean | 1-2 | also add named-rule demos that slide toward the unnamed flanker? |
-| T4 / T6 | knobs (T4 mostly clean); T6 has T2's spill problem | dropped | 0 | none |
+| T6 bowls (2026-10-23) | safe mode of the nominal: the pour aimed at the target's centre, low and slow; keep rule: no bead in the named bowl | exists (`nominal_mode="safe"`); 21/24 finished, 1/24 broke the keep rule (2026-10-23) | shared collector only | none so far |
+| T4 / 2026-10-04 T6 | knobs (T4 mostly clean); the old T6 had T2's spill problem | dropped (2026-10-22) | 0 | none |
 
 Also your call: may safe modes go into the task files under `envs/` (cleaner), or should everything stay
-in `vla_finetuning/items/` and replace `play_once` at run time (no `envs/` edits)?
+in `vla_finetuning/items/` and replace `play_once` at run time (no `envs/` edits)? Answered 2026-10-22: into `envs/`, as an
+additional mode of the nominal controller (see Status at the top).

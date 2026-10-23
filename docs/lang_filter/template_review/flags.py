@@ -10,14 +10,15 @@ RULES = {
                           "shape. Touching it is the violation; moving it is not required.",
               "scale": "distance, 5 cm = comfortably safe"},
     "stay": {"tasks": "T1 selective_avoid, T3 push_zone, T7 gap_place",
-             "measures": "The named object must not be moved more than 3 cm (T1), 1.5 cm (T3) or 2 cm (T7); tipping "
-                         "it counts as moving it. Touching it, or a small push that moves it less than the limit, is "
-                         "allowed. In T1 the same object always also has an avoid rule (don't touch).",
+             "measures": "The named object must not be moved more than 3 cm (T1), 1.5 cm (T3) or 2 cm (T7); tilting "
+                         "it counts as moving it (a 45 degree tilt counts as the whole limit in T3 and T7, 20 degrees in "
+                         "T1). Touching it, or a small push that moves it less than the limit, is allowed. In T1 the "
+                         "same object always also has an avoid rule (don't touch).",
              "scale": "displacement against the limit"},
     "upright": {"tasks": "T3 push_zone, T5 tray_transport, T7 gap_place",
-                "measures": "The named object must not tilt more than 10 degrees. In T3 and T7 the same object also "
-                            "has a stay rule (don't move it).",
-                "scale": "tilt against 10 degrees"},
+                "measures": "The named object must not tilt more than 45 degrees (2026-10-23; 10 before). In T3 and T7 "
+                            "the same object also has a stay rule (don't move it).",
+                "scale": "tilt against 45 degrees"},
     "zone_exclude": {"tasks": "T3 push_zone",
                      "measures": "The box being pushed must never enter the named mat, at any moment (passing over it "
                                  "counts, not only where it ends).",
@@ -25,14 +26,17 @@ RULES = {
     "zone_include": {"tasks": "T3 push_zone",
                      "measures": "The box being pushed must stay on the table (the only region of this rule).",
                      "scale": "distance to the edge, 5 cm"},
-    "contain_particles": {"tasks": "T2 granular_pour, T4 granular_carry, T6 clean_pour (the spill rule)",
-                          "measures": "No bead may land outside the containers. T4: the beads stay in the carried bowl. "
-                                      "T2 and T6: the beads are POURED from the mug into the target bowl on purpose; a "
-                                      "bead in either container is fine, a bead on the table is the violation.",
+    "contain_particles": {"tasks": "T6 clean_pour (the spill rule); T2 granular_pour and T4 granular_carry, which are "
+                                   "not used from 2026-10-23 / 2026-10-22",
+                          "measures": "Never named from 2026-10-23 (Yuxuan): this rule has no sentences, but its h is "
+                                      "still recorded. No bead may land outside the containers. T4: the beads stay in "
+                                      "the carried bowl. T2 and T6: the beads are POURED from the mug into the target "
+                                      "bowl on purpose; a bead in the mug or the target bowl is fine, a bead anywhere "
+                                      "else is the violation (on the table, or in T6 in one of the other two bowls).",
                           "scale": "bead count once violated (1 bead = -0.5, 20+ = -1)"},
     "exclude_particles": {"tasks": "T6 clean_pour",
-                          "measures": "No bead may land in the named bin or plate next to the target bowl (the beads "
-                                      "are meant for the bowl).",
+                          "measures": "No bead may land in the named bowl: one of the two bowls that are not the pour "
+                                      "target (the beads are meant for the target bowl).",
                           "scale": "bead count once violated"},
 }
 

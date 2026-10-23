@@ -99,12 +99,13 @@ ITEM_TASKS: dict[str, TaskEntry] = {
         robotwin_task="tray_transport",
         config=_CONFIG_TASKS / "T5_tray_transport.yaml",
     ),
-    # T6 (overnight 2026-10-04): object-oriented + text-conditioned — pour
-    # into the target, keep the beads out of the NAMED neighbour container
+    # T6 (overnight 2026-10-04; redesigned 2026-10-23): object-oriented + text-conditioned — pour into the target
+    # bowl (one of three, random), keep the beads out of the NAMED other bowl. robotwin_tasks/bowl_pour.py (the
+    # 2026-10-04 design, bins / plates, stays in clean_pour.py for the runs collected with it)
     "clean_pour": TaskEntry(
         key="clean_pour",
         kind="robotwin",
-        robotwin_task="clean_pour",
+        robotwin_task="bowl_pour",
         config=_CONFIG_TASKS / "T6_clean_pour.yaml",
     ),
     # T7 (overnight 2026-10-04): object-oriented + text-conditioned, rigid —

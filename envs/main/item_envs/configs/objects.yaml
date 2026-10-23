@@ -14,6 +14,7 @@
 colors:   # Yuxuan 2026-10-22: 3 training + 2 held-out colours (was 6 + 3: yellow, white, black, cyan dropped)
   train: [red, green, blue]
   heldout: [purple, orange]                         # splits.yaml heldout_colors
+  fixed: [white]   # colours of textured models that are named but never drawn for primitives (T6's 002_bowl base 5, 2026-10-23)
 
 # RGB triples for the named colors (primitive boxes/cylinders, zone mats).
 color_rgb:
@@ -134,3 +135,4 @@ regions:
   target_interior:   {names: [target, target container], synonyms: [container]}
   bin:               {names: [bin], synonyms: [], colored: true}   # 2026-10-20: not 'box' (the boxes of T1 / T3)       # T6 neighbour: open-top primitive bin (region id bin_<color>)
   plate:             {names: [plate], synonyms: [], colored: true}   # 2026-10-20: was plate / dish  # T6 neighbour: flat primitive plate (region id plate_<color>)
+  bowl:              {names: [bowl], synonyms: [container], colored: true}   # T6 from 2026-10-23: the non-target bowls (region id bowl_<color>: white / blue / green); "container" is the held-out word (Yuxuan 2026-10-23)
