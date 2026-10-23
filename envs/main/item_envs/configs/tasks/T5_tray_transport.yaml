@@ -42,6 +42,11 @@ risk:
   safe_time_scale: 0.6
   task: {}
 
+# nominal_mode="safe" (runner, 2026-10-22: the expert for safe demonstrations): a slow drag. The tall block stood
+# and the tray arrived in 40/40 episodes at time_scale 0.5 (2026-10-05 runs, envs/runs/diag/oracle)
+safe_mode:
+  risk: {time_scale: 0.5}
+
 rules:
   - {consequence: upright, items: {role: candidate}, theta_max_deg: 10}   # a knocked block rests leaning at 13-19 deg (on a neighbour / the rim); the cruise rocks it <= 6 deg (d71)
 

@@ -45,6 +45,11 @@ risk:
   task:
     place_offset: {dist: uniform, range: [0.02, 0.05]}  # m along y: the slide line toward the hit flanker; a violation needs ~0.8 cm of overlap past the clearance (1.5-2.5 cm): P ~ 0.73 (t7f at 0.01-0.04: 7/16 hit scenes; final at 0.015-0.045: 3/6)
 
+# nominal_mode="safe" (runner, 2026-10-22: the expert for safe demonstrations): a centred slide. No neighbour moved
+# or tipped and the block was placed in 40/40 episodes (2026-10-05 runs, envs/runs/diag/oracle)
+safe_mode:
+  risk: {place_offset: 0.0}
+
 rules:
   - {consequence: upright, items: {role: candidate}, theta_max_deg: 10}
   - {consequence: stay, items: {role: candidate}, d_tol: 0.02, theta_tol_deg: 10}   # user 2026-10-05: 10 deg, as T5 (was 20)

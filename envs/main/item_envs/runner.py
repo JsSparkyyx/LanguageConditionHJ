@@ -127,8 +127,12 @@ class ItemEpisodeRunner:
         arm_distance: float | None = None,
         task_cfg_path: str | None = None,
         video_fps: float = 25.0,
+        nominal_mode: str = "careless",
     ):
         self.entry = get_task_entry(task)
+        if nominal_mode not in NOMINAL_MODES:
+            raise ValueError(f"nominal_mode must be one of {NOMINAL_MODES}, got {nominal_mode!r}")
+        self.nominal_mode = nominal_mode
         if render not in ("full", "none"):
             raise ValueError(f"render must be 'full' or 'none', got {render!r}")
         self.task_name = task
@@ -175,6 +179,7 @@ class ItemEpisodeRunner:
         rng = np.random.RandomState(self.seed + 7919)
         self.task_cfg = _load_yaml(self.task_cfg_path)
         self.risk_params = sample_risk(self.task_cfg, rng)
+        apply_nominal_mode(self.risk_params, self.task_cfg, self.nominal_mode, self.task_name)
         if self.risk_override:
             _merge_risk_override(self.risk_params, self.risk_override)
 
@@ -444,6 +449,7 @@ class ItemEpisodeRunner:
                 video.close()
 
         meta.risk = self.risk_params.as_dict()
+        meta.diag["nominal_mode"] = self.nominal_mode
         meta.physics = _jsonable_physics(self.physics_sample)
         meta.items = [item_spec_dict(s) for s in self.items]
         meta.regions = [region_dict(r) for r in self.regions]
@@ -837,6 +843,22 @@ def rule_hs(rules, margins, counts=None) -> np.ndarray:
     """[R] h of every rule (margins.rule_h, bead rules with their violation counts)."""
     counts = [None] * len(rules) if counts is None else list(counts)
     return np.array([margin_fns.rule_h(r, m, c) for r, m, c in zip(rules, margins, counts)], dtype=np.float64)
+
+
+NOMINAL_MODES = ("careless", "safe")
+
+
+def apply_nominal_mode(params: RiskParams, task_cfg: dict, mode: str, task: str) -> None:
+    """The nominal controller's mode (Yuxuan 2026-10-22). "careless", the default: the sampled risk knobs, unchanged
+    (every collection and evaluation so far). "safe": the task yaml's ``safe_mode.risk`` knobs pinned over them, the
+    expert for safe demonstrations (T5 a slow drag, T7 a centred slide). The sampling draws are made either way, so a
+    seed builds the same scene in both modes. A task without a ``safe_mode`` section has no safe expert yet."""
+    if mode == "careless":
+        return
+    safe = task_cfg.get("safe_mode") or {}
+    if not safe:
+        raise NotImplementedError(f"{task}: no safe nominal mode yet (configs/tasks/<task>.yaml safe_mode)")
+    _merge_risk_override(params, safe.get("risk") or {})
 
 
 def _merge_risk_override(params: RiskParams, override: dict) -> None:

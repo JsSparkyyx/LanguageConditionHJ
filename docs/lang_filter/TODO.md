@@ -39,7 +39,10 @@ checked.
   wine glass 13.
 - [ ] OOD scenes with the held-out colours for T3 / T5 / T7 (T1 has the "heldout" pool; the other tasks draw their
   colours in their task files and have no switch yet).
-- [ ] When Yuxuan says the revisions are done: commit; re-collect the warmup and validation data of T1, T3, T5, T7
+- [x] 10-22 revision round checked (trial collection runs/lang/smoke_1022: 5 tasks + 2 OOD T1 scenes, records,
+  sentences, splits; 361 lang + 231 env tests) and committed as f1d2488. [ ] Push: the GitHub token in GH_TOKEN is
+  rejected (401, expired since the 10-20 push); needs a new token from Yuxuan.
+- [ ] When Yuxuan says go: re-collect the warmup and validation data of T1, T3, T5, T7
   (old shards hold the old objects, colours and layouts; T2 is unchanged); cancel the three round jobs and
   resubmit (`runs/lang/rounds_1020/launch.sh` as the template, new run names).
 
@@ -77,8 +80,9 @@ checked.
   (detour) trajectory, 20% named rule on an element not in the way + the plain nominal trajectory; the safe
   controllers go into envs/ as an additional mode of the nominal controller. The same 80 / 20 split for T1, T5, T7.
 - [ ] Implement (after the revision round is committed), in this order:
-  - [ ] runner plumbing: `ItemEpisodeRunner(nominal_mode="safe")` (default "careless" unchanged), the task yaml's
-    `safe_mode:` section; T5 safe = time_scale 0.5, T7 safe = place_offset 0 (40/40 clean in the old runs);
+  - [x] 10-22 runner plumbing: `ItemEpisodeRunner(nominal_mode="safe")` (default "careless" unchanged), the task
+    yaml's `safe_mode:` section; T5 safe = time_scale 0.5, T7 safe = place_offset 0; tests/item_envs/test_nominal_mode.py.
+    10-22 sim check on today's scenes (runs/lang/safe_mode_1022): T5 8/8 and T7 8/8 finished with no rule broken;
   - [ ] T1 safe: the named object (in the way) in cuRobo's world with the WSG hand + held-object model (from
     vla_finetuning/hand_model.py), 2 cm margin, stock executor; keep = no contact with it at any physics step;
   - [ ] T3 safe: route around the in-the-way element (waypoints + a pusher that follows them, lifting the hand at
