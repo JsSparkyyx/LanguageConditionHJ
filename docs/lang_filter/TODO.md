@@ -164,13 +164,16 @@ and the old tilt limits. The watcher process had died (no run was submitted).
 - [x] 10-26 Code (24b9444, pushed): agent-view frames during collection, the labeler (`main/lang/vlm_label.py`), the
   h switch (`h_source`, `rule_consequences`, `hsource.py`), rounds wait for labels; CPU tests
   tests/lang/test_vlm_failure.py. Frozen worktree LanguageConditionHJ_rvlm.
-- [ ] Smoke: replay of 3 warmup episodes with frames (A40, runs/lang/vlm_1026/smoke) and the labeler on both VLMs
-  (A100, runs/lang/vlm_1026/mech with frames from 10-20 videos, then the smoke frames).
-- [ ] Data: chain stage vlm1026_data (runs/lang_vlm_1026_data: the 90 T1 / T5 / T6 warmup episodes of data/lang_1023
-  replayed with frames) -> data/lang_vlm_1026/READY.
-- [ ] Labelers: interactive A100 chains, one per VLM (runs/lang/rounds_vlm_1026/start_labelers.sh; batch A100 jobs
-  were a week out on 10-26), held by scripts/lang/vlm/labeler_watch.sh when idle -> LABELS_<vlm>.
-- [ ] Runs (runs/lang/rounds_vlm_1026/presubmit.sh): rounds_ur5_vlm_qwen25vl32b_g095_1026,
-  rounds_ur5_vlm_robobrain2_32b_g095_1026, rounds_ur5_simh_g095_1026 (the reference); 25 rounds x 16 episodes x 8192.
+- [x] 10-26 Smoke (runs/lang/vlm_1026/smoke): 6 warmup episodes replayed with frames (frames line up with the rows);
+  RoboBrain labelled them (852 questions in 9 min on two A100s, every answer parsed). Its agreement with the
+  simulator: T6 catches 69 % of the harmed ticks (precision 1.0), T5 35 % (0.74), T1 touches 0 % (it calls every T1
+  tick safe). Every Delta A100 has 40 GB: a 32B model runs on two (gpuA100x4 / gpuA100x8 interactive).
+- [x] 10-26 Data: chain stage vlm1026_data (16:33-17:00) -> data/lang_vlm_1026/READY; 15 shards, frames check and
+  check_shards clean.
+- [ ] Labelers running (10-26 17:00): chains runs/lang_pipeline_vlm_{qwen25vl32b,robobrain2_32b} (orchestrators and
+  labeler_watch.sh on dt-login02; two A100s each, gpuA100x4 / gpuA100x8 interactive) -> LABELS_<vlm>.
+- [ ] Runs presubmitted 10-26 (wait_then_rounds.sbatch from worktree LanguageConditionHJ_rvlm at 774d5e6):
+  rounds_ur5_simh_g095_1026 (job 23230275, waits for READY), rounds_ur5_vlm_qwen25vl32b_g095_1026 (23230276) and
+  rounds_ur5_vlm_robobrain2_32b_g095_1026 (23230277), waiting for LABELS_<vlm>; 25 rounds x 16 episodes x 8192.
 - [ ] Report: VLM vs simulator agreement on the warmup (`vlm_label agree`), then the closed-loop results.
 
