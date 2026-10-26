@@ -67,3 +67,42 @@ def read_done(root, episode_id: int) -> dict | None:
 
 def frame_path(root, episode_id: int, tick: int) -> Path:
     return frames_dir(root, episode_id) / f"t{int(tick):04d}.jpg"
+
+
+def check_frames(root) -> list[str]:
+    """Problems of a data root's agent-view frames: per episode with rows (lang_episodes.jsonl), done.json must list
+    every `every`-th tick below its n_rows, with a jpg each, and n_rows must equal the episode's sidecar rows with
+    t_in_ep 0 .. n - 1. [] = all good."""
+    root = Path(root)
+    n = int(json.loads((root / "item_buffer" / "header.json").read_text())["n"])
+    ep = np.asarray(np.load(root / "item_buffer" / "episode_id.npy", mmap_mode="r")[:n]).reshape(-1)
+    t = np.asarray(np.load(root / "item_buffer" / "t_in_ep.npy", mmap_mode="r")[:n]).reshape(-1)
+    out = []
+    for ln in (root / "lang_episodes.jsonl").read_text().splitlines():
+        d = json.loads(ln)
+        rows = d.get("rows") or [0, 0]
+        if d.get("skipped") or int(rows[1]) <= int(rows[0]):
+            continue
+        eid = int(d["episode_id"])
+        done = read_done(root, eid)
+        if done is None:
+            out.append(f"{eid}: no done.json")
+            continue
+        r = np.flatnonzero(ep == eid)
+        if r.size != int(done["n_rows"]) or not np.array_equal(t[r], np.arange(r.size)):
+            out.append(f"{eid}: {r.size} sidecar rows, done.json n_rows {done['n_rows']}")
+        want = list(range(0, int(done["n_rows"]), int(done["every"])))
+        if done["ticks"] != want or not all(frame_path(root, eid, k).exists() for k in want):
+            out.append(f"{eid}: ticks {done['ticks'][:3]}... != every {done['every']} below {done['n_rows']}, or a jpg missing")
+    return out
+
+
+if __name__ == "__main__":   # python -m main.lang.agent_view <root> [<root> ...]: exit 1 on any problem
+    import sys
+
+    bad = 0
+    for r in sys.argv[1:]:
+        p = check_frames(r)
+        print(f"{r}: {'OK' if not p else p}")
+        bad += len(p)
+    raise SystemExit(1 if bad else 0)

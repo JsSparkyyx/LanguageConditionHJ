@@ -93,13 +93,15 @@ and the old tilt limits. The watcher process had died (no run was submitted).
 - [x] 10-25 Yuxuan's go: the three 10-20 runs cancelled (they had hit the 48 h limit on 10-24 and sat in the queue;
   stopped at round 39 vanilla / 40 T1 / 83 Qwen, run dirs kept; the Qwen filter had drifted to driving 97 % of the
   ticks, every episode timing out); data/lang_1022 + data/lang_qwen_1022 and the core.* dumps deleted.
-- [ ] Re-collection running: chain stages d1023_vanilla -> d1023_qwen in runs/lang_pipeline_vf/queue.txt (first job
-  23204948, 10-25 20:08) -> data/lang_1023/READY, data/lang_qwen_1023/READY.
+- [x] 10-26 Re-collection done: chain stages d1023_vanilla -> d1023_qwen (10-25 20:08 -> 10-26 00:13),
+  data/lang_1023/READY, data/lang_qwen_1023/READY; checked (150 warmup episodes, every 10-23 change in the data).
 - [ ] The three runs were submitted EARLY (Yuxuan 10-25: the batch queue waits days), so they queue while the data
   is collected: rounds_ur5_g095_1023 (job 23205090), rounds_t1_ur5_g095_1023 (23205091), rounds_ur5_qwen_g095_1023
   (23205092), via runs/lang/rounds_1023/presubmit.sh + wait_then_rounds.sbatch: a job that starts before its READY
   file waits up to 6 h, else resubmits itself. The READY watcher (submit_when_ready.sh) was stopped (no double
   submission). Scheduler estimate on 10-25: start ~10-31.
+- [ ] 10-26 Yuxuan: a fourth run, collision avoidance (T1) only on the Qwen front end, like the GD T1 run:
+  rounds_t1_ur5_qwen_g095_1023 (job 23229109, `runs/lang/rounds_1023/launch.sh t1qwen`, data/lang_qwen_1023).
 
 ## B. Evaluation of the new round trainings
 
@@ -156,3 +158,19 @@ and the old tilt limits. The watcher process had died (no run was submitted).
     the constraint sentence, the 80 / 20 split (in-the-way named + safe trajectory / not-in-the-way named +
     nominal trajectory), ur5-wsg, the HDF5 writer;
   - [ ] collect, fine-tune HoloBrain, evaluate as in C.
+
+## F. VLM as the failure function (Yuxuan 2026-10-26, docs/lang_filter/VLM_FAILURE_PLAN.md)
+
+- [x] 10-26 Code (24b9444, pushed): agent-view frames during collection, the labeler (`main/lang/vlm_label.py`), the
+  h switch (`h_source`, `rule_consequences`, `hsource.py`), rounds wait for labels; CPU tests
+  tests/lang/test_vlm_failure.py. Frozen worktree LanguageConditionHJ_rvlm.
+- [ ] Smoke: replay of 3 warmup episodes with frames (A40, runs/lang/vlm_1026/smoke) and the labeler on both VLMs
+  (A100, runs/lang/vlm_1026/mech with frames from 10-20 videos, then the smoke frames).
+- [ ] Data: chain stage vlm1026_data (runs/lang_vlm_1026_data: the 90 T1 / T5 / T6 warmup episodes of data/lang_1023
+  replayed with frames) -> data/lang_vlm_1026/READY.
+- [ ] Labelers: interactive A100 chains, one per VLM (runs/lang/rounds_vlm_1026/start_labelers.sh; batch A100 jobs
+  were a week out on 10-26), held by scripts/lang/vlm/labeler_watch.sh when idle -> LABELS_<vlm>.
+- [ ] Runs (runs/lang/rounds_vlm_1026/presubmit.sh): rounds_ur5_vlm_qwen25vl32b_g095_1026,
+  rounds_ur5_vlm_robobrain2_32b_g095_1026, rounds_ur5_simh_g095_1026 (the reference); 25 rounds x 16 episodes x 8192.
+- [ ] Report: VLM vs simulator agreement on the warmup (`vlm_label agree`), then the closed-loop results.
+
