@@ -21,7 +21,7 @@ cd VLM
 
 Inside the project container (transformers 4.57.6 has Qwen2.5-VL; both models load with
 `Qwen2_5_VLForConditionalGeneration`). bf16 needs about 66 GB of GPU memory for the weights: two A40s (48 GB each),
-one A100 80 GB, or an H200.
+two A100s (every Delta A100 has 40 GB, gpuA100x4 and gpuA100x8 alike), or one H200.
 
 ```
 srun -A bifq-delta-gpu -p gpuA40x4-interactive --gpus-per-node=2 --mem=160g --cpus-per-task=16 --time=00:30:00 \

@@ -19,6 +19,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -28,10 +29,12 @@ ensure_item_path()
 
 REPO = Path(__file__).resolve().parents[2]
 PROMPTS = Path(__file__).resolve().parent / "vlm_prompts.yaml"
-# the two VLMs of VLM/README.md (both Qwen2.5-VL; RoboBrain 2.0 32B is fine-tuned from Qwen2.5-VL-32B-Instruct)
+# the two VLMs of VLM/README.md (both Qwen2.5-VL; RoboBrain 2.0 32B is fine-tuned from Qwen2.5-VL-32B-Instruct). The
+# weights are not in git (VLM/*/ is ignored): every checkout (the frozen worktrees too) reads the main project's copy
+VLM_ROOT = Path(os.environ.get("VLM_ROOT", "/work/nvme/bifq/project/LanguageConditionHJ/VLM"))
 VLMS = {
-    "qwen25vl32b": REPO / "VLM" / "Qwen2.5-VL-32B-Instruct",
-    "robobrain2_32b": REPO / "VLM" / "RoboBrain2.0-32B",
+    "qwen25vl32b": VLM_ROOT / "Qwen2.5-VL-32B-Instruct",
+    "robobrain2_32b": VLM_ROOT / "RoboBrain2.0-32B",
 }
 PLACEHOLDERS = ("{object}", "{block_description}", "{bowl_description}")
 SCORES = (-1, 0, 1)

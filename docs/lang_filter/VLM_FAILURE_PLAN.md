@@ -15,7 +15,7 @@ vision-language model (VLM) looking at the scene give an h that is good enough t
 | prompts | Yuxuan's for T1 and T5, one in the same style for T6 (`main/lang/vlm_prompts.yaml`) |
 | T1 rules | only "don't touch X" (avoid) is named and trained: the T1 prompt asks about touch, bump, move and tilt together, so it has no separate answer for "don't move X" (stay) |
 | what the VLM sees | two images per question: the episode's first frame and the current one, asked every 5 ticks (0.2 s) |
-| where it runs | one A100 per VLM (a 32B model needs ~66 GB; the training A40 has 48 GB) |
+| where it runs | its own GPUs, not the training A40 (48 GB; a 32B model in bf16 needs ~66 GB): Yuxuan said A100; every Delta A100 has 40 GB, so Qwen runs on one H200 and RoboBrain on two A100s, as 1-h interactive jobs (batch A100 jobs were about a week out on 10-26) |
 | rounds | bigger, so the runs wait for labels less often: 25 rounds × 16 episodes × 8192 steps (the same 400 episodes and 204,800 steps as the 10-23 runs) |
 | reference | a third run with the simulator's h on the same data, tasks and rules: any difference comes from h alone |
 | model | otherwise the 10-23 vanilla run's: HoloBrain-GD encoder, softmin critic, MLP actor |
@@ -57,7 +57,7 @@ An answer without a readable score is asked again once with sampling; if it stil
 |---|---|
 | `vlm_prompts.yaml`, `vlm_prompts.py` | prompts, the item phrase, the answer parser, label-file paths |
 | `agent_view.py` | saves the frames during collection (`LangRolloutController._agent_view_tick`) |
-| `vlm_label.py` | the labeler (`serve`, `agree`); `scripts/lang/vlm/label.sbatch` runs it on an A100 |
+| `vlm_label.py` | the labeler (`serve`, `agree`); interactive chains (`runs/lang/rounds_vlm_1026/start_labelers.sh`, `scripts/lang/vlm/labeler_watch.sh`) or a batch job (`scripts/lang/vlm/label.sbatch`) run it |
 | `hsource.py` | `HSourceSampler`: swaps the VLM's h into the training sampler, restricts the rules, waits for labels |
 | `config.py` | `h_source` ("sim" or "vlm:<name>"), `rule_consequences` ("all" or "vlm_prompts"), `agent_view_every` |
 
@@ -71,9 +71,10 @@ An answer without a readable score is asked again once with sampling; if it stil
 
 ## Jobs
 
-`runs/lang/rounds_vlm_1026/presubmit.sh` (training jobs on A40, labelers on A100); the training jobs wait for
+`runs/lang/rounds_vlm_1026/presubmit.sh` (training jobs on A40) and `start_labelers.sh` (the labelers); the training jobs wait for
 `data/lang_vlm_1026/warmup/LABELS_<vlm>` (written by the labeler once every warmup episode is labelled), the
 reference for `data/lang_vlm_1026/READY`.
 
-Cost note: each labeler holds its A100 for the whole run (about a week), idle while its run trains. A labeler that
-runs only while its run collects would need the run to request it; not done.
+A labeler runs only while there is work: the run touches `ring/vlm_labels/<vlm>/WANTED` while it collects and
+waits, the labeler stops after 5 idle minutes without a fresh marker, and `labeler_watch.sh` (login node) holds the
+chain stage while nothing is pending, so the GPUs are not held while the run trains (about 2/3 of each round).
