@@ -211,14 +211,15 @@ def scene_meta(env, runner) -> dict:
 
 
 def choose_named_rule(record: dict, desig: dict, rng: np.random.Generator,
-                      named_harm_frac: float = 0.5) -> dict | None:
+                      named_harm_frac: float = 0.5, allowed=None) -> dict | None:
     """Section 7.1 item 4: a SAMPLEABLE harm-designated rule with probability
     named_harm_frac, else a sampleable benign-designated one; the other kind
-    when the wanted one does not exist; None when neither exists."""
+    when the wanted one does not exist; None when neither exists. allowed: the
+    consequences the run names (cfg.rule_consequences), None = all."""
     pool = {"harm": [], "benign": []}
     for r in record["rules"]:
         d = desig.get(r["rule_id"])
-        if r.get("sampleable") and d in pool:
+        if r.get("sampleable") and d in pool and (allowed is None or r["consequence"] in allowed):
             pool[d].append(r)
     want = "harm" if rng.random() < named_harm_frac else "benign"
     if not pool[want]:
@@ -384,9 +385,12 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         region_rows = mask_region_rows(runner)
         smeta = scene_meta(env, runner)   # before run(): run() closes the env (actor poses gone)
         named, sentence, cf_sentence, cf_rule = None, None, None, None
+        from .vlm_prompts import allowed_consequences
+
+        allowed = allowed_consequences(getattr(cfg, "rule_consequences", "all"), task)
         if use_filter:
             rng_ep = np.random.default_rng(seed)
-            named = choose_named_rule(record, desig, rng_ep, cfg.named_harm_frac)
+            named = choose_named_rule(record, desig, rng_ep, cfg.named_harm_frac, allowed)
             if named is None:
                 ro.filter_active = False
             else:
@@ -394,7 +398,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                 sentence = language.sample_sentence(named, record, rng_ep, "train")
                 # counterfactual: a sampleable rule of the other designation (Q_cf on the panel)
                 other = "benign" if desig.get(named["rule_id"]) == "harm" else "harm"
-                cands = [r for r in record["rules"] if r.get("sampleable") and desig.get(r["rule_id"]) == other]
+                cands = [r for r in record["rules"] if r.get("sampleable") and desig.get(r["rule_id"]) == other
+                         and (allowed is None or r["consequence"] in allowed)]
                 if cands:
                     cf_rule = cands[int(rng_ep.integers(len(cands)))]
                     cf_sentence = language.sample_sentence(cf_rule, record, rng_ep, "train")
@@ -418,6 +423,11 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             ro.buf = SidecarLockstepWriter(ro.buf, extras)  # pops _kv / _frames inside the same append
         if not with_masks:
             ro.h_fn.with_masks = False
+        av = None
+        if int(getattr(cfg, "agent_view_every", 0) or 0) > 0:   # the VLM labeler's frames (agent_view.py)
+            from .agent_view import AgentViewWriter
+
+            av = ro.agent_view = AgentViewWriter(out_root, seed, int(cfg.agent_view_every))
         if video_every and summary["episodes"] % int(video_every) == 0 and (not video_filter_only or named is not None):
             from .video import LangPanelVideoWriter, video_name
 
@@ -468,6 +478,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         sidecar.flush()
         for nb in necks:
             nb.flush()
+        if av is not None:   # after the rows are on disk: done.json lets the labeler take the episode
+            av.finish(len(buf) - n_before) if len(buf) > n_before else av.discard()
         rows = np.arange(n_before, len(buf)) % buf.capacity
         violated, hmin = _rule_outcomes(sidecar, rows, len(record["rules"]))
         line = {
@@ -647,12 +659,15 @@ TRAIN_ONLY_FIELDS = frozenset({
     "train_episodes_per_task",
     # V6 (2026-10-14): which prefix the words read is decided at training time (the shard stores every frame's)
     "qwen_words_prefix",
+    # VLM failure function (2026-10-26): the labels are read at training time, next to the rows
+    "h_source",
 })
 
 # Collection fields added after shards were written (V6, 2026-10-14). At these values they change nothing a
 # collection does, so collect_hash leaves them out and every shard written before them keeps its hash
 # (qwen_attn matters only with the Qwen encoder)
-NEUTRAL_COLLECT_FIELDS = {"encoder": "holobrain_gd", "spawn_pool": "current", "vocab": "current"}
+NEUTRAL_COLLECT_FIELDS = {"encoder": "holobrain_gd", "spawn_pool": "current", "vocab": "current",
+                          "rule_consequences": "all", "agent_view_every": 0}
 
 
 def collect_fields(cfg) -> dict:
@@ -828,7 +843,7 @@ def replay_plan(src: Path, kind: str, emb: str, tasks=None) -> dict:
 
 
 # collection fields a replay may change: what is stored per tick, never what happens in the episode
-REPLAY_FREE_FIELDS = frozenset({"lang_version", "encoder", "qwen_attn"})
+REPLAY_FREE_FIELDS = frozenset({"lang_version", "encoder", "qwen_attn", "agent_view_every"})
 
 
 def config_drift(old, new) -> list:
@@ -1016,6 +1031,8 @@ def plan_shard(args, kind: str):
     v2 = int(getattr(args, "lang_version", 1) or 1) >= 2
     if v2:
         cfg = dataclasses.replace(cfg, lang_version=2)
+    if int(getattr(args, "agent_view", 0) or 0) > 0:   # the VLM labeler's frames (in collect_hash, replay-free)
+        cfg = dataclasses.replace(cfg, agent_view_every=int(args.agent_view))
     meta = {"kind": kind, "embodiment": args.embodiment, "shard": shard, "n_shards": n_shards,
             "g": g, "episode_offset": offset, "episodes_per_task": ept,
             "slots": [list(x) for x in slots], "config_hash": cfg.hash(), "collect_hash": collect_hash(cfg),
@@ -1172,6 +1189,8 @@ def main(argv=None) -> int:
                        help=f"default {30 if kind == 'warmup' else 5} (with --replay: the replayed shard's)")
         p.add_argument("--tasks", default="all", help="comma list; with --replay, the recorded episodes to replay")
         p.add_argument("--video-every", type=int, default=0)
+        p.add_argument("--agent-view", type=int, default=0, metavar="N",
+                       help="save the agent-view frame every N ticks for the VLM labeler (0 = off)")
         p.add_argument("--no-masks", action="store_true", help="skip per-tick segmentation masks (warmup)")
         p.add_argument("--time-budget", type=float, default=None, help="seconds; then pause (exit 75)")
         p.add_argument("--lang-version", type=int, choices=(1, 2), default=1,

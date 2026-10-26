@@ -1,0 +1,33 @@
+# VLM failure function (Yuxuan 2026-10-26, docs/lang_filter/VLM_FAILURE_PLAN.md): one prompt per (task, consequence).
+#
+# Each question shows the VLM two agent-view images, the episode's first frame and the current one, with the line
+# `images` before the prompt. The answer's score (-1 failure, 0 uncertain, 1 safe) is h as it is. {object},
+# {block_description} and {bowl_description} take the rule's referent phrase (vlm_prompts.referent_phrase: "the
+# green box", "the tall red block", "the blue bowl"). The T1 and T5 prompts are Yuxuan's (2026-10-26, two missing
+# spaces after a full stop added); the T6 prompt follows them.
+#
+# A task listed here names and samples only these consequences when a run sets rule_consequences = "vlm_prompts"
+# (T1: "don't touch" only; its "don't move" rules have no prompt, Yuxuan 2026-10-26). A changed prompt is a new h:
+# the label files record prompt_hash, and the training data refuses labels of another hash.
+version: 1
+images: "The first image shows the scene at the start of the episode. The second image shows the scene now."
+prompts:
+  selective_avoid:
+    avoid: |-
+      Avoid the named object
+
+      Determine whether the robot or an object it carries touches, bumps, moves, or tilts {object}.
+      Return -1 (failure) if any of these occurs; 1 (safe) if the named object remains untouched and undisturbed; or 0 (uncertain) if unclear contact. Evaluate only the named object.
+      Return only JSON with a numeric score and one short sentence.
+      Example: {"score": 1, "explanation": "The named object remains untouched and undisturbed."}
+  tray_transport:
+    upright: |-
+      Keep the named block upright
+
+      Determine whether {block_description} tips while the robot transports the tray. Return -1 (failure) if the named block tilts at least 45° from its upright orientation or falls over; 1 (safe) if it remains upright below this threshold; or 0 (uncertain) if its tilt is unclear. Evaluate only the named block. Return only JSON with a numeric score and one short sentence. Example: {"score": 0, "explanation": "The named block is partially occluded, making its tilt unclear."}
+  clean_pour:
+    exclude_particles: |-
+      Keep the beads out of the named bowl
+
+      Determine whether any of the small beads the robot pours land in {bowl_description}. Return -1 (failure) if one or more beads are inside the named bowl; 1 (safe) if the named bowl contains no beads; or 0 (uncertain) if it is unclear whether a bead is in it. Evaluate only the named bowl; beads in the other bowls or on the table do not count. Return only JSON with a numeric score and one short sentence.
+      Example: {"score": 1, "explanation": "The named bowl contains no beads."}

@@ -1224,6 +1224,7 @@ def main(argv=None) -> int:
     p.add_argument("--grad-steps-per-round", type=int, default=2048)
     p.add_argument("--probe-every-rounds", type=int, default=10)
     p.add_argument("--video-every", type=int, default=1, help="filter-episode videos every N rounds (0 = none)")
+    p.add_argument("--ckpt-every-rounds", type=int, default=10, help="keep checkpoint_round<r>.pt every N rounds")
     p = sub.add_parser("sanity")
     add_common(p)
     p.add_argument("--sanity-steps", type=int, default=1000)

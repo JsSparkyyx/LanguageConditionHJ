@@ -44,9 +44,9 @@ from . import ensure_item_path
 ensure_item_path()
 
 from main.item_envs import language  # noqa: E402
-from main.item_envs.relabel import RelabelSampler  # noqa: E402
 
 from .config import CANON_TASKS  # noqa: E402
+from .hsource import HSourceSampler  # noqa: E402
 from .kv_buffer import KvBuffer  # noqa: E402
 from .neck_buffer import NeckBuffer  # noqa: E402
 from .scene_roles import ref_rows  # noqa: E402
@@ -166,7 +166,8 @@ class LangSource:
     shard, opened on first use)."""
 
     def __init__(self, root, k_prev: int = 2, recall_horizon: int = 7, name: str | None = None,
-                 max_n: int | None = None, drop_stale_bead: bool = True, drop_old_t6: bool = True):
+                 max_n: int | None = None, drop_stale_bead: bool = True, drop_old_t6: bool = True,
+                 h_source: str = "sim", rule_consequences: str = "all"):
         self.root = Path(root).resolve()
         # written before the bead-count h: its bead-task rows hold the old bead h, never train on them
         self.old_bead_h = not (self.root / "item_buffer" / "n_violating.npy").exists()
@@ -177,7 +178,10 @@ class LangSource:
         self.name = name or self.root.name
         self.k = int(k_prev)
         self.recall_horizon = int(recall_horizon)
-        self.rs = RelabelSampler(self.root / "item_buffer", split="train", k_prev=self.k)
+        # the h of each sample and the rules it may name (hsource.py; RelabelSampler at "sim" / "all")
+        self.h_source = str(h_source)
+        self.rs = HSourceSampler(self.root / "item_buffer", split="train", k_prev=self.k, h_source=h_source,
+                                 rule_consequences=rule_consequences)
         self.max_n = max_n
         self.step: dict[str, np.ndarray] = {}
         self.lines: dict[int, dict] = {}
@@ -476,7 +480,7 @@ class LangSampler:
             src = LangSource(r, self.k, int(cfg.recall_ticks),
                              max_n=self.max_rows.get(str(Path(r).resolve())),
                              drop_stale_bead=getattr(cfg, "drop_stale_bead_rows", True),
-                             drop_old_t6=getattr(cfg, "drop_old_t6_rows", True))
+                             drop_old_t6=getattr(cfg, "drop_old_t6_rows", True), **self._hkw())
             if src.rows.size and "scene_tokens" in src.step:
                 self._check_neck_source(src)
                 self._check_encoder_source(src)
@@ -493,10 +497,26 @@ class LangSampler:
         self.stats = {"mixed": 0, "pairs": 0, "harm": 0, "n": 0}
         self.refresh()
 
+    def _hkw(self) -> dict:
+        """Each source's h and rule set (VLM_FAILURE_PLAN): the probe sampler measures against the simulator's h,
+        on the run's rules."""
+        return {"h_source": "sim" if self.probe else getattr(self.cfg, "h_source", "sim"),
+                "rule_consequences": getattr(self.cfg, "rule_consequences", "all")}
+
+    def agreement(self) -> dict:
+        """VLM vs simulator h on the labelled training cells, summed over sources per task (hsource.py)."""
+        out: dict = {}
+        for s in self.sources:
+            for task, c in s.rs.agreement().items():
+                o = out.setdefault(task, {})
+                for k, v in c.items():
+                    o[k] = o.get(k, 0) + v
+        return out
+
     def add_source(self, root) -> None:
         src = LangSource(root, self.k, int(self.cfg.recall_ticks),
                          drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True),
-                         drop_old_t6=getattr(self.cfg, "drop_old_t6_rows", True))
+                         drop_old_t6=getattr(self.cfg, "drop_old_t6_rows", True), **self._hkw())
         if src.rows.size and "scene_tokens" in src.step:
             self._check_neck_source(src)
             self._check_encoder_source(src)

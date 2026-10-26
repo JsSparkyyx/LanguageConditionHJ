@@ -153,6 +153,19 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
     extras = (open_extras(run / "ring", ring_buf, kv_dims={"ckpt_id": qwen.ckpt_id, "attn": cfg.qwen_attn,
                                                            "encoder_version": getattr(qwen, "ENCODER_VERSION", None)})
               if cfg.qwen else {})
+    # VLM failure function (VLM_FAILURE_PLAN): the training data's labels must exist before the sampler indexes it
+    # (a source with no usable row yet is skipped for good); the ring's are waited for after each collection
+    from .hsource import wait_labels, want_labels
+    from .vlm_prompts import vlm_name
+
+    vlm = vlm_name(getattr(cfg, "h_source", "sim"))
+    deadline = stage_deadline(getattr(args, "time_budget", None))
+    if vlm is not None and trainer is None:
+        why = wait_labels(list(roots) + ([run / "ring"] if len(ring_buf) else []), vlm,
+                          lambda: deadline is not None and time.time() > deadline, prefix="[rounds] ")
+        if why:
+            print(f"[rounds] {why} at the start: exit 75 (nothing changed)", flush=True)
+            return EXIT_RESUME
     tr = trainer if trainer is not None else LangTrainer(
         cfg, run, roots, vals, caches, tasks=tasks, embodiments=embs, use_wandb=not args.no_wandb, seed=args.seed,
         qwen=qwen)
@@ -220,7 +233,6 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
     if len(ring_buf) > 0:   # after the roll-back: the sampler never indexes discarded rows
         tr.sampler.add_source(run / "ring")
         ring_added = True
-    deadline = stage_deadline(getattr(args, "time_budget", None))
     tr.install_signal()
     encoder = None
     kins = {}
@@ -271,6 +283,8 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
             t0, walls = time.time(), []
             slots = r_pos["slots"]
             while r_pos["done"] < len(slots):
+                if vlm is not None:   # a labeler is wanted while the round collects (labeler_watch.sh starts one)
+                    want_labels(run / "ring", vlm)
                 est = float(np.mean(walls)) if walls else 420.0
                 if out_of_time(1.2 * est):
                     return stop(r_pos, "signal" if tr._stop else f"time budget (next episode ~{est:.0f}s)")
@@ -291,6 +305,11 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                 r_pos["attempt"] = int(summ["attempt"])
                 r_pos["done"] = k + 1
                 save(r_pos)                # a kill now loses at most the next episode
+            if vlm is not None:   # the labeler takes each episode as it ends: here only the last ones are left
+                tr.pause_prefetch()
+                why = wait_labels([run / "ring"], vlm, out_of_time, prefix=f"[round {r}] ", want=True)
+                if why:
+                    return stop(r_pos, why)
             for m in (tr.policy_enc, tr.actor, tr.critics):
                 m.train()
             if not ring_added:
@@ -300,7 +319,7 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                 tr.sampler.refresh()
             tr.sampler.refresh_pending()
             tr.log({"round/collect_s": time.time() - t0, "round/episodes": len(slots), "round/index": r,
-                    **metrics.round_summary(r)})
+                    **metrics.round_summary(r), **(vlm_agreement(tr, r) if vlm is not None else {})})
             log_round_media(tr, r, lj, metrics.heatmaps(r))
             tr.reset_perf()
             r_pos = {**r_pos, "phase": "train", "steps_target": None}
@@ -324,7 +343,7 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
         tr.log({"round/train_s": time.time() - t0})
         check()
         tr.save_ckpt()
-        if r % 10 == 0 and r > 0:
+        if r % max(int(getattr(args, "ckpt_every_rounds", 10) or 10), 1) == 0 and r > 0:
             tr.save_ckpt(f"checkpoint_round{r}.pt")
         if args.probe_every_rounds and r % int(args.probe_every_rounds) == 0:
             pr = tr.run_probe()
@@ -339,6 +358,21 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
     if tr.prefetch is not None:
         tr.prefetch.stop()
     return 0
+
+
+def vlm_agreement(tr: LangTrainer, r: int) -> dict:
+    """VLM vs simulator h on the labelled training cells (warmup + ring), per task: vlm/<task>/agree (same sign),
+    vlm_neg / sim_neg (the share each calls h < 0), recall (simulator h < 0 cells the VLM also calls negative),
+    fs_agree (fails_soon). Printed and returned for the round log."""
+    out = {}
+    for task, c in sorted(tr.sampler.agreement().items()):
+        n = max(c["cells"], 1)
+        row = {"agree": c["agree"] / n, "vlm_neg": c["vlm_neg"] / n, "sim_neg": c["sim_neg"] / n,
+               "recall": c["both_neg"] / max(c["sim_neg"], 1), "fs_agree": c["fs_agree"] / n, "cells": c["cells"]}
+        out.update({f"vlm/{task}/{k}": v for k, v in row.items()})
+        print(f"[round {r}] [vlm] {task}: " + " ".join(f"{k} {v:.3f}" if isinstance(v, float) else f"{k} {v}"
+                                                      for k, v in row.items()), flush=True)
+    return out
 
 
 def log_round_media(tr: LangTrainer, r: int, lj: Path, images) -> None:

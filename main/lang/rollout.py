@@ -397,12 +397,31 @@ class LangRolloutController(RolloutController):
             writer.check_fast()
         self._in_capture = True
         try:
-            return super()._capture_tick()
+            out = super()._capture_tick()
         finally:
             self._in_capture = False
             self._trace_rules()
             self.timing["capture"] = self.timing.get("capture", 0.0) + time.perf_counter() - t0
             self.timing["n_capture"] = self.timing.get("n_capture", 0) + 1
+        if getattr(self, "agent_view", None) is not None:
+            self._agent_view_tick()
+        return out
+
+    def _agent_view_tick(self) -> None:
+        """VLM failure function (agent_view.py): the agent-view frame of this capture's row, at the ticks the writer
+        wants. The tick is the item h_fn's row counter (one row per capture, t_in_ep), read after the capture."""
+        fn = getattr(self.h_fn, "fn", self.h_fn)   # run() wraps the h_fn in a _Timer
+        n = getattr(fn, "_tick", None)
+        if n is None or n == getattr(self, "_av_rows", None):   # no new row this capture
+            return
+        self._av_rows = n
+        tick = int(n) - 1
+        if self.agent_view.wants(tick):
+            from main.envs.record import observer_rgb
+
+            t0 = time.perf_counter()
+            self.agent_view.save(tick, observer_rgb(self.env.task))
+            self.timing["agent_view"] = self.timing.get("agent_view", 0.0) + time.perf_counter() - t0
 
     def _encode_obs(self, obs):
         """The base encoding (tokens, pos_mean, state, body), always UNFUSED: the StepBuffer row and the V0 readers

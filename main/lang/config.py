@@ -221,6 +221,19 @@ class LangConfig(FrozenConfig):
     # the files before 2026-10-12, which both vanilla rounds runs use (legacy_pool.install_vocab: same physics, old
     # T1 pool, old names, sampleable rules and held-out words). V6 pre-run review, 2026-10-15
     vocab: str = "current"
+    # --- VLM failure function (docs/lang_filter/VLM_FAILURE_PLAN.md, Yuxuan 2026-10-26) ---
+    # Where a training sample's h comes from: "sim" = the simulator's h_rules (item sidecar); "vlm:<name>" = the
+    # scores of the VLM <name> (vlm_prompts.VLMS) in <root>/vlm_labels/<name>/: -1 / 0 / 1 at every labelled tick,
+    # each covering the ticks nearest to it (hsource.py). Episodes without labels are not trained on. Validation and
+    # the probes always use the simulator's h
+    h_source: str = "sim"
+    # The rules a run names (filter episodes) and samples (training and probes): "all" = every sampleable rule;
+    # "vlm_prompts" = per task, the consequences main/lang/vlm_prompts.yaml has a prompt for (T1 avoid, T5 upright,
+    # T6 exclude_particles; a task it does not list keeps all its rules)
+    rule_consequences: str = "all"
+    # Collection: save the agent-view (observer camera) frame at tick 0 and every N ticks under <root>/agent_view/ for
+    # the VLM labeler (agent_view.py); 0 = off. Rendering only, the episode is the same
+    agent_view_every: int = 0
 
     # --- sampling / relabeling ---
     shuffle_text: bool = False
@@ -277,6 +290,14 @@ class LangConfig(FrozenConfig):
         assert self.qwen_attn in ("sdpa", "flash_attention_2", "eager"), self.qwen_attn
         assert self.spawn_pool in ("current", "pre_1012", "heldout"), self.spawn_pool
         assert self.vocab in ("current", "pre_1012"), self.vocab
+        from .vlm_prompts import vlm_name
+
+        vlm_name(self.h_source)   # raises on an unknown source
+        assert self.rule_consequences in ("all", "vlm_prompts"), self.rule_consequences
+        assert int(self.agent_view_every) >= 0, self.agent_view_every
+        # a VLM-labelled run trains only rules the VLM answers for
+        assert self.h_source == "sim" or self.rule_consequences == "vlm_prompts", \
+            "h_source vlm:<name> needs rule_consequences = vlm_prompts"
         # the bank hash of this config's vocabulary; a hash of another known vocabulary is a stale copy (a config
         # built with dataclasses.replace from a default one), any other stored hash (a saved config) is kept
         known = {bank_hash(v) for v in ("current", "pre_1012")}
