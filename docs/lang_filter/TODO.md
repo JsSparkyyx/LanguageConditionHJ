@@ -94,9 +94,12 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   stopped at round 39 vanilla / 40 T1 / 83 Qwen, run dirs kept; the Qwen filter had drifted to driving 97 % of the
   ticks, every episode timing out); data/lang_1022 + data/lang_qwen_1022 and the core.* dumps deleted.
 - [ ] Re-collection running: chain stages d1023_vanilla -> d1023_qwen in runs/lang_pipeline_vf/queue.txt (first job
-  23204948, 10-25 20:08) -> data/lang_1023/READY, data/lang_qwen_1023/READY. Watcher runs/lang/rounds_1023/
-  submit_when_ready.sh (pid 3831649 on dt-login02, hourly "alive" lines in watcher.log) then submits
-  rounds_ur5_g095_1023, rounds_t1_ur5_g095_1023 and rounds_ur5_qwen_g095_1023 (runs/lang/rounds_1023/launch.sh).
+  23204948, 10-25 20:08) -> data/lang_1023/READY, data/lang_qwen_1023/READY.
+- [ ] The three runs were submitted EARLY (Yuxuan 10-25: the batch queue waits days), so they queue while the data
+  is collected: rounds_ur5_g095_1023 (job 23205090), rounds_t1_ur5_g095_1023 (23205091), rounds_ur5_qwen_g095_1023
+  (23205092), via runs/lang/rounds_1023/presubmit.sh + wait_then_rounds.sbatch: a job that starts before its READY
+  file waits up to 6 h, else resubmits itself. The READY watcher (submit_when_ready.sh) was stopped (no double
+  submission). Scheduler estimate on 10-25: start ~10-31.
 
 ## B. Evaluation of the new round trainings
 
