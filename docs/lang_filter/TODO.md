@@ -88,10 +88,15 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   (T6 card and scene, examples re-made from today's scenes: template_review/examples_v3.json by
   corpus_page/page_examples.py).
 - [x] Lang suite 361/361 (A40, 10-23).
-- [ ] Then: commit, frozen worktree LanguageConditionHJ_r1023, re-collect (T1, T3, T5, T6, T7: runs/lang_1023_data,
-  drafted from the 10-22 files, data/lang_1023 + data/lang_qwen_1023), resubmit the three runs (rounds_1023) -
-  waits for Yuxuan's go. data/lang_1022 (20 / 29 shards, T2 and the old tilt limits) is obsolete: ask before
-  deleting it.
+- [x] Committed 7c77532 (pushed), frozen worktree LanguageConditionHJ_r1023, trial collection runs/lang/smoke_1023
+  passed (5 warmup + 3 val20 episodes, text caches, check_shards).
+- [x] 10-25 Yuxuan's go: the three 10-20 runs cancelled (they had hit the 48 h limit on 10-24 and sat in the queue;
+  stopped at round 39 vanilla / 40 T1 / 83 Qwen, run dirs kept; the Qwen filter had drifted to driving 97 % of the
+  ticks, every episode timing out); data/lang_1022 + data/lang_qwen_1022 and the core.* dumps deleted.
+- [ ] Re-collection running: chain stages d1023_vanilla -> d1023_qwen in runs/lang_pipeline_vf/queue.txt (first job
+  23204948, 10-25 20:08) -> data/lang_1023/READY, data/lang_qwen_1023/READY. Watcher runs/lang/rounds_1023/
+  submit_when_ready.sh (pid 3831649 on dt-login02, hourly "alive" lines in watcher.log) then submits
+  rounds_ur5_g095_1023, rounds_t1_ur5_g095_1023 and rounds_ur5_qwen_g095_1023 (runs/lang/rounds_1023/launch.sh).
 
 ## B. Evaluation of the new round trainings
 
