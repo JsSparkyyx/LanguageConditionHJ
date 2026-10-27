@@ -1,0 +1,19 @@
+{
+  "full_description": "a tray with two standing blocks on it stands on the table; one arm grips the handle on the tray's near rim and slides the tray along the table into a black square frame",
+  "schema": "{A} notifies the tray",
+  "preference": "num of words should not exceed 20",
+  "seen": [
+    "Slide {A} into the black frame.",
+    "Drag {A} across the table into the black square.",
+    "Pull {A} by its handle into the black frame.",
+    "Move {A} with the blocks on it into the black frame.",
+    "Grab the handle of {A} and slide it into the black square.",
+    "Hold the handle of {A} and drag it into the black frame.",
+    "Slide {A} along the table until it is inside the black frame."
+  ],
+  "unseen": [
+    "Drag {A} over to the black frame.",
+    "Slide {A} and its blocks into the black square.",
+    "Take {A} by the handle and move it into the black frame."
+  ]
+}

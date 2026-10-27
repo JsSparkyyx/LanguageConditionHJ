@@ -1,0 +1,19 @@
+{
+  "full_description": "a coloured box stands on one side of the table and a black square frame lies on the other side; one arm pushes the box across the table into the frame without lifting it (mats and standing cylinders may be in the way)",
+  "schema": "{A} notifies the box to push, with its colour",
+  "preference": "num of words should not exceed 20",
+  "seen": [
+    "Push {A} into the black frame.",
+    "Push {A} across the table into the black square.",
+    "Slide {A} into the black frame by pushing it.",
+    "Push {A} until it is inside the black frame.",
+    "Use the gripper to push {A} into the black frame.",
+    "Push {A} over to the black frame on the table.",
+    "Keep pushing {A} until it sits in the black square."
+  ],
+  "unseen": [
+    "Shove {A} into the black square.",
+    "Move {A} into the black frame without lifting it.",
+    "Nudge {A} along the table into the black frame."
+  ]
+}
