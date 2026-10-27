@@ -78,10 +78,20 @@ class RiskTickController(TickChunkedController):
     def plan(self, arm: str, target_pose, **kw):
         self._sync_time_scale_from_skill()
         result = super().plan(arm, target_pose, **kw)
+        info = getattr(getattr(self.env, "task", None), "episode_info", None) if self.world_aware_only else None
         if not result or result.get("status") != "Success":
             self.n_plan_failures += 1
+            if isinstance(info, dict) and not info.get("safe_fail"):
+                # safe mode (T1): no fallback planner, this failure ends the episode; its reason is the kind of the
+                # plan the safe_plan ladder could not find (safe_plan.install_plan_hooks)
+                info["safe_fail"] = info.get("safe_last_fail") or "plan_fail"
             return result
-        result = self._unwrap_revolutions(arm, result)
+        unwrapped = self._unwrap_revolutions(arm, result)
+        if isinstance(info, dict) and unwrapped is not result:
+            # safe mode: the shortened joint path was not collision-checked by cuRobo; counted for the demo
+            # collector's diagnostics (task.episode_info -> meta.diag.task), the keep rule checks the real contacts
+            info["safe_unwraps"] = int(info.get("safe_unwraps", 0)) + 1
+        result = unwrapped
         pos = np.asarray(result.get("position"), dtype=np.float64)
         vel_raw = result.get("velocity")
         vel = np.zeros_like(pos) if vel_raw is None else np.asarray(vel_raw, dtype=np.float64)
