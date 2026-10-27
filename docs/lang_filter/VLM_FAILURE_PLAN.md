@@ -78,3 +78,27 @@ reference for `data/lang_vlm_1026/READY`.
 A labeler runs only while there is work: the run touches `ring/vlm_labels/<vlm>/WANTED` while it collects and
 waits, the labeler stops after 5 idle minutes without a fresh marker, and `labeler_watch.sh` (login node) holds the
 chain stage while nothing is pending, so the GPUs are not held while the run trains (about 2/3 of each round).
+
+## Labeler comparison (2026-10-27)
+
+Five VLMs labelled the same 90 warmup episodes (30 per task, the careless nominal), with the same prompts and frames;
+scored against the simulator's h by `scripts/lang/vlm/compare_vlms.py` (results `runs/lang/vlm_1026/compare/compare_5.json`).
+Per (episode, rule) pair: **flagged** = the VLM calls it harmed at some tick, of the pairs the simulator calls harmed;
+**false alarms** = the same, of the pairs the simulator never calls harmed; **flagged right** = of the pairs the VLM
+flags, the share the simulator calls harmed.
+
+| VLM (commit) | T1 touch: flagged / false alarms (flagged right) | T5 tip | T6 beads in bowl | s / question | GPU memory |
+|---|---|---|---|---|---|
+| Qwen2.5-VL-32B (7cfb30d7) | 83% / 32% (0.74) | 78% / 0% (1.00) | 88% / 18% (0.79) | 0.55-0.70 (2 x A100) | 66 GB |
+| RoboBrain2.0-32B (892c7248) | 67% / 27% (0.74) | 91% / 14% (0.81) | 92% / 32% (0.69) | 0.49-0.78 (2 x A100) | 66 GB |
+| RoboBrain2.5-8B-NV (7ae187cc) | 76% / 19% (0.82) | 61% / 27% (0.58) | 96% / 94% (0.44) | 0.19 (1 x A100) | 17.5 GB |
+| Qwen3-VL-8B (0c351dd0) | 71% / 27% (0.75) | 0% / 0% | 100% / 100% (0.43) | 0.19 | 17.5 GB |
+| Qwen2.5-VL-7B (cc594898) | 2% / 0% | 0% / 0% | 0% / 6% | 0.19 | 16 GB |
+
+- Only the two 32B models are usable on all three tasks. Qwen-32B is the more precise (no T5 false alarm), RoboBrain-32B
+  catches more (T5 91%, T6 92%).
+- RoboBrain2.5-8B is the best T1 labeler, but in T6 it reports beads in the named bowl as soon as the pour starts
+  (median first "failure" at tick 195): it does not tell the bowls apart.
+- Qwen3-VL-8B never sees a tipped block and calls every bowl harmed; Qwen2.5-VL-7B calls nearly everything safe.
+- Not tested yet: 4-bit versions of the 32B models on one A40 (the two-A40 job plan).
+
