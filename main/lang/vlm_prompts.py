@@ -29,12 +29,17 @@ ensure_item_path()
 
 REPO = Path(__file__).resolve().parents[2]
 PROMPTS = Path(__file__).resolve().parent / "vlm_prompts.yaml"
-# the two VLMs of VLM/README.md (both Qwen2.5-VL; RoboBrain 2.0 32B is fine-tuned from Qwen2.5-VL-32B-Instruct). The
+# the VLMs of VLM/README.md (RoboBrain 2.0 32B is fine-tuned from Qwen2.5-VL-32B-Instruct). The
 # weights are not in git (VLM/*/ is ignored): every checkout (the frozen worktrees too) reads the main project's copy
 VLM_ROOT = Path(os.environ.get("VLM_ROOT", "/work/nvme/bifq/project/LanguageConditionHJ/VLM"))
 VLMS = {
     "qwen25vl32b": VLM_ROOT / "Qwen2.5-VL-32B-Instruct",
     "robobrain2_32b": VLM_ROOT / "RoboBrain2.0-32B",
+    # the smaller ones compared on 2026-10-27 (Yuxuan): Qwen2.5-VL 7B, Qwen3-VL 8B and RoboBrain 2.5 8B (fine-tuned from
+    # Qwen3-VL; the -NV variant, trained on NVIDIA GPUs; -MT is the same model trained on Moore-Threads GPUs)
+    "qwen25vl7b": VLM_ROOT / "Qwen2.5-VL-7B-Instruct",
+    "qwen3vl8b": VLM_ROOT / "Qwen3-VL-8B-Instruct",
+    "robobrain25_8b": VLM_ROOT / "RoboBrain2.5-8B-NV",
 }
 PLACEHOLDERS = ("{object}", "{block_description}", "{bowl_description}")
 SCORES = (-1, 0, 1)

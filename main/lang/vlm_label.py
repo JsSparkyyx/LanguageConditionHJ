@@ -127,15 +127,16 @@ def episode_queries(root: Path, eid: int) -> tuple[dict, list[dict], dict | None
 
 
 class VLM:
-    """One Qwen2.5-VL-family model (both VLMs of VLMS), bf16, batched generation with left padding."""
+    """One model of VLMS (Qwen2.5-VL or Qwen3-VL architecture; AutoModelForImageTextToText picks the class from its
+    config), bf16, batched generation with left padding."""
 
     def __init__(self, name: str, attn: str = "flash_attention_2"):
         import torch
-        from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+        from transformers import AutoModelForImageTextToText, AutoProcessor
 
         self.name, self.dir = name, VLMS[name]
         t0 = time.time()
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        self.model = AutoModelForImageTextToText.from_pretrained(
             str(self.dir), torch_dtype=torch.bfloat16, device_map="auto", attn_implementation=attn).eval()
         self.proc = AutoProcessor.from_pretrained(str(self.dir))
         self.proc.tokenizer.padding_side = "left"

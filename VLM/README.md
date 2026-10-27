@@ -4,6 +4,12 @@
 |---|---|---|---|
 | `Qwen2.5-VL-32B-Instruct/` | Qwen/Qwen2.5-VL-32B-Instruct | 64 GB (bf16) | downloaded; load test passed on 2 x A40 |
 | `RoboBrain2.0-32B/` | BAAI/RoboBrain2.0-32B (fine-tuned from Qwen2.5-VL-32B-Instruct, Apache-2.0) | 63 GB (bf16) | downloaded; load test passed on 2 x A40 (gated repo: the token is in `~/hugginface`, pass it as `HF_TOKEN`) |
+| `Qwen2.5-VL-7B-Instruct/` | Qwen/Qwen2.5-VL-7B-Instruct (commit cc594898) | 16 GB (bf16) | downloaded 2026-10-27; fits one A40 / A100 40 GB |
+| `Qwen3-VL-8B-Instruct/` | Qwen/Qwen3-VL-8B-Instruct (commit 0c351dd0) | 17 GB (bf16) | downloaded 2026-10-27; fits one A40 / A100 40 GB (transformers 4.57 has Qwen3-VL) |
+| `RoboBrain2.5-8B-NV/` | BAAI/RoboBrain2.5-8B-NV (fine-tuned from Qwen3-VL; -MT is the same model trained on Moore-Threads GPUs) | ~17 GB | NOT downloaded: gated, the token in `~/hugginface` is not on its access list (request access on the model page) |
+
+Commits of the 32B models (all files of one snapshot each, 2026-10-22): Qwen2.5-VL-32B-Instruct 7cfb30d7, RoboBrain2.0-32B
+892c7248.
 
 The weight folders are gitignored (`VLM/*/`); this README and `test_vlm.py` are tracked. Qwen2.5-VL-3B-Instruct
 (HoloBrain-Qwen's base) is in the shared Hugging Face cache, `/work/nvme/bifq/project/tmp/hf-cache/hub`.
