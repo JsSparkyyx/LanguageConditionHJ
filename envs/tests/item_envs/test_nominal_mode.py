@@ -50,8 +50,60 @@ def test_safe_t1_plans_around_the_named_object():
     assert p.time_scale == 0.6
 
 
+def test_safe_t3_pushes_around_the_elements():
+    """T3 (Yuxuan 2026-10-27): the route around the protected elements (push_zone._play_route), no overshoot or
+    lateral offset, pushes at 0.5; the other sampled draws are made as in careless (same scene)."""
+    t3 = _cfg("T3_push_zone.yaml")
+    safe = t3["safe_mode"]
+    assert safe["plan"] == "route" and safe["protect"] == "named" and safe["curobo_only"] is True
+    for key in ("mat_clear", "cyl_clear_box", "cyl_clear_hand", "table_clear", "guard_clear", "reach", "hand"):
+        assert key in safe["route"], key
+    for seed in range(5):
+        p, ref = _sampled(t3, seed), _sampled(t3, seed)
+        apply_nominal_mode(p, t3, "safe", "push_zone")
+        assert p.task["overshoot"] == 0.0 and p.task["lateral_offset"] == 0.0 and p.time_scale == 0.5
+        assert p.safe_time_scale == ref.safe_time_scale and set(p.task) == set(ref.task)
+
+
+def _rule(rule_id, consequence, items, regions=()):
+    from main.item_envs.rules import Consequence, RuleSpec
+
+    return RuleSpec(rule_id=rule_id, consequence=Consequence(consequence), item_ids=tuple(items),
+                    region_ids=tuple(regions), params={})
+
+
+def test_t3_route_protects_every_element_unless_a_rule_is_named():
+    """runner._route_protect: None (every element) with no rule named, the collector's case; a named rule protects
+    its own elements (an outside rule's mats, an upright / stay rule's cylinders, nothing for the table rule);
+    ``protect`` overrides."""
+    safe = _cfg("T3_push_zone.yaml")["safe_mode"]
+    r = ItemEpisodeRunner("push_zone", seed=0, render="none", nominal_mode="safe")
+    r.rules = [
+        _rule("inside|push_0|table_top", "inside", ["push_0"], ["table_top"]),
+        _rule("outside|push_0|zone_red", "outside", ["push_0"], ["zone_red"]),
+        _rule("outside|push_0|zone_blue+zone_red", "outside", ["push_0"], ["zone_blue", "zone_red"]),
+        _rule("upright|obstacle_0|-", "upright", ["obstacle_0"]),
+        _rule("stay|obstacle_0+obstacle_1|-", "stay", ["obstacle_0", "obstacle_1"]),
+    ]
+    assert r._route_protect(safe) is None
+    for rid, want in (("outside|push_0|zone_red", ["zone_red"]),
+                      ("outside|push_0|zone_blue+zone_red", ["zone_blue", "zone_red"]),
+                      ("upright|obstacle_0|-", ["obstacle_0"]),
+                      ("stay|obstacle_0+obstacle_1|-", ["obstacle_0", "obstacle_1"]),
+                      ("inside|push_0|table_top", [])):
+        r.active_rule_id = rid
+        assert r._route_protect(safe) == want, rid
+    r.active_rule_id = "stay|obstacle_9|-"
+    with pytest.raises(ValueError, match="not in this scene"):
+        r._route_protect(safe)
+    r.protect = ["zone_green"]
+    assert r._route_protect(safe) == ["zone_green"]
+    r.protect, r.active_rule_id = None, "upright|obstacle_0|-"
+    assert r._route_protect({**safe, "protect": "all"}) is None
+
+
 def test_tasks_without_a_safe_expert_refuse():
-    for name, task in (("T2_granular_pour.yaml", "granular_pour"), ("T3_push_zone.yaml", "push_zone")):
+    for name, task in (("T2_granular_pour.yaml", "granular_pour"),):
         cfg = _cfg(name)
         with pytest.raises(NotImplementedError, match="no safe nominal mode"):
             apply_nominal_mode(_sampled(cfg), cfg, "safe", task)

@@ -65,6 +65,39 @@ risk:
     overshoot: {dist: uniform, range: [0.0, 0.02]}
     lateral_offset: {dist: uniform, range: [-0.02, 0.02]}
 
+# nominal_mode="safe" (runner, Yuxuan 2026-10-27: the expert for safe demonstrations): the push follows a route around
+# the protected elements (robotwin_tasks/_push_route.py plans it from the live scene, _item_utils.push_via executes it
+# with every step re-checked). protect named = the active rule's elements, every element when no rule is named (the
+# demo collector): every mat (the box footprint mat_clear outside it) and every cylinder (the box cyl_clear_box and
+# each WSG hand layer at its height cyl_clear_hand away), on and off the path; the box stays table_clear inside the
+# table, every EE pose in reach (workspace_<embodiment>.npz). A layout with no route is not pushed at all: a plan
+# failure, episode_info safe_fail "no_route", the planner's reasons in episode_info route. Corners turning more than
+# lift_turn_deg lift the hand over the box. cuRobo only (curobo_only): no mplib fallback plan. No overshoot or
+# lateral offset; the pushes at 0.5 (the approach, corners and retreat at safe_time_scale 0.6).
+safe_mode:
+  plan: route
+  protect: named
+  curobo_only: true
+  risk: {overshoot: 0.0, lateral_offset: 0.0, time_scale: 0.5}
+  route:
+    mat_clear: 0.015          # m, box footprint -> protected mat (2.5 / slack 1 cm routed 19/30 protect-all layouts, 1.5 / 0.5 24/30)
+    cyl_clear_box: 0.02       # m, box footprint -> protected cylinder
+    cyl_clear_hand: 0.015     # m, each hand layer reaching the cylinder's height -> protected cylinder
+    table_clear: 0.02         # m, box footprint -> table edge
+    guard_clear: 0.008        # m, the live re-check before every move (the hard floor of the four above)
+    lane_slack: 0.005         # m, detour lanes this much wider (tracking error)
+    yaw_allow_deg: 15         # box yaw spread on top of its turn flush with the fingers
+    max_turn_deg: 90          # largest turn at a via point; above lift_turn_deg the hand lifts over the box, and a
+    max_first_deg: 90         # 90 deg turn keeps the box face-aligned (LEAD_IN 10 cm leaves no room at 45 deg)
+    lift_turn_deg: 30         # corners turning more lift the hand over the box
+    min_leg: 0.04
+    hand: wide                # the finger axis across the push (push_to_goal's two-finger contact)
+    reach: npz                # npz (the measured grid) | linear (the layout's bound) | either | both | none
+    seg_len: 0.06             # push segments, each re-aimed at the live box
+    via_tol: 0.012
+    lane_tol: 0.02            # the box this far off its leg line re-plans
+    corner_lift: 0.02         # lifted fingertips this far above the box top
+
 rules:
   - {consequence: inside, items: {role: candidate, group: push}, regions: [table_top]}
   - {consequence: outside, items: {role: candidate, group: push}, regions: {kind: zone}}

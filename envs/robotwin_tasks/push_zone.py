@@ -680,6 +680,9 @@ class push_zone(Base_Task):
 
     # -------------------------------------------------------------- nominal ----
     def play_once(self):
+        route_cfg = getattr(self, "safe_route", None)
+        if route_cfg is not None:   # nominal_mode="safe" (the runner sets it from the yaml's safe_mode)
+            return self._play_route(route_cfg)
         knobs = getattr(self, "risk_knobs", None) or {}
         overshoot = float(knobs.get("overshoot", 0.0))
         lateral = float(knobs.get("lateral_offset", 0.0))
@@ -749,6 +752,160 @@ class push_zone(Base_Task):
             "{Y}": ", ".join(b["item_id"] for b in self.bystanders),
         }
         return self.info
+
+    # --------------------------------------------------------- safe nominal ----
+    def _route_inputs(self):
+        """The route planner's view of the live scene (_push_route): the push box (centre xy, yaw, footprint half
+        sides, height), its goal, and every element (mats as drawn; cylinders at their live xy, with their height
+        from item_meta along the item's up axis)."""
+        from ._item_utils import _obb_half_world
+        from ._push_route import Elem
+
+        rec = self.push_objects[0]
+        pose = rec["push_obj"].get_pose()   # the OBB centre (mesh boxes: the _CenteredPushObj shim)
+        p = np.asarray(pose.p, dtype=np.float64).reshape(3)
+        rot = np.asarray(pose.to_transformation_matrix(), dtype=np.float64)[:3, :3]
+        half = _obb_half_world(rec["obj"])
+        if half is None:
+            half = np.array([rec["half_dir"], rec["half_perp"], 0.03], dtype=np.float64)
+        up = int(np.argmax(np.abs(rot[2, :])))   # prim boxes z, RoboTwin meshes y
+        ax = [i for i in range(3) if i != up]
+        meta = {m["item_id"]: m for m in getattr(self, "item_meta", []) or []}
+        live = {b["item_id"]: b["entity"] for b in self.bystanders}
+        elems = []
+        for e in self.elements:
+            if e["kind"] == "zone":
+                elems.append(Elem(e["id"], "zone", tuple(float(v) for v in e["xy"]),
+                                  tuple(float(v) for v in e["half"])))
+                continue
+            ent = live.get(e["id"])
+            xy = np.asarray(ent.get_pose().p, dtype=np.float64).reshape(3)[:2] if ent is not None else e["xy"]
+            m = meta.get(e["id"]) or {}
+            he = m.get("half_extents") or [CYLINDER_HEIGHT[1] / 2.0] * 3
+            e_up = np.abs(np.asarray(m.get("up_axis_local") or [1.0, 0.0, 0.0], dtype=np.float64))
+            elems.append(Elem(e["id"], "obstacle", (float(xy[0]), float(xy[1])), tuple(float(v) for v in e["half"]),
+                              2.0 * float(he[int(np.argmax(e_up))])))
+        yaw = float(np.arctan2(rot[1, ax[0]], rot[0, ax[0]]))
+        return p[:2].copy(), np.asarray(rec["goal_xy"], dtype=np.float64), (float(half[ax[0]]), float(half[ax[1]])), \
+            yaw, 2.0 * float(half[up]), elems
+
+    def _play_route(self, cfg):
+        """nominal_mode="safe" (the runner, T3 yaml safe_mode plan: route; Yuxuan 2026-10-27): the push goes around
+        the protected elements (``cfg["protect"]``: element ids, None = every element) along a route planned from
+        the live scene (_push_route.plan_route), executed by _item_utils.push_via with every step re-checked live
+        (check_motion; a failed check re-plans from the live box, with clearances relaxed to just above the
+        guard's floor when the full ones leave no route). No route: no push, a plan failure
+        (episode_info["safe_fail"] = "no_route"; the planner's reasons in episode_info["route"]). The idle arm
+        closes and tucks as in the careless push."""
+        import dataclasses
+
+        from . import _push_route as pr
+        from ._item_utils import push_via
+
+        params = getattr(self, "embodiment_params", None) or getattr(self, "push_params", None) or {}
+        h_off = float(params.get("push_height_offset", PUSH_HEIGHT_OFFSET))
+        tip_len = params.get("push_tip_len")  # EE origin -> closed-finger bottom (embodiment_overrides)
+        z = TABLE_TOP_Z + float(self.table_z_bias)
+        rcfg = pr.RouteCfg.from_dict(cfg)
+        hand = pr.wsg_hand(rcfg.hand, tip_len=0.164 if tip_len is None else float(tip_len))
+        ee_h = rcfg.tip_clear + hand.tip_len + h_off
+        rec = self.push_objects[0]
+        arm = rec["arm"]
+        protect = cfg.get("protect")
+        start, goal, bhalf, yaw, box_h, elems = self._route_inputs()
+        reach = pr.make_reach(rcfg.reach, arm, cfg.get("reach_npz"), erode=rcfg.reach_erode)
+        info = getattr(self, "episode_info", None)
+        if not isinstance(info, dict):
+            info = self.episode_info = {}
+        route = pr.plan_route(start, goal, bhalf, yaw, elems, protect=protect, cfg=rcfg, reach_ok=reach,
+                              box_h=box_h, hand=hand, ee_height=ee_h)
+        info["route"] = route.as_dict()
+        self.last_push_info = [{"item_id": rec["item_id"], "start_xy": [float(v) for v in start],
+                                "goal_xy": [float(v) for v in goal], "dist": float(np.linalg.norm(goal - start)),
+                                "overshoot": 0.0, "lateral_offset": 0.0, "via": info["route"]["via"]}]
+        if not route.ok:
+            info["safe_fail"] = "no_route"
+            self.plan_success = False   # the runner counts it as a plan failure (meta.plan_failures)
+        else:
+            relaxed = dataclasses.replace(rcfg, mat_clear=rcfg.guard_clear + 0.004,
+                                          cyl_clear_box=rcfg.guard_clear + 0.004,
+                                          cyl_clear_hand=rcfg.guard_clear + 0.004,
+                                          table_clear=rcfg.guard_clear, lane_slack=0.0)
+            sides = dict(route.detail.get("lane_sides") or {})
+            info["replans"] = []
+
+            def guard(ee_poses, box_from, box_to, box_yaw):
+                ok, why, _ = pr.check_motion(ee_poses, box_from, box_to, bhalf, box_yaw, elems, protect=protect,
+                                             cfg=rcfg, hand=hand, box_h=box_h, table_z=z)
+                return ok, why
+
+            def replan(c, yaw_now):
+                for k, c_cfg in enumerate((rcfg, relaxed)):
+                    r = pr.plan_route(c, goal, bhalf, yaw_now, elems, protect=protect, cfg=c_cfg, reach_ok=reach,
+                                      box_h=box_h, hand=hand, ee_height=ee_h, prefer=sides)
+                    info["replans"].append({"at": [round(float(v), 4) for v in c], "relaxed": bool(k),
+                                            "ok": r.ok, "reason": r.reason, "via": r.as_dict()["via"]})
+                    if r.ok:
+                        sides.update(r.detail.get("lane_sides") or {})
+                        return r.via
+                return None
+
+            def on_fail(reason):
+                info["safe_fail"] = str(reason)
+                self.plan_success = False
+
+            # the first approach comes down from above every protected cylinder (the fingertips 3 cm over the
+            # tallest): the transit from the home pose never sweeps through one
+            cyl_h = [e.height for e in elems if e.kind == "obstacle" and (protect is None or e.id in set(protect))]
+            approach = max(rcfg.approach_lift, max(cyl_h, default=0.0) + 0.03 - rcfg.tip_clear)
+            steps_by_arm = {"left": [], "right": []}
+            steps_by_arm[arm] = push_via(
+                self, arm, rec["push_obj"], route.via, guard=guard, replan=replan, on_fail=on_fail,
+                log=info.setdefault("push", {}), seg_len=rcfg.seg_len, via_tol=rcfg.via_tol, lane_tol=rcfg.lane_tol,
+                approach_gap=rcfg.approach_gap, descend_gap=rcfg.descend_gap, backoff=rcfg.backoff,
+                realign_backoff=rcfg.realign_backoff, lift_turn_deg=rcfg.lift_turn_deg,
+                corner_lift=rcfg.corner_lift, hand=hand.mode, contact=hand.contact,
+                tip_len=None if tip_len is None else float(tip_len), tip_clear=rcfg.tip_clear, height_offset=h_off,
+                approach_lift=approach,
+            )
+            idle = "right" if arm == "left" else "left"
+            sgn = 1.0 if idle == "right" else -1.0
+            tuck = [sgn * TUCK_POSE[0], TUCK_POSE[1], z + TUCK_POSE[2]] + list(TOP_DOWN_QUAT)
+            steps_by_arm[idle] = [self.close_gripper(idle), self.move_to_pose(idle, tuck)]
+            failed_at = self._run_route_steps(steps_by_arm)
+            if failed_at is not None and "safe_fail" not in info:
+                info["plan_fail_step"] = failed_at   # a planner failure (meta.plan_failures), not the safe mode's
+        self.info["info"] = {
+            "{A}": f"{self.push_objects[0]['item_id']} ({self.push_objects[0]['asset']})",
+            "{a}": str(self.push_objects[0]["arm"]),
+            "{Z}": ", ".join(zrec["region_id"] for zrec in self.zones),
+            "{Y}": ", ".join(b["item_id"] for b in self.bystanders),
+        }
+        return self.info
+
+    def _run_route_steps(self, steps_by_arm):
+        """play_once's pairing of the two arms' steps (zip_longest, each side realized at execution time, a risky
+        side runs the pair inside risky(task)), for the safe push. Returns the index of the pair after which
+        plan_success turned False (None if it never did)."""
+        failed_at = None
+        pairs = zip_longest(steps_by_arm["left"], steps_by_arm["right"], fillvalue=None)
+        for k, (entry_l, entry_r) in enumerate(pairs):
+            sl = realize_step(self, entry_l) if entry_l is not None else None
+            sr = realize_step(self, entry_r) if entry_r is not None else None
+            step_l = sl.step if isinstance(sl, RiskyStep) else sl
+            step_r = sr.step if isinstance(sr, RiskyStep) else sr
+            if step_l is None and step_r is None:
+                continue
+            if step_l is None:
+                step_l, step_r = step_r, None
+            if isinstance(sl, RiskyStep) or isinstance(sr, RiskyStep):
+                with risky(self):
+                    self.move(step_l, step_r)
+            else:
+                self.move(step_l, step_r)
+            if failed_at is None and getattr(self, "plan_success", True) is False:
+                failed_at = k
+        return failed_at
 
     def overlay_lines(self):
         """Video diagnostics (runner overlay hook): per push object the distance

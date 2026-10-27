@@ -616,6 +616,370 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
 
 
 # ---------------------------------------------------------------------------
+# safe push along a route (T3 nominal_mode="safe", Yuxuan 2026-10-27): new
+# functions only — push_to_goal and _push_quat above stay the careless push
+# ---------------------------------------------------------------------------
+
+
+def _ee_yaw(quat):
+    """Yaw psi of a top-down EE quaternion (wxyz) about world z, from TOP_DOWN_QUAT: the finger axis (EE y) points
+    along world (-cos psi, -sin psi)."""
+    import numpy as np
+
+    w, x, y, z = (float(v) for v in quat)
+    return float(np.arctan2(-(1.0 - 2.0 * (x * x + z * z)), -2.0 * (x * y - w * z)))
+
+
+def _yaw_quat(psi):
+    """TOP_DOWN_QUAT yawed by psi about world z (wxyz): _push_quat's composition."""
+    import numpy as np
+
+    w1, x1, y1, z1 = float(np.cos(psi / 2.0)), 0.0, 0.0, float(np.sin(psi / 2.0))
+    w2, x2, y2, z2 = TOP_DOWN_QUAT
+    return [
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ]
+
+
+def _push_quat_near(push_dir_xy, ee_quat, hand="wide"):
+    """_push_quat's gripper pose (the finger axis across the push; ``hand`` "narrow": along it) with, of the two
+    yaws 180 deg apart that push alike (the closed gripper is symmetric), the one nearest the live EE yaw.
+    _push_quat folds the yaw into [-90, 90) deg, so its target jumps 180 deg whenever a re-aimed push crosses pure
+    +-x (careless seed 6400: plan #9 "large joint travel 3.23 rad" on a 10 cm segment, the episode failed). A tie
+    (exactly 90 deg either way) keeps _push_quat's fold."""
+    import numpy as np
+
+    d = np.asarray(push_dir_xy, dtype=np.float64).reshape(2)
+    psi = float(np.arctan2(d[0], -d[1]) - np.pi)   # R_z(psi) @ (-1, 0) == (-d_y, d_x), as in _push_quat
+    if hand == "narrow":
+        psi += np.pi / 2.0
+    psi = (psi + np.pi / 2.0) % np.pi - np.pi / 2.0
+    live = _ee_yaw(ee_quat)
+    da = abs((psi - live + np.pi) % (2.0 * np.pi) - np.pi)
+    db = abs((psi + np.pi - live + np.pi) % (2.0 * np.pi) - np.pi)
+    if db < da - 1e-9:
+        psi += np.pi
+    return [float(v) for v in _yaw_quat(psi)]
+
+
+def push_via(task, arm_tag, obj, via_xy, guard=None, replan=None, on_fail=None, log=None, seg_len=0.06,
+             via_tol=0.012, goal_tol=0.005, goal_done_tol=0.02, lane_tol=0.02, approach_gap=0.015,
+             descend_gap=0.03, backoff=0.03, realign_backoff=0.02, realign_tol=0.01, lift_turn_deg=30.0,
+             corner_lift=0.02, hand="wide", contact=None, tip_len=None, tip_clear=0.008, height_offset=0.0,
+             height_frac=0.6, approach_lift=0.10, retreat_lift=0.08, max_segments=30, max_replans=4,
+             max_box_tilt_deg=45.0):
+    """Closed-loop table-top push of ``obj`` along the via points ``via_xy`` (the goal last): the T3 safe mode's
+    executor (nominal_mode="safe", Yuxuan 2026-10-27; push_to_goal stays the careless push).
+
+    One leg per via point. Every push segment is re-aimed at the leg's via point from the LIVE box, at most
+    ``seg_len`` and never past the via point (no overshoot); a via point counts as reached within ``via_tol`` or
+    once the box passed it. Before each segment the hand is put behind the box for the new heading:
+
+      d     = unit(via - box centre)                    (re-aimed every segment)
+      touch = centre - d * (OBB depth along d + contact)  (the finger front face on the box face)
+      push  = touch + d * min(seg_len, distance to the via point)
+
+    - a corner (the heading turns more than ``lift_turn_deg``): back off ``backoff`` along the old heading, lift the
+      fingertips ``corner_lift`` above the box top, move across to ``descend_gap`` behind the new face and come down
+      (push_to_goal's approach from above): the hand never swings around the box at push height;
+    - a smaller turn, or the hand off its push line by more than ``realign_tol``: back off ``realign_backoff`` and
+      re-align at push height (push_to_goal's re-alignment).
+
+    Gripper yaw: _push_quat_near, the one of the two equivalent yaws nearest the live EE yaw (no 180 deg flip when
+    the heading crosses +-x). Push height: push_to_goal's (``tip_len``: fingertip bottoms ``tip_clear`` above the
+    table; else the TCP model at ``height_frac`` of the CoM height).
+
+    Safety, the safe mode never falls back to an unsafe motion: ``guard(ee_poses, box_from, box_to, box_yaw)`` ->
+    (ok, why) checks every step before it runs (the EE poses it commands, the live one first, and the box slide of
+    the push). A guard failure, or the box more than ``lane_tol`` off its leg line, asks ``replan(centre, yaw)``
+    for new via points from the live box; with none (or more than ``max_replans``) the push stops: the remaining
+    steps are empty and ``on_fail(reason)`` runs (push_zone marks a plan failure and writes
+    episode_info["safe_fail"]). Reasons: "guard", "lane", "box_fell", "box_tipped" (tilt > ``max_box_tilt_deg``),
+    "box_lost" (moving away from its via point twice), "replans", "segments" (out of segments before the goal).
+
+    ``log`` (a dict, filled in place): the steps taken, the re-plans, the largest yaw change between consecutive
+    pushes, the largest EE miss (live EE vs the last commanded pose; ``ee_miss_flag`` above 2 cm), the box's
+    largest tilt, the failure reason.
+
+    Returns the skill list: close gripper -> approach from ``approach_lift`` above, ``descend_gap`` behind the box
+    -> ``max_segments`` x (re-position, RiskyStep push segment) -> retreat (back ``approach_gap``, up
+    ``retreat_lift``). The first two entries pair with the idle arm's close / tuck, as push_to_goal's do. Execute
+    through ``execute_steps`` or the zipped ``realize_step`` pairs (push_zone).
+    """
+    import numpy as np
+
+    table_z = TABLE_TOP_Z + float(getattr(task, "table_z_bias", 0.0))
+    contact = float(contact) if contact is not None else (0.015 if hand == "wide" else 0.0227)  # WSG finger faces
+    log = {} if log is None else log
+    log.update(steps=[], replans=[], yaw_jump_max_deg=0.0, ee_miss_max=0.0, ee_miss_flag=False, box_tilt_max_deg=0.0,
+               fail=None)
+    state = {"via": [np.asarray(v, dtype=np.float64).reshape(2) for v in via_xy], "leg": 0, "start": None,
+             "d": None, "done": False, "dist": None, "grew": 0, "replans": 0, "skip": False, "last_cmd": None,
+             "last_yaw": None, "up": None}
+
+    def _fail(reason):
+        state["done"] = True
+        if log["fail"] is None:
+            log["fail"] = str(reason)
+            if on_fail is not None:
+                on_fail(str(reason))
+
+    def _live():
+        pose = _unwrap(obj).get_pose()
+        p = np.asarray(pose.p, dtype=np.float64).reshape(3)
+        rot = np.asarray(pose.to_transformation_matrix(), dtype=np.float64)[:3, :3]
+        half = _obb_half_world(obj)
+        if half is None:
+            half = np.array([0.03, 0.03, 0.03], dtype=np.float64)
+        yaw = float(np.arctan2(rot[1, 0], rot[0, 0]))
+        if state["up"] is None:   # the box's up axis, latched at the start (prim boxes z, RoboTwin meshes y)
+            state["up"] = int(np.argmax(np.abs(rot[2, :])))
+        tilt = float(np.degrees(np.arccos(np.clip(abs(rot[2, state["up"]]), 0.0, 1.0))))
+        top = float(p[2] + np.abs(rot[2, :]) @ half)
+        return p, rot, half, yaw, tilt, top
+
+    def _depth(rot, half, d):
+        return float(np.abs(rot.T @ np.array([d[0], d[1], 0.0])) @ half)
+
+    def _z_push(center_z):
+        if tip_len is not None:
+            zc = table_z + float(tip_clear) + float(tip_len) - APPROACH_TO_TCP + float(height_offset)
+        else:
+            zc = max(table_z + float(height_frac) * (center_z - table_z) + float(height_offset), table_z + 0.01)
+        return zc + APPROACH_TO_TCP
+
+    def _pose(xy, z, quat):
+        return [float(xy[0]), float(xy[1]), float(z)] + [float(v) for v in quat]
+
+    def _ee():
+        return np.asarray(task.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+
+    def _xy(v):
+        return [round(float(v[0]), 4), round(float(v[1]), 4)]
+
+    def _guard(poses, c0, c1, yaw):
+        if guard is None:
+            return True, None
+        res = guard(poses, c0, c1, yaw)
+        if isinstance(res, (tuple, list)):
+            return bool(res[0]), (res[1] if len(res) > 1 else None)
+        return bool(res), None
+
+    def _replan(c, yaw, why):
+        """True: new via points from the live box (the next step re-positions for them); False: the push stops."""
+        if replan is None:
+            _fail(why)
+            return False
+        if state["replans"] >= int(max_replans):
+            _fail("replans")
+            return False
+        state["replans"] += 1
+        new = replan(c, yaw)
+        log["replans"].append({"at": _xy(c), "why": why, "ok": bool(new)})
+        if not new:
+            _fail(why)
+            return False
+        state["via"] = [np.asarray(v, dtype=np.float64).reshape(2) for v in new]
+        state.update(leg=0, start=np.asarray(c, dtype=np.float64).copy(), dist=None, grew=0)
+        return True
+
+    def _target(c):
+        """The current via point, past the reached ones; (via point, is the goal)."""
+        via = state["via"]
+        while state["leg"] < len(via) - 1:
+            tgt = via[state["leg"]]
+            line = tgt - state["start"]
+            n = float(np.linalg.norm(line))
+            passed = n > 1e-9 and float((c - tgt) @ line) / n >= 0.0
+            if float(np.linalg.norm(c - tgt)) > float(via_tol) and not passed:
+                break
+            state["leg"] += 1
+            state["start"] = c.copy()
+            state["dist"], state["grew"] = None, 0
+        return via[state["leg"]], state["leg"] == len(via) - 1
+
+    def _off_lane(c, tgt):
+        line = tgt - state["start"]
+        n = float(np.linalg.norm(line))
+        if n < 1e-9:
+            return 0.0
+        rel = c - state["start"]
+        return abs(float(rel[0] * line[1] - rel[1] * line[0])) / n
+
+    def _miss(ee):
+        # the live EE vs the last commanded pose: more than 2 cm off flags the demo (logged, not a failure)
+        if state["last_cmd"] is not None:
+            log["ee_miss_max"] = max(log["ee_miss_max"], round(float(np.linalg.norm(ee[:3] - state["last_cmd"])), 4))
+            log["ee_miss_flag"] = bool(log["ee_miss_max"] > 0.02)
+
+    def _prepush(task):
+        # approach from ABOVE, descend_gap behind the box face (push_to_goal's approach): a direct path to a pose
+        # beside the box can sweep through it
+        p, rot, half, yaw, _, _ = _live()
+        c = p[:2]
+        state["start"] = c.copy()
+        tgt = state["via"][0]
+        dist = float(np.linalg.norm(tgt - c))
+        d = (tgt - c) / dist if dist > 1e-9 else np.array([1.0, 0.0])
+        ee = _ee()
+        quat = _push_quat_near(d, ee[3:], hand)
+        far = c - d * (_depth(rot, half, d) + contact + float(descend_gap))
+        z_push = _z_push(float(p[2]))
+        poses = [_pose(far, z_push + float(approach_lift), quat), _pose(far, z_push, quat)]
+        ok, why = _guard([ee.tolist()] + poses, c, c, yaw)
+        if not ok:
+            log["steps"].append({"kind": "approach", "c": _xy(c), "guard": why})
+            _fail("guard")
+            return arm_tag, []
+        state["d"] = d
+        state["last_cmd"] = np.asarray(poses[-1][:3])
+        state["last_yaw"] = _ee_yaw(quat)
+        log["steps"].append({"kind": "approach", "c": _xy(c),
+                             "d_deg": round(float(np.degrees(np.arctan2(d[1], d[0]))), 1)})
+        return arm_tag, task.move_to_pose(arm_tag, poses[0])[1] + task.move_to_pose(arm_tag, poses[1])[1]
+
+    def _reposition(task):
+        if state["done"]:
+            return arm_tag, []
+        p, rot, half, yaw, tilt, top = _live()
+        c = p[:2]
+        log["box_tilt_max_deg"] = max(log["box_tilt_max_deg"], round(tilt, 1))
+        if p[2] < table_z - 0.02:   # fell off the table
+            _fail("box_fell")
+            return arm_tag, []
+        if tilt > float(max_box_tilt_deg):
+            _fail("box_tipped")
+            return arm_tag, []
+        tgt, last = _target(c)
+        dist = float(np.linalg.norm(tgt - c))
+        d_old = state["d"]
+        if last and (dist <= float(goal_tol) or (dist <= float(goal_done_tol) and d_old is not None
+                                                 and float((c - tgt) @ d_old) >= 0.0)):
+            state["done"] = True   # at the goal (or just past it): no turning back around the box
+            return arm_tag, []
+        if state["dist"] is not None and dist > state["dist"] + 0.005:
+            state["grew"] += 1
+            if state["grew"] >= 2:   # moving away from its via point twice: box lost
+                _fail("box_lost")
+                return arm_tag, []
+        else:
+            state["grew"] = 0
+        state["dist"] = dist
+        if _off_lane(c, tgt) > float(lane_tol):
+            if not _replan(c, yaw, "lane"):
+                return arm_tag, []
+            tgt, last = _target(c)
+            dist = float(np.linalg.norm(tgt - c))
+        d = (tgt - c) / max(dist, 1e-9)
+        d_old = d if d_old is None else d_old
+        ee = _ee()
+        _miss(ee)
+        quat = _push_quat_near(d, ee[3:], hand)
+        touch = c - d * (_depth(rot, half, d) + contact)
+        z_push = _z_push(float(p[2]))
+        turn = float(np.degrees(np.arccos(np.clip(float(d_old @ d), -1.0, 1.0))))
+        rel = touch - ee[:2]
+        lateral = abs(float(rel[0] * d[1] - rel[1] * d[0]))
+        behind = float(rel @ d)
+        dyaw = abs((_ee_yaw(quat) - _ee_yaw(ee[3:]) + np.pi) % (2.0 * np.pi) - np.pi)
+        in_place = (lateral <= float(realign_tol) and -0.005 <= behind <= float(descend_gap) + float(realign_tol)
+                    and np.degrees(dyaw) <= 10.0 and abs(float(ee[2]) - z_push) <= 0.01)
+        poses, kind = [], "none"
+        if turn > float(lift_turn_deg):
+            back = ee[:2] - d_old * float(backoff)
+            fingers = float(tip_len) if tip_len is not None else APPROACH_TO_TCP
+            z_lift = max(z_push, top + float(corner_lift) + fingers)
+            far = touch - d * float(descend_gap)
+            poses = [_pose(back, ee[2], ee[3:]), _pose(back, z_lift, ee[3:]), _pose(far, z_lift, quat),
+                     _pose(far, z_push, quat)]
+            kind = "lift"
+        elif not in_place:
+            back = ee[:2] - d_old * float(realign_backoff)
+            poses = [_pose(back, ee[2], ee[3:]), _pose(touch - d * float(approach_gap), z_push, quat)]
+            kind = "realign"
+        move = min(float(seg_len), dist)
+        ok, why = _guard([ee.tolist()] + poses + [_pose(touch + d * move, z_push, quat)], c, c + d * move, yaw)
+        entry = {"kind": kind, "leg": int(state["leg"]), "c": _xy(c), "turn_deg": round(turn, 1)}
+        if not ok:
+            entry["guard"] = why
+            log["steps"].append(entry)
+            state["skip"] = True   # the push below waits: the next step re-positions for the new route
+            _replan(c, yaw, "guard")
+            return arm_tag, []
+        log["steps"].append(entry)
+        actions = []
+        for pose in poses:
+            actions += task.move_to_pose(arm_tag, pose)[1]
+        if poses:
+            state["last_cmd"] = np.asarray(poses[-1][:3])
+        return arm_tag, actions
+
+    def _push(task):
+        if state["done"]:
+            return arm_tag, []
+        if state["skip"]:
+            state["skip"] = False
+            return arm_tag, []
+        p, rot, half, yaw, _, _ = _live()
+        c = p[:2]
+        tgt = state["via"][state["leg"]]
+        dist = float(np.linalg.norm(tgt - c))
+        if dist < 1e-6:
+            return arm_tag, []
+        d = (tgt - c) / dist
+        ee = _ee()
+        _miss(ee)
+        quat = _push_quat_near(d, ee[3:], hand)
+        move = min(float(seg_len), dist)
+        target = _pose(c - d * (_depth(rot, half, d) + contact) + d * move, _z_push(float(p[2])), quat)
+        ok, why = _guard([ee.tolist(), target], c, c + d * move, yaw)
+        if not ok:
+            log["steps"].append({"kind": "push", "leg": int(state["leg"]), "c": _xy(c), "guard": why})
+            _replan(c, yaw, "guard")   # a new route waits for the next re-position step
+            return arm_tag, []
+        psi = _ee_yaw(quat)
+        if state["last_yaw"] is not None:
+            jump = abs((psi - state["last_yaw"] + np.pi) % (2.0 * np.pi) - np.pi)
+            log["yaw_jump_max_deg"] = max(log["yaw_jump_max_deg"], round(float(np.degrees(jump)), 1))
+        state["last_yaw"] = psi
+        state["d"] = d
+        state["last_cmd"] = np.asarray(target[:3])
+        log["steps"].append({"kind": "push", "leg": int(state["leg"]), "c": _xy(c), "move": round(move, 4),
+                             "d_deg": round(float(np.degrees(np.arctan2(d[1], d[0]))), 1),
+                             "yaw_deg": round(float(np.degrees(psi)), 1)})
+        return arm_tag, task.move_to_pose(arm_tag, target)[1]
+
+    def _retreat(task):
+        if log["fail"] is not None:
+            return arm_tag, []
+        if not state["done"]:
+            _fail("segments")
+            return arm_tag, []
+        p, _, _, yaw, _, _ = _live()
+        ee = _ee()
+        d = state["d"] if state["d"] is not None else np.array([1.0, 0.0])
+        back = ee[:2] - d * float(approach_gap)
+        poses = [_pose(back, ee[2], ee[3:]), _pose(back, float(ee[2]) + float(retreat_lift), ee[3:])]
+        if not _guard([ee.tolist()] + poses, p[:2], p[:2], yaw)[0]:
+            poses = [_pose(ee[:2], float(ee[2]) + float(retreat_lift), ee[3:])]   # straight up only
+            if not _guard([ee.tolist()] + poses, p[:2], p[:2], yaw)[0]:
+                return arm_tag, []   # the box is home: stay rather than move into something
+        actions = []
+        for pose in poses:
+            actions += task.move_to_pose(arm_tag, pose)[1]
+        return arm_tag, actions
+
+    steps = [task.close_gripper(arm_tag), _Deferred(arm_tag, _prepush)]
+    for _ in range(int(max_segments)):
+        steps += [_Deferred(arm_tag, _reposition), RiskyStep(_Deferred(arm_tag, _push))]
+    steps.append(_Deferred(arm_tag, _retreat))
+    return steps
+
+
+# ---------------------------------------------------------------------------
 # granular_pour (T2) helpers: bowl geometry + bead grid + bead spawner
 # ---------------------------------------------------------------------------
 # Geometry source of truth: the collision mesh pieces of the asset, measured
