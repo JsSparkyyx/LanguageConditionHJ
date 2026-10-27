@@ -38,7 +38,8 @@ def test_safe_t5_drags_slowly_and_t7_slides_centred():
         q, ref = _sampled(t7, seed), _sampled(t7, seed)
         apply_nominal_mode(q, t7, "safe", "gap_place")
         assert q.task["place_offset"] == 0.0
-        assert q.time_scale == ref.time_scale          # only the safe knob changes
+        assert q.time_scale == 0.5                     # the slide speed pinned too (2026-10-27)
+        assert q.safe_time_scale == ref.safe_time_scale
 
 
 def test_safe_t1_plans_around_the_named_object():

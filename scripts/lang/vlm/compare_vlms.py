@@ -11,6 +11,7 @@ VLM's h at a tick is the score of the nearest asked tick, as in training (hsourc
 - detected: of the (episode, rule) pairs the simulator calls harmed at some tick, the share the VLM calls harmed at
   some tick; delay: median ticks from the simulator's first harmed tick to the VLM's first (negative = earlier);
 - false alarm: of the pairs the simulator never calls harmed, the share the VLM calls harmed at some tick;
+- flagged right: of the pairs the VLM calls harmed at some tick, the share the simulator calls harmed too;
 - T1 also against "touched so far" (the avoid h was < 0 at this tick or before), what the T1 prompt asks;
 - uncertain / unreadable: shares of the answers; s/question: labeling wall time per question (GPUs in the files).
 Only episodes every listed VLM has labelled are scored, so the models see the same cells.
@@ -94,6 +95,7 @@ def score(roots, vlms):
                 "detected": c["detected"] / max(c["harm_pairs"], 1), "harm_pairs": int(c["harm_pairs"]),
                 "delay_ticks": float(np.median(d)) if d else None,
                 "false_alarm": c["false_alarm"] / max(c["safe_pairs"], 1), "safe_pairs": int(c["safe_pairs"]),
+                "flagged_right": c["detected"] / max(c["detected"] + c["false_alarm"], 1),
                 "uncertain": c["uncertain"] / max(c["answers"], 1), "unreadable": c["unreadable"] / max(c["answers"], 1),
                 "s_per_question": c["s_total"] / max(c["answers"], 1), "episodes": int(c["episodes"]),
                 "cells": int(c["cells"]), "host": c["host"]}
@@ -117,13 +119,14 @@ def main():
         if task not in table:
             continue
         print(f"## {TASK_NAMES[task]}")
-        print("| VLM | caught | right | detected | delay (ticks) | false alarm | uncertain | unreadable | s/question |"
-              + (" caught (touched so far) | right (touched so far) |" if task == "selective_avoid" else ""))
-        print("|---" * (11 if task == "selective_avoid" else 9) + "|")
+        print("| VLM | caught | right | detected | delay (ticks) | false alarm | flagged right | uncertain | unreadable "
+              "| s/question |" + (" caught (touched so far) | right (touched so far) |" if task == "selective_avoid" else ""))
+        print("|---" * (12 if task == "selective_avoid" else 10) + "|")
         for v, r in table[task].items():
             dl = "-" if r["delay_ticks"] is None else f"{r['delay_ticks']:+.0f}"
             line = (f"| {v} | {r['caught']:.2f} | {r['right']:.2f} | {r['detected']:.2f} of {r['harm_pairs']} | {dl} | "
-                    f"{r['false_alarm']:.2f} of {r['safe_pairs']} | {r['uncertain']:.1%} | {r['unreadable']:.1%} | "
+                    f"{r['false_alarm']:.2f} of {r['safe_pairs']} | {r['flagged_right']:.2f} | {r['uncertain']:.1%} | "
+                    f"{r['unreadable']:.1%} | "
                     f"{r['s_per_question']:.2f} |")
             if task == "selective_avoid":
                 line += f" {r['caught_so_far']:.2f} | {r['right_so_far']:.2f} |"

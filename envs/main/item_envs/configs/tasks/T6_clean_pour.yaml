@@ -45,7 +45,10 @@ risk:
                                                          # 13-20 cm landed in the gap too often, 8/14 named-aimed runs harmed; 16-22: 11/14, the other bowl 0/24)
 
 # nominal_mode="safe" (runner, 2026-10-23: the expert for safe demonstrations): the pour aimed at the target's
-# centre, low and slow. Keep rule (the demo collector's, Yuxuan): no bead in the named bowl.
+# centre, low and slow. Keep rule for the HoloBrain demos (Yuxuan 2026-10-27): no bead in either non-target bowl.
+# Known miss (2026-10-27, runs/lang/t6_1027): mug 0 can pivot ~24 deg in the pinch during the lift (gripper stiffness
+# 5000 already), and its stream then lands 6-8 cm off; re-aiming from the live mug pose did not help (7-8 cm either
+# way), so those pours are dropped by the keep rule (yield ~85-90%)
 safe_mode:
   risk: {aim_error: 0.0, pour_height: 0.05, tilt_rate: 1.0, time_scale: 0.6}
 
