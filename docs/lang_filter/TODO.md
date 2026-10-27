@@ -170,8 +170,12 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   tick safe). Every Delta A100 has 40 GB: a 32B model runs on two (gpuA100x4 / gpuA100x8 interactive).
 - [x] 10-26 Data: chain stage vlm1026_data (16:33-17:00) -> data/lang_vlm_1026/READY; 15 shards, frames check and
   check_shards clean.
-- [ ] Labelers running (10-26 17:00): chains runs/lang_pipeline_vlm_{qwen25vl32b,robobrain2_32b} (orchestrators and
-  labeler_watch.sh on dt-login02; two A100s each, gpuA100x4 / gpuA100x8 interactive) -> LABELS_<vlm>.
+- [x] Warmup labelled: LABELS_qwen25vl32b 10-26 23:19, LABELS_robobrain2_32b 10-27 02:16 (90 / 90 episodes each; one
+  Qwen job lost to a GPU fault, "GPU requires reset"). Chains runs/lang_pipeline_vlm_{qwen25vl32b,robobrain2_32b}
+  (orchestrators and labeler_watch.sh on dt-login02) now held until the runs collect. Agreement with the simulator
+  on the warmup (runs/lang/vlm_1026/agree_warmup_<vlm>.json), share of the simulator's harmed ticks caught / share of
+  the VLM's harmed answers that are right: Qwen T6 0.43 / 0.90, T5 0.52 / 0.98, T1 0.28 / 0.12; RoboBrain T6
+  0.54 / 0.77, T5 0.85 / 0.86, T1 0.15 / 0.15. Uncertain answers: Qwen T6 34 %, T1 11 %; RoboBrain T6 13 %.
 - [ ] Runs presubmitted 10-26 (wait_then_rounds.sbatch from worktree LanguageConditionHJ_rvlm at 774d5e6):
   rounds_ur5_simh_g095_1026 (job 23230275, waits for READY), rounds_ur5_vlm_qwen25vl32b_g095_1026 (23230276) and
   rounds_ur5_vlm_robobrain2_32b_g095_1026 (23230277), waiting for LABELS_<vlm>; 25 rounds x 16 episodes x 8192.
