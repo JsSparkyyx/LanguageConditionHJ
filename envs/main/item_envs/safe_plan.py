@@ -15,11 +15,16 @@ items. The safe mode (T1 so far) plans around the PROTECTED items instead (every
   ``attached_object`` link of 256 sphere slots (configs/curobo_safe/ur5-wsg.yml), and ``install_plan_hooks`` fills
   them before every plan with spheres covering the hand's collision boxes and the held object (``sync_arm``);
 - a failed plan is retried down a ladder (``plan_levels``): the same model at smaller margins (1 -> 0.5 -> 0.2 cm, the
-  held object's margin too) when the start is in collision, the goal has no IK or no route is found; then, for a start
-  in collision only, without the held object, then without the hand. The batched grasp search's start state is checked
-  first: cuRobo's batch planner checks none, and its graph planner then rejects the whole batch ("Invalid Problem",
-  which the 10-22 ladder missed). A grasp search that fails with ur5-wsg's one stock pose is tried again over a range
-  of approach tilts. Each plan's level and every failed try go to task.episode_info (``safe_plan_log``);
+  held object's margin too), each failure kind down to its floor (``RETRY_FLOORS``, yaml ``retry_floors``: a start in
+  collision, "Invalid Problem" included, and a goal without IK to 0.2 cm; no route and a goal in collision to 0.5 cm,
+  a route blocked at 0.5 cm is not taken at 0.2); then, for a start in collision only, without the held object, then
+  without the hand. The batched grasp search's start state is checked first: cuRobo's batch planner checks none, and
+  its graph planner then rejects the whole batch ("Invalid Problem", which the 10-22 ladder missed);
+- the grasp search escalates as a whole (the stock grasp at the largest margin wins whenever it exists): RoboTwin's
+  search over every contact point with the stock poses at the base margin first; only if no contact point plans, the
+  whole search again one ladder level per pass, with ten approach tilts for ur5-wsg's one stock pose, up to the first
+  level at which a contact point plans. Each plan's level and every failed try go to task.episode_info
+  (``safe_plan_log``, the last entries; the plan the task used is booked by the controller, ``record_plan``);
 - no fallback planner: a plan the ladder cannot find ends the episode as a plan failure with its reason in
   task.episode_info["safe_fail"], and the planner must be cuRobo on both arms (``require_curobo``).
 
@@ -47,7 +52,7 @@ MESH_SLOTS = 8
 TABLE_CLEARANCE = 0.02           # m: the planner's tabletop sits this far below the real one
 MARGINS = (0.01, 0.005, 0.002)   # m: the margin ladder (protected shapes and held object grown by it), tried in turn
 DROP_MODELS = ("hand", "none")   # then, for a start in collision only: without the held object, without the hand
-LOG_MAX = 64                     # entries of task.episode_info["safe_plan_log"]
+LOG_MAX = 64                     # task.episode_info["safe_plan_log"] keeps the last this many entries
 
 # link -> (lo, hi) of its collision mesh in the link frame, metres (vla_finetuning/hand_model.py)
 HAND_BOXES = {
@@ -73,7 +78,10 @@ _KINDS = (
     ("graph_fail", "no_route"),
     ("dt_exce", "no_route"),
 )
-MARGIN_RETRY = ("start_in_collision", "ik_fail", "no_route", "invalid_query")
+# failure kind -> the smallest margin (m) a failed plan of that kind is retried at; a kind not listed is not retried
+# (review of 2026-10-27: a smaller margin lets a blocked route pass closer to the items, and the hand's box corners
+# stick out of its spheres by up to 1.5 cm, so no route and a goal in collision stop at 0.5 cm)
+RETRY_FLOORS = {"start_in_collision": 0.002, "ik_fail": 0.002, "no_route": 0.005, "invalid_query": 0.005}
 DROP_RETRY = ("start_in_collision",)
 
 
@@ -396,13 +404,19 @@ def margin_ladder(safe: dict) -> tuple[float, ...]:
     return (base, *retry)
 
 
+def retry_floors(safe: dict) -> dict:
+    """The smallest retry margin per failure kind from a safe_mode section (``retry_floors``, RETRY_FLOORS without)."""
+    raw = safe.get("retry_floors")
+    return dict(RETRY_FLOORS) if raw is None else {str(k): float(v) for k, v in dict(raw).items()}
+
+
 def hook_options(safe: dict) -> dict:
     """install_plan_hooks keyword arguments from a task yaml's safe_mode section."""
     drop = safe.get("drop_models", DROP_MODELS)
     lim = safe.get("grasp_rotate_lim")
     return {"payload_margin": float(safe.get("payload_margin", 0.01)), "margins": margin_ladder(safe),
             "drop_models": tuple(str(d) for d in (drop or ())),
-            "wide_grasp": None if not lim else [float(lim[0]), float(lim[1])]}
+            "wide_grasp": None if not lim else [float(lim[0]), float(lim[1])], "floors": retry_floors(safe)}
 
 
 class PlanStatusLog:
@@ -582,11 +596,17 @@ def plan_levels(margins=MARGINS, drop_models=DROP_MODELS) -> list[tuple[float, s
     return [(m, "full") for m in ms] + [(ms[-1], str(d)) for d in drop_models]
 
 
-def escalate(kind: str, next_model: str) -> bool:
-    """Whether a try that failed with ``kind`` goes on to the next level. A smaller margin helps a start in
-    collision, a goal without IK and a blocked route; a lighter model only a start in collision (the start is a real,
-    contact-free state the model reads as colliding; a lighter model at the goal would let the hand into the items)."""
-    return kind in (DROP_RETRY if next_model != "full" else MARGIN_RETRY)
+def escalate(kind: str, margin: float, model: str, floors: dict | None = None) -> bool:
+    """Whether a try that failed with ``kind`` goes on to the level (``margin``, ``model``). A smaller margin helps
+    a start in collision, a goal without IK, a blocked route and a goal in collision, each down to its floor
+    (``floors``, RETRY_FLOORS by default; a kind without one is not retried); a lighter model only a start in collision
+    (the start is a real, contact-free state the model reads as colliding; a lighter model at the goal would let the
+    hand into the items), at a margin its floor allows. The ladder never grows its margin, so the first level
+    refused ends it."""
+    floors = RETRY_FLOORS if floors is None else floors
+    if kind not in floors or float(margin) < float(floors[kind]) - 1e-9:
+        return False
+    return model == "full" or kind in DROP_RETRY
 
 
 def _self_collision_cost(mg):
@@ -656,11 +676,13 @@ def _pose_list(pose) -> list | None:
 
 
 def _note(info: dict, entry: dict) -> None:
+    """Append to the plan log, a ring of the last LOG_MAX entries (a list, JSON-safe); the older ones are counted."""
     log = info.setdefault("safe_plan_log", [])
-    if len(log) < LOG_MAX:
-        log.append(entry)
-    else:
-        info["safe_plan_log_dropped"] = int(info.get("safe_plan_log_dropped", 0)) + 1
+    log.append(entry)
+    if len(log) > LOG_MAX:
+        n = len(log) - LOG_MAX
+        del log[:n]
+        info["safe_plan_log_dropped"] = int(info.get("safe_plan_log_dropped", 0)) + n
 
 
 def _count(info: dict, level) -> None:
@@ -668,36 +690,82 @@ def _count(info: dict, level) -> None:
     levels[str(level)] = int(levels.get(str(level), 0)) + 1
 
 
+def _fail_final(info: dict, kind: str, entry: dict | None) -> None:
+    """A plan the task used failed for good: "fail" counted, its kind and its last failed try kept."""
+    _count(info, "fail")
+    info["safe_last_fail"] = kind
+    if entry is not None:
+        info["safe_fail_entry"] = entry
+
+
+def record_plan(info: dict, result) -> str | None:
+    """Book the plan the controller kept (RiskTickController.plan in T1 safe mode, from the tags install_plan_hooks
+    put on it; the controller's branch-flip re-plans it did not keep, and the batch plans of a grasp search, are not
+    booked here): planned, its level into ``safe_plan_levels`` and ``safe_last_fail`` cleared; failed, "fail", its
+    kind as ``safe_last_fail`` and its last failed try as ``safe_fail_entry``. -> the failure kind, None if planned."""
+    res = result if isinstance(result, dict) else {}
+    if res.get("status") == "Success":
+        if "_safe_level" in res:
+            _count(info, res["_safe_level"])
+        info.pop("safe_last_fail", None)
+        return None
+    kind = str(res.get("_safe_fail") or "plan_fail")
+    _fail_final(info, kind, res.get("_safe_fail_entry"))
+    return kind
+
+
+def _pose_key(pose):
+    """A pose (list / array, or None) as a hashable key, 0.01 mm; the grasp search keys its contact points by it."""
+    if pose is None:
+        return None
+    try:
+        return tuple(np.round(np.asarray(pose, np.float64).reshape(-1), 5).tolist())
+    except (TypeError, ValueError):
+        return str(pose)
+
+
 def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.01, status_sink=None, world=None,
                        margins=None, drop_models=DROP_MODELS, info: dict | None = None, wide_grasp=None,
-                       sync=None):
+                       sync=None, floors=None):
     """Run sync_arm before every RoboTwin plan of either arm (plan_path and the batched grasp search), down the retry
     ladder ``plan_levels(margins, drop_models)``: before each try ``world`` (a ProtectedWorld) is re-written at the
     try's margin from the live poses and the hand + held object synced (the held object grown by the same margin, at
     most ``payload_margin``); a batch's start state is checked first and a start in collision skips the planner
-    (except on the last level). A failed try goes on only as ``escalate`` allows. margins None: one level at
-    ``payload_margin`` (the 10-22 ladder, plus "Invalid Problem").
+    (except on the last level). A failed try goes on only as ``escalate`` allows (``floors``: the smallest margin per
+    failure kind, RETRY_FLOORS by default). margins None: one level at ``payload_margin`` (the 10-22 ladder, plus
+    "Invalid Problem"). Every result is tagged: "_safe_level" (the level it planned at), or "_safe_fail" (its kind) and
+    "_safe_fail_entry" (its last failed try); RiskTickController.plan books the plan it keeps (record_plan).
 
-    Diagnostics go to ``info`` (default task.episode_info): ``safe_plan_log`` (bounded: every failed try with its
-    status, kind, skill, goal, start check and culprits, and every plan that needed a level > 0), ``safe_plan_levels``
-    (plans per level index, "fail"), ``safe_last_fail`` (the kind of the latest plan the ladder could not find;
-    finish_episode turns it into ``safe_fail``). The grasp search: choose_grasp_pose is guarded (no contact point
-    gave a pose: ``safe_fail`` "no_grasp", plan_success False, RoboTwin's placeholder pose instead of an assertion),
-    and with ``wide_grasp`` [lo, hi] rad an arm without a rotate range (ur5-wsg: ten copies of one pose) first tries
-    its stock pose at the base margin, then the ten tilts over [lo, hi) down the whole ladder (choose_best_pose keeps
-    the first that plans, the stock pose first). Install BEFORE the controller is built, so it wraps these hooks.
-    Returns an uninstall function."""
+    The grasp search (choose_grasp_pose, guarded) escalates as a whole, so the stock grasp at the largest margin wins
+    whenever one exists: RoboTwin's search over every contact point with the stock poses at the base margin first;
+    only if no contact point plans, the whole search again one level per pass (from the base margin again when
+    ``wide_grasp`` [lo, hi] rad gives an arm without a rotate range of its own, ur5-wsg: ten copies of one pose, ten
+    approach tilts, the first the stock pose), up to the first level at which any contact point plans. A contact point
+    is planned at a pass with the same candidates as its previous one only as ``escalate`` allows that pass's failure.
+    No contact point gives a pose: ``safe_fail`` "no_grasp" ("planner_error" when cuRobo raised during the search,
+    which then stops), plan_success False, RoboTwin's placeholder pose instead of an assertion.
+
+    Diagnostics go to ``info`` (default task.episode_info): ``safe_plan_log`` (the last LOG_MAX entries: every failed
+    try with its status, kind, skill, goal, start check and culprits, every plan that needed a level > 0, every grasp
+    search that escalated or failed; ``safe_plan_log_dropped`` counts the older ones), ``safe_plan_levels`` (per plan
+    the task used, a controller plan or a whole grasp search: the level it needed, or "fail"), ``safe_last_fail`` (the
+    kind of the latest such plan if it failed; finish_episode turns it into ``safe_fail``), ``safe_fail_entry`` (the
+    entry of the latest such failure), ``safe_wide_grasp`` (grasp searches past the stock pass). Install BEFORE the
+    controller is built, so it wraps these hooks. Returns an uninstall function."""
     from main.envs.controller import _actor_label, current_skill
 
     robot, task = env.robot, env.task
     sync = sync or sync_arm
+    floors = dict(RETRY_FLOORS if floors is None else floors)
     if info is None:
         if not isinstance(getattr(task, "episode_info", None), dict):
             task.episode_info = {}
         info = task.episode_info
     levels_all = plan_levels(margins if margins is not None else (payload_margin,), drop_models)
     info["safe_plan_ladder"] = [[m, model] for m, model in levels_all]
-    state = {"levels": None, "batches": 0}   # levels: the stock grasp search's cut of the ladder
+    # rungs: the levels a grasp-search pass pins every plan to (None: the whole ladder); search: the grasp search in
+    # progress (choose_grasp_pose); kind / entry: the latest plan's failure kind (None: it planned) and last failed try
+    state = {"rungs": None, "batches": 0, "search": None, "kind": None, "entry": None}
     names = {"left_plan_path": "left", "right_plan_path": "right",
              "left_plan_multi_path": "left", "right_plan_multi_path": "right"}
     orig = {}
@@ -709,7 +777,7 @@ def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.0
             batch = _name.endswith("multi_path")
             planner = robot.left_planner if _arm == "left" else robot.right_planner
             mg = planner.motion_gen_batch if batch else planner.motion_gen
-            levels = levels_all[: state["levels"]] if state["levels"] else levels_all
+            rungs = list(range(len(levels_all))) if state["rungs"] is None else list(state["rungs"])
             target = a[0] if a else k.get("target_lst" if batch else "target_pose")
             goals = list(target) if batch and target is not None else [target]
             base = {"call": _name, "skill": getattr(task, "_safe_plan_ctx", None) or current_skill(task),
@@ -718,9 +786,10 @@ def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.0
             if batch:
                 base["n_goals"] = len(goals)
                 state["batches"] += 1
-            res, kind = None, None
-            for i, (m, model) in enumerate(levels):
-                if i > 0 and not escalate(kind, model):
+            res, kind, entry = None, None, None
+            for j, i in enumerate(rungs):
+                m, model = levels_all[i]
+                if j > 0 and not escalate(kind, m, model, floors):
                     break
                 if world is not None:
                     world.push(_arm, m)
@@ -750,10 +819,11 @@ def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.0
                         _restore_self_collision(mg, was_on)
                     statuses = list(status_sink[n0:]) if status_sink is not None else []
                 if not _failed(res):
-                    _count(info, i)
-                    info.pop("safe_last_fail", None)
                     if i > 0:
                         _note(info, {**entry, "ok": True})
+                    if isinstance(res, dict):
+                        res["_safe_level"] = i
+                    state["kind"], state["entry"] = None, None
                     return res
                 kind = failure_kind(statuses)
                 entry.update({"ok": False, "kind": kind, "status": statuses[-1] if statuses else None,
@@ -764,11 +834,27 @@ def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.0
                 elif kind == "start_in_collision" and obstacles:
                     entry["culprits"] = check_start(planner, mg, qpos, obstacles)["culprits"]
                 _note(info, entry)
-            _count(info, "fail")
-            info["safe_last_fail"] = kind or "plan_fail"
+            kind = kind or "plan_fail"
+            if isinstance(res, dict):
+                res["_safe_fail"], res["_safe_fail_entry"] = kind, entry
+            state["kind"], state["entry"] = kind, entry
             return res
 
         setattr(robot, name, wrapped)
+
+    def rotate_attr(arm_tag) -> str:
+        return "left_rotate_lim" if arm_tag == "left" else "right_rotate_lim"   # robot.create_target_pose_list
+
+    def tilts(arm_tag) -> bool:
+        """Whether ``wide_grasp`` gives this arm new grasp candidates: set, and the arm has no rotate range."""
+        stock = list(getattr(robot, rotate_attr(arm_tag), None) or [0.0, 0.0])
+        return wide_grasp is not None and abs(float(stock[1]) - float(stock[0])) <= 1e-9
+
+    def eligible(last, r: int, wide: bool) -> bool:
+        """Whether a contact point whose latest pass failed as ``last`` = (kind, wide) is planned at level ``r``: always
+        with new candidates (the first pass with the tilts), else as escalate allows its failure."""
+        kind, last_wide = last
+        return last_wide != wide or escalate(kind, *levels_all[r], floors)
 
     guards = {}
     if callable(getattr(task, "choose_grasp_pose", None)):
@@ -777,47 +863,80 @@ def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.0
         def choose_grasp_pose(actor, *ga, **gk):
             arm_tag = gk.get("arm_tag", ga[0] if ga else None)
             ctx = f"{arm_tag} grasp_search {_actor_label(task, actor)}"
-            prev, n0 = getattr(task, "_safe_plan_ctx", None), state["batches"]
-            task._safe_plan_ctx = ctx
+            prev, n0 = (getattr(task, "_safe_plan_ctx", None), state["search"]), state["batches"]
+            # search: wide = this pass's tilts on; last = per contact point (kind, wide) of its latest failed pass;
+            # errors = planner errors (cuRobo raised: no further pass)
+            search = {"wide": False, "last": {}, "errors": 0}
+            wide_ok = tilts(arm_tag)
+            passes = [(0, False)] + [(r, wide_ok) for r in range(0 if wide_ok else 1, len(levels_all))]
+            out, found, n_pass = None, None, 0
+            task._safe_plan_ctx, state["search"] = ctx, search
             try:
-                out = orig_choose(actor, *ga, **gk)
+                for p, (r, wide) in enumerate(passes):
+                    if p > 0 and (search["errors"] or not any(eligible(v, r, wide) for v in search["last"].values())):
+                        break
+                    if p == 1:
+                        info["safe_wide_grasp"] = int(info.get("safe_wide_grasp", 0)) + 1
+                    search["wide"], state["rungs"], n_pass = wide, [r], p + 1
+                    out = orig_choose(actor, *ga, **gk)
+                    if out is None:                     # plan_success already False: RoboTwin's bare return
+                        return out
+                    if out[0] is not None and out[1] is not None:
+                        found = (p, r, wide)
+                        break
             finally:
-                task._safe_plan_ctx = prev
-            if out is None or (out[0] is not None and out[1] is not None):
+                state["rungs"] = None
+                task._safe_plan_ctx, state["search"] = prev
+            n_batches = state["batches"] - n0
+            if found is not None:
+                p, r, wide = found
+                _count(info, r)
+                info.pop("safe_last_fail", None)
+                if p > 0:
+                    _note(info, {"call": "choose_grasp_pose", "skill": ctx, "ok": True, "level": r, "wide": wide,
+                                 "n_passes": n_pass, "n_batches": n_batches})
                 return out
             if getattr(task, "plan_success", True):     # no contact point gave a pose: end the motion, no fallback
-                info["safe_fail"] = info.get("safe_fail") or "no_grasp"
+                kind = "planner_error" if search["errors"] else "no_grasp"
                 cp = gk.get("contact_point_id")
-                _note(info, {"call": "choose_grasp_pose", "skill": ctx, "ok": False, "kind": "no_grasp",
-                             "n_batches": state["batches"] - n0,
-                             "contact_point_id": cp if cp is None or isinstance(cp, (int, list)) else str(cp)})
+                entry = {"call": "choose_grasp_pose", "skill": ctx, "ok": False, "kind": kind, "n_passes": n_pass,
+                         "n_batches": n_batches, "kinds": [v[0] for v in search["last"].values()],
+                         "last_try": state["entry"],
+                         "contact_point_id": cp if cp is None or isinstance(cp, (int, list)) else str(cp)}
+                _note(info, entry)
+                _fail_final(info, kind, entry)
+                info["safe_fail"] = info.get("safe_fail") or kind
                 task.plan_success = False
             dummy = [-1.0] * 7          # RoboTwin's own placeholder pose once plan_success is False (get_grasp_pose)
             return dummy, list(dummy)
 
         guards["choose_grasp_pose"] = choose_grasp_pose
-    if wide_grasp is not None and callable(getattr(task, "choose_best_pose", None)):
+    if callable(getattr(task, "choose_best_pose", None)):
         orig_best = task.choose_best_pose
-        wide = [float(wide_grasp[0]), float(wide_grasp[1])]
 
         def choose_best_pose(res_pose, center_pose, arm_tag=None):
-            attr = "left_rotate_lim" if arm_tag == "left" else "right_rotate_lim"   # robot.create_target_pose_list
-            stock = list(getattr(robot, attr, None) or [0.0, 0.0])
-            if abs(float(stock[1]) - float(stock[0])) > 1e-9:
-                return orig_best(res_pose, center_pose, arm_tag)   # the embodiment's own range, the whole ladder
-            state["levels"] = 1                     # the stock search (ten copies of one pose) at the base margin
+            search = state["search"]
+            if search is None:                      # outside a grasp search: RoboTwin's, the whole ladder per plan
+                return orig_best(res_pose, center_pose, arm_tag)
+            key = (_pose_key(res_pose), _pose_key(center_pose))     # the contact point (its stock grasp pose)
+            last = search["last"].get(key)
+            if last is not None and not eligible(last, state["rungs"][0], search["wide"]):
+                return None                         # its failure is not retried at this level: RoboTwin skips it
+            attr = rotate_attr(arm_tag)
+            stock = getattr(robot, attr, None)
+            if search["wide"]:
+                setattr(robot, attr, [float(wide_grasp[0]), float(wide_grasp[1])])   # ten tilts over [lo, hi)
+            state["kind"], state["entry"] = None, None
             try:
                 pose = orig_best(res_pose, center_pose, arm_tag)
             finally:
-                state["levels"] = None
-            if pose is not None or not getattr(task, "plan_success", True):
-                return pose
-            setattr(robot, attr, wide)              # ten approach tilts over [lo, hi): the first is the stock pose
-            info["safe_wide_grasp"] = int(info.get("safe_wide_grasp", 0)) + 1
-            try:
-                return orig_best(res_pose, center_pose, arm_tag)
-            finally:
-                setattr(robot, attr, stock)
+                if search["wide"]:
+                    setattr(robot, attr, stock)
+            if pose is None:
+                kind = state["kind"] or "plan_fail"
+                search["last"][key] = (kind, search["wide"])
+                search["errors"] += int(kind == "planner_error")
+            return pose
 
         guards["choose_best_pose"] = choose_best_pose
     shadowed = {name: vars(task)[name] for name in guards if name in vars(task)}   # instance attributes before ours
@@ -840,8 +959,9 @@ def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.0
 
 
 def finish_episode(task) -> None:
-    """End of a safe episode: a plan failure (plan_success False) gets its reason in episode_info["safe_fail"], the
-    kind of the last plan the ladder could not find (``safe_last_fail``), else "plan_fail"."""
+    """End of a safe episode: a plan failure (plan_success False) without a reason yet gets one in
+    episode_info["safe_fail"]: the kind of the latest plan the task used, if it failed (``safe_last_fail``), else
+    "plan_fail" (plan_success tripped outside a plan, e.g. a target pose None)."""
     info = getattr(task, "episode_info", None)
     if isinstance(info, dict) and getattr(task, "plan_success", True) is False and not info.get("safe_fail"):
         info["safe_fail"] = info.get("safe_last_fail") or "plan_fail"

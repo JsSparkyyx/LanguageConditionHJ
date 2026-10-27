@@ -97,6 +97,10 @@ def attempt(host, seed, mode, out_root, max_steps=10000) -> dict:
             "wide_grasp": task_diag.get("safe_wide_grasp", 0),
             "log_tail": [{k: e.get(k) for k in ("call", "skill", "level", "kind", "status", "start", "culprits")}
                          for e in (task_diag.get("safe_plan_log") or []) if not e.get("ok")][-4:],
+            # the plan that ended the attempt (a controller plan's last failed try, or a failed grasp search)
+            "fail_entry": ({k: task_diag["safe_fail_entry"].get(k) for k in
+                            ("call", "skill", "level", "kind", "status", "start", "culprits", "kinds", "n_passes")}
+                           if isinstance(task_diag.get("safe_fail_entry"), dict) else None),
             "world": (meta.diag.get("safe_plan") or {}).get("world"),
         })
         row["kept"] = bool(row["success"] and not row["error"] and not row["touched"] and row["max_force_N"] < FORCE_MAX

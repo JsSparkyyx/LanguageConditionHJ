@@ -331,6 +331,8 @@ class ItemEpisodeRunner:
                 env, risky_skill_labels=tuple(self.task_cfg.get("risky_skill_labels", ()) or ())
             )
             self.ctrl.world_aware_only = world_aware   # no mplib screw / world-Z fallback: they ignore the world
+            # T1 obstacle-aware only: the controller books its plans and labels a plan failure (safe_plan.record_plan)
+            self.ctrl.safe_fail_on_plan_failure = world_aware
             self.ctrl.attach()
         # time-scale convention (see robotwin_tasks/_item_utils.py): the runner
         # installs the scales; risky(task) / the T1 skill path switch between them

@@ -33,15 +33,19 @@ corridor_t: [0.22, 0.48]
 # 2026-10-27: each object is its convex hull grown by `margin` (shape hull; obb = the 10-22 boxes, 1.4-3.7 cm too big
 # on round and tapered objects), the real tabletop is in the world `table_clearance` low (RoboTwin's own table cuboid
 # is misplaced), a plan that starts in collision / finds no IK / no route is retried at `retry_margins` (the held
-# object's margin, at most `payload_margin`, shrinks with it), then, for a start in collision only, without the held
-# object and without the hand (`drop_models`); a grasp search that fails with ur5-wsg's one stock pose tries ten
-# approach tilts over `grasp_rotate_lim` rad (the stock pose first). Stock speed (time_scale 1 = no retime), as the
-# collision-avoidance demos.
+# object's margin, at most `payload_margin`, shrinks with it), each failure kind down to its `retry_floors` margin (a
+# start in collision, "Invalid Problem" included, and no IK at the goal to 0.2 cm; no route and a goal in collision
+# only to 0.5 cm), then, for a start in collision only, without the held object and without the hand (`drop_models`);
+# the grasp search escalates as a whole: RoboTwin's search over every contact point with ur5-wsg's one stock pose at
+# `margin` first, only if nothing plans the whole search again one level per pass with ten approach tilts over
+# `grasp_rotate_lim` rad (the stock pose first), up to the first level at which a contact point plans. Stock speed
+# (time_scale 1 = no retime), as the collision-avoidance demos.
 safe_mode:
   plan: obstacle_aware
   protect: named
   margin: 0.01
   retry_margins: [0.005, 0.002]
+  retry_floors: {start_in_collision: 0.002, ik_fail: 0.002, no_route: 0.005, invalid_query: 0.005}
   drop_models: [hand, none]
   payload_margin: 0.01
   shape: hull
