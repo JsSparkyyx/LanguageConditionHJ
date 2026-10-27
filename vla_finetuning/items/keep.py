@@ -2,7 +2,8 @@
 succeeds and no protected rule is ever broken, h >= 0 at every capture tick of the runner's trace.npz (t = 0 and every
 10 physics steps, the 1 s settle after play_once included), h = margins.rule_h with the bead rules' violating-bead
 counts, as main/lang/eval_closed.py trace_violations scores it. T1 instead of its avoid rules: no physical contact of
-an extra object with anything but the table at any physics step (monitor.py), force < 20 N.
+an extra object with anything but the table (another extra object included) at any physics step (monitor.py
+extra_contacts), force < 20 N.
 
 Protected: every rule of the scene except the spill rule (particles_inside, T6's beads on the table: recorded, never
 required), and for T1 also except avoid (the contact check replaces the filter's 1 cm buffer). Set and pair rules are
@@ -32,12 +33,17 @@ RENDER_ERRORS = ("cannot create buffer", "DeviceLost", "vk::", "VK_ERROR", "Erro
                  "ErrorInitializationFailed", "ErrorMemoryMapFailed", "CUDA error", "cudaError", "CUDA out of memory",
                  "CUDA_ERROR")
 # exceptions of a broken checkout or code (RoboTwin missing, a safe mode not merged yet: NotImplementedError, a bug in
-# new code), never of a scene: the scenes fail with UnStableError, a layout RuntimeError, or the expert's
-# "AssertionError: target_pose cannot be None" (no grasp pose); a seed they hit is tried again after the fix
+# new code, a trace whose rule columns are not the runner's: TraceMismatch), never of a scene: the scenes fail with
+# UnStableError, a layout RuntimeError, or the expert's "AssertionError: target_pose cannot be None" (no grasp pose);
+# a seed they hit is tried again after the fix
 CODE_ERRORS = ("AttributeError", "FileNotFoundError", "ImportError", "IndexError", "KeyError", "ModuleNotFoundError",
-               "NameError", "NotImplementedError", "SyntaxError", "TypeError", "UnboundLocalError")
+               "NameError", "NotImplementedError", "SyntaxError", "TraceMismatch", "TypeError", "UnboundLocalError")
 CONTACT_ABORT = "ContactAbort"               # monitor.ContactAbort, as the runner records it ("<type>: <message>")
 TIMEOUT = "ItemTimeout"
+
+
+class TraceMismatch(ValueError):
+    """trace.npz's rule columns are not the runner's rule table: the same for every seed of this code (a code_error)."""
 
 
 def _consequence(rule) -> str:
@@ -67,9 +73,9 @@ def read_trace(path: Path, rules) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         ids = [str(x) for x in z["rule_ids"]] if "rule_ids" in z.files else None
     want = [r.rule_id for r in rules]
     if ids is not None and ids != want:
-        raise ValueError(f"trace rule columns {ids} != the runner's rules {want}")
+        raise TraceMismatch(f"trace rule columns {ids} != the runner's rules {want}")
     if m.shape[1] != len(want):
-        raise ValueError(f"trace has {m.shape[1]} rule columns, the runner {len(want)} rules")
+        raise TraceMismatch(f"trace has {m.shape[1]} rule columns, the runner {len(want)} rules")
     return t, m, c
 
 
@@ -121,17 +127,20 @@ def error_reason(err: str) -> str:
 def keep_reason(facts: dict) -> str:
     """'kept' or why not, checked in this order: an exception (error_reason: "render_error" for a broken renderer,
     "contact" for T1's early abort, "timeout", "code_error" for a broken checkout or code, else "error"),
-    "safe_fail:<why>" (the safe controller found no safe motion), "plan_failed", "task_failed", "rule:<rule_id>" (the
-    first protected rule broken), "contact" / "force" (T1), "few_frames".
+    "safe_fail:<why>" (the safe controller found no safe motion), "plan_failed" (the task's plan_success is False at
+    the end, as collect_demos.py reads it), "task_failed", "rule:<rule_id>" (the first protected rule broken),
+    "contact" / "force" (T1), "few_frames". A failed plan() the task recovered from (T5 / T7's step chain after a
+    failed via path, the T6 pour's retries: plan_success set back to True) is no rejection; the runner's count of
+    them (meta.plan_failures) is a row diagnostic only.
 
-    facts: err (str | None), safe_fail (str | None), plan_failures (int), task_success (bool), broken ([rule_id]),
-    contact (None, or {"touched": bool, "force_max": N} for T1), n_frames (int)."""
+    facts: err (str | None), safe_fail (str | None), plan_success (bool, default True), task_success (bool), broken
+    ([rule_id]), contact (None, or {"touched": bool, "force_max": N} for T1), n_frames (int)."""
     err = facts.get("err")
     if err:
         return error_reason(err)
     if facts.get("safe_fail"):
         return f"safe_fail:{facts['safe_fail']}"
-    if int(facts.get("plan_failures") or 0) > 0:
+    if not facts.get("plan_success", True):
         return "plan_failed"
     if not facts.get("task_success"):
         return "task_failed"

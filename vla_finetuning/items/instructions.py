@@ -12,10 +12,13 @@ like the collision-avoidance set's ({"seen": [...], "unseen": [...]}, 100 string
                                                                 from the seed)
 
 The placeholders come from the scene alone, so they are built after the runner's setup() and before run() (run()
-closes the env). A string with a held-out word of the language filter (paraphrases.yaml heldout_words: "container",
-"serving tray", ...) is dropped and the list topped up; the T1 hosts' RoboTwin object descriptions have a few
-("rectangular bright orange serving tray", "red container with yellow fries"). HoloBrain trains on seen AND unseen
-(robotwin_lmdb_dataset joins them), so "unseen" is not held out.
+closes the env). T1's lists are exactly the collision-avoidance set's: common.make_instructions(host,
+common.instruction_info(task, host), seed), unfiltered (only the empty-string and leftover-placeholder guards), so
+they keep the hosts' RoboTwin object descriptions as they are, held-out words of the language filter included
+("rectangular bright orange serving tray", "red container with yellow fries": place_burger_fries). The item tasks'
+own templates hold no held-out word (paraphrases.yaml heldout_words: "container", "serving tray", ...); a string with
+one is dropped there and the list topped up. HoloBrain trains on seen AND unseen (robotwin_lmdb_dataset joins them),
+so "unseen" is not held out.
 """
 
 from __future__ import annotations
@@ -103,9 +106,11 @@ def load_templates(task: str) -> dict:
 
 
 def instruction_md5(task: str, host: str | None = None) -> str:
-    """Hash of what decides the text: the template file and the held-out words (pinned in settings.json)."""
+    """Hash of what decides the text (pinned in settings.json): the template file, and for the item tasks the held-out
+    words (T1's lists are unfiltered)."""
     h = hashlib.md5(template_path(task, host).read_bytes())
-    h.update("\n".join(sorted(heldout_words())).encode())
+    if task != T1:
+        h.update("\n".join(sorted(heldout_words())).encode())
     return h.hexdigest()[:12]
 
 
@@ -187,22 +192,25 @@ def _draw(task: str, info: dict, seed: int, n: int, host: str | None) -> dict:
 
 
 def make_item_instructions(task: str, info: dict, seed: int, n: int = 100, host: str | None = None) -> dict:
-    """{"seen": [n strings], "unseen": [n strings]} for one demo (T1: the host's RoboTwin templates). Strings with a
-    held-out word are dropped: drawn again with OVERDRAW x n, the first n clean ones kept (cycled if fewer)."""
+    """{"seen": [n strings], "unseen": [n strings]} for one demo. T1: common.make_instructions(host, info, seed, n) as it
+    comes (the collision-avoidance set's lists). The item tasks: strings with a held-out word are dropped, drawn again
+    with OVERDRAW x n, the first n clean ones kept (cycled if fewer)."""
     out = _draw(task, info, seed, n, host)
-    if any(has_heldout_word(s) for key in KEYS for s in out.get(key, [])):
+    heldout = task != T1
+    if heldout and any(has_heldout_word(s) for key in KEYS for s in out.get(key, [])):
         big = _draw(task, info, seed, OVERDRAW * n, host)
         out = {}
         for key in KEYS:
             clean = [s for s in big.get(key, []) if not has_heldout_word(s)]
             out[key] = (clean * (n // max(len(clean), 1) + 1))[:n]
     out = {key: list(out.get(key, [])) for key in KEYS}
-    check_instructions(out)
+    check_instructions(out, heldout=heldout)
     return out
 
 
-def check_instructions(instr: dict) -> None:
-    """Raise ValueError unless both lists exist and every string is non-empty, filled, and free of held-out words."""
+def check_instructions(instr: dict, heldout: bool = True) -> None:
+    """Raise ValueError unless both lists exist and every string is non-empty and filled (no "{" / "}" left), and with
+    ``heldout`` (the item tasks' own templates; not T1's RoboTwin lists) free of held-out words."""
     for key in KEYS:
         lst = instr.get(key)
         if not isinstance(lst, list) or not lst:
@@ -212,6 +220,6 @@ def check_instructions(instr: dict) -> None:
                 raise ValueError(f"instructions: empty {key} string {s!r}")
             if "{" in s or "}" in s:
                 raise ValueError(f"instructions: unfilled placeholder in {s!r}")
-            w = has_heldout_word(s)
+            w = has_heldout_word(s) if heldout else None
             if w:
                 raise ValueError(f"instructions: held-out word {w!r} in {s!r}")

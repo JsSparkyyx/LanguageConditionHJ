@@ -17,25 +17,30 @@ ItemEpisodeRunner(..., nominal_mode="safe", active_rule_id=None), which protects
     c. the instruction placeholders and the 100 + 100 instructions (instructions.py; written only if kept), the
        protected rules (keep.py), T1's extra objects for the contact check;
     d. the hooks (monitor.py): frames every 15 physics steps of play_once (pure waits skipped), T1's contact check at
-       every physics step (the first touch aborts the attempt), a 1 s settle after play_once;
+       every physics step (an extra object touching anything but the table, another extra object included; the
+       first touch aborts the attempt), a 1 s settle after play_once;
     e. run(); every rule's h per capture tick from the runner's trace.npz;
-    f. the keep rule (keep.keep_reason): error / timeout / contact (T1's abort), safe_fail:<why>, plan_failed,
-       task_failed, rule:<rule_id>, contact / force (T1), few_frames, else kept;
+    f. the keep rule (keep.keep_reason): error / timeout / contact (T1's abort), safe_fail:<why>, plan_failed (the
+       task's plan_success False at the end, as collect_demos.py; meta.plan_failures also counts the failed plans the
+       task recovered from and is a row diagnostic only), task_failed, rule:<rule_id>, contact / force (T1),
+       few_frames, else kept;
     g. kept: data/episode{k}.hdf5 + instructions/episode{k}.json + entry k of seed.txt (demo_io, the layout
        HoloBrain's packer reads; vla_finetuning/pack.py packs the root unchanged), k = the kept count.
 
 Bookkeeping as in collect_demos.py (its seed walk is reused): settings.json pins the directory's settings (a rerun
 with others is refused), attempts.jsonl gets a "started" line before the scene is built and one result row per
-attempt with the per-rule min h and first violation, contacts, frames, wall time and scene facts (a seed that started
-but never finished counts as tried), a resume deletes orphan files and rewrites seed.txt. Three reasons blame the
-process or the code, not the seed, which is then not counted as tried (up to 3 times per seed): render_error (Vulkan /
-CUDA: "cannot create buffer", DeviceLost, ...; the process ends at once with 75, since a broken renderer stays broken
-in-process: the collision-avoidance attempts show streaks of up to 35), planner_error (not cuRobo; exit 3) and
-code_error (an AttributeError, ImportError, NotImplementedError, ...: RoboTwin missing beside the checkout, a safe
-mode not merged yet, a bug; 3 in a row end the process with 3). The ITEM_* diagnostic overrides of the task files
-must be unset. Exit 0 when --target episodes are kept (or the seeds run out), 75 to be continued (--max-attempts, the
-stage deadline, a renderer error; jobs/collect_items_loop.sh relaunches), 3 when the planners or the code cannot make
-safe demos (a planner not cuRobo, T1 without the safe model's hand slots, 3 code errors in a row).
+attempt with the per-rule min h and first violation, contacts, frames, wall time, scene facts and the safe experts'
+diagnostics (expert_diag), a resume deletes orphan files and rewrites seed.txt. Every exception of an attempt ends in
+its row (keep.error_reason; the seeding and the runner's constructor included), so no process dies between a
+"started" line and its row (a seed that started but never finished, a killed process, counts as tried). Three
+reasons blame the process or the code, not the seed, which is then not counted as tried (up to 3 times per seed):
+render_error (Vulkan / CUDA: "cannot create buffer", DeviceLost, ...; the process ends at once with 75, since a broken
+renderer stays broken in-process: the collision-avoidance attempts show streaks of up to 35), planner_error (not
+cuRobo; exit 3) and code_error (an AttributeError, ImportError, NotImplementedError, ...: RoboTwin missing beside the
+checkout, a safe mode not merged yet, a bug; 3 in a row end the process with 3). The ITEM_* diagnostic overrides of
+the task files must be unset. Exit 0 when --target episodes are kept (or the seeds run out), 75 to be continued
+(--max-attempts, the stage deadline, a renderer error; jobs/collect_items_loop.sh relaunches), 3 when the planners or
+the code cannot make safe demos (a planner not cuRobo, T1 without the safe model's hand slots, 3 code errors in a row).
 """
 
 from __future__ import annotations
@@ -56,12 +61,13 @@ from .. import common as C
 from ..demo_io import write_episode, write_instructions, write_seed_txt, write_video
 from . import instructions as I
 from . import keep as K
-from .monitor import FRAME_EVERY, SETTLE_STEPS, DemoMonitor
+from .monitor import FRAME_EVERY, SETTLE_STEPS, DemoMonitor, extra_contacts
 
 TASKS = I.ITEM_TASKS
 T1 = I.T1
-# physics steps per attempt (the runner's max_steps; its first step and the 250-step settle count too)
-MAX_STEPS = {"selective_avoid": 10000, "push_zone": 12500, "tray_transport": 7500, "clean_pour": 10000,
+# physics steps per attempt (the runner's max_steps; its first step and the 250-step settle count too); push_zone
+# 15000: the T3 safe mode builder's estimate for the routed push (the GPU pilot refines it)
+MAX_STEPS = {"selective_avoid": 10000, "push_zone": 15000, "tray_transport": 7500, "clean_pour": 10000,
              "gap_place": 7500}
 SEED_STOP = 1_000_000       # the language filter's episode ids start at 1M (main/lang/config.py)
 RETRY_REASONS = ("render_error", "planner_error", "code_error")   # the process or the code was broken, not the
@@ -190,16 +196,48 @@ def scene_facts(task: str, runner) -> dict:
     return _plain(out)
 
 
+PUSH_KEYS = ("yaw_jump_max_deg", "ee_miss_max", "ee_miss_flag", "box_tilt_max_deg", "fail")
+ROUTE_KEYS = ("ok", "reason", "length", "hand", "sides", "turns_deg", "first_deg", "min_clear")
+DIAG_KEYS = ("plan_fail_step", "safe_plan_levels", "safe_last_fail")
+
+
+def expert_diag(task_diag: dict) -> dict:
+    """The safe experts' diagnostics at the row's top level, the ones present (the whole task.episode_info stays in
+    diag_task), so a pilot reads from attempts.jsonl alone. T3: push (push_via's log: steps per kind, re-plans, the
+    largest yaw jump / EE miss / box tilt, the failure), route (plan_route's answer without its via points and search
+    detail, n_via instead), plan_fail_step (the step pair a planner failure stopped). T1: safe_plan_levels (plans per
+    ladder level, "fail"), safe_last_fail (the kind of the latest plan the ladder could not find)."""
+    d = task_diag if isinstance(task_diag, dict) else {}
+    out = {}
+    push = d.get("push")
+    if isinstance(push, dict):
+        steps = [s for s in push.get("steps") or [] if isinstance(s, dict)]
+        out["push"] = {"steps": dict(Counter(str(s.get("kind")) for s in steps)),
+                       "n_replans": len(push.get("replans") or []), **{k: push[k] for k in PUSH_KEYS if k in push}}
+    route = d.get("route")
+    if isinstance(route, dict):
+        out["route"] = {"n_via": len(route.get("via") or []), **{k: route[k] for k in ROUTE_KEYS if k in route}}
+    out.update({k: d[k] for k in DIAG_KEYS if k in d})
+    return _plain(out)
+
+
 def run_attempt(task: str, seed: int, host: str | None, out_root: Path, max_steps: int):
     """One attempt, start to keep reason; a failed episode never raises. -> (row, DemoMonitor | None,
     instructions | None); row["reason"] is the keep reason ("kept" or why not)."""
     row = {"task": task, "seed": int(seed), "host": host}
-    C.set_global_seeds(seed)
-    runner = _runner_class()(task, embodiment=C.EMBODIMENT, seed=int(seed), host=host, nominal_mode="safe",
-                             active_rule_id=None, render="none", out_root=str(out_root), max_steps=int(max_steps))
-    row["host"] = runner.host
-    mon = instr = None
+    runner = mon = instr = None
     try:
+        try:
+            C.set_global_seeds(seed)
+            runner = _runner_class()(task, embodiment=C.EMBODIMENT, seed=int(seed), host=host, nominal_mode="safe",
+                                     active_rule_id=None, render="none", out_root=str(out_root),
+                                     max_steps=int(max_steps))
+            row["host"] = runner.host
+        except Exception as exc:  # noqa: BLE001 - before any scene, never the seed's: error_reason (a bug: code_error)
+            traceback.print_exc()
+            err = f"{type(exc).__name__}: {exc}"
+            row.update(reason=K.error_reason(err), error=err[:500], detail="seeding / runner constructor")
+            return row, None, None
         try:
             runner.setup()
         except Exception as exc:  # noqa: BLE001 - no scene for this seed (UnStableError, no extra object, ...)
@@ -240,10 +278,9 @@ def run_attempt(task: str, seed: int, host: str | None, out_root: Path, max_step
             contact_fn = None
             if task == T1:
                 from main.item_envs.items import entity_of
-                from main.item_envs.safe_plan import contact_with
 
-                env, ents = runner.env, [entity_of(s) for s in extras]
-                contact_fn = lambda: contact_with(env, ents)   # noqa: E731
+                scene, names = task_obj.scene, {entity_of(s).name for s in extras}
+                contact_fn = lambda: extra_contacts(scene, names)   # noqa: E731 - two extra objects count too
             mon = DemoMonitor(task_obj, contact_fn=contact_fn).install()
         except Exception as exc:  # noqa: BLE001 - a broken attempt is logged, the next seed follows
             traceback.print_exc()
@@ -273,9 +310,10 @@ def run_attempt(task: str, seed: int, host: str | None, out_root: Path, max_step
                 row["first_violation_t"] = {rid: v["first_t"] for rid, v in per.items() if v["first_t"] is not None}
             elif err is None:
                 err = f"no trace.npz in {runner.out_dir}"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - the type first: error_reason reads it (a bug here is a code_error)
             traceback.print_exc()
-            err = err or f"trace: {type(exc).__name__}: {exc}"
+            err = err or f"{type(exc).__name__}: trace: {exc}"
+        plan_ok = bool(getattr(task_obj, "plan_success", True))   # the end-of-episode flag (collect_demos.py)
         contact = None
         if task == T1:
             contact = {"touched": mon.touched, "force_max": mon.force_max}
@@ -284,17 +322,20 @@ def run_attempt(task: str, seed: int, host: str | None, out_root: Path, max_step
                        first_touch_t=None if mon.first_touch is None else mon.first_touch / C.PHYS_HZ,
                        plan_status=list(((diag.get("safe_plan") or {}).get("plan_status") or [])[:20]))
         row.update(error=None if err is None else str(err)[:500], safe_fail=task_diag.get("safe_fail"),
-                   task_success=bool(meta.task_success), plan_failures=int(meta.plan_failures), broken=broken,
+                   task_success=bool(meta.task_success), plan_success=plan_ok,
+                   plan_failures=int(meta.plan_failures), broken=broken,   # plan_failures: recovered ones too
                    risk=_plain(getattr(meta, "risk", None)), diag_task=_plain(task_diag),
                    n_skipped_frames=mon.n_skipped, play_steps=mon.play_steps, settle_steps=mon.settled,
                    n_steps=mon.n, duration_s=mon.n / C.PHYS_HZ,
                    runner_dir=os.path.relpath(runner.out_dir, Path(out_root).resolve().parent.parent))
-        row["reason"] = K.keep_reason({"err": err, "safe_fail": task_diag.get("safe_fail"),
-                                       "plan_failures": meta.plan_failures, "task_success": meta.task_success,
-                                       "broken": broken, "contact": contact, "n_frames": len(mon.frames)})
+        row.update(expert_diag(task_diag))            # push / route (T3), safe_plan_levels / safe_last_fail (T1)
+        row["reason"] = K.keep_reason({"err": err, "safe_fail": task_diag.get("safe_fail"), "plan_success": plan_ok,
+                                       "task_success": meta.task_success, "broken": broken, "contact": contact,
+                                       "n_frames": len(mon.frames)})
         return row, mon, instr
     finally:
-        runner.close()
+        if runner is not None:
+            runner.close()
 
 
 # ------------------------------------------------------------------ the loop ----
@@ -389,7 +430,13 @@ def _collect(args, d: Path, lock) -> int:
         C.append_jsonl(log, {"seed": seed, "started": time.strftime("%F %T"), "attempt": idx})
         counts[seed] += 1
         t0 = time.time()
-        row, mon, instr = run_attempt(args.task, seed, args.host, att_root, args.max_steps)
+        try:
+            row, mon, instr = run_attempt(args.task, seed, args.host, att_root, args.max_steps)
+        except Exception as exc:  # noqa: BLE001 - this collector's own code: classified, the "started" line gets a row
+            traceback.print_exc()
+            err = f"{type(exc).__name__}: {exc}"
+            row, mon, instr = ({"task": args.task, "seed": int(seed), "host": args.host, "reason": K.error_reason(err),
+                                "error": err[:500], "detail": "run_attempt"}, None, None)
         reason = row.get("reason") or "error"
         frames = mon.frames if mon is not None else []
         row.update(attempt=idx, config=args.config_name, kept=reason == "kept", reason=reason, n_frames=len(frames))

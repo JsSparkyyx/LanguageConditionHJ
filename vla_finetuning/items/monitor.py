@@ -2,11 +2,11 @@
 after the runner's setup() and before run(): run() wraps scene.step again (its tick captures), so this hook sits
 inside it, and the runner keeps measuring every rule while the settle below runs.
 
-- every physics step: a step count; T1 (contact_fn) the contact check of the extra objects (safe_plan.contact_with:
-  anything but the table and each other, touch = a contact point with separation <= 0, force = |impulse| / dt), its
-  max force and the first touch. A touch while the expert runs raises ContactAbort, so a doomed attempt stops (the
-  runner records it as the episode error, "ContactAbort: ..."); a touch before play_once (the runner's first step)
-  raises at play_once's start.
+- every physics step: a step count; T1 (contact_fn) the contact check of the extra objects (extra_contacts: one scan
+  of the scene's contacts, anything but the table counts, two extra objects touching each other too; touch = a
+  contact point with separation <= 0, force = |impulse| / dt), its max force and the first touch. A touch while the
+  expert runs raises ContactAbort, so a doomed attempt stops (the runner records it as the episode error,
+  "ContactAbort: ..."); a touch before play_once (the runner's first step) raises at play_once's start.
 - frames (demo_io.FrameRecorder: task.get_obs(), the collision-avoidance set's cameras and fields): one at the start
   of play_once, one every FRAME_EVERY = 15 physics steps of it (RoboTwin's demo_clean save_freq) and one at its end,
   except a frame whose joint_action/vector (the drive targets + commanded grippers) equals the last recorded one
@@ -27,6 +27,33 @@ SETTLE_STEPS = 250      # physics steps after play_once (1 s at 250 Hz)
 
 class ContactAbort(Exception):
     """T1: an extra object was touched; the keep rule has failed, the attempt stops here."""
+
+
+def extra_contacts(scene, names) -> tuple[float, bool, set]:
+    """(max force N, touched, partner names) for the contacts of the bodies named ``names`` (T1's extra objects, named
+    by item_id) at this physics step, one get_contacts() scan: every partner counts but the table, another extra
+    object too (both are then each other's partner). The rules of vla_finetuning's contact_scan (CrossSafe's): touch
+    = a contact point with separation <= 0, force = |impulse| / dt over all points. safe_plan.contact_with skips the
+    pairs inside ``names``, which the keep rule must not (Yuxuan 2026-10-27: no contact with anything but the table)."""
+    names = {str(n) for n in names if n}
+    max_f, touched, partners = 0.0, False, set()
+    try:
+        contacts = scene.get_contacts()
+    except Exception:  # noqa: BLE001 - as contact_scan: no contact list this step
+        return 0.0, False, partners
+    dt = float(getattr(scene, "timestep", 1.0 / 250.0))
+    for c in contacts:
+        n0, n1 = c.bodies[0].entity.name or "", c.bodies[1].entity.name or ""
+        mine = [n for n in (n0, n1) if n in names]
+        if not mine or "table" in n0.lower() or "table" in n1.lower():
+            continue
+        hit = {n1 if n == n0 else n0 for n in mine}  # the other body of each named one
+        for pt in c.points:
+            if float(pt.separation) <= 0.0:
+                touched = True
+                partners |= hit
+            max_f = max(max_f, float(np.linalg.norm(pt.impulse)) / dt)
+    return max_f, touched, partners
 
 
 def joint_vector(robot) -> np.ndarray:

@@ -12,6 +12,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from vla_finetuning import common as C
 from vla_finetuning.items import instructions as I
 
 INFO_KEYS = {"push_zone": {"{A}"}, "tray_transport": {"{A}"}, "clean_pour": {"{A}", "{B}"},
@@ -114,15 +115,19 @@ def test_heldout_words():
     assert I.has_heldout_word("the cubed apple") is None                     # whole words only
 
 
-def test_t1_host_templates_without_heldout_words():
-    """place_burger_fries' tray and fries descriptions say "serving tray" / "container": those strings are dropped
-    and the lists topped up from a larger draw."""
+def test_t1_lists_are_the_collision_avoidance_sets():
+    """T1 = common.make_instructions(host, info, seed) unfiltered, as collect_demos.py writes them: place_burger_fries'
+    tray and fries descriptions keep their "serving tray" / "container" (held-out words only for the item tasks)."""
     info = {"{A}": "006_hamburg/base0", "{B}": "008_tray/base1", "{C}": "005_french-fries/base0"}
-    out = I.make_item_instructions("selective_avoid", info, seed=5, host="place_burger_fries")
-    assert len(out["seen"]) == 100 and len(out["unseen"]) == 100
-    assert not any(I.has_heldout_word(s) for s in out["seen"] + out["unseen"])
-    out2 = I.make_item_instructions("selective_avoid", {"{A}": "red block", "{B}": "green block"}, seed=5,
-                                    host="stack_blocks_two")
+    I.generator()                                       # RoboTwin's root on sys.path for common's import
+    for seed in (5, 300100):
+        out = I.make_item_instructions("selective_avoid", info, seed=seed, host="place_burger_fries")
+        assert out == C.make_instructions("place_burger_fries", info, seed)
+        assert len(out["seen"]) == 100 and len(out["unseen"]) == 100
+        assert any(I.has_heldout_word(s) for s in out["seen"] + out["unseen"])
+    info2 = {"{A}": "red block", "{B}": "green block"}
+    out2 = I.make_item_instructions("selective_avoid", info2, seed=5, host="stack_blocks_two")
+    assert out2 == C.make_instructions("stack_blocks_two", info2, 5)
     assert all("red block" in s and "green block" in s for s in out2["seen"])
     with pytest.raises(ValueError):
         I.make_item_instructions("selective_avoid", {"{A}": "red block"}, seed=5)       # no host
@@ -138,6 +143,11 @@ def test_check_instructions():
                 {"seen": ["Pour the beads into the white container."], "unseen": good["unseen"]}):   # held-out word
         with pytest.raises(ValueError):
             I.check_instructions(bad)
+    # T1's RoboTwin lists: held-out words stay, the empty-string and leftover-placeholder guards hold
+    I.check_instructions({"seen": ["Put the burger on the serving tray."], "unseen": good["unseen"]}, heldout=False)
+    for bad in ({"seen": [""], "unseen": good["unseen"]}, {"seen": ["Put {A} on the tray."], "unseen": good["unseen"]}):
+        with pytest.raises(ValueError):
+            I.check_instructions(bad, heldout=False)
 
 
 def test_ambiguous_t1_objects():
@@ -149,8 +159,12 @@ def test_ambiguous_t1_objects():
     assert I.ambiguous_objects("place_container_plate", [box("red")]) == []
 
 
-def test_instruction_md5_follows_the_template_file():
+def test_instruction_md5_follows_the_template_file(monkeypatch):
     assert I.instruction_md5("gap_place") == I.instruction_md5("gap_place")
     assert I.instruction_md5("gap_place") != I.instruction_md5("push_zone")
     assert I.instruction_md5("selective_avoid", "stack_blocks_two") != I.instruction_md5("selective_avoid",
                                                                                           "stack_bowls_two")
+    item, t1 = I.instruction_md5("gap_place"), I.instruction_md5("selective_avoid", "stack_blocks_two")
+    monkeypatch.setattr(I, "heldout_words", lambda: ("container", "serving tray", "pail"))
+    assert I.instruction_md5("gap_place") != item                         # the item tasks' filter decides their text
+    assert I.instruction_md5("selective_avoid", "stack_blocks_two") == t1  # T1's lists are unfiltered

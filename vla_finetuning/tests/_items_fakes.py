@@ -21,7 +21,12 @@ HW = (24, 32)
 DEG = np.pi / 180.0
 DEFAULT = {"move1": 150, "hold": 60, "move2": 150, "success": True, "setup_error": None, "render_error_at": None,
            "safe_fail": None, "plan_success": True, "dip": None, "touch_at": None, "box_color": "blue",
-           "play_error": None}   # setup_error / play_error: an exception, or a RuntimeError message
+           "play_error": None, "ctor_error": None, "plan_failures": 0, "episode_info": None, "contacts": None,
+           "bad_trace": False}
+# setup_error / play_error / ctor_error (the runner's constructor): an exception, or a RuntimeError message;
+# plan_failures: failed plan() calls the expert recovered from (plan_success stays as scripted); episode_info: merged
+# into task.episode_info at the end of play_once; contacts: {physics step: [(body a, body b), ...]}; bad_trace: the
+# trace's rule columns reversed
 
 
 class ItemTimeout(Exception):
@@ -107,6 +112,7 @@ class Task:
             self.robot.q[7] += 0.01
             self.scene.step()
         self.plan_success = self.s["plan_success"]
+        self.episode_info.update(self.s["episode_info"] or {})
         return {"info": {}}
 
     def check_success(self):
@@ -139,6 +145,8 @@ class FakeRunner:
         self.task_name, self.seed, self.host, self.max_steps = task, int(seed), host, int(max_steps)
         self.out_dir = Path(out_root).resolve() / task / "ur5-wsg" / f"seed_{self.seed}"
         self.s = dict(DEFAULT, **self.SCRIPTS.get(self.seed, {}))
+        if self.s["ctor_error"]:
+            _raise(self.s["ctor_error"])
         self.env, self.items, self.rules, self._spawn_report = None, [], [], None
         self.closed = False
         FakeRunner.BUILT.append(self)
@@ -161,6 +169,8 @@ class FakeRunner:
                                                   "color": self.s["box_color"], "model_id": None, "xyz": [0, 0, 0]}]}
             if self.s["touch_at"] is not None:
                 task.scene.contacts[self.s["touch_at"]] = [Contact("obj_0", "finger_left")]
+            for step, pairs in (self.s["contacts"] or {}).items():
+                task.scene.contacts.setdefault(int(step), []).extend(Contact(a, b) for a, b in pairs)
         elif self.task_name == "gap_place":
             task.standing = [{"item_id": "block_0", "color": "red", "role_in_slot": "flanker"},
                              {"item_id": "block_1", "color": "blue", "role_in_slot": "flanker"}]
@@ -211,13 +221,15 @@ class FakeRunner:
             err = f"{type(exc).__name__}: {exc}"
         finally:
             task.scene.step = orig
-        if task.plan_success is False:
+        meta.plan_failures = int(self.s["plan_failures"])   # as runner._play: ctrl.n_plan_failures, then the flag
+        if task.plan_success is False and meta.plan_failures == 0:
             meta.plan_failures = 1
         meta.diag["task"] = dict(task.episode_info)
         m = np.stack(rows)
+        ids = [r.rule_id for r in self.rules]
         np.savez_compressed(self.out_dir / "trace.npz", t=np.asarray(t), margins=m,
                             violation_counts=np.full(m.shape, -1, np.int64),
-                            rule_ids=np.array([r.rule_id for r in self.rules], dtype=str))
+                            rule_ids=np.array(ids[::-1] if self.s["bad_trace"] else ids, dtype=str))
         self.close()
         return meta, err
 

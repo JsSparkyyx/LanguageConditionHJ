@@ -77,7 +77,7 @@ def test_cli():
     assert a.max_steps == 7500 and a.host is None and a.max_attempts == 40 and not a.video
     a = CI.parse_args(["--task", "selective_avoid", "--host", "stack_bowls_two", "--root", "/r", "--config-name", "x"])
     assert a.max_steps == 10000 and a.host == "stack_bowls_two"
-    assert CI.parse_args(["--task", "push_zone", "--root", "/r", "--config-name", "s0"]).max_steps == 12500
+    assert CI.parse_args(["--task", "push_zone", "--root", "/r", "--config-name", "s0"]).max_steps == 15000
     assert CI.parse_args(["--task", "clean_pour", "--root", "/r", "--config-name", "s0",
                           "--max-steps", "123"]).max_steps == 123
     for bad in (["--task", "selective_avoid"],                         # T1 needs its host
@@ -125,6 +125,23 @@ def test_make_queue_refuses_the_demo_root(tmp_path):
     out = tmp_path / "q.cmds"
     assert Q.main(["--root", str(root), "--out", str(out), "--tasks", "gap_place"]) == 0
     assert len([ln for ln in out.read_text().splitlines() if ln.startswith("bash ")]) == 4
+
+
+def test_make_queue_only_tasks_with_a_safe_mode(tmp_path, monkeypatch):
+    """Before the T3 safe mode is merged push_zone's yaml has no safe_mode section: left out by default, refused by
+    name (its jobs would only end in code errors and the workqueue drop them)."""
+    for task in ("selective_avoid", "tray_transport", "clean_pour", "gap_place"):
+        assert Q.has_safe_mode(task), task
+    monkeypatch.setattr(Q, "has_safe_mode", lambda task: task != "push_zone")
+    root, out = tmp_path / "demos", tmp_path / "q.cmds"
+    assert Q.main(["--root", str(root), "--out", str(out)]) == 0
+    lines = [ln for ln in out.read_text().splitlines() if ln.startswith("bash ")]
+    assert len(lines) == 5 + 3 * 4 and not any("push_zone" in ln for ln in lines)
+    with pytest.raises(SystemExit, match="push_zone"):
+        Q.main(["--root", str(root), "--out", str(out), "--tasks", "gap_place", "push_zone"])
+    monkeypatch.setattr(Q, "has_safe_mode", lambda task: True)            # after the merge: all 21 shards
+    assert Q.main(["--root", str(root), "--out", str(out)]) == 0
+    assert len([ln for ln in out.read_text().splitlines() if ln.startswith("bash ")]) == 21
 
 
 def _rows(d):
@@ -207,6 +224,113 @@ def test_collect_t1_contact_and_ambiguity(tmp_path, monkeypatch):
     assert k["host"] == "stack_blocks_two" and k["force_max"] == 0.0
     instr = json.loads((d / "instructions" / "episode0.json").read_text())
     assert all("red block" in s and "green block" in s for s in instr["seen"])
+    assert instr == C.make_instructions("stack_blocks_two", {"{A}": "red block", "{B}": "green block"}, 302103)
+
+
+def test_collect_t1_extra_objects_touching_each_other(tmp_path, monkeypatch):
+    """Any contact of an extra object but with the table rejects (another extra object too); the table does not.
+    The T1 safe expert's diagnostics reach the row's top level."""
+    levels = {"0": 6, "2": 1, "fail": 1}
+    install(monkeypatch, {302200: {"contacts": {40: [("obj_1", "obj_0")]}},
+                          302201: {"contacts": {30: [("obj_0", "table"), ("obj_1", "table")]},
+                                   "episode_info": {"safe_plan_levels": levels, "safe_last_fail": "ik_fail",
+                                                    "safe_plan_log": [{"ok": False, "kind": "ik_fail"}]}}})
+    argv = ["--task", "selective_avoid", "--host", "stack_blocks_two", "--root", str(tmp_path), "--config-name",
+            "stack_blocks_two", "--seed-start", "302200", "--seed-step", "1", "--seed-stop", "302300", "--target", "1"]
+    assert CI.main(argv) == 0
+    done = _done(tmp_path / "selective_avoid" / "stack_blocks_two")
+    assert [r["reason"] for r in done] == ["contact", "kept"]
+    assert done[0]["contact_partners"] == ["obj_0", "obj_1"] and done[0]["first_touch_step"] == 40
+    k = done[1]
+    assert k["contact"] is False and k["safe_plan_levels"] == levels and k["safe_last_fail"] == "ik_fail"
+    assert "push" not in k and "route" not in k and k["diag_task"]["safe_plan_log"][0]["kind"] == "ik_fail"
+
+
+def test_plan_failed_only_on_the_end_flag(tmp_path, monkeypatch):
+    """A failed plan the task recovered from (meta.plan_failures > 0, plan_success True at the end: T5 / T7's step
+    chain after a failed via path, the T6 pour) is kept; plan_success False at the end is plan_failed, even when
+    check_success holds, and comes before task_failed."""
+    install(monkeypatch, {340000: {"plan_failures": 2},
+                          340004: {"plan_success": False},
+                          340008: {"plan_success": False, "success": False}})
+    argv = ["--task", "gap_place", "--root", str(tmp_path), "--config-name", "s0", "--seed-start", "340000",
+            "--seed-step", "4", "--seed-stop", "340100", "--target", "2"]
+    assert CI.main(argv) == 0
+    done = _done(tmp_path / "gap_place" / "s0")
+    assert [r["reason"] for r in done] == ["kept", "plan_failed", "plan_failed", "kept"]
+    assert (done[0]["plan_failures"], done[0]["plan_success"], done[0]["settle_steps"]) == (2, True, 250)
+    assert (done[1]["plan_failures"], done[1]["plan_success"], done[1]["settle_steps"]) == (1, False, 0)
+    assert done[1]["task_success"] is True and done[3]["plan_failures"] == 0
+
+
+def test_t3_route_and_push_summaries():
+    """push_zone's safe expert writes episode_info route (plan_route's answer) and push (push_via's log): their
+    summaries go to the row's top level, the bulky parts stay in diag_task."""
+    diag = {"safe_fail": None, "plan_fail_step": 7, "replans": [{"ok": True}],
+            "route": {"ok": True, "via": [[0.1, 0.0], [0.2, 0.05], [0.3, 0.1]], "sides": {"zone_red": "near"},
+                      "hand": "wide", "turns_deg": [20.5], "first_deg": 3.0, "length": 0.31,
+                      "min_clear": {"zone_red": 0.018}, "reason": None, "detail": {"lanes": list(range(50))}},
+            "push": {"steps": [{"kind": "approach"}, {"kind": "push"}, {"kind": "push"}, {"kind": "retreat"}],
+                     "replans": [{"at": [0.2, 0.0], "why": "lane", "ok": True}], "yaw_jump_max_deg": 4.5,
+                     "ee_miss_max": 0.006, "ee_miss_flag": False, "box_tilt_max_deg": 1.2, "fail": None}}
+    out = CI.expert_diag(diag)
+    assert out["route"] == {"n_via": 3, "ok": True, "reason": None, "length": 0.31, "hand": "wide",
+                            "sides": {"zone_red": "near"}, "turns_deg": [20.5], "first_deg": 3.0,
+                            "min_clear": {"zone_red": 0.018}}
+    assert out["push"] == {"steps": {"approach": 1, "push": 2, "retreat": 1}, "n_replans": 1, "yaw_jump_max_deg": 4.5,
+                           "ee_miss_max": 0.006, "ee_miss_flag": False, "box_tilt_max_deg": 1.2, "fail": None}
+    assert out["plan_fail_step"] == 7 and set(out) == {"route", "push", "plan_fail_step"}
+    assert CI.expert_diag({}) == {} and CI.expert_diag(None) == {}
+    assert CI.expert_diag({"push": {"fail": "lane"}}) == {"push": {"steps": {}, "n_replans": 0, "fail": "lane"}}
+
+
+def test_errors_before_the_scene_and_in_the_trace_are_code_errors(tmp_path, monkeypatch):
+    """The seeding and the runner's constructor run inside the guarded block, a trace-scoring failure keeps its type
+    first: a deterministic bug in any of them is a code_error (the seed kept for later, 3 in a row stop with 3)."""
+    install(monkeypatch, {340004: {"ctor_error": AttributeError("'RiskParams' object has no attribute 'task'")},
+                          340008: {"bad_trace": True}})
+
+    def seeds(seed):
+        if seed == 340000:
+            raise ModuleNotFoundError("No module named 'torch'")
+
+    monkeypatch.setattr(C, "set_global_seeds", seeds)
+    argv = ["--task", "gap_place", "--root", str(tmp_path), "--config-name", "s0", "--seed-start", "340000",
+            "--seed-step", "4", "--seed-stop", "340100", "--target", "3"]
+    assert CI.main(argv) == 3
+    d = tmp_path / "gap_place" / "s0"
+    done = _done(d)
+    assert [r["reason"] for r in done] == ["code_error"] * 3
+    assert done[0]["error"].startswith("ModuleNotFoundError: No module named 'torch'")
+    assert all(r["detail"] == "seeding / runner constructor" for r in done[:2])     # run_attempt's own guard
+    assert done[1]["error"].startswith("AttributeError: ")
+    assert done[2]["error"].startswith("TraceMismatch: trace: ")
+    assert all(r.closed for r in FakeRunner.BUILT) and len(FakeRunner.BUILT) == 1    # the constructor never finished
+    install(monkeypatch, {})
+    assert CI.main(argv) == 0
+    assert [r["seed"] for r in _done(d)[3:]] == [340000, 340004, 340008]
+
+
+def test_an_exception_past_the_attempt_still_gets_its_row(tmp_path, monkeypatch):
+    """Anything run_attempt itself lets through (here a bug in the row bookkeeping) is classified by the loop: the
+    "started" line gets its row and the process goes on."""
+    install(monkeypatch, {})
+    orig, calls = CI.expert_diag, []
+
+    def flaky(task_diag):
+        calls.append(1)
+        if len(calls) == 1:
+            raise KeyError("push")
+        return orig(task_diag)
+
+    monkeypatch.setattr(CI, "expert_diag", flaky)
+    argv = ["--task", "gap_place", "--root", str(tmp_path), "--config-name", "s0", "--seed-start", "340000",
+            "--seed-step", "4", "--seed-stop", "340100", "--target", "1"]
+    assert CI.main(argv) == 0
+    rows = _rows(tmp_path / "gap_place" / "s0")
+    assert [r.get("reason") for r in rows] == [None, "code_error", None, "kept"]
+    assert rows[1]["error"] == "KeyError: 'push'" and rows[1]["detail"] == "run_attempt" and rows[1]["seed"] == 340000
+    assert all(r.closed for r in FakeRunner.BUILT)
 
 
 def test_videos(tmp_path, monkeypatch):

@@ -11,8 +11,11 @@
 - every other task (index i in ITEM_TASKS: push_zone 1, tray_transport 2, clean_pour 3, gap_place 4): 4 configs
   s0..s3 of 25 each, config c walking 300000 + 10000 i + c in steps of 4 below 300000 + 10000 (i + 1).
 
-Every shard writes head-camera videos (--video: episodes 0, 10, 20 and the first 5 rejected attempts of the config,
-<config>/videos/). All seeds stay below 1M (the language filter's episode ids, main/lang/config.py). The demo root is
+Only tasks whose yaml (configs/tasks/<task>.yaml) has a safe_mode section get lines, by default all of them; a task
+without one (push_zone until the T3 safe mode is merged) is refused by name: its every job would end with 3 code
+errors (NotImplementedError) and the workqueue drop the command for good after 3 failures. Every shard writes
+head-camera videos (--video: episodes 0, 10, 20 and the first 5 rejected attempts of the config, <config>/videos/).
+All seeds stay below 1M (the language filter's episode ids, main/lang/config.py). The demo root is
 vla_finetuning/data/demos_items_safe of this checkout unless --root says otherwise; nothing is written into it here
 (pack.py wants task directories only there).
 """
@@ -44,6 +47,16 @@ def t1_hosts() -> tuple[str, ...]:
     return tuple(get_task_entry(T1).host_tasks)
 
 
+def has_safe_mode(task: str) -> bool:
+    """The task's yaml has a safe_mode section (runner.apply_nominal_mode raises NotImplementedError without one)."""
+    import yaml
+
+    import main.lang  # noqa: F401
+    from main.item_envs.registry import get_task_entry
+
+    return bool((yaml.safe_load(get_task_entry(task).config.read_text()) or {}).get("safe_mode"))
+
+
 def shards(tasks=ITEM_TASKS) -> list[dict]:
     """One dict per (task, config): task, host, config, seed_start, seed_step, seed_stop, target."""
     out = []
@@ -73,7 +86,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=str(C.REPO / "runs" / "vf_items" / "collect_items_safe.cmds"))
     ap.add_argument("--root", default=str(C.VF / "data" / "demos_items_safe"), help="absolute demo root")
-    ap.add_argument("--tasks", nargs="*", default=list(ITEM_TASKS), choices=ITEM_TASKS)
+    ap.add_argument("--tasks", nargs="*", default=None, choices=ITEM_TASKS,
+                    help="default: every task whose yaml has a safe_mode section")
     args = ap.parse_args(argv)
     root = Path(args.root)
     if not root.is_absolute():
@@ -81,7 +95,17 @@ def main(argv=None) -> int:
     out = Path(args.out)
     if root.resolve() in out.resolve().parents:
         raise SystemExit(f"{out} lies inside the demo root {root}: pack.py wants task directories only there")
-    lines = [command(sh, root) for sh in shards(args.tasks)]
+    if args.tasks:
+        bad = [t for t in args.tasks if not has_safe_mode(t)]
+        if bad:
+            raise SystemExit(f"{bad}: no safe_mode section in the task yaml (the safe expert is not merged yet)")
+        tasks = list(dict.fromkeys(args.tasks))
+    else:
+        tasks = [t for t in ITEM_TASKS if has_safe_mode(t)]
+        left = [t for t in ITEM_TASKS if t not in tasks]
+        if left:
+            print(f"[make_queue] left out, no safe_mode section in the task yaml yet: {left}")
+    lines = [command(sh, root) for sh in shards(tasks)]
     out.parent.mkdir(parents=True, exist_ok=True)
     head = "# item-scene safe demos for HoloBrain (vla_finetuning/items/make_queue.py)\n"
     out.write_text(head + "\n".join(lines) + "\n")

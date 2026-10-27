@@ -127,8 +127,11 @@ def test_read_trace(tmp_path):
     assert np.allclose(t2, t) and np.allclose(m2, m) and (c2 == c).all()
     np.savez_compressed(p, t=t, margins=m, rule_ids=np.array([r.rule_id for r in rules]))   # an old trace: no counts
     assert (K.read_trace(p, rules)[2] == -1).all()
-    with pytest.raises(ValueError):
-        K.read_trace(p, rules[::-1])            # columns in another order
+    with pytest.raises(K.TraceMismatch):
+        K.read_trace(p, rules[::-1])            # columns in another order: the code, not the seed (code_error)
+    np.savez_compressed(p, t=t, margins=m)
+    with pytest.raises(K.TraceMismatch):
+        K.read_trace(p, rules[:1])              # no rule_ids: the column count
 
 
 def test_render_errors():
@@ -139,7 +142,7 @@ def test_render_errors():
     assert not K.is_render_error(None)
 
 
-GOOD = {"err": None, "safe_fail": None, "plan_failures": 0, "task_success": True, "broken": [], "contact": None,
+GOOD = {"err": None, "safe_fail": None, "plan_success": True, "task_success": True, "broken": [], "contact": None,
         "n_frames": 120}
 
 
@@ -153,8 +156,14 @@ GOOD = {"err": None, "safe_fail": None, "plan_failures": 0, "task_success": True
     ({"err": "AttributeError: 'NoneType' object has no attribute 'get_pose'"}, "code_error"),
     ({"err": "NotImplementedError: push_zone: no safe nominal mode yet"}, "code_error"),
     ({"err": "FileNotFoundError: RoboTwin missing: /x/RoboTwin"}, "code_error"),
-    ({"safe_fail": "no_route", "plan_failures": 1, "task_success": False}, "safe_fail:no_route"),
-    ({"plan_failures": 2}, "plan_failed"),
+    # a trace-scoring failure keeps its type first (collect_items): a bug there stops the process, as a code_error
+    ({"err": "TraceMismatch: trace: trace has 3 rule columns, the runner 4 rules"}, "code_error"),
+    ({"err": "KeyError: trace: 'margins'"}, "code_error"),
+    ({"err": "trace: KeyError: 'margins'"}, "error"),                  # the old prefix hid the type
+    ({"safe_fail": "no_route", "plan_success": False, "task_success": False}, "safe_fail:no_route"),
+    ({"plan_success": False}, "plan_failed"),                         # the task's flag at the end of the episode
+    ({"plan_success": False, "task_success": False}, "plan_failed"),
+    ({"plan_failures": 2}, "kept"),          # failed plans the task recovered from (T5 / T7 step chain, T6 pour)
     ({"task_success": False}, "task_failed"),
     ({"broken": ["stay|block_0|-", "upright|block_0|-"]}, "rule:stay|block_0|-"),
     ({"contact": {"touched": True, "force_max": 3.0}}, "contact"),

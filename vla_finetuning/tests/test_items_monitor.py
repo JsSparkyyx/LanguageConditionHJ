@@ -10,9 +10,7 @@ import numpy as np
 import pytest
 from _items_fakes import DEFAULT, Contact, Task
 
-import main.lang  # noqa: F401 - main.item_envs on main.__path__
-from main.item_envs.safe_plan import contact_with
-from vla_finetuning.items.monitor import DemoMonitor, joint_vector
+from vla_finetuning.items.monitor import DemoMonitor, extra_contacts, joint_vector
 
 
 class Rec:
@@ -93,7 +91,7 @@ def test_no_settle_after_a_failed_attempt():
 def test_contact_aborts_while_the_expert_runs():
     task, mon = _setup(move1=100, hold=0, move2=100)
     task.scene.contacts[57] = [Contact("obj_0", "finger_left")]
-    mon.contact_fn = lambda: contact_with(type("E", (), {"task": task})(), [type("X", (), {"name": "obj_0"})()])
+    mon.contact_fn = lambda: extra_contacts(task.scene, {"obj_0"})
     ticks, err = drive(task, mon)
     assert err is not None and err.startswith("ContactAbort") and "finger_left" in err
     assert mon.touched and mon.first_touch == 57 and mon.partners == {"finger_left"}
@@ -101,14 +99,37 @@ def test_contact_aborts_while_the_expert_runs():
     assert mon.force_max == pytest.approx(0.01 * 250.0)    # |impulse| / dt
 
 
-def test_contact_with_the_table_or_between_extra_objects_is_no_touch():
+def test_contact_with_the_table_is_no_touch_but_between_extra_objects_is():
+    """The keep rule (Yuxuan 2026-10-27): no contact of an extra object with anything but the table, so two extra
+    objects touching each other count (safe_plan.contact_with skips that pair)."""
     task, mon = _setup(move1=40, hold=0, move2=0)
-    task.scene.contacts[10] = [Contact("obj_0", "table"), Contact("obj_0", "obj_1")]
+    task.scene.contacts[10] = [Contact("obj_0", "table"), Contact("block1", "table")]
     task.scene.contacts[20] = [Contact("obj_1", "finger_left", separation=0.004)]     # speculative: not a touch
-    ents = [type("X", (), {"name": "obj_0"})(), type("X", (), {"name": "obj_1"})()]
-    mon.contact_fn = lambda: contact_with(type("E", (), {"task": task})(), ents)
+    task.scene.contacts[30] = [Contact("obj_1", "obj_0")]
+    mon.contact_fn = lambda: extra_contacts(task.scene, {"obj_0", "obj_1"})
     ticks, err = drive(task, mon)
-    assert err is None and not mon.touched and mon.settled == 250
+    assert err is not None and err.startswith("ContactAbort")
+    assert mon.first_touch == 30 and mon.partners == {"obj_0", "obj_1"} and mon.settled == 0
+
+
+def test_extra_contacts_one_scan_per_step():
+    class Scene:
+        timestep = 1.0 / 250.0
+        calls = 0
+
+        def get_contacts(self):
+            Scene.calls += 1
+            return [Contact("obj_0", "table_top", impulse=(0, 0, 9.0)),          # the table: neither touch nor force
+                    Contact("block1", "finger_left", impulse=(0, 0, 9.0)),      # no extra object in it
+                    Contact("finger_right", "obj_1", separation=0.002, impulse=(0, 0, 0.02)),   # speculative
+                    Contact("obj_0", "obj_1", impulse=(0, 0, 0.01))]
+
+    f, touched, partners = extra_contacts(Scene(), ["obj_0", "obj_1", ""])
+    assert Scene.calls == 1 and touched and partners == {"obj_0", "obj_1"}
+    assert f == pytest.approx(0.02 * 250.0)                 # force over every point of the counted pairs
+    assert extra_contacts(Scene(), ["obj_2"]) == (0.0, False, set())
+    broken = type("S", (), {"get_contacts": lambda self: 1 / 0})()
+    assert extra_contacts(broken, ["obj_0"]) == (0.0, False, set())    # no contact list this step
 
 
 def test_a_touch_before_play_once_aborts_at_its_start():
