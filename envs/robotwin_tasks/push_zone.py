@@ -794,9 +794,15 @@ class push_zone(Base_Task):
         the protected elements (``cfg["protect"]``: element ids, None = every element) along a route planned from
         the live scene (_push_route.plan_route), executed by _item_utils.push_via with every step re-checked live
         (check_motion; a failed check re-plans from the live box, with clearances relaxed to just above the
-        guard's floor when the full ones leave no route). No route: no push, a plan failure
-        (episode_info["safe_fail"] = "no_route"; the planner's reasons in episode_info["route"]). The idle arm
-        closes and tucks as in the careless push."""
+        guard's floor when the full ones leave no route, and the start pose needing only the guard's floor). No
+        route: no push, a plan failure (episode_info["safe_fail"] = "no_route"; the planner's reasons in
+        episode_info["route"]). The idle arm closes and tucks as in the careless push.
+
+        A safe-mode stop writes its reason once (episode_info["safe_fail"]: the first one stands, a reason the
+        controller wrote before is kept); a planner failure (cuRobo, no fallback) writes episode_info
+        ["plan_fail_step"] (the step pair whose move failed). Every move's joint travel (the pushing arm's joints
+        before / after) is measured: the largest in episode_info["push"]["max_joint_travel"], and a move above
+        push_via's travel_max (2 rad) stops the push (safe_fail "joint_travel")."""
         import dataclasses
 
         from . import _push_route as pr
@@ -840,9 +846,11 @@ class push_zone(Base_Task):
                 return ok, why
 
             def replan(c, yaw_now):
+                # from the live box: it may have drifted inside a clearance, so its start needs only the guard's floor
                 for k, c_cfg in enumerate((rcfg, relaxed)):
                     r = pr.plan_route(c, goal, bhalf, yaw_now, elems, protect=protect, cfg=c_cfg, reach_ok=reach,
-                                      box_h=box_h, hand=hand, ee_height=ee_h, prefer=sides)
+                                      box_h=box_h, hand=hand, ee_height=ee_h, prefer=sides,
+                                      start_floor=rcfg.guard_clear)
                     info["replans"].append({"at": [round(float(v), 4) for v in c], "relaxed": bool(k),
                                             "ok": r.ok, "reason": r.reason, "via": r.as_dict()["via"]})
                     if r.ok:
@@ -851,7 +859,7 @@ class push_zone(Base_Task):
                 return None
 
             def on_fail(reason):
-                info["safe_fail"] = str(reason)
+                info.setdefault("safe_fail", str(reason))   # the first reason stands (the controller's too)
                 self.plan_success = False
 
             # the first approach comes down from above every protected cylinder (the fingertips 3 cm over the
@@ -872,9 +880,9 @@ class push_zone(Base_Task):
             sgn = 1.0 if idle == "right" else -1.0
             tuck = [sgn * TUCK_POSE[0], TUCK_POSE[1], z + TUCK_POSE[2]] + list(TOP_DOWN_QUAT)
             steps_by_arm[idle] = [self.close_gripper(idle), self.move_to_pose(idle, tuck)]
-            failed_at = self._run_route_steps(steps_by_arm)
-            if failed_at is not None and "safe_fail" not in info:
-                info["plan_fail_step"] = failed_at   # a planner failure (meta.plan_failures), not the safe mode's
+            failed_at = self._run_route_steps(steps_by_arm, arm, info)
+            if failed_at is not None:
+                info.setdefault("plan_fail_step", failed_at)   # a planner failure (meta.plan_failures)
         self.info["info"] = {
             "{A}": f"{self.push_objects[0]['item_id']} ({self.push_objects[0]['asset']})",
             "{a}": str(self.push_objects[0]["arm"]),
@@ -883,10 +891,18 @@ class push_zone(Base_Task):
         }
         return self.info
 
-    def _run_route_steps(self, steps_by_arm):
+    def _run_route_steps(self, steps_by_arm, push_arm, info, travel_max=None):
         """play_once's pairing of the two arms' steps (zip_longest, each side realized at execution time, a risky
-        side runs the pair inside risky(task)), for the safe push. Returns the index of the pair after which
-        plan_success turned False (None if it never did)."""
+        side runs the pair inside risky(task)), for the safe push, one action pair at a time (RoboTwin's move()
+        runs its pairs in the same order): the pushing arm's joint travel of every executed move (max |q after - q
+        before| over its joints) goes into info["push"]["max_joint_travel"]; a move above ``travel_max`` (push_via's
+        JOINT_TRAVEL_MAX, 2 rad) stops the push (safe_fail "joint_travel", plan_success False: every later step is
+        empty). Returns the index of the pair whose move failed to plan (None if none did; a stop by the safe mode
+        before a move is not a planner failure)."""
+        from ._item_utils import JOINT_TRAVEL_MAX, arm_qpos
+
+        travel_max = JOINT_TRAVEL_MAX if travel_max is None else float(travel_max)
+        log = info.setdefault("push", {})
         failed_at = None
         pairs = zip_longest(steps_by_arm["left"], steps_by_arm["right"], fillvalue=None)
         for k, (entry_l, entry_r) in enumerate(pairs):
@@ -898,13 +914,33 @@ class push_zone(Base_Task):
                 continue
             if step_l is None:
                 step_l, step_r = step_r, None
-            if isinstance(sl, RiskyStep) or isinstance(sr, RiskyStep):
-                with risky(self):
-                    self.move(step_l, step_r)
-            else:
-                self.move(step_l, step_r)
-            if failed_at is None and getattr(self, "plan_success", True) is False:
-                failed_at = k
+            if getattr(self, "plan_success", True) is False:
+                continue   # stopped (a failed plan, the safe mode): the steps are empty, move() would do nothing
+            n = max(len(step_l[1]), len(step_r[1]) if step_r is not None else 0)
+            for i in range(n):
+                one_l = (step_l[0], step_l[1][i:i + 1])
+                one_r = None if step_r is None else (step_r[0], step_r[1][i:i + 1])
+                q0 = arm_qpos(self, push_arm)
+                if isinstance(sl, RiskyStep) or isinstance(sr, RiskyStep):
+                    with risky(self):
+                        self.move(one_l, one_r)
+                else:
+                    self.move(one_l, one_r)
+                if getattr(self, "plan_success", True) is False:
+                    failed_at = k   # the planner failed inside move(); the next steps see it and stop
+                    break
+                q1 = arm_qpos(self, push_arm)
+                if q0 is None or q1 is None:
+                    continue
+                travel = float(np.max(np.abs(q1 - q0)))
+                if travel > float(log.get("max_joint_travel") or 0.0):
+                    log["max_joint_travel"] = round(travel, 4)
+                    log["max_joint_travel_step"] = [k, i]
+                if travel > travel_max:   # a joint swung further than any move asks for: a flip or a wrist turn
+                    log["fail"] = log.get("fail") or "joint_travel"
+                    info.setdefault("safe_fail", "joint_travel")
+                    self.plan_success = False
+                    break
         return failed_at
 
     def overlay_lines(self):

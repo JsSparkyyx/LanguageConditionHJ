@@ -2,8 +2,8 @@
 
 The fake "physics" extends test_push_to_goal's: a box with a yaw, pushed only when the closed fingers move at push
 height and their front face sweeps into its back face (the box then sits flush ahead of them, optionally creeping
-sideways per metre pushed); backed-off, sideways and lifted moves leave it alone. The fake EE takes every
-commanded pose exactly."""
+sideways and turning per metre pushed); backed-off, sideways and lifted moves leave it alone. The fake EE takes every
+commanded pose exactly. The fake arm joints (_Ur5Wrist) are the review's ur5 wrist_3 model."""
 
 from __future__ import annotations
 
@@ -37,13 +37,56 @@ class _Box:
         return abs(d[0] * c + d[1] * s) * self.half[0] + abs(d[1] * c - d[0] * s) * self.half[1]
 
 
+# ur5-wsg at RoboTwin's homestate (wrist_3 = 0): the EE poses of the careless log's first plans
+# (runs/lang/t6_1023/tilt.log, plan #1 left / #2 right); the arm bases (ARM_DISTANCE 0.8, y = -0.65)
+HOME_EE = {"left": [-0.305, -0.168, 1.115, 0.502, -0.495, 0.484, 0.518],
+           "right": [0.495, -0.168, 1.215, 0.501, -0.495, 0.484, 0.518]}
+ARM_BASE = {"left": (-0.4, -0.65), "right": (0.4, -0.65)}
+
+
+class _Ur5Wrist:
+    """A fake RoboTwin robot, one arm: the review's ur5 wrist_3 model (review_t3/wrist3_check_model.py, fit on the
+    careless T3 log runs/lang/t6_1023/tilt.log, seeds 6400 / 6401, within 0.15 rad): shoulder pan = the EE's
+    bearing about the arm base - 2.96, wrist_3 = pan - yaw + 1.583, followed move by move (the hand turns the short
+    way round); a wrist_3 past +-pi is reached the other way round, as the real IK must (a turn of 2 pi less the
+    asked one, the wrap the review predicted). The other joints stay at the homestate. ``kick``: {move index: rad}
+    extra wrist_3 jumps (an IK branch flip)."""
+
+    def __init__(self, ee_yaw, arm, ee, w3=0.0, kick=None):
+        self.yaw_of, self.arm = ee_yaw, arm
+        self.base = np.asarray(ARM_BASE[arm], dtype=float)
+        setattr(self, f"{arm}_entity_origion_pose", SimpleNamespace(p=np.array([*ARM_BASE[arm], 0.65])))
+        setattr(self, f"get_{arm}_arm_real_jointState", self.joints)
+        self.ee = np.asarray(ee, dtype=float).copy()
+        self.pan, self.w3 = self._pan(self.ee), float(w3)
+        self.kick, self.n, self.w3_log = dict(kick or {}), 0, [float(w3)]
+
+    def _pan(self, ee):
+        return math.atan2(ee[1] - self.base[1], ee[0] - self.base[0]) - 2.96
+
+    def follow(self, ee):
+        ee = np.asarray(ee, dtype=float)
+        pan = self._pan(ee)
+        turn = (self.yaw_of(ee[3:]) - self.yaw_of(self.ee[3:]) + math.pi) % (2.0 * math.pi) - math.pi
+        w = self.w3 + (pan - self.pan) - turn + self.kick.get(self.n, 0.0)
+        if abs(w) > math.pi:
+            w -= math.copysign(2.0 * math.pi, w)
+        self.n += 1
+        self.pan, self.w3, self.ee = pan, w, ee.copy()
+        self.w3_log.append(w)
+
+    def joints(self):
+        return [self.pan, -1.5447, -1.5447, -1.5794, 1.5794, self.w3, 0.0]   # + the gripper value
+
+
 class _Task:
     table_z_bias = 0.0
 
-    def __init__(self, box, drift=0.0):
-        self.box, self.drift = box, drift
+    def __init__(self, box, drift=0.0, turn=0.0):
+        self.box, self.drift, self.turn = box, drift, turn
         self.ee = np.array([-0.30, -0.17, 1.12, -0.5, 0.5, -0.5, -0.5])   # home, TOP_DOWN
         self.moves = []
+        self.robot = None
 
     def get_arm_pose(self, arm):
         return self.ee.copy()
@@ -60,6 +103,8 @@ class _Task:
                 continue
             p0, self.ee = self.ee.copy(), a.pose.copy()
             self.moves.append(self.ee.copy())
+            if self.robot is not None:
+                self.robot.follow(self.ee)
             self._contact(p0, self.ee)
 
     def _contact(self, p0, p1):
@@ -75,6 +120,7 @@ class _Task:
         gap = float(rel @ d) - self.box.depth(d) - CONTACT   # finger face -> box face along the move
         if -0.005 <= gap <= n and abs(float(rel @ perp)) < 0.03:
             pushed = n - max(gap, 0.0)
+            self.box.yaw += self.turn * pushed   # a box that turns under the fingers (``turn`` rad per m)
             self.box.p[:2] = p1[:2] + d * (CONTACT + self.box.depth(d)) + perp * self.drift * pushed
             self.box.path.append(self.box.p[:2].copy())
 
@@ -282,13 +328,21 @@ class _Exec:
     exactly, the push box (a stub entity) pushed by the push arm's fingers as in _Task; move() does nothing once
     plan_success is False, as RoboTwin's."""
 
-    def __init__(self, task):
-        self.task = task
+    def __init__(self, task, wrist=False, kick=None, turn=0.0):
+        import sys
+
+        self.task, self.turn = task, turn
         rec = task.push_objects[0]
         self.arm, self.ent = rec["arm"], rec["obj"].actor
         self.box = _Box(np.asarray(self.ent.get_pose().p)[:2], half=tuple(rec["obj"].config["extents"]))
         top = [-0.5, 0.5, -0.5, -0.5]
         self.ee = {"left": np.array([-0.30, -0.17, 1.12] + top), "right": np.array([0.30, -0.17, 1.12] + top)}
+        self.robot = None
+        if wrist:   # the real home poses and the fake ur5 joints of the pushing arm
+            self.ee = {arm: np.array(HOME_EE[arm]) for arm in ("left", "right")}
+            self.robot = _Ur5Wrist(sys.modules["pz_replay._item_utils"]._ee_yaw, self.arm, self.ee[self.arm],
+                                   kick=kick)
+            task.robot = self.robot
         self.moves = {"left": [], "right": []}
         self.pushers = {}
         task.get_arm_pose = lambda arm: self.ee[arm].copy()
@@ -309,13 +363,16 @@ class _Exec:
                 p0, self.ee[arm] = self.ee[arm].copy(), a.pose.copy()
                 self.moves[arm].append(a.pose.copy())
                 if arm == self.arm:
-                    pusher = self.pushers.setdefault(arm, _Task(self.box))
+                    if self.robot is not None:
+                        self.robot.follow(a.pose)
+                    pusher = self.pushers.setdefault(arm, _Task(self.box, turn=self.turn))
                     pusher._contact(p0, a.pose)
-                    self.ent.set_pose(_FakePose(self.box.p.copy(), [1, 0, 0, 0]))
+                    yaw = self.box.yaw
+                    self.ent.set_pose(_FakePose(self.box.p.copy(), [math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)]))
         return True
 
 
-def _safe_task(seed, protect=None):
+def _safe_task(seed, protect=None, **exec_kw):
     import yaml
     from pathlib import Path
 
@@ -330,7 +387,7 @@ def _safe_task(seed, protect=None):
     npz = envs / "main" / "item_envs" / "configs" / "workspace_ur5-wsg.npz"
     task.safe_route = {**cfg["safe_mode"]["route"], "protect": protect,
                        "reach_npz": str(npz) if npz.is_file() else None}
-    return task, _Exec(task)
+    return task, _Exec(task, **exec_kw)
 
 
 def test_push_zone_safe_play_once_follows_the_route(utils_mod):
@@ -396,3 +453,264 @@ def test_push_quat_near_keeps_the_fingers_across_and_the_yaw_continuous(utils_mo
         d = np.array([math.cos(ang), math.sin(ang)])
         q0 = utils_mod._push_quat(d)
         assert abs(abs(float(np.dot(utils_mod._push_quat_near(d, q0), q0))) - 1.0) < 1e-9
+
+
+# ------------------------------------------------------------- planner failures, re-plans, a box that turns ----
+
+
+def _failing_move(task, ex, at, controller_reason=None):
+    """task.move that fails on its ``at``-th call as a cuRobo failure does in RoboTwin (plan_success False, nothing
+    moves; ``controller_reason``: the T1 controller's safe_fail, written first)."""
+    calls = {"n": 0, "after": 0, "steps_then": None}
+
+    def move(a1, a2=None):
+        calls["n"] += 1
+        if calls["n"] == at:
+            task.plan_success = False
+            if controller_reason is not None:
+                task.episode_info.setdefault("safe_fail", controller_reason)
+            calls["steps_then"] = len(task.episode_info["push"]["steps"])
+            return False
+        if task.plan_success is False:
+            calls["after"] += 1
+        return ex.move(a1, a2)
+
+    task.move = move
+    return calls
+
+
+@pytest.mark.parametrize("controller_reason", [None, "plan_fail"])
+def test_planner_failure_mid_push_is_a_plan_failure(utils_mod, controller_reason):
+    """A cuRobo failure in the middle of the push (the 6th move; review_t3/plan_fail_label.py): the push stops at
+    once, no safe_fail of its own (the controller's reason, when it wrote one, stands), plan_fail_step names the
+    failed step, no phantom push steps are logged and nothing moves after it."""
+    done = 0
+    for seed in (0, 6, 7, 13):
+        task, ex = _safe_task(seed)
+        calls = _failing_move(task, ex, 6, controller_reason)
+        task.episode_info = {}
+        task.play_once()
+        info = task.episode_info
+        if not info["route"]["ok"]:
+            continue
+        done += 1
+        assert info.get("safe_fail") == controller_reason, info.get("safe_fail")
+        assert info["plan_fail_step"] is not None and info["push"]["fail"] == "plan", info["push"]["fail"]
+        assert task.plan_success is False and calls["after"] == 0
+        assert len(info["push"]["steps"]) == calls["steps_then"], info["push"]["steps"]   # nothing logged after it
+        assert sum(len(v) for v in ex.moves.values()) == 5
+    assert done >= 2
+
+
+def test_push_zone_replans_through_play_route(utils_mod):
+    """push_zone._play_route's re-plan: the box knocked 3 cm off its leg mid-push (lane_tol 2 cm) asks the planner
+    again from the live box (prefer the old sides, the start at the guard's floor), and the push goes on to the
+    goal along the new route (seeds 0, 14, 20; on 6, 7, 13 the knock puts the box inside an element's clearance and
+    the push stops with "guard")."""
+    pz = __import__("sys").modules["pz_replay.push_zone"]
+    done = 0
+    for seed in (0, 6, 7, 13, 14, 20):
+        task, ex = _safe_task(seed)
+        orig, n = ex.move, {"push": 0}
+
+        def move(a1, a2=None, _orig=orig, _ex=ex):
+            ok = _orig(a1, a2)
+            n["push"] += sum(1 for st in (a1, a2) if st is not None and st[0] == _ex.arm and st[1])
+            if n["push"] == 8:   # mid-push: knocked sideways, away from the table edge
+                _ex.box.p[1] += 0.03 if _ex.box.p[1] < 0.0 else -0.03
+                _ex.ent.set_pose(_FakePose(_ex.box.p.copy(), [1, 0, 0, 0]))
+            return ok
+
+        task.move = move
+        task.play_once()
+        info = task.episode_info
+        if not info["route"]["ok"]:
+            continue
+        lane = [r for r in info["push"]["replans"] if r["why"] == "lane"]
+        if not lane or "safe_fail" in info:
+            continue   # the knock left no route: covered by test_lane_drift_replans_and_stops_without_a_route
+        done += 1
+        assert lane[0]["ok"] and info["replans"] and info["replans"][0]["ok"], info["replans"]
+        assert task.plan_success is True and info["push"]["fail"] is None
+        goal = np.asarray(task.push_objects[0]["goal_xy"])
+        assert np.linalg.norm(ex.box.p[:2] - goal) <= pz.SUCCESS_TOL, (seed, ex.box.p, goal)
+    assert done >= 2
+
+
+def test_a_box_that_turns_is_followed(utils_mod):
+    """A box that turns under the fingers (40 deg per metre pushed): every segment re-aims from its live pose and
+    yaw (the OBB depth along the new heading), the guard sees the live yaw, and the push still ends at the goal."""
+    box = _Box([-0.30, -0.10])
+    task = _Task(box, turn=math.radians(40.0))
+    seen = []
+
+    def guard(poses, box_from, box_to, yaw):
+        seen.append((float(yaw), box.yaw))
+        return True, None
+
+    log = {}
+    via = [[-0.10, -0.16], [0.15, -0.16]]
+    _run(utils_mod, task, _push_via(utils_mod, task, via, guard=guard, log=log))
+    assert log["fail"] is None, log
+    assert np.linalg.norm(box.p[:2] - via[-1]) < 0.012, box.p
+    assert abs(math.degrees(box.yaw)) > 10.0
+    assert seen and all(abs((a - b + math.pi) % (2 * math.pi) - math.pi) < 1e-6 for a, b in seen)
+
+
+def test_push_zone_safe_play_once_with_a_turning_box(utils_mod):
+    """The same on replayed layouts through play_once (the route checks allow the box +-15 deg)."""
+    pz = __import__("sys").modules["pz_replay.push_zone"]
+    done = 0
+    for seed in (0, 6, 7, 13):
+        task, ex = _safe_task(seed, turn=math.radians(25.0))
+        task.play_once()
+        info = task.episode_info
+        if not info["route"]["ok"]:
+            continue
+        if "safe_fail" in info:   # a guard stop is allowed (it re-checks the turned box); never an unchecked move
+            assert info["safe_fail"] in ("guard", "lane", "replans"), info["safe_fail"]
+            continue
+        done += 1
+        goal = np.asarray(task.push_objects[0]["goal_xy"])
+        assert np.linalg.norm(ex.box.p[:2] - goal) <= pz.SUCCESS_TOL, (seed, ex.box.p, goal)
+        assert abs(math.degrees(ex.box.yaw)) > 5.0
+    assert done >= 3
+
+
+# ------------------------------------------------------------------------------------ the wrist_3 limit ----
+
+
+BAND = math.pi - 0.3
+
+
+def _dir_for_yaw(psi):
+    """A push direction whose finger-across yaws are psi and psi + pi."""
+    return np.array([math.sin(psi), -math.cos(psi)])
+
+
+def test_pick_yaw_near_the_limit(utils_mod):
+    pick = utils_mod.pick_yaw
+    d = _dir_for_yaw(-0.5)
+    near, other = utils_mod._push_yaws(d, 0.0)
+    assert near == pytest.approx(-0.5) and other == pytest.approx(-0.5 + math.pi)
+    assert pick(d, 0.0, 0.0, False) == (near, None)
+    assert pick(d, 0.0, None, False) == (near, None)                 # no joint readings: the nearest
+    # w3 2.5: the nearest would end at 3.0 > pi - 0.3
+    psi, why = pick(d, 0.0, 2.5, False)
+    assert psi is None and why["pred"] == [pytest.approx(3.0)] and why["lifted"] is False
+    psi, why = pick(d, 0.0, 2.5, True)                               # lifted: the 180 deg switch
+    assert psi == pytest.approx(other) and why is None
+    assert 2.5 - utils_mod._wrap_pi(psi - 0.0) == pytest.approx(2.5 - (math.pi - 0.5))
+    # the band edge counts as inside; just past it does not
+    assert pick(d, 0.0, BAND - 0.5, False)[0] == pytest.approx(near)
+    assert pick(d, 0.0, BAND - 0.5 + 1e-6, False)[0] is None
+    # the other side: w3 -2.6 with a turn the other way
+    d2 = _dir_for_yaw(0.5)
+    assert pick(d2, 0.0, -2.6, False)[0] is None
+    assert utils_mod._wrap_pi(pick(d2, 0.0, -2.6, True)[0]) == pytest.approx(0.5 - math.pi)
+    # lifted, one of the two always lands in the band (they are pi apart): a wrist already past it comes back
+    psi, why = pick(d, 0.0, 3.1, True)
+    assert psi == pytest.approx(other) and abs(3.1 - utils_mod._wrap_pi(psi)) <= BAND
+
+
+def test_wrist_track_follows_the_pan_and_the_yaw(utils_mod):
+    """wrist_track = the review's model step by step: a straight +x push of the left arm keeps the yaw, and wrist_3
+    follows the pan (the EE's bearing about the arm base)."""
+    base = ARM_BASE["left"]
+    path = [((x, -0.15), np.array([1.0, 0.0])) for x in np.arange(-0.30, 0.21, 0.06)]
+    w = utils_mod.wrist_track(0.0, 0.0, (-0.30, -0.15), path, 0, base_xy=base)
+    bearing = lambda x: math.atan2(-0.15 - base[1], x - base[0])   # noqa: E731
+    near = utils_mod._push_yaws(np.array([1.0, 0.0]), 0.0)[0]
+    expect = [-utils_mod._wrap_pi(near) + bearing(xy[0]) - bearing(-0.30) for xy, _ in path]
+    assert np.allclose(w, expect)
+    assert w[-1] < w[0] - 0.4   # the pan swings ~0.6 rad over the push
+    w_none = utils_mod.wrist_track(0.0, 0.0, (-0.30, -0.15), path, 0, base_xy=None)
+    assert np.allclose(w_none, -utils_mod._wrap_pi(near))
+
+
+def test_wrist_drift_stops_a_straight_push_before_the_limit(utils_mod):
+    """wrist_3 drifting toward -pi on a long straight push (the pan swings, the yaw stays): the push stops with
+    "wrist_limit" on the move whose prediction leaves the band, before the wrist reaches the limit (no wrap)."""
+    box = _Box([-0.30, -0.10])
+    task = _Task(box)
+    task.robot = _Ur5Wrist(utils_mod._ee_yaw, "left", task.ee)
+    fails, log = [], {}
+    steps = _push_via(utils_mod, task, [[0.20, -0.10]], on_fail=fails.append, log=log)
+
+    def hook(k, task):
+        if k == 2:   # after the approach: the arm came down in a configuration near the limit
+            task.robot.w3 = -2.55
+            task.robot.w3_log.append(-2.55)
+
+    _run(utils_mod, task, steps, hook)
+    assert fails == ["wrist_limit"] and log["fail"] == "wrist_limit", log["fail"]
+    stop = log["steps"][-1]
+    assert stop["wrist"]["pred"][0] < -BAND and stop["wrist"]["lifted"] is False
+    w = np.asarray(task.robot.w3_log[4:])
+    assert w.min() > -math.pi and np.all(np.abs(np.diff(w)) < 0.2), w   # it drifted, never wrapped
+    assert box.p[0] > -0.25 and np.linalg.norm(box.p[:2] - [0.20, -0.10]) > 0.05   # it pushed, then stopped
+
+
+def test_lifted_corner_switches_the_yaw_in_parts(utils_mod):
+    """At a lifted corner whose nearest yaw would carry wrist_3 past the band, push_via takes the other yaw (the
+    180 deg switch): it turns the hand in place, lifted, in parts of at most travel_max - margin (1.7 rad), then
+    goes on; no move turns the wrist by more, and the push ends at the goal."""
+    box = _Box([-0.30, -0.10])
+    task = _Task(box)
+    task.robot = _Ur5Wrist(utils_mod._ee_yaw, "left", task.ee)
+    d2 = np.array([math.cos(math.radians(-60.0)), math.sin(math.radians(-60.0))])
+    via = [[-0.12, -0.10], list(np.array([-0.12, -0.10]) + d2 * 0.15)]
+    log = {}
+    steps = _push_via(utils_mod, task, via, log=log)
+
+    def hook(k, task):
+        if k == 2:
+            task.robot.w3 = 2.2
+            task.robot.w3_log.append(2.2)
+
+    _run(utils_mod, task, steps, hook)
+    assert log["fail"] is None and np.linalg.norm(box.p[:2] - via[-1]) < 0.01, log["fail"]
+    assert log["wrist_switches"] == 1
+    w = np.asarray(task.robot.w3_log[4:])
+    assert np.abs(w).max() <= BAND + 0.05 and np.all(np.abs(np.diff(w)) <= 2.0 - 0.3 + 0.05), w
+    lift = next(s for s in log["steps"] if s["kind"] == "lift")
+    assert lift["turn_deg"] == pytest.approx(60.0, abs=2.0)
+    # the turn happens in place at the lifted back-off pose: consecutive lifted moves with one xy
+    high = [m for m in task.moves if m[2] > PUSH_Z + 0.02]
+    same_xy = [(a, b) for a, b in zip(high[:-1], high[1:]) if np.linalg.norm(a[:2] - b[:2]) < 1e-9
+               and abs(utils_mod._wrap_pi(utils_mod._ee_yaw(a[3:]) - utils_mod._ee_yaw(b[3:]))) > 0.5]
+    assert len(same_xy) >= 2, len(same_xy)   # 120 deg in two parts
+
+
+def test_first_approach_takes_the_yaw_with_headroom(utils_mod):
+    """Replayed seed 14 (right arm, around the near side, the last two corners turning clockwise: the review's
+    wrist_3 ~ 3.7 rad case): from the home pose the yaw nearest the live one would carry wrist_3 past the band,
+    so the first approach takes the other one (a turn above the box in two parts); the push ends at the goal with
+    wrist_3 inside the band all the way and no move above 2 rad."""
+    pz = __import__("sys").modules["pz_replay.push_zone"]
+    task, ex = _safe_task(14, wrist=True)
+    task.play_once()
+    info = task.episode_info
+    assert info["route"]["ok"], info["route"]["reason"]
+    first = info["push"]["wrist_first"]
+    assert first["pick"] == "other" and first["peaks"][0] > BAND >= first["peaks"][1], first
+    assert info["push"]["steps"][0]["kind"] == "approach" and info["push"]["steps"][0]["n_turns"] == 2
+    assert "safe_fail" not in info and task.plan_success is True, (info.get("safe_fail"), info["push"]["fail"])
+    goal = np.asarray(task.push_objects[0]["goal_xy"])
+    assert np.linalg.norm(ex.box.p[:2] - goal) <= pz.SUCCESS_TOL
+    assert np.abs(ex.robot.w3_log).max() <= BAND + 0.05
+    assert 0.5 < info["push"]["max_joint_travel"] <= 2.0 - 0.3 + 0.1
+    assert info["push"]["wrist_switches"] == 0
+
+
+def test_joint_travel_over_the_cap_stops_the_push(utils_mod):
+    """A move whose joints swing more than 2 rad (an IK flip the prediction cannot see: a 2.5 rad wrist_3 kick on
+    the 7th move) stops the push at once: safe_fail "joint_travel", the travel recorded, nothing moves after."""
+    task, ex = _safe_task(0, wrist=True, kick={6: 2.5})
+    task.play_once()
+    info = task.episode_info
+    assert info["route"]["ok"]
+    assert info["safe_fail"] == "joint_travel" and info["push"]["fail"] == "joint_travel"
+    assert info["push"]["max_joint_travel"] == pytest.approx(2.5, abs=0.3) and task.plan_success is False
+    assert "plan_fail_step" not in info
+    assert ex.robot.n == 7   # the kicked move was the last one

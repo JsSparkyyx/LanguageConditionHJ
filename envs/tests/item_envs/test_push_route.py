@@ -239,6 +239,111 @@ def test_guard_flags_a_hand_sweep_through_a_cylinder(pr):
     assert not ok and why["check"] == "box_mat"
 
 
+def _q(psi):
+    """TOP_DOWN yawed by psi about world z (wxyz), _item_utils._yaw_quat."""
+    w1, z1 = math.cos(psi / 2.0), math.sin(psi / 2.0)
+    w2, x2, y2, z2 = -0.5, 0.5, -0.5, -0.5
+    return [w1 * w2 - z1 * z2, w1 * x2 - z1 * y2, w1 * y2 + z1 * x2, w1 * z2 + z1 * w2]
+
+
+PUSH_EE_Z = 0.74 + 0.172   # the EE at push height (fingertips 8 mm above the table)
+
+
+def test_guard_turns_the_hand_the_way_the_wrist_does(pr):
+    """Two yaws 180 deg apart push alike, but the hand gets there turning the short way of the full circle (the
+    wrist follows the orientation): a -30 deg turn passes a cylinder 6 cm off the finger axis, the +150 deg turn to
+    the other yaw sweeps the 14.6 cm base through it."""
+    cyl = pr.Elem("obstacle_0", "obstacle", (0.0, 0.06), (0.01, 0.01), 0.12)
+    far_box = ((0.3, -0.3), (0.3, -0.3))
+    short = [[0.0, 0.0, PUSH_EE_Z] + _q(0.0), [0.0, 0.0, PUSH_EE_Z] + _q(math.radians(-30.0))]
+    ok, why, _ = pr.check_motion(short, *far_box, BOX, 0.0, [cyl], box_h=BOX_H)
+    assert ok, why
+    long = [[0.0, 0.0, PUSH_EE_Z] + _q(0.0), [0.0, 0.0, PUSH_EE_Z] + _q(math.radians(150.0))]
+    ok, why, _ = pr.check_motion(long, *far_box, BOX, 0.0, [cyl], box_h=BOX_H)
+    assert not ok and why["check"] == "hand_cyl", why
+    # the end poses alone are clear: only the swept turn hits
+    for end in (short[1], long[1]):
+        assert pr.check_motion([end], *far_box, BOX, 0.0, [cyl], box_h=BOX_H)[0]
+
+
+def test_guard_samples_a_turn_in_place(pr):
+    """A turn without a move (push_via's split turns, the lifted 180 deg switch) is sampled along the turn: a
+    cylinder 7 cm out at 45 deg clears the base at 0 and at 90 deg, not in between."""
+    cyl = pr.Elem("obstacle_0", "obstacle", (0.07 * math.cos(math.pi / 4), 0.07 * math.sin(math.pi / 4)), (0.01, 0.01),
+                  0.12)
+    far_box = ((0.3, -0.3), (0.3, -0.3))
+    a, b = [0.0, 0.0, PUSH_EE_Z] + _q(0.0), [0.0, 0.0, PUSH_EE_Z] + _q(math.pi / 2.0)
+    assert pr.check_motion([a], *far_box, BOX, 0.0, [cyl], box_h=BOX_H)[0]
+    assert pr.check_motion([b], *far_box, BOX, 0.0, [cyl], box_h=BOX_H)[0]
+    ok, why, _ = pr.check_motion([a, b], *far_box, BOX, 0.0, [cyl], box_h=BOX_H)
+    assert not ok and why["check"] == "hand_cyl"
+
+
+def test_guard_lets_a_drifted_box_or_hand_move_away(pr):
+    """A box that drifted 6 mm from a mat (inside the guard's 8 mm floor) keeps the clearance it has: staying or
+    moving away passes, moving closer fails, and a box already on the mat never passes. The same for the hand
+    5 mm from a cylinder."""
+    mat = pr.Elem("zone_red", "zone", (0.0, 0.0), (0.03, 0.03))
+    high = [[0.3, -0.3, 1.1] + _q(0.0)]
+    y0 = -0.03 - BOX[1] - 0.006
+    run = lambda b0, b1: pr.check_motion(high, b0, b1, BOX, 0.0, [mat], box_h=BOX_H)  # noqa: E731
+    assert run((0.0, y0), (0.0, y0))[0]
+    assert run((0.0, y0), (0.0, y0 - 0.06))[0]
+    assert run((0.0, y0), (0.06, y0))[0]                       # along the edge: the gap never shrinks
+    ok, why, _ = run((0.0, y0), (0.0, y0 + 0.004))
+    assert not ok and why["check"] == "box_mat"
+    on = -0.03 - BOX[1] + 0.002
+    assert not run((0.0, on), (0.0, on - 0.06))[0]             # already touching: no relaxation
+    assert run((0.0, y0 - 0.004), (0.0, y0 + 0.002))[0] is False   # from 1 cm into 4 mm: below the 8 mm floor
+    cyl = pr.Elem("obstacle_0", "obstacle", (0.0, 0.025 + 0.02 + 0.005), (0.02, 0.02), 0.12)
+    box_far = ((0.3, -0.3), (0.3, -0.3))
+    hand = lambda y1: [[0.0, 0.0, PUSH_EE_Z] + _q(0.0), [0.0, y1, PUSH_EE_Z] + _q(0.0)]  # noqa: E731
+    assert pr.check_motion(hand(-0.03), *box_far, BOX, 0.0, [cyl], box_h=BOX_H)[0]
+    ok, why, _ = pr.check_motion(hand(0.003), *box_far, BOX, 0.0, [cyl], box_h=BOX_H)
+    assert not ok and why["check"] == "hand_cyl"
+
+
+def test_replan_start_needs_only_the_guard_floor(pr):
+    """A re-plan from a box that drifted next to a mat (1.1 cm with the yaw allowance, inside mat_clear 1.5 cm):
+    start_blocked at the full clearance; with start_floor (the guard's 8 mm) the start passes and the first leg may
+    keep the mat at that floor, so the route goes on; 5 mm is still blocked."""
+    alpha = math.radians(pr.RouteCfg().yaw_allow_deg)
+    rise = BOX[0] * math.sin(alpha) + BOX[1] * math.cos(alpha) - BOX[1]   # a corner's rise at the allowance
+    for gap, want in ((0.011, True), (0.005, False)):
+        mat = pr.Elem("zone_red", "zone", (-0.30, -0.10 + BOX[1] + rise + gap + 0.03), (0.03, 0.03))
+        full = _route(pr, [mat])
+        assert not full.ok and full.reason == "start_blocked", full.as_dict()
+        relaxed = pr.plan_route(START, GOAL, BOX, 0.0, [mat], box_h=BOX_H, start_floor=0.008)
+        assert relaxed.ok is want, relaxed.as_dict()
+        if want:
+            assert relaxed.detail["start_relaxed"] == ["zone_red"]
+            assert relaxed.min_clear["zone_red"] >= 0.008 - 1e-9
+        else:
+            assert relaxed.reason == "start_blocked"
+
+
+def test_lifted_corner_checks_both_swings(pr):
+    """At a corner that lifts the hand, the planner samples the hand turning both ways round: the short way as it
+    moves across, and the long way in place (push_via's 180 deg switch), then across at the new angle."""
+    cfg = pr.RouteCfg()
+    hand = pr.wsg_hand("wide")
+    ctx = pr._Ctx(cfg, hand, BOX, BOX_H, None, [], None, None)
+    a, b = np.array([-0.30, -0.10]), np.array([-0.12, -0.10])
+    d2 = np.array([math.cos(math.radians(-60.0)), math.sin(math.radians(-60.0))])
+    prev, lo, hi = pr._leg(ctx, a, b, None, 0.0, 0.0, 0)
+    acc = pr._Acc()
+    pr._leg(ctx, b, b + d2 * 0.15, prev, lo, hi, 1, acc)
+    _, hnd, _ = acc.arrays()
+    lifted = hnd[np.isclose(hnd[:, 5], ctx.lift_h)]
+    e_back, fa_p = lifted[0, :2], lifted[0, 2]   # the short swing starts at the back-off pose, the old angle
+    spot = lifted[np.linalg.norm(lifted[:, :2] - e_back, axis=1) < 1e-9]
+    rel = np.degrees(spot[:, 2] - fa_p)
+    # in place: the long way round, 180 - 60 = 120 deg, sampled finely (the base corner steps <= ds)
+    assert rel.max() == pytest.approx(120.0, abs=1.0) and len(spot) >= 30, (rel.min(), rel.max(), len(spot))
+    across = lifted[np.linalg.norm(lifted[:, :2] - e_back, axis=1) > 1e-6]
+    assert 50.0 <= np.degrees(np.ptp(across[:, 2])) <= 60.0 + 1e-6   # while it moves: only the short way
+
+
 def test_reach_npz_mirrors_the_right_arm(pr):
     npz = ROOT / "main" / "item_envs" / "configs" / "workspace_ur5-wsg.npz"
     if not npz.is_file():
@@ -261,17 +366,27 @@ def test_constants_mirror_push_zone(pr):
 
 
 def test_wsg_hand_matches_the_safe_plan_hand_boxes(pr):
+    """The layers are HAND_BOXES (link frames) seen from RoboTwin's EE pose, which sits EE_ABOVE_BASE above the WSG
+    base link (gripper_bias 0.11 - 0.12, ur5-wsg config.yml; robot._trans_endpose); the finger link is 2.3 cm
+    below the base link (guide_joint_finger_*), so the URDF fingertip lands on the measured push_tip_len."""
     from main.item_envs.safe_plan import HAND_BOXES
 
+    EE_ABOVE_BASE, FINGER_JOINT_Z = 0.01, 0.023
     hand = pr.wsg_hand("wide", tip_len=0.164)
     lo, hi = HAND_BOXES["wsg_50_base_link"]
     base = hand.layer("base")
-    assert (base.a, base.b, -base.z_lo) == pytest.approx((hi[0], hi[1], hi[2]))
+    assert (base.a, base.b) == pytest.approx((hi[0], hi[1]))
+    assert (-base.z_hi, -base.z_lo) == pytest.approx((lo[2] + EE_ABOVE_BASE, hi[2] + EE_ABOVE_BASE))
+    gl, gh = HAND_BOXES["gripper_left"]
     fl, fh = HAND_BOXES["finger_left"]
     fingers = hand.layer("fingers")
+    assert -fingers.z_hi == pytest.approx(gl[2] + EE_ABOVE_BASE)          # the guides' top
+    assert -fingers.z_lo == pytest.approx(fh[2] + FINGER_JOINT_Z + EE_ABOVE_BASE, abs=1e-3)   # 0.1635 vs 0.164
     assert fingers.b == pytest.approx(fh[1])                  # 3 cm thick along the push
     assert fingers.a >= -fl[0] + 0.0027 - 1e-9                # closed: the pads meet in the middle
+    assert hand.layer("wrist").z_lo == pytest.approx(0.0005 - EE_ABOVE_BASE)
     assert hand.contact == pytest.approx(0.015) and pr.wsg_hand("narrow").contact == pytest.approx(fingers.a)
+    assert hand.radius == pytest.approx(math.hypot(0.073, 0.025))
 
 
 def test_yaml_route_knobs_are_route_cfg_fields(pr):

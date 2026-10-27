@@ -107,20 +107,27 @@ class Hand:
         """World angle of the finger axis for a push heading ``phi``."""
         return phi + math.pi / 2.0 if self.mode == "wide" else phi
 
+    @property
+    def radius(self) -> float:
+        """The hand's farthest point from the EE axis in top view (m): a turn of t rad moves it t x radius."""
+        return max(lay.a if lay.shape == "disk" else math.hypot(lay.a, lay.b) for lay in self.layers)
+
 
 def wsg_hand(mode: str = "wide", tip_len: float = 0.164) -> Hand:
-    """ur5-wsg's WSG-50 hand in top view (safe_plan.HAND_BOXES and ur5_wsg_gripper.urdf; the EE origin is the base
-    link's): the base 14.6 x 5 cm from the EE origin down 7.25 cm; the closed fingers with their guides 4.5 x 3 cm
-    from 5.9 cm below the EE origin down to the fingertips ``tip_len`` below it (the yaml's push_tip_len, measured);
-    the wrist_3 link, a 4.3 cm disk from the EE origin up 3.5 cm (its collision mesh). The arm above stays above
-    every cylinder: wrist_2 starts 3.5 cm above the EE origin, which sits 17.2 cm above the table during a push,
+    """ur5-wsg's WSG-50 hand in top view (safe_plan.HAND_BOXES and ur5_wsg_gripper.urdf). RoboTwin's EE pose
+    (get_arm_pose) sits 1 cm above the WSG base link: it is ee_link moved gripper_bias - 0.12 = -0.01 m along the
+    approach axis (robot._trans_endpose), and wsg_base_joint has its origin on ee_link. From the EE origin: the base
+    14.6 x 5 cm from 1 cm down to 8.25 cm down; the closed fingers with their guides 4.5 x 3 cm from 6.94 cm down to
+    the fingertips ``tip_len`` down (the yaml's push_tip_len, measured: 0.164 = 0.01 + 0.023 + 0.1305 by the URDF);
+    the wrist_3 link, a 4.3 cm disk from 0.95 cm down to 2.5 cm up (its collision mesh). The arm above stays above
+    every cylinder: wrist_2 starts 2.5 cm above the EE origin, which sits 17.2 cm above the table during a push,
     and the cylinders are at most 18 cm tall."""
     if mode not in ("wide", "narrow"):
         raise ValueError(f"hand mode must be 'wide' or 'narrow', got {mode!r}")
     return Hand(mode, (
-        Layer("base", -0.0725, 0.0, "rect", 0.073, 0.025),
-        Layer("fingers", -float(tip_len), -0.0594, "rect", 0.0227, 0.015),
-        Layer("wrist", 0.0005, 0.035, "disk", 0.0432),
+        Layer("base", -0.0825, -0.01, "rect", 0.073, 0.025),
+        Layer("fingers", -float(tip_len), -0.0694, "rect", 0.0227, 0.015),
+        Layer("wrist", -0.0095, 0.025, "disk", 0.0432),
     ))
 
 
@@ -364,8 +371,7 @@ class _Ctx:
         self.lift_h = max(self.ee_h, self.box_h + float(cfg.corner_lift) + hand.tip_len)
         self.plan_clear = {"mat": cfg.mat_clear, "cyl_box": cfg.cyl_clear_box, "cyl_hand": cfg.cyl_clear_hand,
                            "table": cfg.table_clear}
-        self.guard_clear = {"mat": cfg.guard_clear, "cyl_box": cfg.guard_clear, "cyl_hand": cfg.guard_clear,
-                            "table": 0.5 * cfg.guard_clear}
+        self.guard_clear = _floors(cfg.guard_clear)
 
 
 class _Acc:
@@ -399,12 +405,20 @@ class _Acc:
         return cat(self.box, 4), cat(self.hand, 7), cat(self.reach, 3)
 
 
-def _move_samples(acc, ctx, p0, p1, ang0, ang1, pad, z, leg):
+def _n_samples(ctx, dist, dang):
+    """Samples of a hand move: the EE and the hand's farthest point (Hand.radius) step at most ds."""
+    return max(2, int(math.ceil(float(dist) / ctx.cfg.ds)) + 1,
+               int(math.ceil(abs(float(dang)) * ctx.hand.radius / ctx.cfg.ds)) + 1)
+
+
+def _move_samples(acc, ctx, p0, p1, ang0, ang1, pad, z, leg, long=False):
     """Hand samples of one straight EE move p0 -> p1 at height z, the finger axis turning ang0 -> ang1 the short
-    way (the hand is symmetric under 180 deg)."""
-    n = max(2, int(math.ceil(float(np.linalg.norm(p1 - p0)) / ctx.cfg.ds)) + 1)
-    t = np.linspace(0.0, 1.0, n)
+    way (the hand is symmetric under 180 deg); ``long``: the other way round (push_via's 180-deg yaw switch at a
+    lifted corner, the wrist_3 limit)."""
     dang = float((ang1 - ang0 + math.pi / 2.0) % math.pi - math.pi / 2.0)
+    if long:
+        dang -= math.copysign(math.pi, dang) if dang != 0.0 else math.pi
+    t = np.linspace(0.0, 1.0, _n_samples(ctx, np.linalg.norm(p1 - p0), dang))
     x, y = p0[0] + t * (p1[0] - p0[0]), p0[1] + t * (p1[1] - p0[1])
     acc.add_hand(x, y, ang0 + t * dang, pad, pad, z, leg)
     acc.add_reach(x, y, leg)
@@ -455,17 +469,23 @@ def _leg(ctx, a, b, prev, lo, hi, k, acc=None):
             e_back = a - d_p * (contact + mid_p + cfg.backoff)
             pad = max(spread_p, spread)
             if turn > cfg.lift_turn_deg - LIFT_BAND_DEG:
-                _move_samples(acc, ctx, e_back, a - d * (contact + mid + cfg.descend_gap), fa_p, fa, pad, ctx.lift_h, k)
+                far = a - d * (contact + mid + cfg.descend_gap)
+                _move_samples(acc, ctx, e_back, far, fa_p, fa, pad, ctx.lift_h, k)
+                # push_via may take the other of the two yaws here (the wrist_3 limit): it then turns the hand the
+                # long way round in place, lifted, before it moves across
+                _move_samples(acc, ctx, e_back, e_back, fa_p, fa, pad, ctx.lift_h, k, long=True)
+                _move_samples(acc, ctx, e_back, far, fa, fa, pad, ctx.lift_h, k)
             if turn <= cfg.lift_turn_deg + LIFT_BAND_DEG:
                 _move_samples(acc, ctx, e_back, a - d * (contact + mid + cfg.approach_gap), fa_p, fa, pad, ctx.ee_h, k)
     lo, hi = (min(al), max(al)) if length >= ALIGN_LEN else (min(lo, *al), max(hi, *al))
     return (d, mid, spread, fa), lo, hi
 
 
-def _check_route(ctx, pts, yaw0, clear, cache=None, collect=False):
+def _check_route(ctx, pts, yaw0, clear, cache=None, collect=False, first_clear=None):
     """(ok, fails, min_clear) of the route through ``pts`` ([start, via ..., goal], world xy), leg by leg, the
     first failure ends it unless ``collect``. ``cache``: leg -> result, shared within one search (the candidates
-    share their legs); its "evals" entry counts the legs actually evaluated."""
+    share their legs); its "evals" entry counts the legs actually evaluated. ``first_clear``: the floors of the
+    first leg (a re-plan from a box that drifted close to an element, plan_route's ``start_floor``)."""
     lo = hi = float(yaw0)
     prev = None
     fails, minc = [], {}
@@ -481,7 +501,8 @@ def _check_route(ctx, pts, yaw0, clear, cache=None, collect=False):
         if res is None:
             acc = _Acc()
             nxt = _leg(ctx, a, b, prev, lo, hi, k, acc)
-            res = (*_check(ctx, acc.arrays(), clear, collect), nxt)
+            leg_clear = first_clear if (k == 0 and first_clear is not None) else clear
+            res = (*_check(ctx, acc.arrays(), leg_clear, collect), nxt)
             if key is not None:
                 cache[key] = res
                 cache["evals"] = cache.get("evals", 0) + 1
@@ -497,9 +518,12 @@ def _check_route(ctx, pts, yaw0, clear, cache=None, collect=False):
 
 def _check(ctx, samples, clear, collect=False):
     """(ok, fails, min_clear) of box / hand / reach samples. ``fails``: [{"check", "elem", "leg"}], the first only
-    unless ``collect``; ``min_clear``: per protected element and "table", the lowest clearance evaluated (m)."""
+    unless ``collect``; ``min_clear``: per protected element and "table", the lowest clearance evaluated (m).
+    ``clear``: the floors "mat", "cyl_box", "cyl_hand", "table"; optional "elem_box" / "elem_hand" {element id:
+    floor} replace one element's box / hand floor (the drift relaxations of check_motion and plan_route)."""
     box, hnd, rch = samples
     fails, minc = [], {}
+    over_box, over_hand = clear.get("elem_box") or {}, clear.get("elem_hand") or {}
 
     def fail(check, elem, leg):
         fails.append({"check": check, "elem": elem, "leg": int(leg)})
@@ -511,7 +535,7 @@ def _check(ctx, samples, clear, collect=False):
             dist = _rect_rect_dist((X, Y, TH, ctx.bx, ctx.by), (ex, ey, 0.0, float(e.half[0]), float(e.half[1])))
             i = int(np.argmin(dist)) if dist.size else 0
             minc[e.id] = float(dist[i]) if dist.size else np.inf
-            if dist.size and dist[i] < clear["mat"]:
+            if dist.size and dist[i] < over_box.get(e.id, clear["mat"]):
                 fail("box_mat", e.id, LEG[i])
         else:
             r = float(e.half[0])
@@ -534,9 +558,9 @@ def _check(ctx, samples, clear, collect=False):
                 if dh[j] < best_h:
                     best_h, leg_h = float(dh[j]), hl[j]
             minc[e.id] = min(best_b, best_h)
-            if best_b < clear["cyl_box"]:
+            if best_b < over_box.get(e.id, clear["cyl_box"]):
                 fail("box_cyl", e.id, LEG[i])
-            if best_h < clear["cyl_hand"]:
+            if best_h < over_hand.get(e.id, clear["cyl_hand"]):
                 fail("hand_cyl", e.id, leg_h)
         if fails and not collect:
             return False, fails, minc
@@ -562,6 +586,11 @@ def _pose_samples(ctx, xy, yaw):
     acc = _Acc()
     acc.add_box(np.array([float(xy[0])]), np.array([float(xy[1])]), np.linspace(yaw - alpha, yaw + alpha, 5), 0)
     return acc.arrays()
+
+
+def _floors(f):
+    """push_via's guard floors from one distance ``f``: mats and cylinders f, the table edge f / 2."""
+    return {"mat": float(f), "cyl_box": float(f), "cyl_hand": float(f), "table": 0.5 * float(f)}
 
 
 # ---------------------------------------------------------------------------
@@ -602,12 +631,15 @@ def _side_name(s, n0):
 
 
 def plan_route(start_xy, goal_xy, box_half_xy, box_yaw=0.0, elems=(), protect=None, cfg=None, reach_ok=None,
-               box_h=0.05, hand=None, ee_height=None, prefer=None) -> Route:
+               box_h=0.05, hand=None, ee_height=None, prefer=None, start_floor=None) -> Route:
     """The safe push route from the box at ``start_xy`` (yaw ``box_yaw``, footprint half sides ``box_half_xy``,
     height ``box_h``) to ``goal_xy``: via points (the goal last) keeping every protected element of ``elems``
     clear (``protect``: element ids, None = all). ``reach_ok``: make_reach(...) or None. ``ee_height``: the push EE
     height above the table (default the hand's tip_len + tip_clear). ``prefer``: {element id: +1 / -1} lane sides
-    of an earlier route (re-plans keep them when they can)."""
+    of an earlier route (re-plans keep them when they can). ``start_floor``: a re-plan from a box that drifted
+    close to an element (push_zone's, at the guard's floor guard_clear): the start pose needs only that floor (the
+    table half of it), and on the first leg an element the start pose already has inside its clearance (the table
+    edge too) keeps only that floor, box and hand, so the route can lead away from it."""
     cfg = cfg if isinstance(cfg, RouteCfg) else RouteCfg.from_dict(cfg)
     hand = hand if hand is not None else wsg_hand(cfg.hand)
     ctx = _Ctx(cfg, hand, box_half_xy, box_h, reach_ok, elems, protect, ee_height)
@@ -621,12 +653,25 @@ def plan_route(start_xy, goal_xy, box_half_xy, box_yaw=0.0, elems=(), protect=No
     d0 = (g - s) / total
     n0 = np.array([-d0[1], d0[0]])
 
+    first_clear = None
     for tag, xy in (("start", s), ("goal", g)):
-        ok, fails, _ = _check(ctx, _pose_samples(ctx, xy, yaw0), ctx.plan_clear)
+        relax = tag == "start" and start_floor is not None
+        ok, fails, m_pose = _check(ctx, _pose_samples(ctx, xy, yaw0), _floors(start_floor) if relax else ctx.plan_clear,
+                                   collect=relax)
         if not ok:
             return Route(False, hand=hand.mode, reason=f"{tag}_blocked", detail={**base, "fail": fails[0]})
+        if relax:
+            f = _floors(start_floor)
+            near = [e.id for e in ctx.elems
+                    if m_pose.get(e.id, np.inf) < (cfg.mat_clear if e.kind == "zone" else cfg.cyl_clear_box)]
+            table_near = m_pose.get("table", np.inf) < cfg.table_clear
+            first_clear = {**ctx.plan_clear, "elem_box": {i: f["mat"] for i in near},
+                           "elem_hand": {i: f["cyl_hand"] for i in near}}
+            if table_near:
+                first_clear["table"] = f["table"]
+            base["start_relaxed"] = sorted(near) + (["table"] if table_near else [])
 
-    ok, fails, minc = _check_route(ctx, [s, g], yaw0, ctx.plan_clear, collect=True)
+    ok, fails, minc = _check_route(ctx, [s, g], yaw0, ctx.plan_clear, collect=True, first_clear=first_clear)
     if ok:
         return Route(True, via=[g.tolist()], hand=hand.mode, length=total, min_clear=minc, detail=base)
     blocking_ids = {f["elem"] for f in fails if f["elem"] is not None}
@@ -759,7 +804,7 @@ def plan_route(start_xy, goal_xy, box_half_xy, box_yaw=0.0, elems=(), protect=No
                     or cache.get("evals", 0) >= cfg.max_evals:
                 break
             via = [s + u * d0 + v * n0 for u, v in zip(U, V)] + [g]
-            ok, fails, _ = _check_route(ctx, [s] + via, yaw0, ctx.plan_clear, cache=cache)
+            ok, fails, _ = _check_route(ctx, [s] + via, yaw0, ctx.plan_clear, cache=cache, first_clear=first_clear)
             n_checked += 1
             if ok:
                 best = (float(cost), pi, via)
@@ -777,7 +822,7 @@ def plan_route(start_xy, goal_xy, box_half_xy, box_yaw=0.0, elems=(), protect=No
         return Route(False, hand=hand.mode, reason=reason, detail=detail)
     _, pi, via = best
     groups, sides, _ = plans[pi]
-    _, _, minc = _check_route(ctx, [s] + via, yaw0, ctx.plan_clear, collect=True)
+    _, _, minc = _check_route(ctx, [s] + via, yaw0, ctx.plan_clear, collect=True, first_clear=first_clear)
     legs = np.diff(np.stack([s] + via), axis=0)
     heads = np.arctan2(legs[:, 1], legs[:, 0])
     detail["lane_sides"] = {e.id: int(sd) for grp, sd in zip(groups, sides) for e in grp}
@@ -809,7 +854,12 @@ def check_motion(ee_poses, box_from, box_to, box_half_xy, box_yaw, elems, protec
     the step commands, in order, the live pose first (world [x, y, z, qw, qx, qy, qz]); the box slides
     ``box_from`` -> ``box_to`` (equal: it stays). Every protected element keeps ``guard_clear`` from the box and
     from every hand layer at its height, the box stays guard_clear / 2 inside the table. Reach is not checked here
-    (an unreachable pose fails its plan; it harms nothing)."""
+    (an unreachable pose fails its plan; it harms nothing).
+
+    Between two poses the hand turns the short way round of the full circle (the wrist follows the orientation's
+    shorter turn), so the other of push_via's two yaws is checked swinging the long way; a turn in place is sampled
+    as finely as a move. A box or hand that already sits inside a floor (it drifted there) keeps the clearance it has
+    instead: the step passes if it never brings them closer (a move away recovers), unless they already touch."""
     cfg = cfg if isinstance(cfg, RouteCfg) else RouteCfg.from_dict(cfg)
     hand = hand if hand is not None else wsg_hand(cfg.hand)
     ctx = _Ctx(cfg, hand, box_half_xy, box_h, None, elems, protect, None)
@@ -828,14 +878,31 @@ def check_motion(ee_poses, box_from, box_to, box_half_xy, box_yaw, elems, protec
     poses = [np.asarray(p, dtype=np.float64).reshape(7) for p in ee_poses]
     for k in range(len(poses) - 1):
         a, b = poses[k], poses[k + 1]
-        n = max(2, int(math.ceil(float(np.linalg.norm(b[:2] - a[:2])) / cfg.ds)) + 1)
-        t = np.linspace(0.0, 1.0, n)
         fa, fb = quat_finger_angle(a[3:]), quat_finger_angle(b[3:])
-        dang = float((fb - fa + math.pi / 2.0) % math.pi - math.pi / 2.0)
+        dang = float(_wrap(fb - fa))
+        t = np.linspace(0.0, 1.0, _n_samples(ctx, np.linalg.norm(b[:2] - a[:2]), dang))
         acc.add_hand(a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), fa + t * dang, 0.0, 0.0,
                      a[2] + t * (b[2] - a[2]) - float(table_z), k + 1)
-    if len(poses) == 1:
+    # the current pose: the box where it stands (its yaw +- the guard's), the hand at the live EE pose
+    now_box, now_hand = _Acc(), _Acc()
+    th_now = th[np.abs(th - float(box_yaw)) <= ga + 1e-9]
+    now_box.add_box(p0[:1], p0[1:2], th_now if th_now.size else np.array([float(box_yaw)]), 0)
+    if poses:
         a = poses[0]
-        acc.add_hand(a[:1], a[1:2], quat_finger_angle(a[3:]), 0.0, 0.0, a[2] - float(table_z), 0)
-    ok, fails, minc = _check(ctx, acc.arrays(), ctx.guard_clear)
+        now_hand.add_hand(a[:1], a[1:2], quat_finger_angle(a[3:]), 0.0, 0.0, a[2] - float(table_z), 0)
+        if len(poses) == 1:
+            acc.add_hand(a[:1], a[1:2], quat_finger_angle(a[3:]), 0.0, 0.0, a[2] - float(table_z), 0)
+    _, _, c_box = _check(ctx, now_box.arrays(), ctx.guard_clear, collect=True)
+    _, _, c_hand = _check(ctx, now_hand.arrays(), ctx.guard_clear, collect=True)
+    clear = dict(ctx.guard_clear)
+    clear["elem_box"], clear["elem_hand"] = {}, {}
+    for e in ctx.elems:
+        floor_box = clear["mat"] if e.kind == "zone" else clear["cyl_box"]
+        if 0.0 < c_box.get(e.id, np.inf) < floor_box:
+            clear["elem_box"][e.id] = c_box[e.id] - 1e-6
+        if e.kind != "zone" and 0.0 < c_hand.get(e.id, np.inf) < clear["cyl_hand"]:
+            clear["elem_hand"][e.id] = c_hand[e.id] - 1e-6
+    if 0.0 < c_box.get("table", np.inf) < clear["table"]:
+        clear["table"] = c_box["table"] - 1e-6
+    ok, fails, minc = _check(ctx, acc.arrays(), clear)
     return ok, (None if ok else fails[0]), minc

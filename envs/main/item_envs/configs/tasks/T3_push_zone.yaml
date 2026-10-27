@@ -73,7 +73,9 @@ risk:
 # table, every EE pose in reach (workspace_<embodiment>.npz). A layout with no route is not pushed at all: a plan
 # failure, episode_info safe_fail "no_route", the planner's reasons in episode_info route. Corners turning more than
 # lift_turn_deg lift the hand over the box. cuRobo only (curobo_only): no mplib fallback plan. No overshoot or
-# lateral offset; the pushes at 0.5 (the approach, corners and retreat at safe_time_scale 0.6).
+# lateral offset; the pushes at 0.5 (the approach, corners and retreat at safe_time_scale 0.6). The gripper yaw keeps
+# the ur5 wrist_3 (+-pi) inside +-(pi - 0.3), predicted from the live joints (_item_utils.push_via), and a move whose
+# joints travel more than 2 rad stops the push (safe_fail joint_travel; push_zone measures every move).
 safe_mode:
   plan: route
   protect: named
