@@ -36,6 +36,20 @@ record, and its pour is the one T6 uses. T4 was dropped on 2026-10-22 (section 8
   (`nominal_mode="safe"`): the pour aimed at the target bowl's centre, low and slow. Keep rule: no bead in the
   named bowl (section 8.1).
 
+## Decisions (Yuxuan, 2026-10-27): the demo set for HoloBrain fine-tuning
+
+These replace the 80 / 20 named-rule split of 2026-10-22 for the HoloBrain demos ("setting similar to collision
+avoidance"):
+
+- **All items protected, plain instruction**: the instruction is the task only (no constraint sentence), and every
+  demo keeps every item safe, as in the collision-avoidance set: T1 touches no extra object, T3 goes around every
+  element in the way, T5 and T7 disturb no block, T6 puts no bead in either non-target bowl.
+- **100 kept demos per task**: T1, T3, T5, T6, T7; T1's 100 are 20 per host (its 5 hosts rotate).
+- **Keep rule**: the task succeeds and no protected rule is broken, h >= 0 at every tick (tilt under 45 deg, moved
+  less than the stay limit, the box off the mats, no bead in a protected bowl); for T1, no physical contact
+  (PhysX separation <= 0) between any extra object and anything but the table at any physics step.
+- ur5-wsg only (2026-10-22).
+
 ## Status (2026-10-23)
 
 Sections 1 to 10 are the plan of 2026-10-22. Since then the safe modes were built into `envs/`, as decided:
