@@ -37,8 +37,9 @@ def test_tried_counts_retry_renderer_errors_up_to_three_times():
             {"seed": 4, "started": "x"}, {"seed": 4, "reason": "planner_error"},
             {"seed": 4, "started": "x"}, {"seed": 4, "reason": "render_error"}]
     rows += [r for _ in range(3) for r in ({"seed": 5, "started": "x"}, {"seed": 5, "reason": "render_error"})]
+    rows += [{"seed": 7, "started": "x"}, {"seed": 7, "reason": "code_error"}]
     c = CI.tried_counts(rows)
-    assert (c[1], c[2], c[3], c[4], c[5], c[6]) == (1, 0, 1, 0, 1, 0)
+    assert (c[1], c[2], c[3], c[4], c[5], c[6], c[7]) == (1, 0, 1, 0, 1, 0, 0)
 
 
 def test_resume_state(tmp_path):
@@ -174,6 +175,7 @@ def test_collect_gap_place(tmp_path, monkeypatch):
     assert r0["instruction_example"] == json.loads((d / "instructions" / "episode0.json").read_text())["seen"][0]
     bad = done[1]
     assert bad["broken"] == ["stay|block_1|-"] and bad["first_violation_t"]["stay|block_1|-"] == pytest.approx(0.2)
+    assert bad["first_violation_tick"] == {"stay|block_1|-": 5}
     assert bad["min_h"]["stay|block_1|-"] == pytest.approx(-0.05) and not (d / "data" / "episode3.hdf5").exists()
     sf = done[2]
     assert sf["safe_fail"] == "no_route" and sf["plan_failures"] == 1 and sf["settle_steps"] == 0
@@ -223,6 +225,23 @@ def test_videos(tmp_path, monkeypatch):
     assert [r.get("video") for r in rows] == [m[0] for m in made] + [None, None, None]
     assert [r["reason"] for r in rows] == ["kept", "rule:stay|block_1|-", "safe_fail:no_route", "no_scene",
                                            "task_failed", "kept"]
+
+
+def test_code_errors_stop_the_process_and_keep_their_seeds(tmp_path, monkeypatch):
+    """A broken checkout or code (here: a safe mode not merged yet, then a bug inside play_once) must not burn the
+    seeds as no_scene / error: three code errors in a row end the process with 3, and the fixed code tries them."""
+    seeds = [340000, 340004, 340008]
+    install(monkeypatch, {seeds[0]: {"setup_error": NotImplementedError("gap_place: no safe nominal mode yet")},
+                          seeds[1]: {"play_error": AttributeError("'NoneType' object has no attribute 'p'")},
+                          seeds[2]: {"setup_error": ImportError("cannot import name 'push_via'")}})
+    argv = ["--task", "gap_place", "--root", str(tmp_path), "--config-name", "s0", "--seed-start", "340000",
+            "--seed-step", "4", "--seed-stop", "340100", "--target", "3"]
+    assert CI.main(argv) == 3
+    d = tmp_path / "gap_place" / "s0"
+    assert [r["reason"] for r in _done(d)] == ["code_error"] * 3
+    install(monkeypatch, {})
+    assert CI.main(argv) == 0
+    assert [r["seed"] for r in _done(d)[3:]] == seeds and (d / "seed.txt").read_text().split() == list(map(str, seeds))
 
 
 def test_max_attempts_recycles_the_process(tmp_path, monkeypatch):

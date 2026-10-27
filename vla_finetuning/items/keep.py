@@ -31,6 +31,11 @@ MIN_FRAMES = 10
 RENDER_ERRORS = ("cannot create buffer", "DeviceLost", "vk::", "VK_ERROR", "ErrorOutOfDeviceMemory",
                  "ErrorInitializationFailed", "ErrorMemoryMapFailed", "CUDA error", "cudaError", "CUDA out of memory",
                  "CUDA_ERROR")
+# exceptions of a broken checkout or code (RoboTwin missing, a safe mode not merged yet: NotImplementedError, a bug in
+# new code), never of a scene: the scenes fail with UnStableError, a layout RuntimeError, or the expert's
+# "AssertionError: target_pose cannot be None" (no grasp pose); a seed they hit is tried again after the fix
+CODE_ERRORS = ("AttributeError", "FileNotFoundError", "ImportError", "IndexError", "KeyError", "ModuleNotFoundError",
+               "NameError", "NotImplementedError", "SyntaxError", "TypeError", "UnboundLocalError")
 CONTACT_ABORT = "ContactAbort"               # monitor.ContactAbort, as the runner records it ("<type>: <message>")
 TIMEOUT = "ItemTimeout"
 
@@ -76,17 +81,20 @@ def rule_h_series(rule, margins: np.ndarray, counts: np.ndarray) -> np.ndarray:
 
 
 def score_trace(rules, protected: dict, t, margins, counts) -> tuple[dict, list[str]]:
-    """Per rule {"min_h", "first_t"} (first_t: the first capture with h below the rule's bar, protected rules; h < 0,
-    the others; None if never), and the broken protected rule ids, earliest first (ties in rule-table order)."""
+    """Per rule {"min_h", "first_tick", "first_t"} (the first capture, index and seconds, with h below the rule's bar
+    for a protected rule, h < 0 for the others; None if never), and the broken protected rule ids, earliest first
+    (ties in rule-table order)."""
     t = np.asarray(t, np.float64)
     per, broken = {}, []
     for j, rule in enumerate(rules):
         h = rule_h_series(rule, margins[:, j], counts[:, j]) if len(t) else np.zeros(0)
         bar = protected.get(rule.rule_id, 0.0)
         bad = ~(h >= bar)                       # NaN counts as broken
-        first = float(t[int(np.argmax(bad))]) if bad.any() else None
+        tick = int(np.argmax(bad)) if bad.any() else None
+        first = None if tick is None else float(t[tick])
         finite = h[np.isfinite(h)]
-        per[rule.rule_id] = {"min_h": float(finite.min()) if finite.size else None, "first_t": first}
+        per[rule.rule_id] = {"min_h": float(finite.min()) if finite.size else None, "first_tick": tick,
+                             "first_t": first}
         if rule.rule_id in protected and first is not None:
             broken.append((first, j, rule.rule_id))
     return per, [rid for _, _, rid in sorted(broken)]
@@ -96,23 +104,31 @@ def is_render_error(msg) -> bool:
     return bool(msg) and any(p in str(msg) for p in RENDER_ERRORS)
 
 
+def error_reason(err: str) -> str:
+    """The keep reason of an attempt that ended in an exception ("<type>: <message>", as the runner records it)."""
+    err = str(err)
+    if is_render_error(err):
+        return "render_error"
+    if err.startswith(CONTACT_ABORT):
+        return "contact"
+    if err.startswith(TIMEOUT):
+        return "timeout"
+    if err.split(":", 1)[0].strip() in CODE_ERRORS:
+        return "code_error"
+    return "error"
+
+
 def keep_reason(facts: dict) -> str:
-    """'kept' or why not, checked in this order: error ("render_error" for a broken renderer, "contact" for T1's early
-    abort, "timeout", else "error"), "safe_fail:<why>" (the safe controller found no safe motion), "plan_failed",
-    "task_failed", "rule:<rule_id>" (the first protected rule broken), "contact" / "force" (T1), "few_frames".
+    """'kept' or why not, checked in this order: an exception (error_reason: "render_error" for a broken renderer,
+    "contact" for T1's early abort, "timeout", "code_error" for a broken checkout or code, else "error"),
+    "safe_fail:<why>" (the safe controller found no safe motion), "plan_failed", "task_failed", "rule:<rule_id>" (the
+    first protected rule broken), "contact" / "force" (T1), "few_frames".
 
     facts: err (str | None), safe_fail (str | None), plan_failures (int), task_success (bool), broken ([rule_id]),
     contact (None, or {"touched": bool, "force_max": N} for T1), n_frames (int)."""
     err = facts.get("err")
     if err:
-        err = str(err)
-        if is_render_error(err):
-            return "render_error"
-        if err.startswith(CONTACT_ABORT):
-            return "contact"
-        if err.startswith(TIMEOUT):
-            return "timeout"
-        return "error"
+        return error_reason(err)
     if facts.get("safe_fail"):
         return f"safe_fail:{facts['safe_fail']}"
     if int(facts.get("plan_failures") or 0) > 0:

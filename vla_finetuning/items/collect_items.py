@@ -27,13 +27,15 @@ ItemEpisodeRunner(..., nominal_mode="safe", active_rule_id=None), which protects
 Bookkeeping as in collect_demos.py (its seed walk is reused): settings.json pins the directory's settings (a rerun
 with others is refused), attempts.jsonl gets a "started" line before the scene is built and one result row per
 attempt with the per-rule min h and first violation, contacts, frames, wall time and scene facts (a seed that started
-but never finished counts as tried), a resume deletes orphan files and rewrites seed.txt. A renderer error (Vulkan /
-CUDA: "cannot create buffer", DeviceLost, ...) is reason render_error: the seed is not counted as tried (up to 3 such
-errors per seed) and the process ends at once with 75, since a broken renderer stays broken in-process (the
-collision-avoidance attempts show streaks of up to 35). The ITEM_* diagnostic overrides of the task files must be
-unset. Exit 0 when --target episodes are kept (or the seeds run out), 75 to be continued (--max-attempts, the stage
-deadline, a renderer error; jobs/collect_items_loop.sh relaunches), 3 when a planner is not cuRobo (T1: or without
-the safe model's hand slots).
+but never finished counts as tried), a resume deletes orphan files and rewrites seed.txt. Three reasons blame the
+process or the code, not the seed, which is then not counted as tried (up to 3 times per seed): render_error (Vulkan /
+CUDA: "cannot create buffer", DeviceLost, ...; the process ends at once with 75, since a broken renderer stays broken
+in-process: the collision-avoidance attempts show streaks of up to 35), planner_error (not cuRobo; exit 3) and
+code_error (an AttributeError, ImportError, NotImplementedError, ...: RoboTwin missing beside the checkout, a safe
+mode not merged yet, a bug; 3 in a row end the process with 3). The ITEM_* diagnostic overrides of the task files
+must be unset. Exit 0 when --target episodes are kept (or the seeds run out), 75 to be continued (--max-attempts, the
+stage deadline, a renderer error; jobs/collect_items_loop.sh relaunches), 3 when the planners or the code cannot make
+safe demos (a planner not cuRobo, T1 without the safe model's hand slots, 3 code errors in a row).
 """
 
 from __future__ import annotations
@@ -62,8 +64,9 @@ T1 = I.T1
 MAX_STEPS = {"selective_avoid": 10000, "push_zone": 12500, "tray_transport": 7500, "clean_pour": 10000,
              "gap_place": 7500}
 SEED_STOP = 1_000_000       # the language filter's episode ids start at 1M (main/lang/config.py)
-RETRY_REASONS = ("render_error", "planner_error")   # the process was broken, not the seed: tried again ...
-RETRY_MAX = 3                                       # ... up to this many times per seed
+RETRY_REASONS = ("render_error", "planner_error", "code_error")   # the process or the code was broken, not the
+RETRY_MAX = 3                                                     # seed: tried again, up to this many times per seed
+CODE_STREAK = 3             # this many code errors in a row: the checkout or the code is broken, stop (exit 3)
 ALLOWED_ENV = ("ITEM_VIDEO_STYLE",)                 # every other ITEM_* variable changes a scene or the expert
 _hard_exit = False          # set on a renderer error: __main__ skips the interpreter teardown (see there)
 
@@ -203,7 +206,15 @@ def run_attempt(task: str, seed: int, host: str | None, out_root: Path, max_step
             traceback.print_exc()
             err = f"{type(exc).__name__}: {exc}"
             problem = planner_problem(runner, task)
-            reason = "render_error" if K.is_render_error(err) else ("planner_error" if problem else "no_scene")
+            kind = K.error_reason(err)
+            if kind == "render_error":
+                reason = kind
+            elif problem:
+                reason = "planner_error"
+            elif kind == "code_error":          # RoboTwin missing, a safe mode not merged, a bug: not the scene
+                reason = kind
+            else:
+                reason = "no_scene"
             row.update(reason=reason, error=err[:500], detail=problem)
             return row, None, None
         problem = planner_problem(runner, task)
@@ -236,13 +247,15 @@ def run_attempt(task: str, seed: int, host: str | None, out_root: Path, max_step
             mon = DemoMonitor(task_obj, contact_fn=contact_fn).install()
         except Exception as exc:  # noqa: BLE001 - a broken attempt is logged, the next seed follows
             traceback.print_exc()
-            row.update(reason="error", error=f"{type(exc).__name__}: {exc}"[:500])
+            err = f"{type(exc).__name__}: {exc}"
+            row.update(reason=K.error_reason(err), error=err[:500])
             return row, mon, None
         try:
             meta, err = runner.run()
         except Exception as exc:  # noqa: BLE001 - run() records episode errors itself; this is anything else
             traceback.print_exc()
-            row.update(reason="error", error=f"run: {type(exc).__name__}: {exc}"[:500])
+            err = f"{type(exc).__name__}: {exc}"
+            row.update(reason=K.error_reason(err), error=f"run: {err}"[:500])
             return row, mon, None
         diag = dict(getattr(meta, "diag", None) or {})
         task_diag = diag.get("task")                  # task.episode_info as the runner copied it at the end
@@ -255,6 +268,8 @@ def run_attempt(task: str, seed: int, host: str | None, out_root: Path, max_step
                 t, m, c = K.read_trace(trace, runner.rules)
                 per, broken = K.score_trace(runner.rules, protected, t, m, c)
                 row["min_h"] = {rid: v["min_h"] for rid, v in per.items()}
+                row["first_violation_tick"] = {rid: v["first_tick"] for rid, v in per.items()
+                                               if v["first_tick"] is not None}
                 row["first_violation_t"] = {rid: v["first_t"] for rid, v in per.items() if v["first_t"] is not None}
             elif err is None:
                 err = f"no trace.npz in {runner.out_dir}"
@@ -352,7 +367,7 @@ def _collect(args, d: Path, lock) -> int:
     walk = SimpleNamespace(seeds_from=None, seed_start=args.seed_start, seed_step=args.seed_step,
                            seed_stop=args.seed_stop)
     seed_iter = CD._seed_iter(walk, counts, kept_seeds)        # each seed once, skipping the tried ones
-    n_proc, times = 0, []
+    n_proc, times, code_streak = 0, [], 0
     while len(kept) < args.target:
         seed = next(seed_iter, None)
         if seed is None:
@@ -414,6 +429,11 @@ def _collect(args, d: Path, lock) -> int:
             return 75
         if reason == "planner_error":
             print(f"[collect_items] refusing to run: {row.get('detail')}", flush=True)
+            return 3
+        code_streak = code_streak + 1 if reason == "code_error" else 0
+        if code_streak >= CODE_STREAK:
+            print(f"[collect_items] {code_streak} code errors in a row (last: {row.get('error')}): the checkout or "
+                  "the code is broken, not the scenes; refusing to go on", flush=True)
             return 3
         del frames, mon, instr
     print(f"[collect_items] {name}: target reached ({len(kept)} kept)")

@@ -75,6 +75,7 @@ def test_score_trace_bead_counts_and_order():
     per, broken = K.score_trace(rules, prot, t, m, c)
     assert broken == ["particles_outside|beads|bowl_blue", "particles_outside|beads|bowl_green"]   # earliest first
     assert per["particles_outside|beads|bowl_green"]["first_t"] == pytest.approx(t[6])
+    assert per["particles_outside|beads|bowl_green"]["first_tick"] == 6
     assert per["particles_outside|beads|bowl_green"]["min_h"] == pytest.approx(-0.5)
     assert per["particles_outside|beads|bowl_blue"]["min_h"] == pytest.approx(-1.0)
     spill = "particles_inside|beads|bowl_src_interior+target_interior"
@@ -147,7 +148,11 @@ GOOD = {"err": None, "safe_fail": None, "plan_failures": 0, "task_success": True
     ({"err": "RuntimeError: cannot create buffer"}, "render_error"),
     ({"err": "ContactAbort: extra object touched at physics step 812"}, "contact"),
     ({"err": "ItemTimeout: rollout exceeded 7500 physics steps"}, "timeout"),
-    ({"err": "AssertionError: target_pose cannot be None for move action."}, "error"),
+    ({"err": "AssertionError: target_pose cannot be None for move action."}, "error"),        # no grasp pose
+    ({"err": "RuntimeError: push_zone: no valid B-A/mix layout after 1000 tries (seed 3)"}, "error"),
+    ({"err": "AttributeError: 'NoneType' object has no attribute 'get_pose'"}, "code_error"),
+    ({"err": "NotImplementedError: push_zone: no safe nominal mode yet"}, "code_error"),
+    ({"err": "FileNotFoundError: RoboTwin missing: /x/RoboTwin"}, "code_error"),
     ({"safe_fail": "no_route", "plan_failures": 1, "task_success": False}, "safe_fail:no_route"),
     ({"plan_failures": 2}, "plan_failed"),
     ({"task_success": False}, "task_failed"),

@@ -20,11 +20,16 @@ from vla_finetuning.common import CAMS
 HW = (24, 32)
 DEG = np.pi / 180.0
 DEFAULT = {"move1": 150, "hold": 60, "move2": 150, "success": True, "setup_error": None, "render_error_at": None,
-           "safe_fail": None, "plan_success": True, "dip": None, "touch_at": None, "box_color": "blue"}
+           "safe_fail": None, "plan_success": True, "dip": None, "touch_at": None, "box_color": "blue",
+           "play_error": None}   # setup_error / play_error: an exception, or a RuntimeError message
 
 
 class ItemTimeout(Exception):
     """The runner's max_steps exception (same name: keep.py reads it by name)."""
+
+
+def _raise(err):
+    raise err if isinstance(err, BaseException) else RuntimeError(str(err))
 
 
 class Entity:
@@ -87,6 +92,8 @@ class Task:
         self.plan_success = True
 
     def play_once(self):
+        if self.s["play_error"]:
+            _raise(self.s["play_error"])
         for _ in range(self.s["move1"]):
             self.robot.q[0] += 0.01
             self.scene.step()
@@ -140,7 +147,7 @@ class FakeRunner:
         task = Task(self.s)
         self.env = SimpleNamespace(task=task, robot=task.robot)
         if self.s["setup_error"]:
-            raise RuntimeError(self.s["setup_error"])
+            _raise(self.s["setup_error"])
         if self.task_name == "selective_avoid":
             self.items = [ItemSpec(item_id="block1", entity=Entity("block1"), category="wooden_block",
                                    role="task_object"),
