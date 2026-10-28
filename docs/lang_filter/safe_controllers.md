@@ -62,9 +62,9 @@ default, and a seed builds the same scene in both modes).
 | T7 gap | centred slide (`place_offset` 0), commit 4c6a158 | 8/8 clean |
 | T1 avoid | obstacle-aware cuRobo: the protected objects in its world (+1 cm), the WSG hand and the held object as attached spheres, no mplib fallback (`envs/main/item_envs/safe_plan.py`), commit 22b5b3a | 4/8 finished the job, all 8 with no touch; careless touched the protected object in 5/8 |
 | T6 bowls | the pour aimed at the target's centre, low and slow (`T6_clean_pour.yaml` `safe_mode`), with the ur5 aim lead fit to the plain bowls | 21/24 finished; 1/24 put beads in the named bowl (section 8.1) |
-| T3 push | not built: needs the route planner (section 6) | - |
+| T3 push | built 2026-10-27, branch `safe-demos/t3`: the push goes around every protected element along a route planned from the live scene (`envs/robotwin_tasks/_push_route.py`, pure numpy), pushed by `_item_utils.push_via` with every move re-checked first, cuRobo only, the ur5 wrist_3 limit kept (`T3_push_zone.yaml` `safe_mode`, `plan: route`); a layout with no route is not pushed (`safe_fail` "no_route") | no simulator run yet. Off-GPU on replayed layouts (`envs/scripts/item_envs/t3_route_feasibility.py`): a route for 107/120 with every element protected (52/60 on seeds 0-59); each named element alone 210/210 on the path, 79/79 off it. GPU pilot pending (`envs/scripts/item_envs/t3_safe_pilot.py`) |
 
-Still missing: the T3 safe push, and the demo collector for the item scenes with the 80 / 20 split.
+Still missing: the T3 GPU pilot (success, cylinder touches at every physics step, joint travel, physics steps), and the demo collector for the item scenes.
 
 ## 1. Short answer
 

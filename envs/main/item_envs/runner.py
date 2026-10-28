@@ -347,6 +347,17 @@ class ItemEpisodeRunner:
         # in data"): the task yaml's embodiment_overrides[<embodiment>]
         overrides = (self.task_cfg.get("embodiment_overrides") or {}).get(self.embodiment) or {}
         task.embodiment_params = dict(overrides)
+        # T3 safe mode (plan: route, Yuxuan 2026-10-27): push_zone pushes around the protected elements
+        # (robotwin_tasks/_push_route.py); task.safe_route carries the yaml's route knobs, the element ids to protect
+        # and the reach grid. cuRobo only (curobo_only): the parent's mplib fallbacks would put a world-Z plan 8 cm
+        # above a push pose into the demo; T3 sets neither plan_local nor plan_via, so world_aware_only bypasses
+        # none of its moves (controller.py _plan_body)
+        if self.nominal_mode == "safe" and safe.get("plan") == "route":
+            npz = Path(__file__).resolve().parent / "configs" / f"workspace_{self.embodiment}.npz"
+            task.safe_route = {**(safe.get("route") or {}), "protect": self._route_protect(safe),
+                               "reach_npz": str(npz) if npz.is_file() else None}
+            if self.ctrl is not None:
+                self.ctrl.world_aware_only = bool(safe.get("curobo_only", True))
 
         # optional task pre-roll BEFORE t = 0 (never recorded): T4's held mode
         # grasps + levels the brim-full bowl and deletes the beads it spilled.
@@ -390,6 +401,24 @@ class ItemEpisodeRunner:
         if not out:
             raise ValueError(f"safe mode: no item to protect (wanted {sorted(want)})")
         return out
+
+    def _route_protect(self, safe: dict) -> list[str] | None:
+        """T3 safe mode: the element ids the push goes around (mats by region id, cylinders by item id), None =
+        every element (no rule named: the demo collector's case). ``protect`` overrides; safe_mode.protect "named"
+        = the active rule's: an outside rule's mats, an upright / stay rule's cylinders, none for the table rule
+        (the box always stays on the table). Resolved at setup(): set ``active_rule_id`` in the constructor."""
+        if self.protect is not None:
+            return list(self.protect)
+        if safe.get("protect", "named") != "named" or self.active_rule_id is None:
+            return None
+        rule = next((r for r in self.rules if r.rule_id == self.active_rule_id), None)
+        if rule is None:
+            raise ValueError(f"active rule {self.active_rule_id!r} not in this scene")
+        if rule.consequence is Consequence.OUTSIDE:
+            return list(rule.region_ids)
+        if rule.consequence in (Consequence.UPRIGHT, Consequence.STAY):
+            return list(rule.item_ids)
+        return []
 
     def close(self) -> None:
         if self._safe_uninstall is not None:

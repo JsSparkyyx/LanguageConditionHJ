@@ -36,6 +36,7 @@ through PhysX immediately, so ``physics.apply_physics`` /
 physics.
 """
 
+import math
 from contextlib import contextmanager
 
 
@@ -613,6 +614,565 @@ def push_to_goal(task, arm_tag, obj, goal_xy, overshoot=0.0, lateral_offset=0.0,
         *[RiskyStep(_Deferred(arm_tag, _segment)) for _ in range(int(max_segments))],
         _Deferred(arm_tag, _retreat),
     ]
+
+
+# ---------------------------------------------------------------------------
+# safe push along a route (T3 nominal_mode="safe", Yuxuan 2026-10-27): new
+# functions only — push_to_goal and _push_quat above stay the careless push
+# ---------------------------------------------------------------------------
+
+
+def _ee_yaw(quat):
+    """Yaw psi of a top-down EE quaternion (wxyz) about world z, from TOP_DOWN_QUAT: the finger axis (EE y) points
+    along world (-cos psi, -sin psi)."""
+    import numpy as np
+
+    w, x, y, z = (float(v) for v in quat)
+    return float(np.arctan2(-(1.0 - 2.0 * (x * x + z * z)), -2.0 * (x * y - w * z)))
+
+
+def _yaw_quat(psi):
+    """TOP_DOWN_QUAT yawed by psi about world z (wxyz): _push_quat's composition."""
+    import numpy as np
+
+    w1, x1, y1, z1 = float(np.cos(psi / 2.0)), 0.0, 0.0, float(np.sin(psi / 2.0))
+    w2, x2, y2, z2 = TOP_DOWN_QUAT
+    return [
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ]
+
+
+def _wrap_pi(a):
+    """``a`` wrapped into [-pi, pi)."""
+    return (float(a) + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _push_yaws(push_dir_xy, live_yaw, hand="wide"):
+    """The two yaws 180 deg apart that push alike along ``push_dir_xy`` (the closed gripper is symmetric; the finger
+    axis across the push, ``hand`` "narrow": along it): (the one nearest ``live_yaw``, the other). A tie (exactly
+    90 deg either way) keeps _push_quat's fold first."""
+    import numpy as np
+
+    d = np.asarray(push_dir_xy, dtype=np.float64).reshape(2)
+    psi = float(np.arctan2(d[0], -d[1]) - np.pi)   # R_z(psi) @ (-1, 0) == (-d_y, d_x), as in _push_quat
+    if hand == "narrow":
+        psi += np.pi / 2.0
+    psi = (psi + np.pi / 2.0) % np.pi - np.pi / 2.0
+    if abs(_wrap_pi(psi + np.pi - live_yaw)) < abs(_wrap_pi(psi - live_yaw)) - 1e-9:
+        psi += np.pi
+    return psi, psi + np.pi
+
+
+def _push_quat_near(push_dir_xy, ee_quat, hand="wide"):
+    """_push_quat's gripper pose (the finger axis across the push; ``hand`` "narrow": along it) with, of the two
+    yaws 180 deg apart that push alike (the closed gripper is symmetric), the one nearest the live EE yaw.
+    _push_quat folds the yaw into [-90, 90) deg, so its target jumps 180 deg whenever a re-aimed push crosses pure
+    +-x (careless seed 6400: plan #9 "large joint travel 3.23 rad" on a 10 cm segment, the episode failed). A tie
+    (exactly 90 deg either way) keeps _push_quat's fold."""
+    return [float(v) for v in _yaw_quat(_push_yaws(push_dir_xy, _ee_yaw(ee_quat), hand)[0])]
+
+
+# The wrist_3 limit (T3 safe mode). ur5's last joint turns a top-down hand about the vertical: yawing the hand by
+# dpsi turns wrist_3 by -dpsi, and the shoulder pan's change adds to it (the review's fit on the careless T3 log
+# runs/lang/t6_1023/tilt.log, seeds 6400 / 6401: wrist_3 ~= pan - psi + 1.58 within 0.15 rad, pan ~= the EE's bearing
+# about the arm base + const). The URDF keeps wrist_3 within +-pi: a yaw that needs more makes cuRobo turn the
+# wrist the other way, nearly a full turn (or flip to another IK branch).
+WRIST_LIMIT = math.pi
+WRIST_MARGIN = 0.3        # rad kept off the limit: the per-move prediction leaves out the pan's change in the move
+JOINT_TRAVEL_MAX = 2.0    # rad, any arm joint, one executed move (the controller's BRANCH_FLIP_TRAVEL)
+
+
+def arm_qpos(task, arm_tag):
+    """The arm's live joint positions (RoboTwin robot.get_<arm>_arm_real_jointState without its gripper value;
+    ur5: pan, lift, elbow, wrist_1, wrist_2, wrist_3), None without a robot (the CPU tests' fakes)."""
+    import numpy as np
+
+    fn = getattr(getattr(task, "robot", None), f"get_{arm_tag}_arm_real_jointState", None)
+    if fn is None:
+        return None
+    try:
+        q = np.asarray(fn(), dtype=np.float64).reshape(-1)
+    except Exception:  # noqa: BLE001  (diagnostics never break the push)
+        return None
+    return q[:-1].copy() if q.size > 1 else None
+
+
+def _arm_base_xy(task, arm_tag):
+    """World xy of the arm's base (RoboTwin robot.<arm>_entity_origion_pose), None without a robot."""
+    import numpy as np
+
+    pose = getattr(getattr(task, "robot", None), f"{arm_tag}_entity_origion_pose", None)
+    p = getattr(pose, "p", None)
+    return None if p is None else np.asarray(p, dtype=np.float64).reshape(-1)[:2].copy()
+
+
+def pick_yaw(push_dir_xy, live_yaw, w3, lifted, hand="wide", band=WRIST_LIMIT - WRIST_MARGIN):
+    """push_via's yaw for one move: (yaw, None), or (None, why) when no yaw keeps wrist_3 within +-``band``. Of the
+    two yaws that push alike, the one nearest ``live_yaw`` if its predicted wrist_3 w3' = w3 - wrap(yaw - live_yaw)
+    stays within the band, else (only when ``lifted``: a lifted corner, the 180 deg switch) the other one. ``w3``
+    None (no joint readings): the nearest. Example: live yaw 0, a push needing yaw -0.5 or +2.64, w3 = 2.5: the
+    nearest gives w3' = 3.0 > 2.84 (pi - 0.3); lifted, the other gives -0.14 and is taken; not lifted, none."""
+    near, other = _push_yaws(push_dir_xy, live_yaw, hand)
+    if w3 is None:
+        return near, None
+    pred = []
+    for k, psi in enumerate((near, other)):
+        if k and not lifted:
+            break
+        w = float(w3) - _wrap_pi(psi - live_yaw)
+        pred.append(round(w, 3))
+        if abs(w) <= band:
+            return psi, None
+    return None, {"w3": round(float(w3), 3), "pred": pred, "lifted": bool(lifted)}
+
+
+def wrist_track(w3, live_yaw, ee_xy, path, first, base_xy=None, hand="wide"):
+    """Predicted wrist_3 along a push: the live wrist_3 ``w3``, EE yaw ``live_yaw`` and EE xy ``ee_xy``, then
+    ``path`` [(EE xy, push direction), ...] with, at the first entry, the yaw ``first`` (0: nearest the live yaw,
+    1: the other one) and after it the yaw nearest the previous one (push_via between lifted corners). Each move
+    turns wrist_3 by the pan's change (the EE's bearing change about ``base_xy``; none when None) minus the yaw's.
+    Returns the predicted wrist_3 after each entry."""
+    import numpy as np
+
+    w, psi, p = float(w3), float(live_yaw), np.asarray(ee_xy, dtype=np.float64).reshape(2)
+
+    def bearing(xy):
+        return math.atan2(float(xy[1]) - float(base_xy[1]), float(xy[0]) - float(base_xy[0]))
+
+    out = []
+    for i, (xy, d) in enumerate(path):
+        xy = np.asarray(xy, dtype=np.float64).reshape(2)
+        new = _push_yaws(d, psi, hand)[int(first) if i == 0 else 0]
+        if base_xy is not None:
+            w += _wrap_pi(bearing(xy) - bearing(p))
+        w -= _wrap_pi(new - psi)
+        psi, p = new, xy
+        out.append(w)
+    return out
+
+
+def push_via(task, arm_tag, obj, via_xy, guard=None, replan=None, on_fail=None, log=None, seg_len=0.06,
+             via_tol=0.012, goal_tol=0.005, goal_done_tol=0.02, lane_tol=0.02, approach_gap=0.015,
+             descend_gap=0.03, backoff=0.03, realign_backoff=0.02, realign_tol=0.01, lift_turn_deg=30.0,
+             corner_lift=0.02, hand="wide", contact=None, tip_len=None, tip_clear=0.008, height_offset=0.0,
+             height_frac=0.6, approach_lift=0.10, retreat_lift=0.08, max_segments=30, max_replans=4,
+             max_box_tilt_deg=45.0, wrist_limit=WRIST_LIMIT, wrist_margin=WRIST_MARGIN, travel_max=JOINT_TRAVEL_MAX):
+    """Closed-loop table-top push of ``obj`` along the via points ``via_xy`` (the goal last): the T3 safe mode's
+    executor (nominal_mode="safe", Yuxuan 2026-10-27; push_to_goal stays the careless push).
+
+    One leg per via point. Every push segment is re-aimed at the leg's via point from the LIVE box, at most
+    ``seg_len`` and never past the via point (no overshoot); a via point counts as reached within ``via_tol`` or
+    once the box passed it. Before each segment the hand is put behind the box for the new heading:
+
+      d     = unit(via - box centre)                    (re-aimed every segment)
+      touch = centre - d * (OBB depth along d + contact)  (the finger front face on the box face)
+      push  = touch + d * min(seg_len, distance to the via point)
+
+    - a corner (the heading turns more than ``lift_turn_deg``): back off ``backoff`` along the old heading, lift the
+      fingertips ``corner_lift`` above the box top, move across to ``descend_gap`` behind the new face and come down
+      (push_to_goal's approach from above): the hand never swings around the box at push height;
+    - a smaller turn, or the hand off its push line by more than ``realign_tol``: back off ``realign_backoff`` and
+      re-align at push height (push_to_goal's re-alignment).
+
+    Gripper yaw, of the two yaws 180 deg apart that push alike (wrist_3 limit, the arm's last joint: ur5 +-pi). With
+    the arm's joints readable (arm_qpos), wrist_3 after a move is predicted as w3' = w3 - wrap(psi' - psi_live):
+    - the first approach (from above, the hand far from everything) takes the yaw whose predicted wrist_3 along the
+      whole route (wrist_track: the pan's change from the arm base's bearing, the yaw continuous after it) stays
+      within +-(``wrist_limit`` - ``wrist_margin``), the one nearest the live yaw if both do, the smaller peak if
+      neither does;
+    - every later move keeps the yaw nearest the live one (no 180 deg flip when the heading crosses +-x) while its
+      w3' stays in that band; only at a lifted corner it may take the other one (the 180 deg switch: the hand turns
+      in place, lifted, before it moves across); no yaw in the band stops the push ("wrist_limit") before the move;
+    - a turn larger than ``travel_max`` - ``wrist_margin`` (the first approach, a switch) is split into equal parts,
+      one move each, so no move asks a joint for more than push_zone's ``travel_max`` check allows.
+    Without joint readings (fakes) the yaw nearest the live one, always. Push height: push_to_goal's (``tip_len``:
+    fingertip bottoms ``tip_clear`` above the table; else the TCP model at ``height_frac`` of the CoM height).
+
+    Safety, the safe mode never falls back to an unsafe motion: ``guard(ee_poses, box_from, box_to, box_yaw)`` ->
+    (ok, why) checks every step before it runs (the EE poses it commands, the live one first, and the box slide of
+    the push). A guard failure, or the box more than ``lane_tol`` off its leg line, asks ``replan(centre, yaw)``
+    for new via points from the live box; with none (or more than ``max_replans``) the push stops: the remaining
+    steps are empty and ``on_fail(reason)`` runs (push_zone marks a plan failure and writes
+    episode_info["safe_fail"]). Reasons: "guard", "lane", "box_fell", "box_tipped" (tilt > ``max_box_tilt_deg``),
+    "box_lost" (moving away from its via point twice), "replans", "wrist_limit", "segments" (out of segments before
+    the goal). A planner failure (the task's plan_success turned False: RoboTwin's move() then does nothing) stops
+    the push too, without on_fail (the runner counts it as a plan failure; log "fail" = "plan").
+
+    ``log`` (a dict, filled in place): the steps taken, the re-plans, the largest yaw change between consecutive
+    pushes, the yaw switches, the largest EE miss (live EE vs the last commanded pose; ``ee_miss_flag`` above 2 cm),
+    the box's largest tilt, the failure reason; "max_joint_travel" is push_zone's (it executes the moves).
+
+    Returns the skill list: close gripper -> approach from ``approach_lift`` above, ``descend_gap`` behind the box
+    -> ``max_segments`` x (re-position, RiskyStep push segment) -> retreat (back ``approach_gap``, up
+    ``retreat_lift``). The first two entries pair with the idle arm's close / tuck, as push_to_goal's do. Execute
+    through ``execute_steps`` or the zipped ``realize_step`` pairs (push_zone).
+    """
+    import numpy as np
+
+    table_z = TABLE_TOP_Z + float(getattr(task, "table_z_bias", 0.0))
+    contact = float(contact) if contact is not None else (0.015 if hand == "wide" else 0.0227)  # WSG finger faces
+    band = float(wrist_limit) - float(wrist_margin)        # |predicted wrist_3| kept within
+    turn_step = float(travel_max) - float(wrist_margin)    # largest yaw change per move
+    log = {} if log is None else log
+    log.update(steps=[], replans=[], yaw_jump_max_deg=0.0, ee_miss_max=0.0, ee_miss_flag=False, box_tilt_max_deg=0.0,
+               fail=None, wrist_switches=0, wrist_first=None, max_joint_travel=0.0)
+    state = {"via": [np.asarray(v, dtype=np.float64).reshape(2) for v in via_xy], "leg": 0, "start": None,
+             "d": None, "done": False, "dist": None, "grew": 0, "replans": 0, "skip": False, "last_cmd": None,
+             "last_yaw": None, "up": None}
+
+    def _fail(reason):
+        state["done"] = True
+        if log["fail"] is None:
+            log["fail"] = str(reason)
+            if on_fail is not None:
+                on_fail(str(reason))
+
+    def _planner_failed():
+        # a cuRobo failure in an earlier move: RoboTwin's move() ignores everything after it, so stop here (no
+        # on_fail: the runner counts the plan failure, push_zone records plan_fail_step)
+        if getattr(task, "plan_success", True) is False:
+            state["done"] = True
+            log["fail"] = log["fail"] or "plan"
+            return True
+        return False
+
+    def _live():
+        pose = _unwrap(obj).get_pose()
+        p = np.asarray(pose.p, dtype=np.float64).reshape(3)
+        rot = np.asarray(pose.to_transformation_matrix(), dtype=np.float64)[:3, :3]
+        half = _obb_half_world(obj)
+        if half is None:
+            half = np.array([0.03, 0.03, 0.03], dtype=np.float64)
+        yaw = float(np.arctan2(rot[1, 0], rot[0, 0]))
+        if state["up"] is None:   # the box's up axis, latched at the start (prim boxes z, RoboTwin meshes y)
+            state["up"] = int(np.argmax(np.abs(rot[2, :])))
+        tilt = float(np.degrees(np.arccos(np.clip(abs(rot[2, state["up"]]), 0.0, 1.0))))
+        top = float(p[2] + np.abs(rot[2, :]) @ half)
+        return p, rot, half, yaw, tilt, top
+
+    def _depth(rot, half, d):
+        return float(np.abs(rot.T @ np.array([d[0], d[1], 0.0])) @ half)
+
+    def _z_push(center_z):
+        if tip_len is not None:
+            zc = table_z + float(tip_clear) + float(tip_len) - APPROACH_TO_TCP + float(height_offset)
+        else:
+            zc = max(table_z + float(height_frac) * (center_z - table_z) + float(height_offset), table_z + 0.01)
+        return zc + APPROACH_TO_TCP
+
+    def _pose(xy, z, quat):
+        return [float(xy[0]), float(xy[1]), float(z)] + [float(v) for v in quat]
+
+    def _ee():
+        return np.asarray(task.get_arm_pose(arm_tag), dtype=np.float64).reshape(7)
+
+    def _xy(v):
+        return [round(float(v[0]), 4), round(float(v[1]), 4)]
+
+    def _guard(poses, c0, c1, yaw):
+        if guard is None:
+            return True, None
+        res = guard(poses, c0, c1, yaw)
+        if isinstance(res, (tuple, list)):
+            return bool(res[0]), (res[1] if len(res) > 1 else None)
+        return bool(res), None
+
+    def _yaw(d, ee, lifted):
+        """(yaw, None) or (None, why) for push direction d from the live EE (pick_yaw on the live wrist_3)."""
+        live = _ee_yaw(ee[3:])
+        q = arm_qpos(task, arm_tag)
+        psi, why = pick_yaw(d, live, None if q is None else float(q[-1]), lifted, hand=hand, band=band)
+        if psi is not None and abs(_wrap_pi(psi - live)) > math.pi / 2.0 + 1e-9:
+            log["wrist_switches"] += 1
+        return psi, why
+
+    def _turns(psi_from, psi_to):
+        """The yaws a turn psi_from -> psi_to (the short way of the full circle) passes in parts of at most
+        turn_step, the last one psi_to."""
+        dpsi = _wrap_pi(psi_to - psi_from)
+        n = max(1, int(np.ceil(abs(dpsi) / max(turn_step, 1e-3) - 1e-9)))
+        return [psi_from + dpsi * (j + 1) / n for j in range(n - 1)] + [psi_to]
+
+    def _replan(c, yaw, why):
+        """True: new via points from the live box (the next step re-positions for them); False: the push stops."""
+        if replan is None:
+            _fail(why)
+            return False
+        if state["replans"] >= int(max_replans):
+            _fail("replans")
+            return False
+        state["replans"] += 1
+        new = replan(c, yaw)
+        log["replans"].append({"at": _xy(c), "why": why, "ok": bool(new)})
+        if not new:
+            _fail(why)
+            return False
+        state["via"] = [np.asarray(v, dtype=np.float64).reshape(2) for v in new]
+        state.update(leg=0, start=np.asarray(c, dtype=np.float64).copy(), dist=None, grew=0)
+        return True
+
+    def _target(c):
+        """The current via point, past the reached ones; (via point, is the goal)."""
+        via = state["via"]
+        while state["leg"] < len(via) - 1:
+            tgt = via[state["leg"]]
+            line = tgt - state["start"]
+            n = float(np.linalg.norm(line))
+            passed = n > 1e-9 and float((c - tgt) @ line) / n >= 0.0
+            if float(np.linalg.norm(c - tgt)) > float(via_tol) and not passed:
+                break
+            state["leg"] += 1
+            state["start"] = c.copy()
+            state["dist"], state["grew"] = None, 0
+        return via[state["leg"]], state["leg"] == len(via) - 1
+
+    def _off_lane(c, tgt):
+        line = tgt - state["start"]
+        n = float(np.linalg.norm(line))
+        if n < 1e-9:
+            return 0.0
+        rel = c - state["start"]
+        return abs(float(rel[0] * line[1] - rel[1] * line[0])) / n
+
+    def _miss(ee):
+        # the live EE vs the last commanded pose: more than 2 cm off flags the demo (logged, not a failure)
+        if state["last_cmd"] is not None:
+            log["ee_miss_max"] = max(log["ee_miss_max"], round(float(np.linalg.norm(ee[:3] - state["last_cmd"])), 4))
+            log["ee_miss_flag"] = bool(log["ee_miss_max"] > 0.02)
+
+    def _route_path(c, rot, half):
+        """(EE xy, push direction) of every planned push segment, the box moved along the via points."""
+        out, c = [], np.asarray(c, dtype=np.float64).copy()
+        for b in state["via"]:
+            for _ in range(200):
+                r = b - c
+                n = float(np.linalg.norm(r))
+                if n < 1e-6:
+                    break
+                d = r / n
+                out.append((c - d * (_depth(rot, half, d) + contact), d))
+                c = c + d * min(float(seg_len), n)
+        return out
+
+    def _first_yaw(d, ee, c, rot, half):
+        """The first approach's yaw (see the docstring): (yaw, None) or (None, why)."""
+        live = _ee_yaw(ee[3:])
+        cands = _push_yaws(d, live, hand)
+        q = arm_qpos(task, arm_tag)
+        if q is None:
+            return cands[0], None
+        w3 = float(q[-1])
+        path = _route_path(c, rot, half)
+        base = _arm_base_xy(task, arm_tag)
+        peaks = []
+        for k in (0, 1):
+            first_ok = abs(w3 - _wrap_pi(cands[k] - live)) <= band
+            track = wrist_track(w3, live, ee[:2], path, k, base_xy=base, hand=hand)
+            peaks.append((first_ok, max([abs(w) for w in track] or [abs(w3)])))
+        ok = [k for k in (0, 1) if peaks[k][0] and peaks[k][1] <= band]
+        if ok:
+            k = ok[0]
+        else:
+            fine = [k for k in (0, 1) if peaks[k][0]]
+            if not fine:
+                return None, {"w3": round(w3, 3), "first": True}
+            k = min(fine, key=lambda j: peaks[j][1])
+        log["wrist_first"] = {"w3": round(w3, 3), "pick": "near" if k == 0 else "other",
+                              "peaks": [round(peaks[0][1], 3), round(peaks[1][1], 3)]}
+        return cands[k], None
+
+    def _prepush(task):
+        # approach from ABOVE, descend_gap behind the box face (push_to_goal's approach): a direct path to a pose
+        # beside the box can sweep through it
+        if _planner_failed():
+            return arm_tag, []
+        p, rot, half, yaw, _, _ = _live()
+        c = p[:2]
+        state["start"] = c.copy()
+        tgt = state["via"][0]
+        dist = float(np.linalg.norm(tgt - c))
+        d = (tgt - c) / dist if dist > 1e-9 else np.array([1.0, 0.0])
+        ee = _ee()
+        psi, why = _first_yaw(d, ee, c, rot, half)
+        if psi is None:
+            log["steps"].append({"kind": "approach", "c": _xy(c), "wrist": why})
+            _fail("wrist_limit")
+            return arm_tag, []
+        quat = _yaw_quat(psi)
+        far = c - d * (_depth(rot, half, d) + contact + float(descend_gap))
+        z_push = _z_push(float(p[2]))
+        # the turn from the live yaw happens above, split when it is large (the far yaw from the home pose)
+        poses = [_pose(far, z_push + float(approach_lift), _yaw_quat(a)) for a in _turns(_ee_yaw(ee[3:]), psi)]
+        poses.append(_pose(far, z_push, quat))
+        ok, why = _guard([ee.tolist()] + poses, c, c, yaw)
+        if not ok:
+            log["steps"].append({"kind": "approach", "c": _xy(c), "guard": why})
+            _fail("guard")
+            return arm_tag, []
+        state["d"] = d
+        state["last_cmd"] = np.asarray(poses[-1][:3])
+        state["last_yaw"] = psi
+        log["steps"].append({"kind": "approach", "c": _xy(c), "n_turns": len(poses) - 1,
+                             "d_deg": round(float(np.degrees(np.arctan2(d[1], d[0]))), 1)})
+        actions = []
+        for pose in poses:
+            actions += task.move_to_pose(arm_tag, pose)[1]
+        return arm_tag, actions
+
+    def _reposition(task):
+        if state["done"] or _planner_failed():
+            return arm_tag, []
+        p, rot, half, yaw, tilt, top = _live()
+        c = p[:2]
+        log["box_tilt_max_deg"] = max(log["box_tilt_max_deg"], round(tilt, 1))
+        if p[2] < table_z - 0.02:   # fell off the table
+            _fail("box_fell")
+            return arm_tag, []
+        if tilt > float(max_box_tilt_deg):
+            _fail("box_tipped")
+            return arm_tag, []
+        tgt, last = _target(c)
+        dist = float(np.linalg.norm(tgt - c))
+        d_old = state["d"]
+        if last and (dist <= float(goal_tol) or (dist <= float(goal_done_tol) and d_old is not None
+                                                 and float((c - tgt) @ d_old) >= 0.0)):
+            state["done"] = True   # at the goal (or just past it): no turning back around the box
+            return arm_tag, []
+        if state["dist"] is not None and dist > state["dist"] + 0.005:
+            state["grew"] += 1
+            if state["grew"] >= 2:   # moving away from its via point twice: box lost
+                _fail("box_lost")
+                return arm_tag, []
+        else:
+            state["grew"] = 0
+        state["dist"] = dist
+        if _off_lane(c, tgt) > float(lane_tol):
+            if not _replan(c, yaw, "lane"):
+                return arm_tag, []
+            tgt, last = _target(c)
+            dist = float(np.linalg.norm(tgt - c))
+        d = (tgt - c) / max(dist, 1e-9)
+        d_old = d if d_old is None else d_old
+        ee = _ee()
+        _miss(ee)
+        turn = float(np.degrees(np.arccos(np.clip(float(d_old @ d), -1.0, 1.0))))
+        lifted = turn > float(lift_turn_deg)
+        psi, why = _yaw(d, ee, lifted)
+        entry = {"kind": "lift" if lifted else "none", "leg": int(state["leg"]), "c": _xy(c),
+                 "turn_deg": round(turn, 1)}
+        if psi is None:
+            entry["wrist"] = why
+            log["steps"].append(entry)
+            _fail("wrist_limit")
+            return arm_tag, []
+        quat = _yaw_quat(psi)
+        touch = c - d * (_depth(rot, half, d) + contact)
+        z_push = _z_push(float(p[2]))
+        rel = touch - ee[:2]
+        lateral = abs(float(rel[0] * d[1] - rel[1] * d[0]))
+        behind = float(rel @ d)
+        live_yaw = _ee_yaw(ee[3:])
+        dyaw = abs(_wrap_pi(psi - live_yaw))
+        in_place = (lateral <= float(realign_tol) and -0.005 <= behind <= float(descend_gap) + float(realign_tol)
+                    and np.degrees(dyaw) <= 10.0 and abs(float(ee[2]) - z_push) <= 0.01)
+        poses = []
+        if lifted:
+            back = ee[:2] - d_old * float(backoff)
+            fingers = float(tip_len) if tip_len is not None else APPROACH_TO_TCP
+            z_lift = max(z_push, top + float(corner_lift) + fingers)
+            far = touch - d * float(descend_gap)
+            poses = [_pose(back, ee[2], ee[3:]), _pose(back, z_lift, ee[3:])]
+            if dyaw > math.pi / 2.0 + 1e-9:
+                # the 180 deg switch: turn in place, lifted (in parts when large), then move across
+                poses += [_pose(back, z_lift, _yaw_quat(a)) for a in _turns(live_yaw, psi)]
+            poses += [_pose(far, z_lift, quat), _pose(far, z_push, quat)]
+        elif not in_place:
+            back = ee[:2] - d_old * float(realign_backoff)
+            poses = [_pose(back, ee[2], ee[3:]), _pose(touch - d * float(approach_gap), z_push, quat)]
+            entry["kind"] = "realign"
+        move = min(float(seg_len), dist)
+        ok, why = _guard([ee.tolist()] + poses + [_pose(touch + d * move, z_push, quat)], c, c + d * move, yaw)
+        if not ok:
+            entry["guard"] = why
+            log["steps"].append(entry)
+            state["skip"] = True   # the push below waits: the next step re-positions for the new route
+            _replan(c, yaw, "guard")
+            return arm_tag, []
+        log["steps"].append(entry)
+        actions = []
+        for pose in poses:
+            actions += task.move_to_pose(arm_tag, pose)[1]
+        if poses:
+            state["last_cmd"] = np.asarray(poses[-1][:3])
+        return arm_tag, actions
+
+    def _push(task):
+        if state["done"] or _planner_failed():
+            return arm_tag, []
+        if state["skip"]:
+            state["skip"] = False
+            return arm_tag, []
+        p, rot, half, yaw, _, _ = _live()
+        c = p[:2]
+        tgt = state["via"][state["leg"]]
+        dist = float(np.linalg.norm(tgt - c))
+        if dist < 1e-6:
+            return arm_tag, []
+        d = (tgt - c) / dist
+        ee = _ee()
+        _miss(ee)
+        psi, why = _yaw(d, ee, False)
+        if psi is None:
+            log["steps"].append({"kind": "push", "leg": int(state["leg"]), "c": _xy(c), "wrist": why})
+            _fail("wrist_limit")
+            return arm_tag, []
+        quat = _yaw_quat(psi)
+        move = min(float(seg_len), dist)
+        target = _pose(c - d * (_depth(rot, half, d) + contact) + d * move, _z_push(float(p[2])), quat)
+        ok, why = _guard([ee.tolist(), target], c, c + d * move, yaw)
+        if not ok:
+            log["steps"].append({"kind": "push", "leg": int(state["leg"]), "c": _xy(c), "guard": why})
+            _replan(c, yaw, "guard")   # a new route waits for the next re-position step
+            return arm_tag, []
+        if state["last_yaw"] is not None:
+            jump = abs(_wrap_pi(psi - state["last_yaw"]))
+            log["yaw_jump_max_deg"] = max(log["yaw_jump_max_deg"], round(float(np.degrees(jump)), 1))
+        state["last_yaw"] = psi
+        state["d"] = d
+        state["last_cmd"] = np.asarray(target[:3])
+        log["steps"].append({"kind": "push", "leg": int(state["leg"]), "c": _xy(c), "move": round(move, 4),
+                             "d_deg": round(float(np.degrees(np.arctan2(d[1], d[0]))), 1),
+                             "yaw_deg": round(float(np.degrees(_wrap_pi(psi))), 1)})
+        return arm_tag, task.move_to_pose(arm_tag, target)[1]
+
+    def _retreat(task):
+        if _planner_failed() or log["fail"] is not None:
+            return arm_tag, []
+        if not state["done"]:
+            _fail("segments")
+            return arm_tag, []
+        p, _, _, yaw, _, _ = _live()
+        ee = _ee()
+        d = state["d"] if state["d"] is not None else np.array([1.0, 0.0])
+        back = ee[:2] - d * float(approach_gap)
+        poses = [_pose(back, ee[2], ee[3:]), _pose(back, float(ee[2]) + float(retreat_lift), ee[3:])]
+        if not _guard([ee.tolist()] + poses, p[:2], p[:2], yaw)[0]:
+            poses = [_pose(ee[:2], float(ee[2]) + float(retreat_lift), ee[3:])]   # straight up only
+            if not _guard([ee.tolist()] + poses, p[:2], p[:2], yaw)[0]:
+                return arm_tag, []   # the box is home: stay rather than move into something
+        actions = []
+        for pose in poses:
+            actions += task.move_to_pose(arm_tag, pose)[1]
+        return arm_tag, actions
+
+    steps = [task.close_gripper(arm_tag), _Deferred(arm_tag, _prepush)]
+    for _ in range(int(max_segments)):
+        steps += [_Deferred(arm_tag, _reposition), RiskyStep(_Deferred(arm_tag, _push))]
+    steps.append(_Deferred(arm_tag, _retreat))
+    return steps
 
 
 # ---------------------------------------------------------------------------
