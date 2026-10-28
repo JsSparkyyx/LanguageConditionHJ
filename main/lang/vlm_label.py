@@ -38,7 +38,7 @@ from . import ensure_item_path
 ensure_item_path()
 
 from .agent_view import frame_path, read_done  # noqa: E402
-from .vlm_prompts import (VLMS, build_prompt, label_dir, label_path, labelled, load_prompts, parse_score,  # noqa: E402
+from .vlm_prompts import (QUANT, VLLM_ONLY, VLMS, build_prompt, label_dir, label_path, labelled, load_prompts, parse_score,  # noqa: E402
                           prompt_hash, write_json_atomic)
 
 CLAIM_STALE_S = 600.0   # a claim is touched after every batch (~10 s): 10 min untouched = its labeler died
@@ -160,12 +160,61 @@ class VLM:
         return self.proc.batch_decode(out[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)
 
 
+class VLLMVLM:
+    """The same interface on vLLM (2026-10-27), for the 4-bit models (QUANT) on one A40: vLLM batches the prompts
+    itself, so ask() takes a whole episode's questions at once. Greedy decoding, as the transformers backend; the
+    prompt is the model's own chat template (AutoProcessor), the images go in as PIL. Runs in the separate env
+    /work/nvme/bifq/conda/envs/vlm (vllm 0.11.0), never in the RoboTwin env."""
+
+    def __init__(self, name: str, max_model_len: int = 4096, gpu_memory_utilization: float = 0.88):
+        import torch
+        from transformers import AutoProcessor
+        from vllm import LLM, SamplingParams
+
+        self.name, self.dir = name, VLMS[name]
+        quant = QUANT.get(name)
+        t0 = time.time()
+        kw = {"quantization": quant} if quant else {}
+        if quant == "bitsandbytes":   # quantized at load time from the bf16 checkpoint
+            kw["load_format"] = "bitsandbytes"
+        # AWQ kernels want fp16 activations; the bitsandbytes and bf16 checkpoints run in bf16
+        dtype = "float16" if quant == "awq" else "bfloat16"
+        # every visible GPU (tensor parallel): one A40 for the 4-bit / 8-bit models, two A100s for bf16 32B
+        tp = max(1, torch.cuda.device_count())
+        self.llm = LLM(model=str(self.dir), dtype=dtype, max_model_len=int(max_model_len),
+                       limit_mm_per_prompt={"image": 2}, gpu_memory_utilization=float(gpu_memory_utilization),
+                       tensor_parallel_size=tp, seed=0, **kw)
+        self.proc = AutoProcessor.from_pretrained(str(self.dir))
+        self.SamplingParams = SamplingParams
+        print(f"[vlm_label] {name} loaded on vLLM from {self.dir} in {time.time() - t0:.0f}s (quantization "
+              f"{quant or 'none'}, dtype {dtype}, tensor parallel {tp})", flush=True)
+
+    def ask(self, batch: list[tuple[list, str]], sample: bool = False) -> list[str]:
+        reqs = []
+        for imgs, text in batch:
+            msg = [{"role": "user", "content": [{"type": "image"} for _ in imgs] + [{"type": "text", "text": text}]}]
+            prompt = self.proc.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+            reqs.append({"prompt": prompt, "multi_modal_data": {"image": list(imgs)}})
+        sp = (self.SamplingParams(temperature=0.7, top_p=0.9, max_tokens=2 * MAX_NEW_TOKENS, seed=0) if sample
+              else self.SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS))
+        outs = self.llm.generate(reqs, sp, use_tqdm=False)
+        return [o.outputs[0].text for o in outs]
+
+
+def make_vlm(name: str, backend: str, attn: str = "flash_attention_2", gpu_mem: float = 0.88):
+    """The labeler's model: a quantized model (QUANT) always runs on vLLM."""
+    if backend == "vllm" or name in QUANT or name in VLLM_ONLY:
+        return VLLMVLM(name, gpu_memory_utilization=gpu_mem)
+    return VLM(name, attn=attn)
+
+
 def label_episode(vlm: VLM, root: Path, eid: int, batch_size: int, touch=None) -> dict:
     from PIL import Image
 
     t0 = time.time()
     skel, qs, _ = episode_queries(root, eid)
-    skel.update({"vlm": vlm.name, "model_dir": str(vlm.dir), "batch": int(batch_size), "host": socket.gethostname()})
+    skel.update({"vlm": vlm.name, "model_dir": str(vlm.dir), "batch": int(batch_size), "host": socket.gethostname(),
+                 "backend": type(vlm).__name__, "quant": QUANT.get(vlm.name)})
     if not qs:
         skel["wall_s"] = round(time.time() - t0, 1)
         return skel
@@ -222,8 +271,8 @@ def cmd_serve(args) -> int:
         float(os.environ["STAGE_DEADLINE"]) if os.environ.get("STAGE_DEADLINE") else None)
     from .hsource import wanted
 
-    vlm = VLM(args.vlm, attn=args.attn)
-    state = {"vlm": args.vlm, "episodes": 0, "queries": 0, "started": time.time(), "prompt_hash": prompt_hash()}
+    vlm = make_vlm(args.vlm, args.backend, attn=args.attn, gpu_mem=args.gpu_mem)
+    state = {"vlm": args.vlm, "backend": type(vlm).__name__, "episodes": 0, "queries": 0, "started": time.time(), "prompt_hash": prompt_hash()}
     last_hb = 0.0
     walls: list[float] = []
     idle_since = time.time()
@@ -325,6 +374,9 @@ def main(argv=None) -> int:
     p.add_argument("--roots", nargs="+", required=True, help="data roots or globs, in priority order (ring first)")
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--attn", default="flash_attention_2", choices=("flash_attention_2", "sdpa", "eager"))
+    p.add_argument("--gpu-mem", type=float, default=0.88, help="vLLM: share of each GPU's memory it may use")
+    p.add_argument("--backend", default="hf", choices=("hf", "vllm"),
+                   help="hf = transformers (bf16 models); vllm = the separate vLLM env (the 4-bit models always use it)")
     p.add_argument("--poll", type=float, default=20.0, help="seconds between scans when idle")
     p.add_argument("--once", action="store_true", help="exit when nothing is left to label")
     p.add_argument("--until", default=None, help="exit when this file exists (e.g. the run's checkpoint_final.pt)")

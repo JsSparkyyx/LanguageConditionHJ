@@ -40,7 +40,22 @@ VLMS = {
     "qwen25vl7b": VLM_ROOT / "Qwen2.5-VL-7B-Instruct",
     "qwen3vl8b": VLM_ROOT / "Qwen3-VL-8B-Instruct",
     "robobrain25_8b": VLM_ROOT / "RoboBrain2.5-8B-NV",
+    # 4-bit versions of the two 32B models, to fit one A40 (Yuxuan 2026-10-27: try them first): Qwen's official AWQ
+    # checkpoint, and RoboBrain2.0-32B quantized at load time (bitsandbytes NF4: BAAI publishes no 4-bit version).
+    # Both run on the vLLM backend (vlm_label --backend vllm, the separate env /work/nvme/bifq/conda/envs/vlm)
+    "qwen25vl32b_awq": VLM_ROOT / "Qwen2.5-VL-32B-Instruct-AWQ",
+    "robobrain2_32b_nf4": VLM_ROOT / "RoboBrain2.0-32B",
+    # 2026-10-27, after the 4-bit RoboBrain lost most of T1 / T5: the same bf16 weights on vLLM (separates the
+    # backend from the quantization) and 8-bit weights (FP8, quantized at load time, W8A16 kernels on A40 / A100)
+    "robobrain2_32b_vllm": VLM_ROOT / "RoboBrain2.0-32B",
+    "robobrain2_32b_fp8": VLM_ROOT / "RoboBrain2.0-32B",
+    "qwen25vl32b_fp8": VLM_ROOT / "Qwen2.5-VL-32B-Instruct",
 }
+# how each model's weights are quantized (vLLM's quantization argument); a model not listed runs in bf16
+QUANT = {"qwen25vl32b_awq": "awq", "robobrain2_32b_nf4": "bitsandbytes", "robobrain2_32b_fp8": "fp8",
+         "qwen25vl32b_fp8": "fp8"}
+# models that always run on the vLLM backend (every QUANT model does too)
+VLLM_ONLY = {"robobrain2_32b_vllm"}
 PLACEHOLDERS = ("{object}", "{block_description}", "{bowl_description}")
 SCORES = (-1, 0, 1)
 
