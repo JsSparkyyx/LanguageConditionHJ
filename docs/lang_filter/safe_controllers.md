@@ -417,6 +417,12 @@ Will the task still succeed? Nominal success is 73 % (`calibration.md:33`); safe
 - Franka's wide hand makes cylinder detours much wider; ur5 only is assumed anyway.
 - cuRobo plans each push move in joint space with a table-only world: the hand's path between two push
   poses is not exactly a straight line.
+- Production, 2026-10-28 (14 kept of 97 tries): 37 tries ended `safe_fail:segments` with the box 5-12 mm short
+  of the goal, already inside success's 4 cm. Each last push was as long as the distance left (6-11 mm) and
+  left the box where it was, lost in the hand's tracking, until the 30 segments ran out. Fix: toward the goal
+  every push is at least `min_push` = 1.5 cm (`push_via`), so the box may pass the goal by up to 1.5 cm
+  (`goal_done_tol` 2 cm counts that as reached). 33 more tries ended `safe_fail:guard`, mostly the hand
+  near a cylinder on the last leg after the re-plans ran out: real safe stops, not changed.
 
 ## 7. T5 `tray_transport` and T7 `gap_place`: the knobs already give a safe expert
 

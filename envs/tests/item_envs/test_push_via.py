@@ -82,8 +82,9 @@ class _Ur5Wrist:
 class _Task:
     table_z_bias = 0.0
 
-    def __init__(self, box, drift=0.0, turn=0.0):
+    def __init__(self, box, drift=0.0, turn=0.0, slack=0.0):
         self.box, self.drift, self.turn = box, drift, turn
+        self.slack = slack   # a move at push height stops this short (the real hand's tracking, 2026-10-28)
         self.ee = np.array([-0.30, -0.17, 1.12, -0.5, 0.5, -0.5, -0.5])   # home, TOP_DOWN
         self.moves = []
         self.robot = None
@@ -102,6 +103,10 @@ class _Task:
             if a.pose is None:
                 continue
             p0, self.ee = self.ee.copy(), a.pose.copy()
+            seg = self.ee[:2] - p0[:2]
+            n = float(np.linalg.norm(seg))
+            if self.slack > 0.0 and n > 1e-9 and max(p0[2], self.ee[2]) <= PUSH_Z + 0.01:
+                self.ee[:2] -= seg / n * min(self.slack, n)
             self.moves.append(self.ee.copy())
             if self.robot is not None:
                 self.robot.follow(self.ee)
@@ -321,6 +326,23 @@ def test_out_of_segments_is_a_failure(utils_mod):
     fails = []
     _run(utils_mod, task, _push_via(utils_mod, task, [[0.30, -0.10]], max_segments=3, on_fail=fails.append))
     assert fails == ["segments"]
+
+
+@pytest.mark.parametrize("min_push, reached", [(0.015, True), (0.0, False)])
+def test_short_pushes_reach_the_goal_despite_the_hand_lag(utils_mod, min_push, reached):
+    """Production 2026-10-28: the box stuck 5-12 mm short of the goal, each push as long as the distance left and
+    lost in the hand's tracking. A hand that stops 7 mm short of every push: min_push still gets the box home (just
+    past the goal at most), without it the push runs out of segments."""
+    box = _Box([-0.30, -0.10])
+    task = _Task(box, slack=0.007)
+    goal = np.array([0.0, -0.10])
+    log, fails = {}, []
+    _run(utils_mod, task, _push_via(utils_mod, task, [list(goal)], min_push=min_push, on_fail=fails.append, log=log))
+    if reached:
+        assert log["fail"] is None and not fails, log
+        assert np.linalg.norm(box.p[:2] - goal) <= 0.02 and float(box.p[0] - goal[0]) <= 0.015, box.p
+    else:
+        assert fails == ["segments"] and float(np.linalg.norm(box.p[:2] - goal)) > 0.005
 
 
 class _Exec:

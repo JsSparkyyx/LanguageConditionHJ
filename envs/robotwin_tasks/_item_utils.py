@@ -755,7 +755,7 @@ def wrist_track(w3, live_yaw, ee_xy, path, first, base_xy=None, hand="wide"):
 
 
 def push_via(task, arm_tag, obj, via_xy, guard=None, replan=None, on_fail=None, log=None, seg_len=0.06,
-             via_tol=0.012, goal_tol=0.005, goal_done_tol=0.02, lane_tol=0.02, approach_gap=0.015,
+             via_tol=0.012, goal_tol=0.005, goal_done_tol=0.02, min_push=0.015, lane_tol=0.02, approach_gap=0.015,
              descend_gap=0.03, backoff=0.03, realign_backoff=0.02, realign_tol=0.01, lift_turn_deg=30.0,
              corner_lift=0.02, hand="wide", contact=None, tip_len=None, tip_clear=0.008, height_offset=0.0,
              height_frac=0.6, approach_lift=0.10, retreat_lift=0.08, max_segments=30, max_replans=4,
@@ -765,11 +765,14 @@ def push_via(task, arm_tag, obj, via_xy, guard=None, replan=None, on_fail=None, 
 
     One leg per via point. Every push segment is re-aimed at the leg's via point from the LIVE box, at most
     ``seg_len`` and never past the via point (no overshoot); a via point counts as reached within ``via_tol`` or
-    once the box passed it. Before each segment the hand is put behind the box for the new heading:
+    once the box passed it. Toward the goal a push is at least ``min_push`` long: a shorter one is lost in the hand's
+    tracking (production 2026-10-28: 37 of 97 T3 pushes ran out of segments 5-12 mm short of the goal, each 6-11 mm
+    push leaving the box where it was), so the goal may be passed by up to ``min_push`` (within ``goal_done_tol``,
+    which counts as reached). Before each segment the hand is put behind the box for the new heading:
 
       d     = unit(via - box centre)                    (re-aimed every segment)
       touch = centre - d * (OBB depth along d + contact)  (the finger front face on the box face)
-      push  = touch + d * min(seg_len, distance to the via point)
+      push  = touch + d * min(seg_len, distance to the via point)       (toward the goal: at least min_push)
 
     - a corner (the heading turns more than ``lift_turn_deg``): back off ``backoff`` along the old heading, lift the
       fingertips ``corner_lift`` above the box top, move across to ``descend_gap`` behind the new face and come down
@@ -928,6 +931,10 @@ def push_via(task, arm_tag, obj, via_xy, guard=None, replan=None, on_fail=None, 
             state["start"] = c.copy()
             state["dist"], state["grew"] = None, 0
         return via[state["leg"]], state["leg"] == len(via) - 1
+
+    def _move(dist, last):
+        """The push length: at most seg_len, the distance to the via point, at least min_push toward the goal."""
+        return min(float(seg_len), max(dist, float(min_push)) if last else dist)
 
     def _off_lane(c, tgt):
         line = tgt - state["start"]
@@ -1093,7 +1100,7 @@ def push_via(task, arm_tag, obj, via_xy, guard=None, replan=None, on_fail=None, 
             back = ee[:2] - d_old * float(realign_backoff)
             poses = [_pose(back, ee[2], ee[3:]), _pose(touch - d * float(approach_gap), z_push, quat)]
             entry["kind"] = "realign"
-        move = min(float(seg_len), dist)
+        move = _move(dist, last)
         ok, why = _guard([ee.tolist()] + poses + [_pose(touch + d * move, z_push, quat)], c, c + d * move, yaw)
         if not ok:
             entry["guard"] = why
@@ -1130,7 +1137,7 @@ def push_via(task, arm_tag, obj, via_xy, guard=None, replan=None, on_fail=None, 
             _fail("wrist_limit")
             return arm_tag, []
         quat = _yaw_quat(psi)
-        move = min(float(seg_len), dist)
+        move = _move(dist, state["leg"] == len(state["via"]) - 1)
         target = _pose(c - d * (_depth(rot, half, d) + contact) + d * move, _z_push(float(p[2])), quat)
         ok, why = _guard([ee.tolist(), target], c, c + d * move, yaw)
         if not ok:
