@@ -1,0 +1,19 @@
+{
+  "full_description": "a mug full of beads and three bowls (white, blue and green) stand on the table; one arm picks the mug up by its handle and pours the beads into the bowl of the named colour",
+  "schema": "{A} notifies the bowl to pour into (the target), with its colour, {B} notifies the mug holding the beads",
+  "preference": "num of words should not exceed 20",
+  "seen": [
+    "Pour the beads from {B} into {A}.",
+    "Pick up {B} and pour the beads into {A}.",
+    "Empty the beads in {B} into {A}.",
+    "Grab {B} by its handle and pour the beads into {A}.",
+    "Tip {B} to pour its beads into {A}.",
+    "Pour all the beads from {B} into {A}.",
+    "Hold {B} over {A} and pour the beads in."
+  ],
+  "unseen": [
+    "Use {B} to pour the beads into {A}.",
+    "Lift {B} and empty its beads into {A}.",
+    "Tilt {B} so the beads fall into {A}."
+  ]
+}

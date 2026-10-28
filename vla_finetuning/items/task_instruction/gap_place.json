@@ -1,0 +1,19 @@
+{
+  "full_description": "a wooden block stands on the table next to two coloured blocks with a narrow gap between them; one arm picks the wooden block up from the top, lowers it beside the gap and slides it into the gap",
+  "schema": "{A} notifies the wooden block to place, {B} and {C} notify the two blocks on either side of the gap, with their colours",
+  "preference": "num of words should not exceed 20",
+  "seen": [
+    "Put {A} into the gap between {B} and {C}.",
+    "Slide {A} into the slot between {B} and {C}.",
+    "Pick up {A} and place it between {B} and {C}.",
+    "Insert {A} into the narrow gap between {B} and {C}.",
+    "Fit {A} into the space between {B} and {C}.",
+    "Place {A} in the gap that lies between {B} and {C}.",
+    "Set {A} down in the slot between {B} and {C}."
+  ],
+  "unseen": [
+    "Move {A} into the gap between {B} and {C}.",
+    "Place {A} between {B} and {C}.",
+    "Push {A} into the opening between {B} and {C}."
+  ]
+}
