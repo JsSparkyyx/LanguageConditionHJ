@@ -68,6 +68,10 @@ class RiskTickController(TickChunkedController):
         self.n_plan_failures: int = 0
         # safe nominal mode (obstacle-aware): cuRobo against its world only, no mplib fallback (it ignores the world)
         self.world_aware_only: bool = False
+        # T1 safe mode only (set by the runner's obstacle-aware setup, safe_plan hooks installed): the plan kept here
+        # is booked in task.episode_info (safe_plan.record_plan) and a failed one labels the episode (safe_fail, when
+        # no reason is set yet). Other world_aware_only users (T3's route mode) label their own failures
+        self.safe_fail_on_plan_failure: bool = False
         # realized-vs-commanded tracking (see module docstring)
         self._user_tick_hook = None
         self._tracking_enabled = False
@@ -78,10 +82,28 @@ class RiskTickController(TickChunkedController):
     def plan(self, arm: str, target_pose, **kw):
         self._sync_time_scale_from_skill()
         result = super().plan(arm, target_pose, **kw)
+        info, kind = None, None
+        if self.safe_fail_on_plan_failure:
+            info = getattr(getattr(self.env, "task", None), "episode_info", None)
+            if isinstance(info, dict):
+                from . import safe_plan
+
+                kind = safe_plan.record_plan(info, result)   # the plan the task runs: its level, or why it failed
+            else:
+                info = None
         if not result or result.get("status") != "Success":
             self.n_plan_failures += 1
+            if info is not None and not info.get("safe_fail"):
+                # T1 safe mode: no fallback planner, this failure ends the episode; its reason is the kind of the
+                # plan the safe_plan ladder could not find (safe_plan.install_plan_hooks)
+                info["safe_fail"] = kind or "plan_fail"
             return result
-        result = self._unwrap_revolutions(arm, result)
+        unwrapped = self._unwrap_revolutions(arm, result)
+        if info is not None and unwrapped is not result:
+            # T1 safe mode: the shortened joint path was not collision-checked by cuRobo; counted for the demo
+            # collector's diagnostics (task.episode_info -> meta.diag.task), the keep rule checks the real contacts
+            info["safe_unwraps"] = int(info.get("safe_unwraps", 0)) + 1
+        result = unwrapped
         pos = np.asarray(result.get("position"), dtype=np.float64)
         vel_raw = result.get("velocity")
         vel = np.zeros_like(pos) if vel_raw is None else np.asarray(vel_raw, dtype=np.float64)
@@ -154,13 +176,14 @@ class RiskTickController(TickChunkedController):
             ok = bool(result) and result.get("status") == "Success"
             print(f"[risk_tick] plan #{self._n_plan} {arm} world-aware curobo={'ok' if ok else (result or {}).get('status')}")
             # an IK branch flip (see _avoid_branch_flip) is fixed by re-planning with the same world-aware cuRobo
-            # only: the screw path there would ignore the protected items
-            best, best_travel = result, (_max_joint_travel(result) if ok else 0.0)
-            for _ in range(BRANCH_FLIP_REPLANS if best_travel > BRANCH_FLIP_TRAVEL else 0):
+            # only: the screw path there would ignore the protected items. The kept plan: the lowest safe_plan level
+            # (the largest margin; "_safe_level", 0 without the T1 hooks), then the least joint travel
+            best = result
+            for _ in range(BRANCH_FLIP_REPLANS if ok and _max_joint_travel(result) > BRANCH_FLIP_TRAVEL else 0):
                 again = nominal(target_pose, **plan_kw)
-                if again and again.get("status") == "Success" and _max_joint_travel(again) < best_travel:
-                    best, best_travel = again, _max_joint_travel(again)
-                if best_travel <= BRANCH_FLIP_TRAVEL:
+                if again and again.get("status") == "Success" and _replan_key(again) < _replan_key(best):
+                    best = again
+                if _max_joint_travel(best) <= BRANCH_FLIP_TRAVEL:
                     break
             return best
         if not getattr(task, "plan_local", False):
@@ -552,6 +575,12 @@ def _max_joint_travel(result) -> float:
     if pos.ndim != 2 or pos.shape[0] < 2:
         return 0.0
     return float(np.max(np.abs(pos - pos[0])))
+
+
+def _replan_key(result) -> tuple[int, float]:
+    """World-aware branch-flip re-plans, the smaller key is kept: the safe_plan ladder level the plan needed (T1's
+    "_safe_level" tag; 0 untagged, so plain cuRobo plans compare by travel alone), then the joint travel."""
+    return int(result.get("_safe_level") or 0), _max_joint_travel(result)
 
 
 def _min_jerk_resample(result) -> dict:

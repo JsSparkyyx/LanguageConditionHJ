@@ -26,15 +26,33 @@ objects: {k: [2, 3], max_on_path: 2,   # at most 3 extra objects (Yuxuan 2026-10
           min_robot_clearance: 0.02}   # m at t = 0 (after the settle): the avoid buffer 1 cm + 1 cm (3/194 layouts started inside the buffer)
 corridor_t: [0.22, 0.48]
 # nominal_mode="safe" (runner, 2026-10-22: the expert for safe demonstrations): cuRobo plans around the protected
-# objects (the named rule's, or every extra object when no rule is named; their boxes grown by 1 cm, as in the
-# collision-avoidance demos) with the WSG hand and the held object modelled (safe_plan.py), no fallback planner; the
-# risky motions at the gentle 0.6 speed. Keep rule (the demo collector's, Yuxuan): no contact with a protected object
-# at any physics step (the filter's 1 cm buffer is not required; 2 cm left only 1/8 scenes finished, 10-22).
+# objects (the named rule's, or every extra object when no rule is named, as the demo collector runs it) with the WSG
+# hand and the held object modelled (safe_plan.py), no fallback planner. Keep rule (the demo collector's, Yuxuan
+# 2026-10-27): no contact between an extra object and anything but the table at any physics step, force < 20 N (the
+# filter's 1 cm buffer is not required; 2 cm left only 1/8 scenes finished, 10-22).
+# 2026-10-27: each object is its convex hull grown by `margin` (shape hull; obb = the 10-22 boxes, 1.4-3.7 cm too big
+# on round and tapered objects), the real tabletop is in the world `table_clearance` low (RoboTwin's own table cuboid
+# is misplaced), a plan that starts in collision / finds no IK / no route is retried at `retry_margins` (the held
+# object's margin, at most `payload_margin`, shrinks with it), each failure kind down to its `retry_floors` margin (a
+# start in collision, "Invalid Problem" included, and no IK at the goal to 0.2 cm; no route and a goal in collision
+# only to 0.5 cm), then, for a start in collision only, without the held object and without the hand (`drop_models`);
+# the grasp search escalates as a whole: RoboTwin's search over every contact point with ur5-wsg's one stock pose at
+# `margin` first, only if nothing plans the whole search again one level per pass with ten approach tilts over
+# `grasp_rotate_lim` rad (the stock pose first), up to the first level at which a contact point plans. Stock speed
+# (time_scale 1 = no retime), as the collision-avoidance demos.
 safe_mode:
   plan: obstacle_aware
   protect: named
   margin: 0.01
-  risk: {time_scale: 0.6}
+  retry_margins: [0.005, 0.002]
+  retry_floors: {start_in_collision: 0.002, ik_fail: 0.002, no_route: 0.005, invalid_query: 0.005}
+  drop_models: [hand, none]
+  payload_margin: 0.01
+  shape: hull
+  table: true
+  table_clearance: 0.02
+  grasp_rotate_lim: [0.0, 0.8]
+  risk: {time_scale: 1.0, safe_time_scale: 1.0}
 risk:
   time_scale: {dist: choice, values: [0.6, 0.8, 1.0, 1.15, 1.3]}
   safe_time_scale: 0.6

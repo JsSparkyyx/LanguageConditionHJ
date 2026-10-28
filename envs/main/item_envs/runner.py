@@ -139,6 +139,7 @@ class ItemEpisodeRunner:
         self.protect = None if protect is None else [str(i) for i in protect]   # safe mode: item ids to plan around
         self.safe_plan_info: dict | None = None
         self._safe_uninstall = None
+        self._safe_world = None   # T1 safe mode: safe_plan.ProtectedWorld (cleared in close())
         if render not in ("full", "none"):
             raise ValueError(f"render must be 'full' or 'none', got {render!r}")
         self.task_name = task
@@ -304,23 +305,34 @@ class ItemEpisodeRunner:
         self._item_psids = {int(entity_of(s).per_scene_id): s.item_id for s in self.items}
 
         # safe nominal mode, obstacle-aware planning (T1, 2026-10-22): the protected items are the cuRobo world and
-        # the hand + held object are modelled before every plan; hooks first, so the controller wraps them
+        # the hand + held object are modelled before every plan; hooks first, so the controller wraps them.
+        # 2026-10-27: the items as grown hulls plus the real table, re-written before every plan, the margin ladder
+        # and the wide grasp search (safe_plan.py); diagnostics in task.episode_info (-> meta.diag.task)
         if world_aware:
             protected = self._protected_items(safe)
+            if not isinstance(getattr(task, "episode_info", None), dict):
+                task.episode_info = {}
+            self._safe_world = safe_plan.ProtectedWorld(env.robot, protected, task=task, **safe_plan.world_options(safe))
+            self._safe_world.push()
             self.safe_plan_info = {
                 "protected": [s.item_id for s in protected],
-                "cuboids": safe_plan.push_protected_world(env.robot, protected, float(safe.get("margin", 0.02))),
+                "obstacles": self._safe_world.names("left"),
+                "world": self._safe_world.stats,
             }
             safe_plan.PlanStatusLog.install(env.robot)
             safe_plan.PlanStatusLog.sink = []
             self.safe_plan_info["plan_status"] = safe_plan.PlanStatusLog.sink   # the failures, for meta
-            self._safe_uninstall = safe_plan.install_plan_hooks(env, status_sink=safe_plan.PlanStatusLog.sink)
+            self._safe_uninstall = safe_plan.install_plan_hooks(
+                env, status_sink=safe_plan.PlanStatusLog.sink, world=self._safe_world, info=task.episode_info,
+                **safe_plan.hook_options(safe))
 
         if build_controller:
             self.ctrl = RiskTickController(
                 env, risky_skill_labels=tuple(self.task_cfg.get("risky_skill_labels", ()) or ())
             )
             self.ctrl.world_aware_only = world_aware   # no mplib screw / world-Z fallback: they ignore the world
+            # T1 obstacle-aware only: the controller books its plans and labels a plan failure (safe_plan.record_plan)
+            self.ctrl.safe_fail_on_plan_failure = world_aware
             self.ctrl.attach()
         # time-scale convention (see robotwin_tasks/_item_utils.py): the runner
         # installs the scales; risky(task) / the T1 skill path switch between them
@@ -386,6 +398,12 @@ class ItemEpisodeRunner:
             except Exception as exc:  # noqa: BLE001
                 print(f"[runner] safe-plan hooks: {exc}")
             self._safe_uninstall = None
+        if self._safe_world is not None:   # the cached MotionGens keep meshes past the episode otherwise
+            try:
+                self._safe_world.clear()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[runner] safe-plan world: {exc}")
+            self._safe_world = None
         if self.env is not None:
             try:
                 self.env.close()
@@ -516,6 +534,8 @@ class ItemEpisodeRunner:
         if self._held_error is not None:
             meta.diag["held_error"] = self._held_error
         meta.diag["primary_rule"] = self._primary_rule_id(task)
+        if self._safe_world is not None:   # T1 safe mode: a plan failure carries its reason (episode_info safe_fail)
+            safe_plan.finish_episode(task)
         info = getattr(task, "episode_info", None)
         if isinstance(info, dict):  # task-reported episode facts (T4: mode, pre-roll outcome)
             meta.diag["task"] = dict(info)
