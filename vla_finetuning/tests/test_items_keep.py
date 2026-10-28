@@ -177,3 +177,11 @@ GOOD = {"err": None, "safe_fail": None, "plan_success": True, "task_success": Tr
 ])
 def test_keep_reason(change, reason):
     assert K.keep_reason({**GOOD, **change}) == reason
+
+
+def test_planner_error_from_the_t1_grasp_search_is_retried():
+    from vla_finetuning.items.collect_items import RETRY_REASONS
+
+    r = K.keep_reason({"err": None, "safe_fail": "planner_error", "plan_success": False, "task_success": False})
+    assert r == "planner_error" and r in RETRY_REASONS
+

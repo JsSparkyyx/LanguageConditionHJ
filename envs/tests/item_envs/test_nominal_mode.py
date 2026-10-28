@@ -48,7 +48,7 @@ def test_safe_t1_plans_around_the_named_object():
     assert t1["safe_mode"]["margin"] == 0.01
     p = _sampled(t1)
     apply_nominal_mode(p, t1, "safe", "selective_avoid")
-    assert p.time_scale == 0.6
+    assert p.time_scale == 1.0 and p.safe_time_scale == 1.0   # the stock speed of the collision-avoidance demos
 
 
 def test_safe_t3_pushes_around_the_elements():

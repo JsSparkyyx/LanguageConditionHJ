@@ -138,6 +138,8 @@ def keep_reason(facts: dict) -> str:
     err = facts.get("err")
     if err:
         return error_reason(err)
+    if facts.get("safe_fail") == "planner_error":
+        return "planner_error"   # T1: cuRobo raised during the grasp search, the planner is broken, not the scene
     if facts.get("safe_fail"):
         return f"safe_fail:{facts['safe_fail']}"
     if not facts.get("plan_success", True):
