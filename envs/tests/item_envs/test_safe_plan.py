@@ -453,6 +453,56 @@ def test_table_free_retry_only_for_a_straight_descent(constrained, enabled, ok):
         assert False not in tables and res["_safe_fail"] == "ik_fail"
 
 
+class _StatsWorld(_TableWorld):
+    stats = {"table": {"top_z": 0.72, "clearance": 0.02}}
+
+
+DOWN = [0.707, -0.0027, 0.7072, -0.0027]   # the stock top-down grasp quaternion (approach axis -z)
+
+
+def test_raised_goal_puts_the_fingertips_above_the_real_table():
+    up = safe_plan.raised_goal([-0.36, -0.13, 0.8734, *DOWN], 0.74, 0.164, 0.005)
+    assert up[:2] == [-0.36, -0.13] and up[3:] == DOWN
+    assert abs(up[2] - 0.164 * 1.0 - 0.745) < 1e-3          # fingertips 5 mm above the 0.74 tabletop
+    assert safe_plan.raised_goal([0, 0, 0.95, *DOWN], 0.74, 0.164) is None              # already clear
+    assert safe_plan.raised_goal([0, 0, 0.80, 1, 0, 0, 0], 0.74, 0.164) is None         # approach along +x
+
+
+@pytest.mark.parametrize("held, raised_ok, want", [("", True, "raised"), ("", False, "no_table"),
+                                                   ("container", True, "no_table")])
+def test_grasp_descent_is_raised_before_the_table_is_dropped(held, raised_ok, want):
+    """2026-10-29: a grasp descent with no IK first goes to the goal raised to 5 mm above the real tabletop (the
+    whole world kept); a place descent (something held), or a raised goal that does not plan either, goes on to the
+    table-free try."""
+    env, sink = _env()
+    ik = "MotionGenStatus.IK_FAIL"
+    if want == "raised":
+        env.robot.single = [ik, ik, ik, None]
+    elif held:
+        env.robot.single = [ik, ik, ik, None]                      # no raised tries: straight to no_table
+    else:
+        env.robot.single = [ik, ik, ik, ik, ik, ik, None]          # 3 raised tries fail, then no_table
+    targets = []
+    orig = env.robot._single
+    env.robot._single = lambda arm, target: (targets.append(list(target)), orig(arm, target))[1]
+    calls, sync = _sync_log()
+
+    def sync_h(e, arm, pm, level):
+        out = sync(e, arm, pm, level)
+        out["held"] = held if level == "full" else ""
+        return out
+
+    world = _StatsWorld()
+    safe_plan.install_plan_hooks(env, status_sink=sink, world=world, margins=safe_plan.MARGINS, sync=sync_h,
+                                 table_free_descents=True, descent_tip_len=0.164)
+    res = env.robot.left_plan_path([-0.36, -0.13, 0.8734, *DOWN], constraint_pose=[1, 1, 1, 0, 0, 0])
+    assert res["status"] == "Success" and res["_safe_level"] == want
+    if want == "raised":
+        assert abs(targets[-1][2] - 0.909) < 1e-3 and [t for _, _, t in world.pushes][-1] is True
+    else:
+        assert abs(targets[-1][2] - 0.8734) < 1e-6 and world.pushes[-1][2] is False
+
+
 def test_no_unsafe_fallback_the_plan_fails_with_its_reason():
     env, sink = _env()
     env.robot.single = ["MotionGenStatus.IK_FAIL"] * 3
@@ -779,7 +829,8 @@ def test_t1_safe_yaml_knobs():
     assert safe_plan.world_options(safe) == {"margin": 0.01, "shape": "hull", "table": True, "table_clearance": 0.02}
     assert safe_plan.hook_options(safe) == {"payload_margin": 0.01, "margins": (0.01, 0.005, 0.002),
                                             "drop_models": ("hand", "none"), "wide_grasp": [0.0, 0.8],
-                                            "floors": safe_plan.RETRY_FLOORS, "table_free_descents": True}
+                                            "floors": safe_plan.RETRY_FLOORS, "table_free_descents": True,
+                                            "descent_tip_len": 0.164, "descent_tip_clear": 0.005}
     assert safe_plan.retry_floors({}) == safe_plan.RETRY_FLOORS and safe_plan.retry_floors({"retry_floors": {}}) == {}
     for seed in range(6):   # the risk_collect cells pin 0.5-1.3 and 0.6: safe runs at stock speed whatever was drawn
         p, ref = sample_risk(cfg, np.random.RandomState(seed)), sample_risk(cfg, np.random.RandomState(seed))

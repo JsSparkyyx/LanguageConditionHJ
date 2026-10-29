@@ -56,6 +56,11 @@ safe_mode:
   # (physics stops them on it), below the planner's table at every margin. Such a descent is tried once more
   # without the table (the items stay in the world; the keep rule never counted table contact)
   table_free_descents: true
+  # 2026-10-29 production: burger_fries kept 1 of 21; pressed on the table, the closing fingers tipped the fries
+  # 30-68 deg in 7 of 9 lifts. A grasp descent (nothing held) with no IK first goes to its goal raised until the
+  # fingertips (descent_tip_len along the approach axis) stop descent_tip_clear above the real tabletop
+  descent_tip_len: 0.164
+  descent_tip_clear: 0.005
   grasp_rotate_lim: [0.0, 0.8]
   risk: {time_scale: 1.0, safe_time_scale: 1.0}
 risk:

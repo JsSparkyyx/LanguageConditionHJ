@@ -418,7 +418,9 @@ def hook_options(safe: dict) -> dict:
     return {"payload_margin": float(safe.get("payload_margin", 0.01)), "margins": margin_ladder(safe),
             "drop_models": tuple(str(d) for d in (drop or ())),
             "wide_grasp": None if not lim else [float(lim[0]), float(lim[1])], "floors": retry_floors(safe),
-            "table_free_descents": bool(safe.get("table_free_descents", False))}
+            "table_free_descents": bool(safe.get("table_free_descents", False)),
+            "descent_tip_len": None if safe.get("descent_tip_len") is None else float(safe["descent_tip_len"]),
+            "descent_tip_clear": float(safe.get("descent_tip_clear", 0.005))}
 
 
 class PlanStatusLog:
@@ -677,6 +679,24 @@ def _pose_list(pose) -> list | None:
     return [round(float(x), 4) for x in arr[:7]]
 
 
+def raised_goal(goal, table_top: float, tip_len: float, clear: float = 0.005) -> list | None:
+    """``goal`` (a gripper pose [x, y, z, qw, qx, qy, qz]) moved straight up until the fingertips, ``tip_len`` along
+    the approach axis (the gripper x axis), sit ``clear`` above ``table_top``; None when the approach does not point
+    down (its z component above -0.5) or the fingertips already clear the table. ur5-wsg: tip_len 0.164 m, the
+    distance push_via's tip_len was measured at (fingertips 8 mm above the table at gripper z = table + 0.172)."""
+    g = _pose_list(goal)
+    if g is None or len(g) < 7:
+        return None
+    w, x, y, z = (float(v) for v in g[3:7])
+    a_z = 2.0 * (x * z - y * w)                    # z component of the rotation's first column (the approach axis)
+    if a_z > -0.5:
+        return None
+    dz = float(table_top) + float(clear) - (float(g[2]) + float(tip_len) * a_z)
+    if dz <= 1e-4:
+        return None
+    return [g[0], g[1], float(g[2]) + dz, *g[3:7]]
+
+
 def _note(info: dict, entry: dict) -> None:
     """Append to the plan log, a ring of the last LOG_MAX entries (a list, JSON-safe); the older ones are counted."""
     log = info.setdefault("safe_plan_log", [])
@@ -728,7 +748,8 @@ def _pose_key(pose):
 
 def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.01, status_sink=None, world=None,
                        margins=None, drop_models=DROP_MODELS, info: dict | None = None, wide_grasp=None,
-                       sync=None, floors=None, table_free_descents: bool = False):
+                       sync=None, floors=None, table_free_descents: bool = False, descent_tip_len: float | None = None,
+                       descent_tip_clear: float = 0.005):
     """Run sync_arm before every RoboTwin plan of either arm (plan_path and the batched grasp search), down the retry
     ladder ``plan_levels(margins, drop_models)``: before each try ``world`` (a ProtectedWorld) is re-written at the
     try's margin from the live poses and the hand + held object synced (the held object grown by the same margin, at
@@ -844,7 +865,44 @@ def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.0
                 # RoboTwin's straight grasp / place descent onto a flat object asks for the fingertips below the
                 # tabletop (2026-10-28 pilot: the stock grasps of 006_hamburg and 075_bread put them 2.5-3 cm into
                 # it, 1 cm below the planner's table; physics stops them on the table), which no margin of the
-                # table-aware world allows: once more without the table, the items kept at the ladder's margins
+                # table-aware world allows. A grasp descent (nothing held) first goes to the goal raised until the
+                # fingertips stop descent_tip_clear above the real tabletop, the whole world kept (10-29: pressed on
+                # the table, the closing fingers tipped 005_french-fries 30-68 deg in 7 of 9 lifts); then, or for a
+                # place descent, once more without the table, the items kept at the ladder's margins
+                tb = (getattr(world, "stats", None) or {}).get("table") or {}
+                up = None
+                if descent_tip_len and not (entry or {}).get("held") and "top_z" in tb:
+                    up = raised_goal(goals[0], float(tb["top_z"]) + float(tb.get("clearance", 0.0)),
+                                     float(descent_tip_len), float(descent_tip_clear))
+                if up is not None:
+                    ua, uk = ((up, *a[1:]), k) if a else ((), {**k, "target_pose": up})
+                    for m, model in levels_all:
+                        if model != "full" or float(m) < float(floors.get("ik_fail", 0.0)) - 1e-9:
+                            continue
+                        world.push(_arm, m)
+                        s = sync(env, _arm, min(float(payload_margin), m), "full")
+                        n0 = len(status_sink) if status_sink is not None else 0
+                        entry = {**base, "goal": _pose_list(up), "level": "raised", "margin": m, "model": "full",
+                                 "raise_m": round(float(up[2]) - float(_pose_list(goals[0])[2]), 4)}
+                        was_on = bool(getattr(_self_collision_cost(mg), "enabled", False))
+                        try:
+                            res = _fn(*ua, **uk)
+                        except Exception as exc:
+                            _note(info, {**entry, "ok": False, "kind": "planner_error",
+                                         "exc": f"{type(exc).__name__}: {str(exc)[:160]}"})
+                            raise
+                        finally:
+                            _restore_self_collision(mg, was_on)
+                        if not _failed(res):
+                            _note(info, {**entry, "ok": True})
+                            if isinstance(res, dict):
+                                res["_safe_level"] = "raised"
+                            state["kind"], state["entry"] = None, None
+                            return res
+                        statuses = list(status_sink[n0:]) if status_sink is not None else []
+                        entry.update({"ok": False, "kind": failure_kind(statuses),
+                                      "status": statuses[-1] if statuses else None, "held": s.get("held", "")})
+                        _note(info, entry)
                 for m, model in levels_all:
                     if model != "full" or float(m) < float(floors.get("ik_fail", 0.0)) - 1e-9:
                         continue
