@@ -118,3 +118,15 @@ of the same kind, reporting the collision rate and the success rate.
   - collection on A40;
   - fine-tuning on 4 GPUs for a few hours per model;
   - testing on A40.
+
+## Item scenes (2026-10-27/28)
+
+- Demonstrations: the item-scene safe expert (`items/collect_items.py`) on T1 / T3 / T5 / T6 / T7, 100 kept each
+  (T1 20 per host), every item protected, plain RoboTwin-format instructions (`data/demos_items_safe`).
+- Fine-tuning (decided 2026-10-28, Yuxuan left it to us, "I just want to ensure the performance is better"): ONE
+  model for all five tasks. HoloBrain's config is multi-task (the instruction is an input) and its starting point
+  `post_training_robotwin` is itself one model over all RoboTwin tasks; the five tasks share the robot, table and
+  cameras, so 500 demos teach the shared skills better than 100 per model; it matches the collision-avoidance
+  fine-tune and costs one job instead of five. Same recipe (4 A100, 15k steps, 8 per GPU).
+- Job `jobs/finetune_items.sbatch` (23310002, submitted 10-28 before the data was complete): `jobs/prep_items.sh`
+  packs `data/lmdb/items_safe` only when every task has its demos; until then the job resubmits itself after 1 h.
