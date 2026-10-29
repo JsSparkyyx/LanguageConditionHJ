@@ -127,6 +127,12 @@ of the same kind, reporting the collision rate and the success rate.
   model for all five tasks. HoloBrain's config is multi-task (the instruction is an input) and its starting point
   `post_training_robotwin` is itself one model over all RoboTwin tasks; the five tasks share the robot, table and
   cameras, so 500 demos teach the shared skills better than 100 per model; it matches the collision-avoidance
-  fine-tune and costs one job instead of five. Same recipe (4 A100, 15k steps, 8 per GPU).
-- Job `jobs/finetune_items.sbatch` (23310002, submitted 10-28 before the data was complete): `jobs/prep_items.sh`
-  packs `data/lmdb/items_safe` only when every task has its demos; until then the job resubmits itself after 1 h.
+  fine-tune and costs one job instead of five.
+- ONE GPU per fine-tune job (Yuxuan 2026-10-28). The recipe's batch of 32 stays: 8 per micro-batch x 4 micro-batches
+  per optimizer step (`GRAD_ACCUM=4` in `jobs/train.sh`: accelerate divides the loss by it; HoloBrain's trainer counts
+  max_step, saves and the LR schedule in optimizer steps; checked by two reviewers, 10-28). 15k optimizer steps
+  (~15-20 h on one A40), so the run resumes across 48 h jobs (`jobs/ft_chain_step.sh`: the newest complete checkpoint,
+  a save every 500 steps; an early kill or a cut without a new checkpoint fails instead of resubmitting).
+- Job `jobs/finetune_items.sbatch` (23312401, one A40, submitted 10-28 before the data was complete; the 4-A100 job
+  23310002 was cancelled): `jobs/prep_items.sh` packs `data/lmdb/items_safe` only when every task has its demos;
+  until then the job resubmits itself after 1 h.

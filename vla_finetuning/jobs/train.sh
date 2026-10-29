@@ -17,6 +17,10 @@ N=${5:-1}
 RESUME=${6:-}
 RL=${ROBO_ORCHARD_LAB:-/work/nvme/bifq/project/RoboOrchardLab}
 export PYTHONPATH="$PWD/pyshim:$RL:${PYTHONPATH:-}"   # pyshim: accelerate 1.14 DummyOptim re-export
+# GRAD_ACCUM (default 1): micro-batches per optimizer step (accelerate reads the variable in Accelerator(); its backward
+# divides the loss by it; HoloBrain's trainer counts max_step / save_step_freq and steps the LR schedule in committed
+# optimizer steps), so one GPU with GRAD_ACCUM=4 trains the 4-GPU recipe's batch of 32 (Yuxuan 2026-10-28: one GPU)
+export ACCELERATE_GRADIENT_ACCUMULATION_STEPS=${GRAD_ACCUM:-1}
 KW="{\"max_step\": $MAX, \"save_step_freq\": $SAVE"
 WS="ws/$RUN"
 if [ -n "$RESUME" ]; then
@@ -30,10 +34,10 @@ KW="$KW}"
 mkdir -p "$WS"
 cp -r configs "$WS/vf_configs"                     # train.py copies HoloBrain's upstream configs, not ours
 cat > "$WS/vf_run.json" <<EOF
-{"run": "$RUN", "lmdb": "$VF_LMDB", "kwargs": $KW, "n_gpu": $N, "resume": "$RESUME",
+{"run": "$RUN", "lmdb": "$VF_LMDB", "kwargs": $KW, "n_gpu": $N, "grad_accum": ${GRAD_ACCUM:-1}, "resume": "$RESUME",
  "git": "$(git -C .. rev-parse --short HEAD 2>/dev/null || echo ?)", "host": "$(hostname)", "start": "$(date '+%F %T')"}
 EOF
-echo "[train] $WS lmdb $VF_LMDB kwargs $KW gpus $N host $(hostname) $(date)"
+echo "[train] $WS lmdb $VF_LMDB kwargs $KW gpus $N grad_accum ${GRAD_ACCUM:-1} host $(hostname) $(date)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 if [ "$N" -gt 1 ]; then
   exec accelerate launch --multi_gpu --num_processes "$N" --num_machines 1 --mixed_precision no \

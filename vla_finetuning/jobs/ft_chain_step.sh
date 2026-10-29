@@ -6,7 +6,7 @@
 # (the chain resubmits); the step that reaches max_step writes ws/<run>.DONE (the final checkpoint's path) and exits 0.
 #   bash vla_finetuning/jobs/ft_chain_step.sh <run> <lmdb> <max_step> <save_every> <n_gpu> [prep script]
 # A checkpoint is complete when model, optimizer, scheduler and trainer-progress files are all there and it is older
-# than 2 min (a save cut by the deadline is skipped). The prep script (prep_items.sh) packs the data first; its 75
+# than 2 min (a save cut part-way misses its last file, model/model.safetensors). The prep script (prep_items.sh) packs the data first; its 75
 # (demos still short) passes through, so the chain tries again later.
 set -uo pipefail
 RUN=$1; LMDB=$2; MAX=$3; SAVE=$4; N=$5; PREP=${6:-}
@@ -39,12 +39,25 @@ fi
 left=$(( ${STAGE_DEADLINE:?} - $(date +%s) - 120 ))
 [ $left -gt 600 ] || { echo "[ft_chain] only ${left}s left: next job"; exit 75; }
 echo "[ft_chain] $RUN from ${CK:-scratch}, ${left}s of training"
+t0=$(date +%s)
 timeout --signal=INT --kill-after=60 $left bash vla_finetuning/jobs/train.sh "$RUN" "$LMDB" "$MAX" "$SAVE" "$N" $CK
 rc=$?
-echo "[ft_chain] train.sh exit $rc $(date)"
+el=$(( $(date +%s) - t0 ))
+echo "[ft_chain] train.sh exit $rc after ${el}s $(date)"
 if [ $rc -eq 0 ]; then
   newest 0 > "$WS/$RUN.DONE"
   echo "[ft_chain] $RUN reached max_step: $(cat "$WS/$RUN.DONE")"; exit 0
 fi
-{ [ $rc -eq 124 ] || [ $rc -eq 130 ] || [ $rc -eq 137 ]; } && exit 75
+# a deadline cut: 124 (timeout's INT worked), or 137 when the window really ran out (its KILL 60 s later). An earlier
+# 137 is an outside SIGKILL (e.g. the cgroup OOM killer) and fails the job instead of resubmitting it (review 10-28);
+# a cut that left no new complete checkpoint stops too, so a run that cannot progress never loops
+if [ $rc -eq 124 ] || { [ $rc -eq 137 ] && [ $el -ge $(( left - 5 )) ]; }; then
+  CK2=$(newest 0)
+  if [ "$CK2" = "$CK" ]; then
+    echo "[ft_chain] cut after ${el}s with no new complete checkpoint (still ${CK:-none}): stopping, not resubmitting"
+    exit 1
+  fi
+  exit 75
+fi
+echo "[ft_chain] train.sh died early (rc $rc after ${el}s of ${left}s): not a deadline cut"
 exit $rc
