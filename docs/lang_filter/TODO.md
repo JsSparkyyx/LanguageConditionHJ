@@ -95,13 +95,15 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   ticks, every episode timing out); data/lang_1022 + data/lang_qwen_1022 and the core.* dumps deleted.
 - [x] 10-26 Re-collection done: chain stages d1023_vanilla -> d1023_qwen (10-25 20:08 -> 10-26 00:13),
   data/lang_1023/READY, data/lang_qwen_1023/READY; checked (150 warmup episodes, every 10-23 change in the data).
-- [ ] The three runs were submitted EARLY (Yuxuan 10-25: the batch queue waits days), so they queue while the data
+- [x] (running since 10-27 ~16:40; 10-29 11:00: vanilla and T1-only round 34 / 100, Qwen round 76 / 100; their
+  48 h jobs end 10-29 ~16:40-17:00 and resubmit themselves) The three runs were submitted EARLY (Yuxuan 10-25: the batch queue waits days), so they queue while the data
   is collected: rounds_ur5_g095_1023 (job 23205090), rounds_t1_ur5_g095_1023 (23205091), rounds_ur5_qwen_g095_1023
   (23205092), via runs/lang/rounds_1023/presubmit.sh + wait_then_rounds.sbatch: a job that starts before its READY
   file waits up to 6 h, else resubmits itself. The READY watcher (submit_when_ready.sh) was stopped (no double
   submission). Scheduler estimate on 10-25: start ~10-31.
 - [ ] 10-26 Yuxuan: a fourth run, collision avoidance (T1) only on the Qwen front end, like the GD T1 run:
   rounds_t1_ur5_qwen_g095_1023 (job 23229109, `runs/lang/rounds_1023/launch.sh t1qwen`, data/lang_qwen_1023).
+  Submitted, pending (estimate 10-30 13:21).
 
 ## B. Evaluation of the new round trainings
 
@@ -113,8 +115,7 @@ and the old tilt limits. The watcher process had died (no run was submitted).
 
 ## C. VLA fine-tuned on safe demonstrations (collision avoidance)
 
-- [ ] Fine-tune job 23051382 (vf-ft-safe, gpuA100x4, pending) -> export (`vla_finetuning/jobs/export.sh`) ->
-  `vla_finetuning/evaluate.py --agent vla` on the 250 test scenes -> report collision rate and success rate.
+- [x] Cancelled 10-29 (Yuxuan: "no need"): job 23051382 never ran; the 500 demos stay in vla_finetuning/data/demos_safe.
 
 ## D. VLMs for later use (`VLM/`)
 
@@ -149,15 +150,24 @@ and the old tilt limits. The watcher process had died (no run was submitted).
     0/8 but finished 1/8 (4 plan failures, 3 "no grasp pose"). Fixes: cuRobo status log for the start-in-collision
     fallback, margin 2 -> 1 cm. Rerun (check_t1_v2): safe finished 4/8 with 0/8 touches (careless finished without
     touching it 1/8); the failures are "no grasp pose" (2, one also fails careless) and IK_FAIL at the target (2);
-  - [ ] T3 safe: route around the in-the-way element (waypoints + a pusher that follows them, lifting the hand at
+  - [x] 10-27/28 T1 safe rebuilt (hull meshes, the real table, margin ladder, wide grasp search; merged) and
+    10-28 the table-free retry of a straight grasp / place descent (burger_fries 0/12 and bread_basket 1/12 -> 1/3
+    and 2/3 in the GPU debug run);
+  - [x] 10-27/28 T3 safe (route planner _push_route.py + push_via, merged) and 10-28 min_push 1.5 cm toward the
+    goal (14 % -> 43 % kept; the box had stuck 5-12 mm short);
+  - [x] (was: T3 safe: route around the in-the-way element (waypoints + a pusher that follows them, lifting the hand at
     corners);
   - [x] (dropped 10-23: T2 left the task set) T2 safe;
   - [x] 10-23 T6 safe mode (the pour aimed at the target, low and slow; ur5 aim lead fit to the plain bowls):
     final check (base 5) 21/24 finished, 1/24 put beads in the named bowl (T6 card);
-  - [ ] the demo collector for item scenes (vla_finetuning): frames every 15 physics steps, task instructions +
-    the constraint sentence, the 80 / 20 split (in-the-way named + safe trajectory / not-in-the-way named +
-    nominal trajectory), ur5-wsg, the HDF5 writer;
-  - [ ] collect, fine-tune HoloBrain, evaluate as in C.
+  - [x] 10-27/28 the demo collector for item scenes (vla_finetuning/items, merged): Yuxuan 10-27 replaced the
+    80 / 20 split by "protect every item, plain task instruction", 100 kept per task (T1 20 per host), keep = no
+    rule broken; GPU pilot 10-28;
+  - [ ] collect (runs/vf_items/collect_items_safe_a.cmds, chain stage items1028a of runs/lang_pipeline_vf, 30-min
+    1-node jobs, 4 collectors per GPU): 10-29 11:10 217 / 500 (T5 100, T1 60, T3 39, T6 18, T7 0);
+  - [ ] fine-tune HoloBrain: ONE model for all five tasks (decided 10-28), ONE GPU (Yuxuan), job 23312401 (waits for
+    every task's demos; faster route prepared: runs/lang_pipeline_ft, 1-hour H200 jobs, start once packed);
+  - [ ] an evaluator for the item scenes (evaluate.py knows only the collision-avoidance tasks), then evaluate.
 
 ## F. VLM as the failure function (Yuxuan 2026-10-26, docs/lang_filter/VLM_FAILURE_PLAN.md)
 
@@ -176,8 +186,10 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   on the warmup (runs/lang/vlm_1026/agree_warmup_<vlm>.json), share of the simulator's harmed ticks caught / share of
   the VLM's harmed answers that are right: Qwen T6 0.43 / 0.90, T5 0.52 / 0.98, T1 0.28 / 0.12; RoboBrain T6
   0.54 / 0.77, T5 0.85 / 0.86, T1 0.15 / 0.15. Uncertain answers: Qwen T6 34 %, T1 11 %; RoboBrain T6 13 %.
-- [ ] Runs presubmitted 10-26 (wait_then_rounds.sbatch from worktree LanguageConditionHJ_rvlm at 774d5e6):
-  rounds_ur5_simh_g095_1026 (job 23230275, waits for READY), rounds_ur5_vlm_qwen25vl32b_g095_1026 (23230276) and
-  rounds_ur5_vlm_robobrain2_32b_g095_1026 (23230277), waiting for LABELS_<vlm>; 25 rounds x 16 episodes x 8192.
+- [x] 10-27 the two 32B VLM runs cancelled (Yuxuan); 10-27/28 compared 7 labelers incl. 3 small ones and 4-bit / 8-bit
+  32B (VLM_FAILURE_PLAN.md); 10-29 the saved 8-bit copies decided it: Qwen 0.851 vs RoboBrain 0.764.
+- [ ] Runs: rounds_ur5_simh_g095_1026 (job 23230275, the sim-h reference, pending, estimate 10-30 13:21) and
+  rounds_ur5_vlm_qwen25vl32b_fp8saved_g095_1028 (job 23319949, one 2-A40 job: GPU 0 trains, GPU 1 labels; pending);
+  25 rounds x 16 episodes x 8192.
 - [ ] Report: VLM vs simulator agreement on the warmup (`vlm_label agree`), then the closed-loop results.
 
