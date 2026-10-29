@@ -1,6 +1,7 @@
 #!/bin/bash
 # Training data of the item-scene fine-tune (inside the container; Yuxuan 2026-10-27/28: T1 / T3 / T5 / T6 / T7 safe
-# demos, 100 kept each, T1 20 per host; ONE model for all five tasks):
+# demos, 100 kept each, T1 20 per host; ONE model for all five tasks; 10-29: the GPU pilot's and the T1 debug run's
+# kept demos, same collector and settings, are reused as extra config directories, counted with their task / host):
 #   exit 0 when every task has its kept demos and they are packed (data/lmdb/items_safe, once: data/PREP_ITEMS_DONE);
 #   exit 75 when some task is still short (the caller waits or resubmits), nothing packed.
 set -uo pipefail
@@ -24,8 +25,14 @@ for t, n in need.items():
     k = sum(kept(c) for c in (root / t).iterdir() if c.is_dir()) if (root / t).exists() else 0
     if k < n:
         short.append(f"{t} {k}/{n}")
+def host_of(c):   # a T1 config's host (its settings.json): the host's own shard and reused pilot / debug configs
+    try:
+        return json.loads((c / "settings.json").read_text()).get("host")
+    except (OSError, ValueError):
+        return None
+t1 = [c for c in (root / "selective_avoid").iterdir() if c.is_dir()] if (root / "selective_avoid").exists() else []
 for h in hosts:
-    k = kept(root / "selective_avoid" / h)
+    k = sum(kept(c) for c in t1 if host_of(c) == h)
     if k < 20:
         short.append(f"selective_avoid/{h} {k}/20")
 print("[prep_items] short: " + ", ".join(short) if short else "[prep_items] every task has its demos")
