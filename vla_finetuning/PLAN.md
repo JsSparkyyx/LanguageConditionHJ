@@ -110,6 +110,8 @@ of the same kind, reporting the collision rate and the success rate.
   base-model or planner rows (the code for them stays: `evaluate.py --agent nominal|safe`, `make_matched.py`).
 - **Training data**: every kept safe demonstration (`data/demos_safe`, about 100 per task), packed into
   `data/lmdb/safe` (`jobs/prep_data.sh`); job `jobs/finetune.sbatch` (4 A100, 15k steps, the final checkpoint).
+  Job 23051382 (queued since 10-20, never started) cancelled 2026-10-29: Yuxuan, "no need" for this fine-tune; the
+  500 demos stay in `data/demos_safe`.
 
 ## Compute
 
