@@ -251,6 +251,15 @@ Will the task still succeed? Nominal success is 70 % (`calibration.md:31`). The 
   of the planner.
 - Big on-path objects (kettle, books) may leave no reachable way over or around.
 - Dropped layouts bias the demo set toward easy scenes. Log the yield per host and per object kind.
+- GPU pilot, 2026-10-28 (4 kept per host wanted, at most 12 seeds): container_plate 4/8, stack_bowls_two 4/7,
+  stack_blocks_two 2/12 (8 cheap rejections before the run: ambiguous instruction, no layout), bread_basket
+  1/12, burger_fries 0/12. Production of the first three: 20/20 each (31, 64, 41 tries). burger_fries and
+  bread_basket lost most seeds to `ik_fail` on the straight grasp descent, whether or not an extra object stood
+  near: RoboTwin's stock top-down grasp of the flat hamburger / bread asks for the fingertips ~3 cm into the
+  tabletop (target z 0.873-0.879, tip length 16.4 cm; physics stops them on the table), below the planner's table
+  (top 0.72) at every margin. Fix (`safe_mode.table_free_descents`, on for T1): a straight (constrained) move
+  with no IK on every rung is tried once more per margin without the table; the items stay in the world, and
+  the keep rule never counted table contact.
 
 ## 5. T2 `granular_pour`: don't spill
 
