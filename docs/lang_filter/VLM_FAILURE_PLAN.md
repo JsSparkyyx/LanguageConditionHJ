@@ -102,3 +102,30 @@ flags, the share the simulator calls harmed.
 - Qwen3-VL-8B never sees a tipped block and calls every bowl harmed; Qwen2.5-VL-7B calls nearly everything safe.
 - Not tested yet: 4-bit versions of the 32B models on one A40 (the two-A40 job plan).
 
+
+## 8-bit labelers and the one VLM run (2026-10-28)
+
+Score = (detected + (1 - false alarm)) / 2 per task, averaged over T1, T5, T6 (90 warmup episodes):
+
+| labeler | T1 | T5 | T6 | average |
+|---|---|---|---|---|
+| Qwen2.5-VL-32B, bf16 | 0.755 | 0.891 | 0.854 | 0.833 |
+| RoboBrain2.0-32B, bf16 | 0.698 | 0.889 | 0.800 | 0.796 |
+| RoboBrain2.0-32B, vLLM's own fp8 (two A100s) | 0.712 | 0.902 | 0.781 | 0.798 |
+| RoboBrain2.0-32B, 4-bit NF4 | 0.534 | 0.769 | 0.775 | 0.693 |
+| RoboBrain2.5-8B / Qwen3-VL-8B / Qwen2.5-VL-7B | | | | 0.655 / 0.574 / 0.494 |
+
+- Yuxuan's decisions (2026-10-28): one VLM run only, the 8-bit Qwen if it scores higher than the 8-bit RoboBrain,
+  else the RoboBrain (by the average score; within 0.01 is a tie and goes to RoboBrain, which answers "uncertain"
+  less often); the HoloBrain GD model, gamma 0.95, the 10-26 settings; one job with two A40s, one GPU training and
+  one labelling.
+- vLLM's own fp8 loads the 64 GB bf16 model before converting it, so it cannot load on one 48 GB A40.
+  `scripts/lang/vlm/to_fp8.py` saves the 8-bit copy once (llm-compressor's FP8_DYNAMIC format: per-channel scales,
+  the vision tower kept bf16) on `/work/hdd/bifq/VLM_fp8`; entries `qwen25vl32b_fp8saved`, `robobrain2_32b_fp8saved`.
+  Both are scored on one A40 (the demo chain's next job, `runs/lang/vlm_1026/compare/fp8saved_a40.sh`), which is also the
+  check that they fit.
+- `runs/lang/rounds_vlm8_1028/decide_and_submit.sh` (a login-node watcher) scores both when their labels are done,
+  writes `decision.json` and submits `presubmit.sh <winner>`: run `runs/lang/rounds_ur5_vlm_<winner>_g095_1028`, one
+  2-A40 job (`train_and_label.sbatch`), code = worktree `LanguageConditionHJ_rvlm8` (branch `lang-vlm8-1028`: the
+  sim-h reference run's 774d5e6 plus the labeler's 8-bit entries), so only h differs from the reference run.
+  Nothing is submitted if the winner scores below 0.75 (a broken copy).
