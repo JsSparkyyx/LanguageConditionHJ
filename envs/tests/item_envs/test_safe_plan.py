@@ -424,6 +424,35 @@ def test_ladder_drops_the_models_only_for_a_start_in_collision():
     assert [c[2] for c in calls] == ["full", "full", "full", "hand"]
 
 
+class _TableWorld(_World):
+    table = ("centre", "quat", "half")
+
+    def push(self, arm=None, margin=None, table=True):
+        self.pushes.append((arm, margin, table))
+        return True
+
+
+@pytest.mark.parametrize("constrained, enabled, ok", [(True, True, True), (False, True, False), (True, False, False)])
+def test_table_free_retry_only_for_a_straight_descent(constrained, enabled, ok):
+    """2026-10-28: RoboTwin's grasp descent onto a flat object (hamburger, bread) has no IK with the table at any
+    margin; a straight (constrained) move gets one more try per margin without the table, items kept."""
+    env, sink = _env()
+    ik = "MotionGenStatus.IK_FAIL"
+    env.robot.single = [ik, ik, ik, None] if (constrained and enabled) else [ik, ik, ik]
+    world = _TableWorld()
+    safe_plan.install_plan_hooks(env, status_sink=sink, world=world, margins=safe_plan.MARGINS, sync=_sync_log()[1],
+                                 table_free_descents=enabled)
+    res = env.robot.left_plan_path([0, 0, 0.87, 1, 0, 0, 0], constraint_pose=[1, 1, 1, 0, 0, 0] if constrained else None)
+    assert (res["status"] == "Success") is ok
+    tables = [t for _, _, t in world.pushes]
+    if ok:
+        assert res["_safe_level"] == "no_table" and tables == [True, True, True, False]
+        assert world.pushes[-1][1] == 0.01   # the items at the base margin first
+        assert env.task.episode_info["safe_plan_log"][-1]["level"] == "no_table"
+    else:
+        assert False not in tables and res["_safe_fail"] == "ik_fail"
+
+
 def test_no_unsafe_fallback_the_plan_fails_with_its_reason():
     env, sink = _env()
     env.robot.single = ["MotionGenStatus.IK_FAIL"] * 3
@@ -750,7 +779,7 @@ def test_t1_safe_yaml_knobs():
     assert safe_plan.world_options(safe) == {"margin": 0.01, "shape": "hull", "table": True, "table_clearance": 0.02}
     assert safe_plan.hook_options(safe) == {"payload_margin": 0.01, "margins": (0.01, 0.005, 0.002),
                                             "drop_models": ("hand", "none"), "wide_grasp": [0.0, 0.8],
-                                            "floors": safe_plan.RETRY_FLOORS}
+                                            "floors": safe_plan.RETRY_FLOORS, "table_free_descents": True}
     assert safe_plan.retry_floors({}) == safe_plan.RETRY_FLOORS and safe_plan.retry_floors({"retry_floors": {}}) == {}
     for seed in range(6):   # the risk_collect cells pin 0.5-1.3 and 0.6: safe runs at stock speed whatever was drawn
         p, ref = sample_risk(cfg, np.random.RandomState(seed)), sample_risk(cfg, np.random.RandomState(seed))

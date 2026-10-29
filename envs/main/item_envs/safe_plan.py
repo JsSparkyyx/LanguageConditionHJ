@@ -311,9 +311,9 @@ class ProtectedWorld:
             self._hulls[key] = out
         return self._hulls[key]
 
-    def obstacles(self, margin: float | None = None) -> list[dict]:
+    def obstacles(self, margin: float | None = None, table: bool = True) -> list[dict]:
         """World-frame obstacles at ``margin`` (the base margin by default): {"name", "kind": "mesh" | "cuboid",
-        "item_id", "p", "q", and "verts", "faces" (item frame) | "half"}."""
+        "item_id", "p", "q", and "verts", "faces" (item frame) | "half"}; ``table`` False leaves the table out."""
         from .items import entity_of
 
         m = self.margin if margin is None else float(margin)
@@ -334,7 +334,7 @@ class ProtectedWorld:
             self.stats["items"].setdefault(spec.item_id, {}).update(
                 {"shape": "hull" if mesh else "obb", "category": spec.category,
                  "n_vertices": int(len(out[-1]["verts"])) if mesh else 8})
-        if self.table is not None:
+        if self.table is not None and table:
             c, q, h = self.table
             out.append({"name": TABLE_NAME, "kind": "cuboid", "item_id": None, "p": c, "q": q, "half": h})
         return out
@@ -343,12 +343,13 @@ class ProtectedWorld:
         """The obstacle names last written to ``arm``'s MotionGens."""
         return list(self._pushed.get(arm, (None, []))[1])
 
-    def push(self, arm: str | None = None, margin: float | None = None) -> bool:
+    def push(self, arm: str | None = None, margin: float | None = None, table: bool = True) -> bool:
         """Write the world at ``margin`` (the base margin by default) from the live poses to the MotionGens of
         ``arm`` (both arms by default); an arm whose last write had the same obstacles at the same poses (0.1 mm,
-        1e-3 quaternion) is skipped. -> True if anything was written."""
+        1e-3 quaternion) is skipped. ``table`` False: without the table (install_plan_hooks' table-free descent
+        retry). -> True if anything was written."""
         m = self.margin if margin is None else float(margin)
-        obs = self.obstacles(m)
+        obs = self.obstacles(m, table=table)
         sig = (round(m, 6), tuple((o["name"], tuple(np.round(o["p"], 4)), tuple(np.round(o["q"], 3))) for o in obs))
         wrote = False
         for side in (("left", "right") if arm is None else (str(arm),)):
@@ -416,7 +417,8 @@ def hook_options(safe: dict) -> dict:
     lim = safe.get("grasp_rotate_lim")
     return {"payload_margin": float(safe.get("payload_margin", 0.01)), "margins": margin_ladder(safe),
             "drop_models": tuple(str(d) for d in (drop or ())),
-            "wide_grasp": None if not lim else [float(lim[0]), float(lim[1])], "floors": retry_floors(safe)}
+            "wide_grasp": None if not lim else [float(lim[0]), float(lim[1])], "floors": retry_floors(safe),
+            "table_free_descents": bool(safe.get("table_free_descents", False))}
 
 
 class PlanStatusLog:
@@ -726,14 +728,17 @@ def _pose_key(pose):
 
 def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.01, status_sink=None, world=None,
                        margins=None, drop_models=DROP_MODELS, info: dict | None = None, wide_grasp=None,
-                       sync=None, floors=None):
+                       sync=None, floors=None, table_free_descents: bool = False):
     """Run sync_arm before every RoboTwin plan of either arm (plan_path and the batched grasp search), down the retry
     ladder ``plan_levels(margins, drop_models)``: before each try ``world`` (a ProtectedWorld) is re-written at the
     try's margin from the live poses and the hand + held object synced (the held object grown by the same margin, at
     most ``payload_margin``); a batch's start state is checked first and a start in collision skips the planner
     (except on the last level). A failed try goes on only as ``escalate`` allows (``floors``: the smallest margin per
     failure kind, RETRY_FLOORS by default). margins None: one level at ``payload_margin`` (the 10-22 ladder, plus
-    "Invalid Problem"). Every result is tagged: "_safe_level" (the level it planned at), or "_safe_fail" (its kind) and
+    "Invalid Problem"). ``table_free_descents``: a straight-line move (a constraint pose: RoboTwin's grasp and place
+    descents) whose goal has no IK on every rung is tried once more per allowed margin without the table (level
+    "no_table"; the items stay), since RoboTwin's stock grasp of a flat object asks for the fingertips below the
+    tabletop. Every result is tagged: "_safe_level" (the level it planned at), or "_safe_fail" (its kind) and
     "_safe_fail_entry" (its last failed try); RiskTickController.plan books the plan it keeps (record_plan).
 
     The grasp search (choose_grasp_pose, guarded) escalates as a whole, so the stock grasp at the largest margin wins
@@ -834,6 +839,38 @@ def install_plan_hooks(env, log: list | None = None, payload_margin: float = 0.0
                 elif kind == "start_in_collision" and obstacles:
                     entry["culprits"] = check_start(planner, mg, qpos, obstacles)["culprits"]
                 _note(info, entry)
+            if (table_free_descents and kind == "ik_fail" and base["constrained"] and not batch
+                    and state["search"] is None and world is not None and getattr(world, "table", None) is not None):
+                # RoboTwin's straight grasp / place descent onto a flat object asks for the fingertips below the
+                # tabletop (2026-10-28 pilot: the stock grasps of 006_hamburg and 075_bread put them 2.5-3 cm into
+                # it, 1 cm below the planner's table; physics stops them on the table), which no margin of the
+                # table-aware world allows: once more without the table, the items kept at the ladder's margins
+                for m, model in levels_all:
+                    if model != "full" or float(m) < float(floors.get("ik_fail", 0.0)) - 1e-9:
+                        continue
+                    world.push(_arm, m, table=False)
+                    s = sync(env, _arm, min(float(payload_margin), m), "full")
+                    n0 = len(status_sink) if status_sink is not None else 0
+                    entry = {**base, "level": "no_table", "margin": m, "model": "full", "table": False}
+                    was_on = bool(getattr(_self_collision_cost(mg), "enabled", False))
+                    try:
+                        res = _fn(*a, **k)
+                    except Exception as exc:
+                        _note(info, {**entry, "ok": False, "kind": "planner_error",
+                                     "exc": f"{type(exc).__name__}: {str(exc)[:160]}"})
+                        raise
+                    finally:
+                        _restore_self_collision(mg, was_on)
+                    if not _failed(res):
+                        _note(info, {**entry, "ok": True})
+                        if isinstance(res, dict):
+                            res["_safe_level"] = "no_table"
+                        state["kind"], state["entry"] = None, None
+                        return res
+                    statuses = list(status_sink[n0:]) if status_sink is not None else []
+                    entry.update({"ok": False, "kind": failure_kind(statuses),
+                                  "status": statuses[-1] if statuses else None, "held": s.get("held", "")})
+                    _note(info, entry)
             kind = kind or "plan_fail"
             if isinstance(res, dict):
                 res["_safe_fail"], res["_safe_fail_entry"] = kind, entry

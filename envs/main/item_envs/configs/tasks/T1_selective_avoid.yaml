@@ -51,6 +51,11 @@ safe_mode:
   shape: hull
   table: true
   table_clearance: 0.02
+  # 2026-10-28 pilot: burger_fries 0/12 and bread_basket 1/12 kept, most lost to "ik_fail" on the straight grasp
+  # descent: RoboTwin's stock grasp of the flat hamburger / bread asks for the fingertips ~3 cm into the tabletop
+  # (physics stops them on it), below the planner's table at every margin. Such a descent is tried once more
+  # without the table (the items stay in the world; the keep rule never counted table contact)
+  table_free_descents: true
   grasp_rotate_lim: [0.0, 0.8]
   risk: {time_scale: 1.0, safe_time_scale: 1.0}
 risk:
