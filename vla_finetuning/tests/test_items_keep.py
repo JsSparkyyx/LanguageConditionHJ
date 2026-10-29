@@ -174,6 +174,10 @@ GOOD = {"err": None, "safe_fail": None, "plan_success": True, "task_success": Tr
     ({"err": "ContactAbort: x", "task_success": False, "broken": ["stay|obj_0|-"]}, "contact"),
     ({"broken": ["stay|obj_0|-"], "contact": {"touched": True, "force_max": 50.0}}, "rule:stay|obj_0|-"),
     ({"task_success": False, "broken": ["stay|obj_0|-"]}, "task_failed"),
+    # 10-29: an item that flew (a physics blow-up) rejects the demo even when the task's success check passed
+    ({"flown": ["frenchfries"]}, "flown:frenchfries"),
+    ({"flown": ["frenchfries"], "broken": ["stay|obj_0|-"]}, "flown:frenchfries"),
+    ({"flown": ["frenchfries"], "task_success": False}, "task_failed"),
 ])
 def test_keep_reason(change, reason):
     assert K.keep_reason({**GOOD, **change}) == reason
@@ -185,3 +189,17 @@ def test_planner_error_from_the_t1_grasp_search_is_retried():
     r = K.keep_reason({"err": None, "safe_fail": "planner_error", "plan_success": False, "task_success": False})
     assert r == "planner_error" and r in RETRY_REASONS
 
+
+def test_flown_items(tmp_path):
+    """Items whose height ever passes MAX_ITEM_Z (1.4 m); a trace without poses has none."""
+    p = tmp_path / "trace.npz"
+    pose = np.zeros((5, 2, 7))
+    pose[:, :, 2] = 0.75
+    pose[3, 1, 2] = 1.72                                   # the fries of 2026-10-29's kept burger_fries demo
+    np.savez(p, item_pose=pose, item_ids=np.array(["hamburg", "frenchfries"]), t=np.arange(5.0))
+    assert K.flown_items(p) == ["frenchfries"]
+    pose[3, 1, 2] = 1.04                                   # the highest kept item of any task (T6's mug)
+    np.savez(p, item_pose=pose, item_ids=np.array(["hamburg", "frenchfries"]), t=np.arange(5.0))
+    assert K.flown_items(p) == []
+    np.savez(p, t=np.arange(5.0))
+    assert K.flown_items(p) == []

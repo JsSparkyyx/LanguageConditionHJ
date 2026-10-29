@@ -298,12 +298,14 @@ def run_attempt(task: str, seed: int, host: str | None, out_root: Path, max_step
         task_diag = diag.get("task")                  # task.episode_info as the runner copied it at the end
         if not isinstance(task_diag, dict):
             task_diag = getattr(task_obj, "episode_info", None) or {}
-        broken = []
+        broken, flown = [], []
         trace = Path(runner.out_dir) / "trace.npz"
         try:
             if trace.exists():
                 t, m, c = K.read_trace(trace, runner.rules)
                 per, broken = K.score_trace(runner.rules, protected, t, m, c)
+                flown = K.flown_items(trace)
+                row["flown"] = flown
                 row["min_h"] = {rid: v["min_h"] for rid, v in per.items()}
                 row["first_violation_tick"] = {rid: v["first_tick"] for rid, v in per.items()
                                                if v["first_tick"] is not None}
@@ -330,7 +332,8 @@ def run_attempt(task: str, seed: int, host: str | None, out_root: Path, max_step
                    runner_dir=os.path.relpath(runner.out_dir, Path(out_root).resolve().parent.parent))
         row.update(expert_diag(task_diag))            # push / route (T3), safe_plan_levels / safe_last_fail (T1)
         row["reason"] = K.keep_reason({"err": err, "safe_fail": task_diag.get("safe_fail"), "plan_success": plan_ok,
-                                       "task_success": meta.task_success, "broken": broken, "contact": contact,
+                                       "task_success": meta.task_success, "flown": flown, "broken": broken,
+                                       "contact": contact,
                                        "n_frames": len(mon.frames)})
         return row, mon, instr
     finally:

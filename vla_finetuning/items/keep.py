@@ -26,6 +26,9 @@ UNPROTECTED_T1 = ("avoid",)                  # T1: the contact check instead
 OUTSIDE_H_MIN = 0.1                          # T3 outside (zone_exclude) rules: 5 mm of h_unit 5 cm
 KEEP_FORCE_N = 20.0                          # vla_finetuning common.KEEP_FORCE_N (CrossSafe contact_force_threshold)
 MIN_FRAMES = 10
+# m: an item whose height ever passes this flew (a physics blow-up: 2026-10-29, the fries of a kept burger_fries demo
+# shot to 1.72 m and the task's success check still passed); the kept demos of every task stayed below 1.04 m
+MAX_ITEM_Z = 1.4
 
 # renderer / GPU errors (vla_finetuning/data/demos_safe attempts: "cannot create buffer" 685x, "vk::Queue::submit:
 # ErrorDeviceLost" 3x; run logs also "vk::Device::waitIdle: ErrorDeviceLost"): the process is broken, not the seed
@@ -86,6 +89,16 @@ def rule_h_series(rule, margins: np.ndarray, counts: np.ndarray) -> np.ndarray:
     return np.array([rule_h(rule, float(mk), int(ck)) for mk, ck in zip(margins, counts)], np.float64)
 
 
+def flown_items(path: Path, max_z: float = MAX_ITEM_Z) -> list[str]:
+    """Items of a runner trace.npz whose height passed ``max_z`` at some tick (none when the trace has no poses)."""
+    with np.load(Path(path), allow_pickle=True) as z:
+        if "item_pose" not in z.files or "item_ids" not in z.files:
+            return []
+        top = np.asarray(z["item_pose"], np.float64)[..., 2].max(axis=0)
+        ids = [str(x) for x in z["item_ids"]]
+    return [i for i, h in zip(ids, top) if h > max_z]
+
+
 def score_trace(rules, protected: dict, t, margins, counts) -> tuple[dict, list[str]]:
     """Per rule {"min_h", "first_tick", "first_t"} (the first capture, index and seconds, with h below the rule's bar
     for a protected rule, h < 0 for the others; None if never), and the broken protected rule ids, earliest first
@@ -128,13 +141,14 @@ def keep_reason(facts: dict) -> str:
     """'kept' or why not, checked in this order: an exception (error_reason: "render_error" for a broken renderer,
     "contact" for T1's early abort, "timeout", "code_error" for a broken checkout or code, else "error"),
     "safe_fail:<why>" (the safe controller found no safe motion), "plan_failed" (the task's plan_success is False at
-    the end, as collect_demos.py reads it), "task_failed", "rule:<rule_id>" (the first protected rule broken),
+    the end, as collect_demos.py reads it), "task_failed", "flown:<item>" (an item passed MAX_ITEM_Z: a physics
+    blow-up), "rule:<rule_id>" (the first protected rule broken),
     "contact" / "force" (T1), "few_frames". A failed plan() the task recovered from (T5 / T7's step chain after a
     failed via path, the T6 pour's retries: plan_success set back to True) is no rejection; the runner's count of
     them (meta.plan_failures) is a row diagnostic only.
 
-    facts: err (str | None), safe_fail (str | None), plan_success (bool, default True), task_success (bool), broken
-    ([rule_id]), contact (None, or {"touched": bool, "force_max": N} for T1), n_frames (int)."""
+    facts: err (str | None), safe_fail (str | None), plan_success (bool, default True), task_success (bool), flown
+    ([item_id]), broken ([rule_id]), contact (None, or {"touched": bool, "force_max": N} for T1), n_frames (int)."""
     err = facts.get("err")
     if err:
         return error_reason(err)
@@ -146,6 +160,8 @@ def keep_reason(facts: dict) -> str:
         return "plan_failed"
     if not facts.get("task_success"):
         return "task_failed"
+    if facts.get("flown"):
+        return f"flown:{facts['flown'][0]}"
     if facts.get("broken"):
         return f"rule:{facts['broken'][0]}"
     contact = facts.get("contact")
