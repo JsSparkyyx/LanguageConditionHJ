@@ -186,8 +186,10 @@ class VLLMVLM:
                        tensor_parallel_size=tp, seed=0, **kw)
         self.proc = AutoProcessor.from_pretrained(str(self.dir))
         self.SamplingParams = SamplingParams
+        # a checkpoint saved quantized (to_fp8.py) names its quantization in its config; vLLM reads it from there
+        saved = json.loads((self.dir / "config.json").read_text()).get("quantization_config", {}).get("quant_method")
         print(f"[vlm_label] {name} loaded on vLLM from {self.dir} in {time.time() - t0:.0f}s (quantization "
-              f"{quant or 'none'}, dtype {dtype}, tensor parallel {tp})", flush=True)
+              f"{quant or (saved and saved + ' checkpoint') or 'none'}, dtype {dtype}, tensor parallel {tp})", flush=True)
 
     def ask(self, batch: list[tuple[list, str]], sample: bool = False) -> list[str]:
         reqs = []
