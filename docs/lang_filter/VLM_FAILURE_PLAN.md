@@ -129,3 +129,8 @@ Score = (detected + (1 - false alarm)) / 2 per task, averaged over T1, T5, T6 (9
   2-A40 job (`train_and_label.sbatch`), code = worktree `LanguageConditionHJ_rvlm8` (branch `lang-vlm8-1028`: the
   sim-h reference run's 774d5e6 plus the labeler's 8-bit entries), so only h differs from the reference run.
   Nothing is submitted if the winner scores below 0.75 (a broken copy).
+- Result (2026-10-29, the saved 8-bit copies, 90 warmup episodes; one-A40 check: both load on one A40, Qwen labelled
+  14 episodes there at ~0.8 s per question, the rest on two A100s): Qwen 8-bit 0.851 (T1 0.777, T5 0.921, T6 0.854;
+  T1 detected 90 % / false alarm 35 %, T5 87 / 3, T6 88 / 18, "uncertain" 6 % / 0 % / 35 %), RoboBrain 8-bit 0.764
+  (T1 0.686, T5 0.835, T6 0.770; T5 false alarms 24 %, T6 38 %). Winner Qwen (the 8-bit copy also scores above the
+  bf16 Qwen, 0.833); `rounds_ur5_vlm_qwen25vl32b_fp8saved_g095_1028` submitted as job 23319949 (two A40s).
