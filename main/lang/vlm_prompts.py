@@ -29,13 +29,39 @@ ensure_item_path()
 
 REPO = Path(__file__).resolve().parents[2]
 PROMPTS = Path(__file__).resolve().parent / "vlm_prompts.yaml"
-# the two VLMs of VLM/README.md (both Qwen2.5-VL; RoboBrain 2.0 32B is fine-tuned from Qwen2.5-VL-32B-Instruct). The
+# the VLMs of VLM/README.md (RoboBrain 2.0 32B is fine-tuned from Qwen2.5-VL-32B-Instruct). The
 # weights are not in git (VLM/*/ is ignored): every checkout (the frozen worktrees too) reads the main project's copy
 VLM_ROOT = Path(os.environ.get("VLM_ROOT", "/work/nvme/bifq/project/LanguageConditionHJ/VLM"))
+VLM_FP8_ROOT = Path(os.environ.get("VLM_FP8_ROOT", "/work/hdd/bifq/VLM_fp8"))
 VLMS = {
     "qwen25vl32b": VLM_ROOT / "Qwen2.5-VL-32B-Instruct",
     "robobrain2_32b": VLM_ROOT / "RoboBrain2.0-32B",
+    # the smaller ones compared on 2026-10-27 (Yuxuan): Qwen2.5-VL 7B, Qwen3-VL 8B and RoboBrain 2.5 8B (fine-tuned from
+    # Qwen3-VL; the -NV variant, trained on NVIDIA GPUs; -MT is the same model trained on Moore-Threads GPUs)
+    "qwen25vl7b": VLM_ROOT / "Qwen2.5-VL-7B-Instruct",
+    "qwen3vl8b": VLM_ROOT / "Qwen3-VL-8B-Instruct",
+    "robobrain25_8b": VLM_ROOT / "RoboBrain2.5-8B-NV",
+    # 4-bit versions of the two 32B models, to fit one A40 (Yuxuan 2026-10-27: try them first): Qwen's official AWQ
+    # checkpoint, and RoboBrain2.0-32B quantized at load time (bitsandbytes NF4: BAAI publishes no 4-bit version).
+    # Both run on the vLLM backend (vlm_label --backend vllm, the separate env /work/nvme/bifq/conda/envs/vlm)
+    "qwen25vl32b_awq": VLM_ROOT / "Qwen2.5-VL-32B-Instruct-AWQ",
+    "robobrain2_32b_nf4": VLM_ROOT / "RoboBrain2.0-32B",
+    # 2026-10-27, after the 4-bit RoboBrain lost most of T1 / T5: the same bf16 weights on vLLM (separates the
+    # backend from the quantization) and 8-bit weights (FP8, quantized at load time, W8A16 kernels on A40 / A100)
+    "robobrain2_32b_vllm": VLM_ROOT / "RoboBrain2.0-32B",
+    "robobrain2_32b_fp8": VLM_ROOT / "RoboBrain2.0-32B",
+    "qwen25vl32b_fp8": VLM_ROOT / "Qwen2.5-VL-32B-Instruct",
+    # 2026-10-28, for the 2-A40 training job (one GPU trains, one labels; Yuxuan): the same 8-bit weights saved once
+    # (scripts/lang/vlm/to_fp8.py), since vLLM's own fp8 above loads the 64 GB bf16 model first and so needs two
+    # GPUs. On /work/hdd (the nvme project space is near its quota); the checkpoint's config names its quantization
+    "qwen25vl32b_fp8saved": VLM_FP8_ROOT / "Qwen2.5-VL-32B-Instruct-FP8",
+    "robobrain2_32b_fp8saved": VLM_FP8_ROOT / "RoboBrain2.0-32B-FP8",
 }
+# how each model's weights are quantized (vLLM's quantization argument); a model not listed runs in bf16
+QUANT = {"qwen25vl32b_awq": "awq", "robobrain2_32b_nf4": "bitsandbytes", "robobrain2_32b_fp8": "fp8",
+         "qwen25vl32b_fp8": "fp8"}
+# models that always run on the vLLM backend (every QUANT model does too); the saved fp8 ones load quantized
+VLLM_ONLY = {"robobrain2_32b_vllm", "qwen25vl32b_fp8saved", "robobrain2_32b_fp8saved"}
 PLACEHOLDERS = ("{object}", "{block_description}", "{bowl_description}")
 SCORES = (-1, 0, 1)
 
