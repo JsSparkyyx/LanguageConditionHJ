@@ -138,3 +138,13 @@ of the same kind, reporting the collision rate and the success rate.
 - Job `jobs/finetune_items.sbatch` (23312401, one A40, submitted 10-28 before the data was complete; the 4-A100 job
   23310002 was cancelled): `jobs/prep_items.sh` packs `data/lmdb/items_safe` only when every task has its demos;
   until then the job resubmits itself after 1 h.
+- Test and longer training (2026-10-29, Yuxuan: "not sure 15k steps is enough; once it finishes run the eval, and if
+  it's not good train longer, resumed from the trained checkpoint"): the chain's stage runs `jobs/ft_items_pipeline.sh`
+  end to end. `items/evaluate_items.py` tests a model in the demo collector's scenes from held-out seeds (20 per task,
+  identical for every model), scored by the demos' keep rule (safe success = success with no protected rule broken, no
+  T1 contact, nothing flown). The base model and the 15k model are tested; unless the 15k model reaches 0.80 safe
+  success, its step-7500 checkpoint is tested on the same first 10 scenes per task. If 15k beats 7.5k by 0.10 (still
+  improving), a longer training follows: 15k more steps from the 15k weights with a fresh LR schedule (resuming the
+  15k checkpoint itself would keep its LR already dropped 10x at step 13,500), tested again; another 15k while each
+  round gains 0.05, at most 45k steps in all. The rule, every model's numbers and the best model:
+  `results_items/decision.json` (`jobs/ft_items_decide.py`; `train.sh` INIT_CKPT = the starting weights).
