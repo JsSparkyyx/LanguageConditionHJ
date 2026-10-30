@@ -191,6 +191,9 @@ and the old tilt limits. The watcher process had died (no run was submitted).
     does) via runs/lang_pipeline_ft/state/hold.ft_items, at step ~8000 of 15000 (25 GB, fits an A100). Resume: delete
     the hold file (the chain6 orchestrator keeps running); check the base-eval job 23329871 first (a test running at
     the same time as the pipeline's own base test fails on the evaluator lock);
+    Yuxuan 10-30 18:45: resume it as soon as the actor-issue verification is done (check 4's 20k verdict, rescored,
+    reported): stop the A40 retrain feeder first (scripts/lang/diag_1030/a40_feeder.sh on dt-login01), then delete
+    the hold file;
   - [ ] an evaluator for the item scenes (evaluate.py knows only the collision-avoidance tasks), then evaluate.
 
 ## F. VLM as the failure function (Yuxuan 2026-10-26, docs/lang_filter/VLM_FAILURE_PLAN.md)
