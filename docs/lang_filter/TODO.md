@@ -163,10 +163,14 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   - [x] 10-27/28 the demo collector for item scenes (vla_finetuning/items, merged): Yuxuan 10-27 replaced the
     80 / 20 split by "protect every item, plain task instruction", 100 kept per task (T1 20 per host), keep = no
     rule broken; GPU pilot 10-28;
-  - [ ] collect (runs/vf_items/collect_items_safe_a.cmds, chain stage items1028a of runs/lang_pipeline_vf, 30-min
-    1-node jobs, 4 collectors per GPU): 10-29 11:10 217 / 500 (T5 100, T1 60, T3 39, T6 18, T7 0);
-  - [ ] fine-tune HoloBrain: ONE model for all five tasks (decided 10-28), ONE GPU (Yuxuan), job 23312401 (waits for
-    every task's demos; faster route prepared: runs/lang_pipeline_ft, 1-hour H200 jobs, start once packed);
+  - [x] collected 10-29 22:06: 500 / 500 (T1 20 per host, T3 / T5 / T6 / T7 100), every kept demo rescanned (no
+    item above 1.4 m). 12 reused from the GPU pilot and the T1 debug run (same collector and settings). Fixes on the
+    way: T3 min_push (14 -> 43 % kept), T1 grasp descent raised 5 mm above the table / table-free retry, the
+    flown:<item> keep rule (2 burger_fries demos with the fries shot to 1.7 m dropped), T1 collectors weighted 2
+    slots (14.5 GB GPU each); burger_fries stayed hard (~6 % kept: the fries carton tips in the grasp);
+  - [ ] fine-tune HoloBrain: ONE model for all five tasks (decided 10-28), ONE GPU (Yuxuan), GRAD_ACCUM 4 (batch 32),
+    15k steps; running as chain runs/lang_pipeline_ft on A40 interactive 1-hour jobs (ft_chain_step.sh: packs one
+    LMDB per task, then trains, resuming from the newest checkpoint); batch backup job 23327423 held;
   - [ ] an evaluator for the item scenes (evaluate.py knows only the collision-avoidance tasks), then evaluate.
 
 ## F. VLM as the failure function (Yuxuan 2026-10-26, docs/lang_filter/VLM_FAILURE_PLAN.md)
