@@ -115,6 +115,11 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   those branches' first actions; (4) critic-only retrains with the target through the deterministic actor or a fixed
   continuation (stored next action, zero) vs the stochastic control. Lead from the logs: in harmed T5 episodes the
   filter first engaged only 0.2-0.4 s before h < 0 (gamma 0.95 at 25 Hz looks about 0.54 s ahead).
+  10-30 18:20 checks 1-3 done, check 4 interim at ~2k steps: docs/lang_filter/DIAG_ACTOR_2026-10-30.md (commit 4423eb2).
+  Actor at the max-entropy point (sigma 0.864, mu 0.018 everywhere = a freeze); Q ranks nothing (spread ~1e-5 vs a
+  true 0.49); every target variant loses the action within 250 steps (not the target); on T5 only slowing down
+  saves late, freezing tips the block by itself. Still to do: check 4's 20k verdict (retrain pools resubmit
+  themselves: retrain_watch.sh, a100x8_feeder.sh, a40_feeder.sh), then rescore (runs/lang/diag_1030/score/jobs/).
 
 ## B. Evaluation of the new round trainings
 
