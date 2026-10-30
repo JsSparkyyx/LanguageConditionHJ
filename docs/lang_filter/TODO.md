@@ -104,6 +104,10 @@ and the old tilt limits. The watcher process had died (no run was submitted).
 - [ ] 10-26 Yuxuan: a fourth run, collision avoidance (T1) only on the Qwen front end, like the GD T1 run:
   rounds_t1_ur5_qwen_g095_1023 (job 23229109, `runs/lang/rounds_1023/launch.sh t1qwen`, data/lang_qwen_1023).
   Submitted, pending (estimate 10-30 13:21).
+- [x] 10-30 Yuxuan: every round training STOPPED (the results are bad; issues found, the model is analyzed and
+  adjusted later). Cancelled while pending: the 10-23 resubmits 23323331 / 23323630 / 23323656 (vanilla, T1-only,
+  Qwen), 23229109 (T1 Qwen), 23230275 (sim-h reference), 23319949 (8-bit Qwen VLM failure function). Do not
+  resubmit any round run until Yuxuan says so; the run dirs and checkpoints under runs/lang/rounds_* stay.
 
 ## B. Evaluation of the new round trainings
 
@@ -192,7 +196,7 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   0.54 / 0.77, T5 0.85 / 0.86, T1 0.15 / 0.15. Uncertain answers: Qwen T6 34 %, T1 11 %; RoboBrain T6 13 %.
 - [x] 10-27 the two 32B VLM runs cancelled (Yuxuan); 10-27/28 compared 7 labelers incl. 3 small ones and 4-bit / 8-bit
   32B (VLM_FAILURE_PLAN.md); 10-29 the saved 8-bit copies decided it: Qwen 0.851 vs RoboBrain 0.764.
-- [ ] Runs: rounds_ur5_simh_g095_1026 (job 23230275, the sim-h reference, pending, estimate 10-30 13:21) and
+- [ ] (10-30 both cancelled with every round training, see A; not started) Runs: rounds_ur5_simh_g095_1026 (job 23230275, the sim-h reference, pending, estimate 10-30 13:21) and
   rounds_ur5_vlm_qwen25vl32b_fp8saved_g095_1028 (job 23319949, one 2-A40 job: GPU 0 trains, GPU 1 labels; pending);
   25 rounds x 16 episodes x 8192.
 - [ ] Report: VLM vs simulator agreement on the warmup (`vlm_label agree`), then the closed-loop results.
