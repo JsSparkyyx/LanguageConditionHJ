@@ -108,6 +108,13 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   adjusted later). Cancelled while pending: the 10-23 resubmits 23323331 / 23323630 / 23323656 (vanilla, T1-only,
   Qwen), 23229109 (T1 Qwen), 23230275 (sim-h reference), 23319949 (8-bit Qwen VLM failure function). Do not
   resubmit any round run until Yuxuan says so; the run dirs and checkpoints under runs/lang/rounds_* stay.
+- [ ] 10-30 Yuxuan: confirm the ACTOR issue before changing the model (object identification set aside). The four
+  checks of the analysis pasted 10-30; code scripts/lang/diag_1030/, results runs/lang/diag_1030/<check>/: (1) actor
+  statistics on T5 states (|mu| / dtheta_max, sigma); (2) T5 ground truth: branch mid-slide states (physics snapshot)
+  into planner / freeze / half speed / smooth stop over 1 s, min h of each (A40 production); (3) the critic's ranking of
+  those branches' first actions; (4) critic-only retrains with the target through the deterministic actor or a fixed
+  continuation (stored next action, zero) vs the stochastic control. Lead from the logs: in harmed T5 episodes the
+  filter first engaged only 0.2-0.4 s before h < 0 (gamma 0.95 at 25 Hz looks about 0.54 s ahead).
 
 ## B. Evaluation of the new round trainings
 
@@ -175,6 +182,10 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   - [ ] fine-tune HoloBrain: ONE model for all five tasks (decided 10-28), ONE GPU (Yuxuan), GRAD_ACCUM 4 (batch 32),
     15k steps; running as chain runs/lang_pipeline_ft on A40 interactive 1-hour jobs (ft_chain_step.sh: packs one
     LMDB per task, then trains, resuming from the newest checkpoint); batch backup job 23327423 held;
+    10-30 ~15:15 PAUSED (Yuxuan: the actor-issue checks first; the training needs no A40, only its sim evaluation
+    does) via runs/lang_pipeline_ft/state/hold.ft_items, at step ~8000 of 15000 (25 GB, fits an A100). Resume: delete
+    the hold file (the chain6 orchestrator keeps running); check the base-eval job 23329871 first (a test running at
+    the same time as the pipeline's own base test fails on the evaluator lock);
   - [ ] an evaluator for the item scenes (evaluate.py knows only the collision-avoidance tasks), then evaluate.
 
 ## F. VLM as the failure function (Yuxuan 2026-10-26, docs/lang_filter/VLM_FAILURE_PLAN.md)
