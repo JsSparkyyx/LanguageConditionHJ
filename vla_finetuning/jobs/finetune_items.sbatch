@@ -46,7 +46,7 @@ resubmit() {   # queue the next job; retry transient failures; never queue a sec
 limit=$(( $(date +%s) + ${WAIT_H:-1} * 3600 ))
 while true; do
   scripts/lang/in_container.sh bash vla_finetuning/jobs/ft_chain_step.sh ft_items_safe \
-    "$R/vla_finetuning/data/lmdb/items_safe" "${MAX_STEP:-15000}" "${SAVE_EVERY:-500}" 1 vla_finetuning/jobs/prep_items.sh
+    "$R/vla_finetuning/data/lmdb/items_safe_selective_avoid,$R/vla_finetuning/data/lmdb/items_safe_push_zone,$R/vla_finetuning/data/lmdb/items_safe_tray_transport,$R/vla_finetuning/data/lmdb/items_safe_clean_pour,$R/vla_finetuning/data/lmdb/items_safe_gap_place" "${MAX_STEP:-15000}" "${SAVE_EVERY:-500}" 1 vla_finetuning/jobs/prep_items.sh
   rc=$?
   [ $rc -eq 0 ] && { echo "[finetune_items] done $(date)"; exit 0; }
   [ $rc -ne 75 ] && { echo "[finetune_items] failed ($rc)"; exit $rc; }
