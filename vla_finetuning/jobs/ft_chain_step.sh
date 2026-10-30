@@ -53,7 +53,8 @@ fi
 # a cut that left no new complete checkpoint stops too, so a run that cannot progress never loops
 if [ $rc -eq 124 ] || { [ $rc -eq 137 ] && [ $el -ge $(( left - 5 )) ]; }; then
   CK2=$(newest 0)
-  if [ "$CK2" = "$CK" ]; then
+  # an empty answer is a failed lookup (10-30: /work/nvme dropped out, python could not even import codecs), not progress
+  if [ -z "$CK2" ] || [ "$CK2" = "$CK" ]; then
     echo "[ft_chain] cut after ${el}s with no new complete checkpoint (still ${CK:-none}): stopping, not resubmitting"
     exit 1
   fi
