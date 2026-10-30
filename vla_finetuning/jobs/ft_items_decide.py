@@ -64,6 +64,33 @@ def ckpt_at_step(run: str, step: int) -> str | None:
     return None
 
 
+def checkpoint_steps(run: str) -> dict:
+    """{checkpoint dir: step} of a run's complete checkpoints (ws/<run> and its resumes ws/<run>_r<t>), from the
+    trainer's "Save checkpoint at the end of step N to ..." lines in the stage logs."""
+    pat = re.compile(rf"Save checkpoint at the end of step (\d+) to (ws/{re.escape(run)}(?:_r\d+)?/checkpoints/checkpoint_\d+)")
+    out = {}
+    for f in sorted(glob.glob(str(LOGS / "lang_ft_items_*.out"))):
+        for m in pat.finditer(Path(f).read_text(errors="replace")):
+            d = VF / m.group(2)
+            if all((d / n).exists() for n in NEED):
+                out[str(d)] = int(m.group(1))
+    return out
+
+
+def prune(run: str, every: int = 2500) -> list[str]:
+    """Delete a run's checkpoints except every ``every``-th step and its newest (~2 GB each, one per job). -> removed"""
+    import shutil
+
+    steps = checkpoint_steps(run)
+    if not steps:
+        return []
+    newest = max(steps, key=steps.get)
+    gone = [d for d, s in steps.items() if s % every != 0 and d != newest]
+    for d in gone:
+        shutil.rmtree(d, ignore_errors=True)
+    return gone
+
+
 def _overall(name: str) -> float | None:
     return safe_rate(_rows(RES / name))
 
@@ -108,6 +135,10 @@ def main(argv) -> int:
         return 0 if p else 1
     if argv[:1] == ["compare"]:
         print(json.dumps(compare(Path(argv[1]), Path(argv[2]))))
+        return 0
+    if argv[:1] == ["prune"]:
+        gone = prune(argv[1])
+        print(f"[prune] {argv[1]}: removed {len(gone)} checkpoints")
         return 0
     if argv[:1] == ["next"]:
         print(decide())

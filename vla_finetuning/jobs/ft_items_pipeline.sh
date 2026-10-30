@@ -18,6 +18,7 @@ DEC="python vla_finetuning/jobs/ft_items_decide.py"
 
 train_run() {   # <run> [initial weights]: train to <run>.DONE
   [ -f "$WS/$1.DONE" ] && return 0
+  $DEC prune "$1"                                  # keep every 2500th step and the newest (2 GB each)
   INIT_CKPT="${2:-}" bash vla_finetuning/jobs/ft_chain_step.sh "$1" "$L" "${MAX_STEP:-15000}" "${SAVE_EVERY:-500}" 1 \
     vla_finetuning/jobs/prep_items.sh
 }
