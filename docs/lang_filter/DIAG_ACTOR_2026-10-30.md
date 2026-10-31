@@ -18,8 +18,17 @@ readout, MLP actor head; checkpoints of rounds 10, 20, 30 and the last saved one
    normalized.
 
 Code: `scripts/lang/diag_1030/`. Results: `runs/lang/diag_1030/{actor_stats,t5_branch,retrain,score}/`.
-Checks 1-3 are complete. Check 4 has an interim result at about 2,000 of its 20,000 steps fixed in advance; the
-20,000-step verdict follows (section 5).
+All four checks are complete. Check 4 ran its 20,000 steps fixed in advance (verdict 10-31 08:10, section 5).
+
+**In one paragraph.** The critic gives every action the same value. Its Q moves by about 1e-5 over the first ticks of
+four continuations, and by about 3e-4 over 16 random actions (h units). The true outcomes of those four continuations
+differ by about 0.5. Its readout always takes the minimum from a head that sees the
+action only indirectly. The actor therefore gets no signal from Q, sits at the entropy bonus's optimum, and its mean
+command is a freeze. Retraining from scratch with four different target continuations (the actor's sample, its mean,
+the next stored command, freeze) gives the same blind critic, and scaling the action inputs does not help either. So
+the random target is not the cause. By the rule fixed in advance the cause is the data and the one-tick time step:
+almost every stored action is the planner's, and one 40 ms tick changes the outcome only a little. Check 4 cannot
+separate this from the readout, which all variants share.
 
 Symbols used below:
 - h: the failure value of the named rule, from −1 (badly harmed) through 0 (just harmed) to +1 (comfortably safe). For
@@ -146,43 +155,67 @@ that actually tips it.
 - A freshly initialized critic is about 50 times more action-sensitive (spread 7.2e-3 at the same states), so the
   blindness is learned.
 
-## 5. Check 4: retraining with other target continuations (interim, about 2,000 of 20,000 steps)
+## 5. Check 4: retraining with other target continuations (final, 20,000 steps)
 
 Same data (warmup + the vanilla run's ring), same config, from scratch; only the action a′ used at s′ in the target
 changes. Measured every 250 steps on 768 fixed states (512 from validation scenes, 256 from training, 256 of them T5 drag
 states). Criteria fixed in advance (`runs/lang/diag_1030/retrain/criteria.json`): "clear spread" = Q spread over 16
 random actions ≥ 0.02 h units; "departs" = clear and ≥ 2× the stochastic control at the same step; on T5 drag states the
-sign must agree with check 2's ranking.
+sign must agree with check 2's ranking (≥ 0.70 of the pairs whose truth differs by > 0.05, a pair counting only if its
+Q gap is ≥ 1e-3).
 
-| variant (a′ in the target) | step 0 | step 250 | step ~2,000 | ÷ stoch control |
-|---|---|---|---|---|
-| stoch: a sample of the actor (as trained) | 0.011 | 7.5e-5 | 3.1e-5 | 1.0 |
-| det: the actor's mean | 0.011 | 7.4e-5 | 4.3e-5 | 1.0-1.4 |
-| data: the stored next command | 0.011 | 7.5e-5 | 3.0e-5 | 1.0 |
-| zero: freeze | 0.011 | 7.5e-5 | 4.0e-5 | 1.3 |
-| stoch_norm: stoch, action inputs scaled to unit size | 0.059 | 2.8e-4 | 1.1e-4 | 3.6 |
-| stoch_mlp (exploratory, MLP readout, capped at 5,000 steps) | 0.0005 | 7.6e-5 | 2.7e-4 (slowly rising) | 8.6 |
+Spread of Q over 16 random actions on the 768 fixed states (the metric fixed in advance), then the T5 scores of the
+final checkpoint on check 2's 117 drag states:
 
-- All four target variants lose the action within the first 250 steps (0.011 → 7.5e-5), identically, while the target
-  critics (τ = 0.005) are still close to their initialization. So the target's continuation is not what makes the critic
-  action-blind.
-- The stochastic control reproduces the original run (batch action sensitivity 3.7e-5 to 4.9e-5 vs 4.1e-5 to 6.3e-5 in
-  the original log at the same steps).
-- Normalizing the action inputs raises the spread only 3.6×, still about 180× below 0.02. The MLP readout is 8.6× and
-  rising slowly, still about 75× below.
-- Scored on check 2's T5 branch states (117 drag ticks; 12 checkpoints: the four vanilla ones and eight retrain
-  checkpoints at 1,828-2,887 steps):
-  - Q differs across the four branches' first actions by 1e-6 to 2.3e-5 on average (5e-5 for the MLP readout); 0 of
-    117 states reach 0.02 for any checkpoint.
-  - Ranking: 0 of 311 branch pairs have a Q gap of at least 1e-3 (the sign test fixed in advance scores 0.00 against a
-    bar of 0.70); counting any gap, agreement is 0.41-0.56, Kendall τ −0.09 to +0.15 (chance 0).
-  - No retrained variant matches its own continuation yet: data vs the planner branch MAE 0.87, zero vs the freeze
-    branch 0.70, det vs T_det 0.71 (n = 60-117).
-  - A perfect critic of "first tick, then the deterministic actor" would spread about 0.11 over the four first actions;
-    the det variant spreads 1.5e-6, about 70,000 times less. So the small one-tick gap does not explain the flatness by
-    itself.
-- By the rule fixed in advance the interim reading is "not the target: data and time step" (with input scale not
-  sufficient on its own). The verdict is at 20,000 steps (expected around midday 10-31); the jobs resubmit themselves.
+| variant (a′ in the target) | step 0 | 250 | 5,000 | 20,000 | ÷ stoch at 20,000 | T5: Q spread over the 4 branch first actions (truth 0.49) | T5 sign test, pairs decided (of 311) | T5 signs agreeing, any gap (chance 0.5) | Q vs the truth of its own continuation, MAE |
+|---|---|---|---|---|---|---|---|---|---|
+| stoch: a sample of the actor (as trained) | 0.011 | 7.5e-5 | 2.0e-5 | 2.7e-4 | 1.0 | 1.2e-5 | 0 | 0.51 | 0.85 (T_stoch) |
+| det: the actor's mean | 0.011 | 7.4e-5 | 4.5e-5 | 2.7e-4 | 1.0 | 1.1e-5 | 0 | 0.50 | 0.21 (T_det) |
+| data: the stored next command | 0.011 | 7.5e-5 | 2.9e-5 | 4.2e-4 | 1.6 | 2.1e-5 | 0 | 0.45 | 0.55 (planner branch) |
+| zero: freeze | 0.011 | 7.5e-5 | 2.6e-5 | 3.9e-4 | 1.5 | 2.5e-5 | 0 | 0.43 | 0.40 (freeze branch) |
+| stoch_norm: stoch, action inputs scaled to unit size | 0.059 | 2.7e-4 | 6.5e-5 | 5.5e-4 | 2.1 | 9.6e-6 | 0 | 0.63 | 0.66 (T_stoch) |
+| stoch_mlp (exploratory, MLP readout, stopped at 5,000) | 0.0005 | 7.6e-5 | 3.1e-4 | – | 16 at 5,000 | 4.0e-5 | 0 | 0.55 | 0.64 (T_stoch) |
+| the vanilla round run's last checkpoint (79,872 steps, reference) | | | | | | 1.5e-5 | 0 | 0.42 | 0.87 (T_stoch) |
+
+**Verdict, by the rule fixed in advance: "not the target; the data and the one-tick time step".**
+- No variant reaches a clear spread (the largest, stoch_norm, is 5.5e-4, 36× below 0.02). det, data and zero stay
+  within 1.6× of the stochastic control, so the action used in the target is not what makes the critic blind. stoch_norm
+  is 2.1× the control but not clear, so the input scale is not enough on its own either.
+- T5 sign test: no final checkpoint has a single pair with a Q gap of 1e-3 (score 0.00, bar 0.70). Counting any gap,
+  the signs agree with the truth in 0.43-0.63 of the pairs. stoch_norm (0.63, Kendall τ 0.24) is the only one above
+  chance, with gaps of about 1e-5.
+- The actor stays at zero in every variant: mean |tanh μ| 0.007-0.024, against the bar of 0.05. The criterion's
+  other branch, σ < 0.9, is met by every variant and means nothing, because the tanh-Gaussian's maximum-entropy σ is
+  0.874 (check 1). I noticed this on 10-31 at 00:30, from the interim numbers and before the 20,000-step numbers
+  existed.
+
+**What else the 20,000 steps show.**
+- Every target loses the action in the same first 250 steps (0.011 → 7.5e-5), while the target critics (τ = 0.005) are
+  still near their initialization. The stochastic control reproduces the original run (batch action sensitivity
+  3.7e-5 to 4.9e-5, vs 4.1e-5 to 6.3e-5 in the original log at the same steps).
+- After that the spread grows slowly in every variant, about 10× from 5,000 to 20,000 steps. Longer training does not
+  close the gap, though: the vanilla run's own last checkpoint, trained 4× longer, sits at the same level on the same
+  T5 states (16 random actions: 3.1e-4, vs 2.2e-4 to 4.4e-4 here). Over the four branch first actions Q spreads 1e-5
+  to 2.5e-5 (the largest gap at any state is 7e-4). The truth spreads 0.49 over the four whole continuations, and about
+  0.11 when each first tick is followed by the same deterministic actor (section 3). So Q is still thousands of times
+  too flat, even as a critic of one-tick actions.
+- The critics do learn the value of the state under their own continuation: Q against its own truth has an error of
+  0.21 for det (one tick, then the deterministic near-freeze), 0.40 for zero (freeze) and 0.55 for data (the planner).
+  At about 2,000 steps these were 0.71, 0.70 and 0.87. What they never learn is the difference between actions.
+- Readout: in every softmin variant the minimum sits on a readout query in 100 % of the states, at every step. The link
+  heads, which carry the action, sit a median 150-930 h units above it and move 0.23-0.45 over the 16 actions, but never
+  set Q.
+- The MLP readout made the action reach Q faster: 16× the softmin control at 5,000 steps (3.1e-4 vs 2.0e-5). It was
+  still 64× below 0.02, and the softmin variants caught up with it by 20,000 steps.
+
+**What check 4 does not separate.** The rule reaches "data and time step" by elimination. Check 4 changed only the
+target, and all five variants also share the data, the one-tick action and (except the short MLP run) the softmin
+readout. So it rules out the target and the input scale. It cannot tell "the data has no action contrast at a state and
+one tick changes little" from "the readout cannot carry the action". Section 7 lists a test that would separate them.
+
+(Run note: from about 05:20 to 07:15 on 10-31 the project's SSD storage pool was full, and every 330 MB save failed.
+The 20,000-step saves of stoch, zero and data and det's last 2,500 steps were lost, then resumed from the last state
+file, which is written atomically and so was intact. The repeated steps were recomputed with the same recipe.)
 
 ## 6. Answers to the three candidate causes
 
@@ -194,7 +227,7 @@ sign must agree with check 2's ranking.
   mode; the actor's form cannot matter until the critic ranks actions.
 - The outside analysis's mechanism (Q learns "a, then random flailing", a loop through the stochastic target): **not
   supported**. Q sits far above the random-actor truth, and every target variant loses the action in the same first
-  250 steps.
+  250 steps and is still blind at 20,000 (check 4's verdict).
 
 ## 7. What the numbers point to for the design (my reading)
 
@@ -209,14 +242,20 @@ sign must agree with check 2's ranking.
    interventions, their real outcomes. The 500 safe demos add the slow, careful versions of each task.
 3. **Let the action reach the readout.** Today Q comes from readout queries that see the action only second-hand while
    the action-carrying link heads run away above the minimum, and the residual stream grows to ~10⁴ (bound it, e.g. a
-   norm after the trunk blocks). An MLP readout alone did not fix it in 2,000 steps, so this is needed but not
-   sufficient.
+   norm after the trunk blocks). An MLP readout alone reached only 16× the softmin at 5,000 steps, still 64× below a
+   clear spread, so this is needed but not sufficient.
 4. **Warn earlier, and don't freeze.** In T5 a freeze saves only if it starts 0.6 s or more before the brake, a slow-down
    until about 0.3 s; the current critic turns negative at a fixed phase of the drag, 0.2-0.7 s in, also in drags that
    never tip. A freeze, and "freeze 3 ticks then resume at full speed", tip the block by themselves. With longer actions
    (point 1) one decision covers more time, which also lengthens what the backup sees per step without changing γ.
 5. **Measure the action, not only the sentence.** The batch metrics (pair rank accuracy 0.98) never tested the action.
    Add the branch ranking (check 3) to every evaluation.
+6. **One test separates the data from the readout before a redesign** (proposed, not run). Use check 2's branch tool to
+   record counterfactual episodes: from about 100 T5 drag states (and T1 / T7 states, for contact rules), run the four
+   continuations and store every tick with its tokens, as a collection episode would. Then retrain the critic on the
+   normal data plus these episodes, once with the softmin readout and once with the MLP readout, and score the branch
+   ranking on held-out branch states. If both rank the branches, the data was the cause. If only the MLP does, the
+   readout matters too. If neither does, one 40 ms tick is too short an action, which argues for point 1 first.
 
 ## 8. Limits
 
@@ -225,6 +264,9 @@ sign must agree with check 2's ranking.
   and flipped the outcome at 4 of 117 ticks, so every branch (and the episode's own continuation) starts from a restore.
 - Actor continuations were cut at 60-125 ticks (bounds the V_0.95 error by 0.01-0.09) and run at 15 of the 117 drag
   ticks (6 of 12 episodes).
-- Check 4 is interim (about 2,000 of 20,000 steps).
+- Check 4 changed only the target continuation (plus, in two side variants, the input scale and the readout). The data,
+  the one-tick action and the readout were shared, so its verdict comes by elimination (section 5).
+- The sign test on T5 decided no pair at all, so it says nothing about which way a sensitive critic would rank; it only
+  shows that none of these critics ranks.
 - The retrains use all the data from step 0; the round run's ring grew over its rounds. The stochastic control still
   matches the original run's action sensitivity at the same steps.

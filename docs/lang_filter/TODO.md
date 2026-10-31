@@ -108,7 +108,7 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   adjusted later). Cancelled while pending: the 10-23 resubmits 23323331 / 23323630 / 23323656 (vanilla, T1-only,
   Qwen), 23229109 (T1 Qwen), 23230275 (sim-h reference), 23319949 (8-bit Qwen VLM failure function). Do not
   resubmit any round run until Yuxuan says so; the run dirs and checkpoints under runs/lang/rounds_* stay.
-- [ ] 10-30 Yuxuan: confirm the ACTOR issue before changing the model (object identification set aside). The four
+- [x] 10-30 Yuxuan: confirm the ACTOR issue before changing the model (object identification set aside). The four
   checks of the analysis pasted 10-30; code scripts/lang/diag_1030/, results runs/lang/diag_1030/<check>/: (1) actor
   statistics on T5 states (|mu| / dtheta_max, sigma); (2) T5 ground truth: branch mid-slide states (physics snapshot)
   into planner / freeze / half speed / smooth stop over 1 s, min h of each (A40 production); (3) the critic's ranking of
@@ -118,8 +118,23 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   10-30 18:20 checks 1-3 done, check 4 interim at ~2k steps: docs/lang_filter/DIAG_ACTOR_2026-10-30.md (commit 4423eb2).
   Actor at the max-entropy point (sigma 0.864, mu 0.018 everywhere = a freeze); Q ranks nothing (spread ~1e-5 vs a
   true 0.49); every target variant loses the action within 250 steps (not the target); on T5 only slowing down
-  saves late, freezing tips the block by itself. Still to do: check 4's 20k verdict (retrain pools resubmit
-  themselves: retrain_watch.sh, a100x8_feeder.sh, a40_feeder.sh), then rescore (runs/lang/diag_1030/score/jobs/).
+  saves late, freezing tips the block by itself.
+  10-31 08:10 check 4 final (20k steps, rescored on the T5 branch states): verdict by the rule fixed in advance "not
+  the target; data and the one-tick time step". No variant near a clear spread (largest 5.5e-4 vs 0.02; det / data /
+  zero within 1.6x of the stoch control, stoch_norm 2.1x), the T5 sign test decides 0 of 311 pairs for every final
+  checkpoint, the actor stays at zero (|tanh mu| <= 0.024). Check 4 cannot separate the data from the softmin readout
+  (shared by all variants; the min sits on a query head in 100 % of states). Report section 5; next-step test proposed
+  in its section 7 point 6 (branch-tool counterfactual episodes, retrain softmin vs MLP readout). Feeders and watchers
+  stopped; the fine-tune resumed (C).
+- [ ] 10-31 STORAGE (decide by ~11-04 00:15): /work/nvme/bifq is over the SSD-pool soft quota (2,196 GiB used at 07:20
+  vs 2,000 GiB soft; the hard limit of 2,200 GiB was hit on 10-31 05:20-07:15 and saves failed). Check: `lfs quota -p
+  22016 --pool ddn_ssd /work/nvme` (`quota` does not show it). After the grace ends every write to /work/nvme/bifq
+  fails until usage is below 2,000 GiB. Already done (no data deleted): new files of runs/lang/diag_1030, the
+  fine-tune dirs (vla_finetuning/{ws,results_items,models,logs}, runs/lang_pipeline_ft) and project/tmp/logs go to
+  the HDD pool (`lfs setstripe -p ddn_hdd`). Proposed, waiting for Yuxuan: `lfs migrate -p ddn_hdd` (same paths,
+  nothing deleted, reversible) the rings of the four round runs stopped before 10-25: rounds_ur5_g098 (147 GB),
+  rounds_ur5_g095_mlp (143), rounds_ur5_qwen_g095 (93), rounds_ur5_qwen_g095_1020 (95) = 478 GB. Not
+  rounds_ur5_g095_1023 (check 4 read its ring).
 
 ## B. Evaluation of the new round trainings
 
@@ -194,6 +209,10 @@ and the old tilt limits. The watcher process had died (no run was submitted).
     Yuxuan 10-30 18:45: resume it as soon as the actor-issue verification is done (check 4's 20k verdict, rescored,
     reported): stop the A40 retrain feeder first (scripts/lang/diag_1030/a40_feeder.sh on dt-login01), then delete
     the hold file;
+    10-31 07:56 RESUMED (feeders stopped, hold file removed; chain6 451528 submitted 23374798). The separate
+    base-eval job 23329871 is HELD (`scontrol release 23329871` to undo): the pipeline runs the same base test itself
+    and the two must not overlap. New checkpoints and results land on the HDD pool (see the STORAGE entry);
+
   - [ ] an evaluator for the item scenes (evaluate.py knows only the collision-avoidance tasks), then evaluate.
 
 ## F. VLM as the failure function (Yuxuan 2026-10-26, docs/lang_filter/VLM_FAILURE_PLAN.md)
