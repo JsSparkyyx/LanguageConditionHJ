@@ -270,3 +270,46 @@ file, which is written atomically and so was intact. The repeated steps were rec
   shows that none of these critics ranks.
 - The retrains use all the data from step 0; the round run's ring grew over its rounds. The stochastic control still
   matches the original run's action sensitivity at the same steps.
+
+## 9. 2026-11-02: the T1-only model is just as blind (it is not from training five tasks in one model)
+
+Question (Yuxuan): is the critic blind to the action because one model learns five tasks? Test: the check-1 tool
+(`actor_stats.py`) on the final checkpoint of `rounds_t1_ur5_g095_1023`, the collision-avoidance (T1) only run. It has
+the same settings and the same 79,872 steps as the five-task run `rounds_ur5_g095_1023`; only `task_choices` differs.
+The five-task final checkpoint was scored again on the same number of T1 states. Job
+`runs/lang/diag_1030/actor_stats/jobs/t1only.sbatch`, outputs `actor_stats/t1only/` and `actor_stats/vanilla_t1states/`,
+table `scripts/lang/diag_1030/compare_t1only.py`.
+
+What is measured: how much Q(s, a) changes when only the first command a changes, at a fixed state s and sentence:
+16 random commands spread over the whole per-tick box (each joint up to its full per-tick limit), and the planner's
+own command scaled by -1 to 1.5 (c·a_ref; c = 0 is a freeze). For scale, the planner's command alone moves the links a
+median 2.2 mm per tick, and the farthest link 12.8 mm (p90 36 mm). Q itself is in h units, where an avoid rule's
+h = 1 is 5 cm of clearance.
+
+T1 planner ticks (128 states), final checkpoints:
+
+| | T1-only | five-task |
+|---|---|---|
+| Q change over 16 random commands, median | 5.3e-5 | 1.3e-4 |
+| same, largest over all states | 5.7e-3 | 5.4e-3 |
+| Q change between states (std of Q over the 128 states) | 0.61 | 0.64 |
+| Q change over c·a_ref (freeze ... 1.5× planner), median | 3.5e-6 | 1.3e-5 |
+| states where Q(freeze) − Q(half speed) is larger than the TF32 rounding noise | 0% | 1.6% |
+| readout minimum on a query head (not on an arm link) | 100% | 100% |
+| lowest link head above Q, median (h units) | 8,910 | 1,780 |
+| body token size, median / the action's part of it | 14,000 / 1.0 | 7,850 / 0.93 |
+| actor's mean command, share of the per-tick limit | 0.2% | 1.7% |
+| actor entropy (maximum 8.204) | 8.20 | 8.20 |
+
+The actor's own ticks in T1 (64 states) give the same picture (T1-only: median change 4.1e-5, 0% above the noise, 100%
+on a query head). A freshly initialized critic of the same architecture changes by 0.012 over the 16 commands (section
+4), about 200× more.
+
+Reading: in the T1-only model too, the largest change any command makes is under 1% of how much Q changes from one
+state to the next, so the critic is blind to the action. Even for "don't touch X", where an arm link is the natural
+place for the minimum, the readout minimum sits on a query head in every state. The link heads, the only heads that see
+the command, sit about 9,000 h units above it (5× farther than in the five-task model), so they never set Q and get no
+gradient. The actor again sits at the entropy-only optimum, a near-freeze. Training many tasks in one model is
+therefore not the cause; what both runs share is the data, the one-tick action and the softmin readout (section 5's
+caveat stands). Not run: the over-training curve of the T1-only run (not needed for this question) and a T1 branch
+ground truth.
