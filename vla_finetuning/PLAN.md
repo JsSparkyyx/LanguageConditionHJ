@@ -148,3 +148,37 @@ of the same kind, reporting the collision rate and the success rate.
   15k checkpoint itself would keep its LR already dropped 10x at step 13,500), tested again; another 15k while each
   round gains 0.05, at most 45k steps in all. The rule, every model's numbers and the best model:
   `results_items/decision.json` (`jobs/ft_items_decide.py`; `train.sh` INIT_CKPT = the starting weights).
+- Results so far (11-02). The 15k model `ft_items_safe` against the base model and the two scripted controllers on
+  the same 100 scenes (Yuxuan 11-01: compare with the nominal and the safe nominal that collected the demos;
+  `items/evaluate_nominal.py`, jobs/eval_nominal.sbatch; table: `python vla_finetuning/items/compare_items.py`).
+  "careless" is the task's nominal with the scene's risk knobs (what the filter guards), "safe" the expert of the 500
+  demos (nominal_mode "safe"). Safe success (success with no protected rule broken, no T1 contact, nothing flown):
+
+  | task | base | ft_items_safe (15k) | careless nominal | safe nominal |
+  |---|---|---|---|---|
+  | T1 selective_avoid | 0.00 | 0.15 | 0.00 | 0.30 |
+  | T3 push_zone | 0.00 | 0.05 | 0.00 | 0.60 |
+  | T5 tray_transport | 0.05 | 0.85 | 0.30 | 1.00 |
+  | T6 clean_pour | 0.00 | 0.05 | 0.00 | 0.90 |
+  | T7 gap_place | 0.00 | 0.95 | 0.10 | 1.00 |
+  | all five (n 100; careless 99) | 0.01 | 0.41 | 0.08 | 0.76 |
+
+  Success / harmed, all five: base 0.01 / 0.14, 15k 0.52 / 0.33, careless 0.53 / 0.90, safe 0.77 / 0.05.
+  - The 15k model nearly matches its teacher on T5 and T7, and is far below it on T3 and T6. T6: it runs out of its
+    800 actions in 19 of 20 scenes before finishing the pour. T3: out of actions in 16 of 20, and harmed in 13 (the box
+    over a mat in 8). On T1 it touches an extra object in 16 of 20 and moves one in 12; 8 of its 11 successes are
+    harmed.
+  - The safe nominal is no perfect teacher on T1 (0.30): in 11 of 20 scenes it found no safe motion (safe_fail:
+    ik_fail 4, constraint 3, no_grasp 2, start_in_collision 2) and stopped. On T3 its route planner gave up in 9 of 20.
+    It was harmed in 5 scenes in all (T1 3: touches, two of them with the fries flown; T6 2: beads in a named bowl).
+  - Differences in the comparison: the model must succeed within the action limit (STEP_LIMIT; T1 RoboTwin's own)
+    and its success is latched when the task's check first passes, while a scripted controller plays its whole plan
+    and is checked after the settle. The scripted controllers act on the simulator's state, the model on images. One
+    careless T1 scene crashed (`target_pose cannot be None`) and is left out.
+  - The step-7500 checkpoint (10 scenes per task) scored 0.14 against the 15k model's 0.36 on the same scenes, so the
+    rule chose EXTEND 2: `ft_items_safe_x2` (15k more steps from the 15k weights), 6,300 of 15,000 on 11-02 09:00.
+    It trains in fp32 on one GPU at ~5 s per step on an A40 or an A100 alike (fp32 matmuls are no faster on the
+    A100), so it finishes around 11-03 04:00; Yuxuan 11-02 kept the recipe (no TF32). From 11-01 23:30 its training
+    runs on any free 1-GPU interactive slot (`jobs/ft_x_train.sbatch`, fed by `jobs/ft_x_feeder.sh` on dt-login02,
+    log `runs/lang_pipeline_ft/ftx_feeder.log`, checkpoint every 250 steps) while the chain holds ft_items; at DONE the
+    feeder releases the chain, which exports, tests on the A40 and decides.

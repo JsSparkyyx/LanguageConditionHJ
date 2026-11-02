@@ -212,6 +212,17 @@ and the old tilt limits. The watcher process had died (no run was submitted).
     10-31 07:56 RESUMED (feeders stopped, hold file removed; chain6 451528 submitted 23374798). The separate
     base-eval job 23329871 is HELD (`scontrol release 23329871` to undo): the pipeline runs the same base test itself
     and the two must not overlap. New checkpoints and results land on the HDD pool (see the STORAGE entry);
+    11-01: the 15k model tested (safe success 0.41 vs base 0.01); the 7.5k checkpoint 0.14 on the same scenes, so
+    the rule chose EXTEND 2 (ft_items_safe_x2, 15k more steps). Its training moved to any free 1-GPU interactive slot
+    (jobs/ft_x_train.sbatch + jobs/ft_x_feeder.sh on dt-login02, pid 326432; the chain holds ft_items until x2 is
+    DONE, then exports, tests on the A40 and decides). fp32, ~5 s per step on A40 and A100 alike: 6,300 / 15,000 at
+    11-02 09:00, done ~11-03 04:00; Yuxuan 11-02: keep the recipe (no TF32);
+  - [x] 11-02 the careless nominal and the safe nominal (the demos' expert) on the same 100 scenes
+    (items/evaluate_nominal.py, jobs/eval_nominal.sbatch; results_items/nominal_{careless,safe}): safe success
+    careless 0.08, safe 0.76, the 15k model 0.41, base 0.01 (vla_finetuning/PLAN.md "Results so far"; table:
+    `python vla_finetuning/items/compare_items.py base ft_items_safe ft_items_safe_x2 nominal_careless nominal_safe`);
+  - [ ] when x2 is tested (results_items/ft_items_safe_x2/summary.json): rerun compare_items.py with x2, report it
+    against both nominals, and follow the decision (EXTEND 3 trains on through the feeder; STOP ends it);
 
   - [ ] an evaluator for the item scenes (evaluate.py knows only the collision-avoidance tasks), then evaluate.
 
