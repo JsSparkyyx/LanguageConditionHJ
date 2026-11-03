@@ -35,3 +35,4 @@ wandb/
 # VLM weights and logs (2026-10-22); VLM/README.md and VLM/*.py are tracked
 VLM/*/
 !VLM/
+vla_videos/

@@ -126,15 +126,15 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   (shared by all variants; the min sits on a query head in 100 % of states). Report section 5; next-step test proposed
   in its section 7 point 6 (branch-tool counterfactual episodes, retrain softmin vs MLP readout). Feeders and watchers
   stopped; the fine-tune resumed (C).
-- [ ] 10-31 STORAGE (decide by ~11-04 00:15): /work/nvme/bifq is over the SSD-pool soft quota (2,196 GiB used at 07:20
-  vs 2,000 GiB soft; the hard limit of 2,200 GiB was hit on 10-31 05:20-07:15 and saves failed). Check: `lfs quota -p
-  22016 --pool ddn_ssd /work/nvme` (`quota` does not show it). After the grace ends every write to /work/nvme/bifq
-  fails until usage is below 2,000 GiB. Already done (no data deleted): new files of runs/lang/diag_1030, the
-  fine-tune dirs (vla_finetuning/{ws,results_items,models,logs}, runs/lang_pipeline_ft) and project/tmp/logs go to
-  the HDD pool (`lfs setstripe -p ddn_hdd`). Proposed, waiting for Yuxuan: `lfs migrate -p ddn_hdd` (same paths,
-  nothing deleted, reversible) the rings of the four round runs stopped before 10-25: rounds_ur5_g098 (147 GB),
-  rounds_ur5_g095_mlp (143), rounds_ur5_qwen_g095 (93), rounds_ur5_qwen_g095_1020 (95) = 478 GB. Not
-  rounds_ur5_g095_1023 (check 4 read its ring).
+- [x] STORAGE, solved 11-03 (Yuxuan: delete instead of migrate). The SSD pool (`lfs quota -p 22016 --pool ddn_ssd
+  /work/nvme`; `quota` does not show it; soft 2,000 GiB, hard 2,200) was at 2,193 GiB with the grace ending 11-03
+  ~23:10. Deleted 13:23 (list in project/tmp/logs/storage_cleanup_1103.txt*): 40 core dumps (148 GiB, 29 in
+  RoboTwin/) and the ring/ replay buffers of the seven round runs stopped before 10-25 (rounds_ur5_g098,
+  rounds_t1_ur5_g098, rounds_ur5_g095_mlp, rounds_ur5_qwen_g095, rounds_ur5_g095_1020, rounds_t1_ur5_g095_1020,
+  rounds_ur5_qwen_g095_1020: 623 GiB; their checkpoints, logs and evals stay; they cannot be resumed). Now 1,463 GiB,
+  grace cleared. Kept: the three 1023 rings, every data/ version, tmp/cehj (CrossSafe). New big outputs still go
+  to the HDD pool (`lfs setstripe -p ddn_hdd <dir>`; vla_finetuning/{ws,results_items,models,logs},
+  runs/lang/diag_1030, runs/lang_pipeline_ft, project/tmp/logs, vla_videos).
 
 ## B. Evaluation of the new round trainings
 
