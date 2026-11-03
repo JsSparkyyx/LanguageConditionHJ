@@ -250,3 +250,20 @@ and the old tilt limits. The watcher process had died (no run was submitted).
   25 rounds x 16 episodes x 8192.
 - [ ] Report: VLM vs simulator agreement on the warmup (`vlm_label agree`), then the closed-loop results.
 
+
+## G. Constraint-following VLA fine-tune (Yuxuan 2026-11-03; vla_finetuning/PLAN.md "Constraint-following fine-tune")
+
+The question the VLA comparison was meant to answer: can fine-tuning alone make HoloBrain follow a constraint
+sentence while finishing the task? Demos follow the whole prompt literally (A task only -> careless, B + constraint
+on the item in the way -> careful for that item, C + constraint on another item -> careless). Plan confirmed by
+Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (22 kept in vla_videos/).
+
+- [x] 11-03 code: items/constraint.py (helpers), calibrate.py, collect_constraint.py, evaluate_constraint.py; jobs
+  constraint_{calib,calib2_smoke,collect,eval}.sbatch, the two pools, ft_c_train.sbatch, prep_constraint.sh,
+  constraint_feeder.sh.
+- [x] 11-03 T7 calibrated: careless offset 2.75-3.25 cm, success window clearance + 1.5 cm.
+- [ ] T6: a careless pour that fills the target and drops some beads in the aimed-at bowl (round 1 failed; round 2
+  running); if no run-time setting works, ask Yuxuan (a task-file change, or T6 out of this experiment).
+- [ ] smoke test of the collector (T1 / T3 / T5 / T7, A40) and a code review, then start constraint_feeder.sh.
+- [ ] collection (100 complete scenes per task), fine-tune (15k steps, 1 GPU), paired test (new model, the 10-27
+  model, the scripted controllers); report the A-vs-B and A-vs-C tables per task.

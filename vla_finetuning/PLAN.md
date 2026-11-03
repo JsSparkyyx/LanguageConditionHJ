@@ -190,3 +190,45 @@ of the same kind, reporting the collision rate and the success rate.
   - What changed: T1 harms 16 -> 12 of 20 (touches; harmed successes 8 -> 3), T3 harmed 13 -> 9; T7 slipped (harmed
     1 -> 3, two of them successes that knocked or moved a neighbour). What did not: running out of actions, T3 16 / 20
     and T6 18 / 20 (19 before), so the pour and the push stay unfinished; more steps of the same recipe are not the lever.
+
+## Constraint-following fine-tune (2026-11-03)
+
+Question (Yuxuan 11-03, what the VLA comparison was meant to test from the start): can fine-tuning alone give a VLA
+that follows a constraint sentence while still finishing the task? The 10-27 fine-tune cannot answer it: its prompts
+are the task only and its expert protects every item, so the model never has to read a constraint.
+
+- **Demonstrations follow the whole prompt literally** (`items/constraint.py`, `items/collect_constraint.py`). Per
+  scene:
+  - A, the task alone ("Push the red box into the black frame."): the careless motion, which finishes the task and
+    harms the item in its way;
+  - B, the task + a constraint on the item in the way ("..., and keep the red box off the green mat."): a careful
+    run that spares exactly that item (T1 plans around that object only, T3 pushes around that mat or cylinder only,
+    T5 slow drag, T6 aimed low slow pour, T7 centred slide) and finishes; other items may still be harmed;
+  - C, the task + a constraint on an item not in the way: the careless motion again (one careless run carries both
+    A and C prompts: half of its instruction list each).
+  - "In the way" = `main/lang/scene_roles.in_way_reasons` (scene metadata, deterministic per seed). Constraint
+    sentences: the paraphrase bank's 4 training templates; the 5th (held-out) template only in the test.
+- **The careless motion must finish the task**, so three tasks get other careless knobs, set at run time (no
+  task-file edits):
+  - T5: time_scale 1.15 or 1.3 (the tall block falls only above 1.0);
+  - T7: slide offset 2.75-3.25 cm (was 2-5 cm) and the block counted as placed up to 1.5 cm past the clearance
+    (was 5 mm). Calibration (10 scenes per offset, `items/calibrate.py`, `results_constraint/calib/summary.md`):
+    3.0 cm disturbed the aimed-at block 10/10 and placed the wooden block 6/10 (the misses: the block tipping on a
+    pillar, failed plans); as built, 14 of 20 careless slides ended past the old window;
+  - T6: as built the careless pour aims 16-22 cm off and puts ~0% of the beads in the target. Round 1 (bowls 1-3.5 cm
+    apart, aim up to the target's rim) did not work: the stream still lands in the target or misses it, the aimed-at
+    bowl got beads in 1-3 of 7 runs per setting. Round 2 (bowls 0.3-0.8 cm apart, aim 1-4 cm past the rim) and
+    round 3 (the same, a high and fast pour, 15-20 cm, 3 rad/s) show why: per scene the stream lands almost all in
+    the target or almost all in the aimed-at bowl. Its landing spot differs by several cm between scenes and the
+    stream is narrow, so a fixed aim splits it in about 1 scene of 3. T6 is out of the experiment
+    (`constraint.ACTIVE_TASKS`) until Yuxuan decides: change the pour in the task code (e.g. a careless pour that
+    drifts from the target toward the neighbour), or leave T6 out.
+- **Size**: 100 complete scenes per task (A and at least one B kept; T1 20 per host), 22 shards, up to 2 tries per B.
+- **Fine-tune**: the 10-28 recipe (one GPU, GRAD_ACCUM 4, 15k steps) from post_training_robotwin, one model for the
+  five tasks (`jobs/ft_c_train.sbatch`, packs first: `jobs/prep_constraint.sh`).
+- **Test** (`items/evaluate_constraint.py`): 20 held-out scenes per task, each with an item in the way (X) and one not
+  (Y); five prompts per scene with the same noise seed: A, B, C and B2 / C2 (held-out templates). Main result per
+  scene, A vs B on X's named rule: harmed in A and not in B = followed; harmed in both = ignored. A vs C: X should
+  still be harmed in C. Rows: the new model, the 10-27 model (never saw a constraint), the scripted controllers.
+- **Pipeline**: `jobs/constraint_feeder.sh` on a login node: collection (A40), then training (A100 / H200) with the
+  baseline tests (A40), then the new model's test.
