@@ -182,3 +182,11 @@ of the same kind, reporting the collision rate and the success rate.
     runs on any free 1-GPU interactive slot (`jobs/ft_x_train.sbatch`, fed by `jobs/ft_x_feeder.sh` on dt-login02,
     log `runs/lang_pipeline_ft/ftx_feeder.log`, checkpoint every 250 steps) while the chain holds ft_items; at DONE the
     feeder releases the chain, which exports, tests on the A40 and decides.
+- 11-03: x2 finished (30k steps in all, 01:21), was tested on the same 100 scenes and the rule chose STOP (04:03;
+  `results_items/decision.json`): safe success 0.44 vs the 15k model's 0.41, a gain of 0.03 < 0.05 (95% intervals
+  0.35-0.54 vs 0.32-0.51, so within noise). Best model: `ft_items_safe_x2`. Safe success per task, 15k / x2 / safe
+  nominal: T1 0.15 / 0.25 / 0.30, T3 0.05 / 0.10 / 0.60, T5 0.85 / 0.90 / 1.00, T6 0.05 / 0.10 / 0.90, T7 0.95 / 0.85 /
+  1.00. Success / harmed, all five: 15k 0.52 / 0.33, x2 0.51 / 0.28.
+  - What changed: T1 harms 16 -> 12 of 20 (touches; harmed successes 8 -> 3), T3 harmed 13 -> 9; T7 slipped (harmed
+    1 -> 3, two of them successes that knocked or moved a neighbour). What did not: running out of actions, T3 16 / 20
+    and T6 18 / 20 (19 before), so the pour and the push stay unfinished; more steps of the same recipe are not the lever.

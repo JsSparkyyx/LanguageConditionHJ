@@ -221,8 +221,8 @@ and the old tilt limits. The watcher process had died (no run was submitted).
     (items/evaluate_nominal.py, jobs/eval_nominal.sbatch; results_items/nominal_{careless,safe}): safe success
     careless 0.08, safe 0.76, the 15k model 0.41, base 0.01 (vla_finetuning/PLAN.md "Results so far"; table:
     `python vla_finetuning/items/compare_items.py base ft_items_safe ft_items_safe_x2 nominal_careless nominal_safe`);
-  - [ ] when x2 is tested (results_items/ft_items_safe_x2/summary.json): rerun compare_items.py with x2, report it
-    against both nominals, and follow the decision (EXTEND 3 trains on through the feeder; STOP ends it);
+  - [x] 11-03 x2 tested, rule STOP (safe success 0.44 vs 15k 0.41, gain 0.03 < 0.05; safe nominal 0.76, careless
+    0.08); best model ft_items_safe_x2; feeder stopped, chain DONE (vla_finetuning/PLAN.md "Results so far");
 
   - [ ] an evaluator for the item scenes (evaluate.py knows only the collision-avoidance tasks), then evaluate.
 
