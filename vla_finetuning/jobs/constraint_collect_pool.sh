@@ -9,6 +9,28 @@ R=/work/nvme/bifq/project/LanguageConditionHJ
 CL=$1; SLOTS=${2:-3}; ROOT=$3; shift 3
 cd $R
 ITEMS=$(python -m vla_finetuning.items.constraint "$@")
+# the shards with the most scenes left first (longest work first: on a 1-node job the slow shards would otherwise
+# start last); the table order when the count fails
+SORTED=$(ITEMS="$ITEMS" python - "$ROOT" <<'PYEOF'
+import json, os, sys
+root, rows = sys.argv[1], [l for l in os.environ["ITEMS"].splitlines() if l.strip()]
+def left(line):
+    task, host, shard, target = line.split()[:4]
+    ka, kb, ks = set(), set(), set()
+    try:
+        for l in open(f"{root}_logs/{task}/{shard}/runs.jsonl"):
+            try:
+                r = json.loads(l)
+            except ValueError:
+                continue
+            if r.get("reason") == "kept":
+                {"A": ka, "B": kb, "S": ks}.get(r.get("kind"), set()).add(r.get("seed"))
+    except OSError:
+        pass
+    return int(target) - len(ks) - len(ka & kb)
+print("\n".join(sorted(rows, key=lambda l: -left(l))))
+PYEOF
+) && [ -n "$SORTED" ] && ITEMS=$SORTED
 mkdir -p ${ROOT}_logs/_pool
 slot() {
   local task host shard target start step stop log rc quick t0 crashes
