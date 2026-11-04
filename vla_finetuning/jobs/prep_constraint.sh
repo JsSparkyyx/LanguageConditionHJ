@@ -24,11 +24,12 @@ root = Path(sys.argv[1])
 for t in sys.argv[2:]:
     n = {}
     for cfg in sorted((root / t).glob("*_*")):
-        kind = "A" if cfg.name.endswith("_A") else "B"
+        kind = cfg.name.rsplit("_", 1)[1][0]   # A careless, B<j> careful for one item, S safe only (T6)
         p = cfg / "attempts.jsonl"
         k = sum(1 for l in p.read_text().splitlines() if l.strip()) if p.exists() else 0
         n[kind] = n.get(kind, 0) + k
-    print(f"[prep_constraint] {t}: {n.get('A', 0)} careless demos, {n.get('B', 0)} careful demos")
+    print(f"[prep_constraint] {t}: {n.get('A', 0)} careless demos, {n.get('B', 0)} careful demos"
+          + (f", {n['S']} safe-only demos" if "S" in n else ""))
 EOF
 mkdir -p "$D/lmdb"
 for t in $tasks; do
