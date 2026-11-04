@@ -220,9 +220,12 @@ are the task only and its expert protects every item, so the model never has to 
     bowl got beads in 1-3 of 7 runs per setting. Round 2 (bowls 0.3-0.8 cm apart, aim 1-4 cm past the rim) and
     round 3 (the same, a high and fast pour, 15-20 cm, 3 rad/s) show why: per scene the stream lands almost all in
     the target or almost all in the aimed-at bowl. Its landing spot differs by several cm between scenes and the
-    stream is narrow, so a fixed aim splits it in about 1 scene of 3. T6 is out of the experiment
-    (`constraint.ACTIVE_TASKS`) until Yuxuan decides: change the pour in the task code (e.g. a careless pour that
-    drifts from the target toward the neighbour), or leave T6 out.
+    stream is narrow, so a fixed aim splits it in about 1 scene of 3. Yuxuan 11-03: "for T6 just ignore the
+    careless controller, just need the safe success that pours as many beads as possible into the target
+    bowl". So T6 runs as built (bowls 9-12 cm apart) with safe demos only (`constraint.SAFE_ONLY_TASKS`): one
+    safe pour per scene, kept if half the beads reach the target and none lands in either other bowl; its
+    prompts are half the task alone, half the task + a constraint on either other bowl. In the test T6 is a
+    task check (share of beads in the target, named bowl clean), not a constraint-reading one.
 - **Size**: 100 complete scenes per task (A and at least one B kept; T1 20 per host), 22 shards, up to 2 tries per B.
 - **Fine-tune**: the 10-28 recipe (one GPU, GRAD_ACCUM 4, 15k steps) from post_training_robotwin, one model for the
   five tasks (`jobs/ft_c_train.sbatch`, packs first: `jobs/prep_constraint.sh`).

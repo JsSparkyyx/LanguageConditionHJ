@@ -158,10 +158,10 @@ def run_prompt(sc: dict, prompt: str, agent: str, policy, out_root: Path, cap_pe
     from .evaluate_items import _NoRecorder, _DEVNULL
 
     task, seed, host = sc["task"], int(sc["seed"]), sc.get("host")
-    careful = agent == "scripted" and prompt.startswith("B")
+    careful = agent == "scripted" and (prompt.startswith("B") or task in X.SAFE_ONLY_TASKS)   # T6: safe demos only
     mode = "safe" if careful else "careless"
-    active = X.protect_rule([{"rule_id": r, "consequence": r.split("|")[0]} for r in sc["x_rules"]]) if careful \
-        else None
+    active = X.protect_rule([{"rule_id": r, "consequence": r.split("|")[0]} for r in sc["x_rules"]]) \
+        if careful and task not in X.SAFE_ONLY_TASKS else None
     runner, why = build(task, seed, host, out_root, mode=mode, active=active,
                         careless_knobs=(agent == "scripted" and not careful))
     row = {"task": task, "scene": sc["scene"], "seed": seed, "host": host, "prompt": prompt,

@@ -60,10 +60,13 @@ KNOBS = {
     "t7_success_tol": 0.015,      # m past the clearance: gap_place.SUCCESS_TOL (as built 0.005)
 }
 PATCHED_TASKS = ("tray_transport", "clean_pour", "gap_place")
-# the tasks of this experiment (collection, packing, training data, test): one switch for every job. T6 out until
-# Yuxuan decides (11-03): no run-time setting makes its careless pour fill the target AND drop beads in the aimed-at
-# bowl (three calibration rounds, results_constraint/calib/summary.md)
-ACTIVE_TASKS = ("selective_avoid", "push_zone", "tray_transport", "gap_place")
+# the tasks of this experiment (collection, packing, training data, test): one switch for every job
+ACTIVE_TASKS = ITEM_TASKS
+# tasks with safe demos only (Yuxuan 11-03, T6: "ignore the careless controller, just need the safe success that
+# pours as many beads as possible into the target bowl"): no run-time setting made its careless pour fill the
+# target AND drop beads in the aimed-at bowl (three calibration rounds, results_constraint/calib/summary.md); T6
+# runs as built (bowls 9-12 cm apart), one safe pour per scene
+SAFE_ONLY_TASKS = ("clean_pour",)
 
 
 def task_knobs(task: str, knobs: dict | None = None) -> dict:

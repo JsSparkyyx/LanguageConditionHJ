@@ -18,6 +18,11 @@ Per scene (one seed):
        < 20 N; aborted at the first touch); other items may be harmed. Its prompts: the task + a constraint on that
        item (every rule of it the run kept). Up to B_TRIES runs per item (cuRobo differs run to run).
 
+T6 (constraint.SAFE_ONLY_TASKS, Yuxuan 11-03: "ignore the careless controller, just the safe success"): one run per
+scene, kind S, the safe pour (aimed at the target, low, slow); kept if it succeeds (half the beads in the target) with
+no bead in either other bowl; its prompts: half the task alone, half the task + a constraint on either other bowl
+(the safe pour keeps every one). Its demos go to <shard>_S/.
+
 Prompts: the task sentences of the 10-27 demos (instructions.make_item_instructions: 100 seen + 100 unseen, RoboTwin
 format), joined as "<task>, and <constraint>." with the paraphrase bank's TRAINING templates and words
 (language.sentences "train"); the held-out template of each rule never appears (evaluate_constraint tests it).
@@ -129,6 +134,9 @@ def run_demo(task: str, seed: int, host: str | None, kind: str, out_root: Path, 
             if kind == "A" and not roles["harm"]:
                 row.update(reason="nothing_in_the_way")
                 return row, None, None
+            if kind == "S" and not (roles["harm"] or roles["benign"]):
+                row.update(reason="nothing_named")
+                return row, None, None
             if kind == "B" and ref not in roles["harm"]:
                 row.update(reason="scene_mismatch", detail=f"{ref} not in the way in the rebuilt scene")
                 return row, None, None
@@ -187,9 +195,9 @@ def run_demo(task: str, seed: int, host: str | None, kind: str, out_root: Path, 
         reason = None
         if err:
             reason = K.error_reason(err)
-        elif kind == "B" and task_diag.get("safe_fail") == "planner_error":
+        elif kind in ("B", "S") and task_diag.get("safe_fail") == "planner_error":
             reason = "planner_error"
-        elif kind == "B" and task_diag.get("safe_fail"):
+        elif kind in ("B", "S") and task_diag.get("safe_fail"):
             reason = f"safe_fail:{task_diag['safe_fail']}"
         elif not plan_ok:
             reason = "plan_failed"
@@ -204,6 +212,11 @@ def run_demo(task: str, seed: int, host: str | None, kind: str, out_root: Path, 
                 reason = "contact" if contacts.touched.get(ref) else "force"
             elif bad:
                 reason = f"rule:{bad[0]}"
+        elif kind == "S":                            # every nameable item spared (T6: no bead in either bowl)
+            bad = [r["rule_id"] for d in (roles["harm"], roles["benign"]) for rules in d.values() for r in rules
+                   if status.get(r["rule_id"], {}).get("broken", True)]
+            if bad:
+                reason = f"rule:{bad[0]}"
         if reason is None and len(mon.frames) < K.MIN_FRAMES and frames:
             reason = "few_frames"
         row["reason"] = reason or "kept"
@@ -211,6 +224,9 @@ def run_demo(task: str, seed: int, host: str | None, kind: str, out_root: Path, 
         if kind == "A":
             pool = [r for rules in roles["benign"].values() for r in rules if not status.get(r["rule_id"], {}).get(
                 "broken", True)]
+        elif kind == "S":
+            pool = [r for d in (roles["harm"], roles["benign"]) for rules in d.values() for r in rules
+                    if not status.get(r["rule_id"], {}).get("broken", True)]
         else:
             pool = [r for r in roles["harm"][ref] if not status.get(r["rule_id"], {}).get("broken", True)]
         row["constraint_rules"] = [r["rule_id"] for r in pool]
@@ -275,11 +291,11 @@ def scene_state(rows: list[dict]) -> dict:
     b_rows, b_started = {}, Counter()
     for r in rows:
         s = int(r["seed"])
-        if r.get("started") == "A":
+        if r.get("started") in ("A", "S"):
             a_started[s] += 1
         elif r.get("started") == "B":
             b_started[(s, r.get("ref"))] += 1
-        elif r.get("kind") == "A" and "reason" in r:
+        elif r.get("kind") in ("A", "S") and "reason" in r:
             a_rows.setdefault(s, []).append(r)
         elif r.get("kind") == "B" and "reason" in r:
             b_rows.setdefault((s, r.get("ref")), []).append(r)
@@ -287,8 +303,10 @@ def scene_state(rows: list[dict]) -> dict:
     tried |= {s for s, n in a_started.items() if n >= RETRY_MAX}
     kept_a = {s: next(r for r in rs if r["reason"] == "kept") for s, rs in a_rows.items()
               if any(r["reason"] == "kept" for r in rs)}
-    complete, pending = set(), {}
+    complete, pending = {s for s, a in kept_a.items() if a.get("kind") == "S"}, {}
     for s, a in kept_a.items():
+        if a.get("kind") == "S":
+            continue
         refs = list(a.get("in_way") or [])
         if any(r["reason"] == "kept" for ref in refs for r in b_rows.get((s, ref), [])):
             complete.add(s)
@@ -367,7 +385,7 @@ def _collect(args, root: Path, log_d: Path, lock) -> int:
             configs[name] = Config(root / args.task / f"{args.shard}_{name}")
         return configs[name]
 
-    config("A")
+    config("S" if args.task in X.SAFE_ONLY_TASKS else "A")
     for d in sorted((root / args.task).glob(f"{args.shard}_B*")):   # every config's orphans are cleaned at start
         tail = d.name[len(args.shard) + 1:]
         if d.is_dir() and tail[1:].isdigit():
@@ -405,7 +423,7 @@ def _collect(args, root: Path, log_d: Path, lock) -> int:
                 return 0
             lock.check()
             C.append_jsonl(runs_p, {"seed": seed, "started": "scene", "at": time.strftime("%F %T")})
-            jobs = [("A", None, None, None)]
+            jobs = [("S" if args.task in X.SAFE_ONLY_TASKS else "A", None, None, None)]
         while jobs:
             kind, ref, active, j = jobs.pop(0)
             why = stop_now()
@@ -433,7 +451,12 @@ def _collect(args, root: Path, log_d: Path, lock) -> int:
                 row["b_index"] = j
             lock.check()
             if reason == "kept":
-                if kind == "A":
+                if kind == "S":
+                    groups = row["constraint_groups"]
+                    instr = X.demo_instructions(sc["task_instr"], groups, 0.5 if groups else 0.0, seed)
+                    cfg = config("S")
+                    complete.add(seed)
+                elif kind == "A":
                     groups = row["constraint_groups"]
                     instr = X.demo_instructions(sc["task_instr"], groups, 0.5 if groups else 0.0, seed)
                     cfg = config("A")

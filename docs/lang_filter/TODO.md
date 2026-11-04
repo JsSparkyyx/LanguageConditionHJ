@@ -262,8 +262,10 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   constraint_{calib,calib2_smoke,collect,eval}.sbatch, the two pools, ft_c_train.sbatch, prep_constraint.sh,
   constraint_feeder.sh.
 - [x] 11-03 T7 calibrated: careless offset 2.75-3.25 cm, success window clearance + 1.5 cm.
-- [ ] T6: a careless pour that fills the target and drops some beads in the aimed-at bowl (round 1 failed; round 2
-  running); if no run-time setting works, ask Yuxuan (a task-file change, or T6 out of this experiment).
-- [ ] smoke test of the collector (T1 / T3 / T5 / T7, A40) and a code review, then start constraint_feeder.sh.
+- [x] 11-03 T6: no run-time setting gives a careless pour that fills the target and drops beads in the aimed-at
+  bowl (3 rounds); Yuxuan: ignore the careless controller for T6, safe successes only (SAFE_ONLY_TASKS).
+- [x] 11-03 smoke tests (collector T1 / T3 / T5 / T7, the paired test), a 4-reviewer code review and its fixes;
+  constraint_feeder.sh running on dt-login02 (collection started 17:54).
+- [x] 11-03 the three camera views of one scene per task for slides: imgs/ (items/render_views.py).
 - [ ] collection (100 complete scenes per task), fine-tune (15k steps, 1 GPU), paired test (new model, the 10-27
   model, the scripted controllers); report the A-vs-B and A-vs-C tables per task.
