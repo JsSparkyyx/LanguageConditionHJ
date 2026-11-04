@@ -227,6 +227,13 @@ are the task only and its expert protects every item, so the model never has to 
     prompts are half the task alone, half the task + a constraint on either other bowl. In the test T6 is a
     task check (share of beads in the target, named bowl clean), not a constraint-reading one.
 - **Size**: 100 complete scenes per task (A and at least one B kept; T1 20 per host), 22 shards, up to 2 tries per B.
+  Collected 11-04: T1 149 A / 148 B, T3 117 / 146, T5 100 / 100, T7 119 / 100 (extra A from scenes whose B runs
+  all failed, extra B from scenes with two items in the way), T6 100 safe pours.
+- **Balanced training set** (Yuxuan 11-04: "except the t6 ... for other tasks the num of training data should be
+  the same"): per complete scene its A demo and one B demo (drawn per scene when two items were in the way), so
+  T1 / T3 / T5 / T7 each train on 100 careless + 100 careful demos and T6 on its 100 safe pours
+  (`items/balance_constraint.py`, a symlink view `data/demos_constraint_bal`, packed by `prep_constraint.sh`). The
+  first run on the unbalanced set stopped at step 2,300 (kept in `ws/_old_unbalanced_1104/`).
 - **Fine-tune**: the 10-28 recipe (one GPU, GRAD_ACCUM 4, 15k steps) from post_training_robotwin, one model for the
   five tasks (`jobs/ft_c_train.sbatch`, packs first: `jobs/prep_constraint.sh`).
 - **Test** (`items/evaluate_constraint.py`): 20 held-out scenes per task, each with an item in the way (X) and one not

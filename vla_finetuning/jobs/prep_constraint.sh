@@ -1,6 +1,6 @@
 #!/bin/bash
 # Training data of the constraint-following fine-tune (inside the container; Yuxuan 2026-11-03,
-# items/collect_constraint.py): exit 0 when every shard of the active tasks is DONE and every active task is packed
+# items/collect_constraint.py; packed from the balanced view, items/balance_constraint.py): exit 0 when every shard of the active tasks is DONE and every active task is packed
 # (data/lmdb/constraint_<task>/PACK_DONE, checked per task: a task added later gets packed then); exit 75 while
 # shards are unfinished or a lookup failed (the caller waits or resubmits), 1 when packing failed.
 set -uo pipefail
@@ -16,8 +16,12 @@ while read -r task host shard target start step stop; do
   [ -f "${ROOT}_logs/$task/$shard/DONE" ] || { echo "[prep_constraint] $task $shard not done"; short=1; }
 done <<< "$table"
 [ $short -eq 0 ] || exit 75
-# the demos per task and kind (the collector exits 0 also when its seeds ran out: a shortfall shows here)
-python - "$ROOT" $tasks <<'EOF'
+# the balanced view (Yuxuan 11-04: the same number of demos per task except T6): per complete scene its careless
+# demo and one careful demo, 100 + 100 per task; T6 its 100 safe pours (items/balance_constraint.py)
+BAL=${ROOT}_bal
+python -m vla_finetuning.items.balance_constraint --root "$ROOT" --out "$BAL" || exit 1
+# the demos per task and kind in the view (the collector exits 0 also when its seeds ran out: a shortfall shows here)
+python - "$BAL" $tasks <<'EOF'
 import json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
@@ -36,7 +40,7 @@ for t in $tasks; do
   o="${OUT}_$t"
   [ -f "$o/PACK_DONE" ] && continue
   rm -rf "$o"
-  python -m vla_finetuning.pack --root "$ROOT" --out "$o" --tasks "$t" || exit 1
+  python -m vla_finetuning.pack --root "$BAL" --out "$o" --tasks "$t" || exit 1
   date '+%F %T' > "$o/PACK_DONE"
   echo "[prep_constraint] packed $t: $(tr -d '\n ' < "$o/vf_pack.json" | cut -c1-300)"
   if [ -n "${STAGE_DEADLINE:-}" ] && [ $(( STAGE_DEADLINE - $(date +%s) )) -lt 1500 ]; then

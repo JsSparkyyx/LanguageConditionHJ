@@ -271,7 +271,11 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   pool now starts the shards with the most scenes left first). Demos: T1 149 careless / 148 careful, T3 117 / 146,
   T5 100 / 100, T7 119 / 100, T6 100 safe pours (82% of the beads in the target on average, 50-100%); packed into
   data/lmdb/constraint_<task>.
-- [ ] fine-tune ft_constraint (15k steps, 1 GPU; started 11-04 06:16, ~3.6 s/step = ~15 h of training plus queue
-  waits); baseline paired tests (scripted: prompts A/B/C; ft_items_safe_x2: A/B/C/B2/C2) running since 06:16.
+- [x] 11-04 balanced training set (Yuxuan: same number of demos per task except T6): 100 careless + 100 careful
+  per task (one B per complete scene), T6 100 safe pours; items/balance_constraint.py -> data/demos_constraint_bal.
+  The unbalanced run (step 2,300) and its packs moved to ws/_old_unbalanced_1104/, data/_old_unbalanced_1104/.
+- [ ] fine-tune ft_constraint on the balanced set (15k steps, 1 GPU; restarted 11-04 13:24, ~3.6 s/step = ~15 h
+  of training plus queue waits); baseline paired tests (scripted: prompts A/B/C, done; ft_items_safe_x2:
+  A/B/C/B2/C2, 9 of 10 parts) since 06:16.
 - [ ] paired test of ft_constraint (the feeder starts it at ws/ft_constraint.DONE), summaries; report the A-vs-B and
   A-vs-C tables per task, the T6 share.
