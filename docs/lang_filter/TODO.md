@@ -267,5 +267,11 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
 - [x] 11-03 smoke tests (collector T1 / T3 / T5 / T7, the paired test), a 4-reviewer code review and its fixes;
   constraint_feeder.sh running on dt-login02 (collection started 17:54).
 - [x] 11-03 the three camera views of one scene per task for slides: imgs/ (items/render_views.py).
-- [ ] collection (100 complete scenes per task), fine-tune (15k steps, 1 GPU), paired test (new model, the 10-27
-  model, the scripted controllers); report the A-vs-B and A-vs-C tables per task.
+- [x] 11-04 collection done 06:15 (22 shards, 100 complete scenes per task; slowed by the 11-04 node reboots, the
+  pool now starts the shards with the most scenes left first). Demos: T1 149 careless / 148 careful, T3 117 / 146,
+  T5 100 / 100, T7 119 / 100, T6 100 safe pours (82% of the beads in the target on average, 50-100%); packed into
+  data/lmdb/constraint_<task>.
+- [ ] fine-tune ft_constraint (15k steps, 1 GPU; started 11-04 06:16, ~3.6 s/step = ~15 h of training plus queue
+  waits); baseline paired tests (scripted: prompts A/B/C; ft_items_safe_x2: A/B/C/B2/C2) running since 06:16.
+- [ ] paired test of ft_constraint (the feeder starts it at ws/ft_constraint.DONE), summaries; report the A-vs-B and
+  A-vs-C tables per task, the T6 share.
