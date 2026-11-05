@@ -13,10 +13,13 @@ ROOT=$VF/data/demos_constraint; RUN=ft_constraint; MAX_JOBS=${MAX_JOBS:-60}
 mkdir -p $RES/_logs; LOG=$RES/_logs/feeder.log
 cd $R
 log() { echo "$(date '+%F %T') $*" >> $LOG; }
-queued() { squeue -h -u $USER -n $1 -o %i | head -1; }
+# A failed squeue (Slurm controller down, as on 11-05 07:02) must not read as "nothing queued", or a second
+# training job could start next to the running one: queued prints ERR (never empty) and busy says busy.
+queued() { local o; o=$(squeue -h -u $USER -n $1 -o %i 2>/dev/null) || { echo ERR; return; }; echo "$o" | head -1; }
 declare -A n_sub
 busy() {   # partition list -> 0 when this user already has a job in one of them (interactive QOS: 1 per user)
-  local p; for p in ${1//,/ }; do [ -n "$(squeue -h -u $USER -p $p -o %i | head -1)" ] && return 0; done; return 1
+  local p o; for p in ${1//,/ }; do
+    o=$(squeue -h -u $USER -p $p -o %i 2>/dev/null) || return 0; [ -n "$o" ] && return 0; done; return 1
 }
 submit() {   # kind partitions args... (only accepted submissions count towards MAX_JOBS)
   local k=$1 parts=$2; shift 2
