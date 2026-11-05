@@ -274,8 +274,12 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
 - [x] 11-04 balanced training set (Yuxuan: same number of demos per task except T6): 100 careless + 100 careful
   per task (one B per complete scene), T6 100 safe pours; items/balance_constraint.py -> data/demos_constraint_bal.
   The unbalanced run (step 2,300) and its packs moved to ws/_old_unbalanced_1104/, data/_old_unbalanced_1104/.
-- [ ] fine-tune ft_constraint on the balanced set (15k steps, 1 GPU; restarted 11-04 13:24, ~3.6 s/step = ~15 h
-  of training plus queue waits); baseline paired tests (scripted: prompts A/B/C, done; ft_items_safe_x2:
-  A/B/C/B2/C2, 9 of 10 parts) since 06:16.
+- [x] 11-04 baseline paired tests done (20 scenes per task; results_constraint/<name>/summary.md). Scripted
+  (prompts A/B/C): the constraint stopped the harm in 66 of 100 scenes (T1 14, T3 19, T5 19, T7 13; T6 is safe in
+  every prompt, share 0.80 / 0.76 / 0.74), C left it in 66. ft_items_safe_x2 (A/B/C/B2/C2): does not read the
+  sentence; T5 / T7 safe whatever the prompt (0 harmed in A), T1 / T3 harmed about half the time in every prompt
+  (followed 6 vs harmed in B only 3), T6 share 0.01 (the pour misses the target).
+- [ ] fine-tune ft_constraint on the balanced set (15k steps, 1 GPU; started 11-04 15:26, ~3.6 s/step = ~850 steps
+  per hourly job plus queue waits; step 2,050 at 23:00).
 - [ ] paired test of ft_constraint (the feeder starts it at ws/ft_constraint.DONE), summaries; report the A-vs-B and
   A-vs-C tables per task, the T6 share.
