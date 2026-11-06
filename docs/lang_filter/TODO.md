@@ -284,5 +284,11 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   ws/ft_constraint_r1793933423/checkpoints/checkpoint_1 (ws/ft_constraint.DONE). Survived the 11-05 Slurm controller
   outage (07:02-07:26) and the dt-login02 Lustre hang (12:53; the feeder moved to dt-login04, and no longer reads a
   failed squeue as "nothing queued").
-- [ ] paired test of ft_constraint (started by the feeder 11-05 21:16, vf-ceval 23585441, 10 parts), summaries; report the A-vs-B and
-  A-vs-C tables per task, the T6 share.
+- [x] 11-06 paired test of ft_constraint done (09:03, 500 runs in 10 parts, 0 crashes; results_constraint/ft_constraint/
+  summary.md). The fine-tune does not read the sentence: the item in the way was harmed in 37 / 35 / 35 of 100 scenes
+  under A / B / C (scripted 68 / 3 / 67). Per task, A / B / C harmed of 20: T1 15 / 16 / 15, T3 19 / 14 / 15, T5 0 / 0 / 0,
+  T6 1 / 2 / 1, T7 2 / 3 / 4. "Followed" 6 scenes (all T3) against 7 where naming another item "helped" (A harmed, C
+  not) and 4 harmed in B only, so chance; the held-out phrasing the same (7 followed). It does not copy the careless
+  demos in T5 / T7 either (A harmed 0 and 2 of 20; scripted 19 and 13). Success under A 46 / 100 (ft_items_safe_x2 52,
+  scripted 83); T6 0 of 20 succeeded, 3.5% of the beads in the target (x2 1%, scripted 80%). Tables reported to Yuxuan
+  11-06; the next step is Yuxuan's call.
