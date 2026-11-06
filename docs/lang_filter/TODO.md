@@ -300,5 +300,8 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   train.sh / export.sh (export reads the run's vf_run.json), TASKS in ft_c_train.sbatch, results_constraint/<name>/TASKS
   for the test pool, jobs/qwen_feeder.sh. Downloads: tmp/holobrain/HoloBrain_v0.0_Qwen (post_training_robotwin,
   processors, urdf), VLM/Qwen2.5-VL-3B-Instruct (vla_finetuning/ckpt/ symlink).
-  - [ ] smoke test: 100 steps on a 40 GB A100 + export, then one T1 scene's five prompts on an A40.
-  - [ ] both trainings (qwen_feeder.sh), then their paired tests; report next to ft_constraint (GD) and scripted.
+  - [x] 11-06 smoke test: 100 steps on a 40 GB A100 (3.1-3.6 s per step of batch 32, GD 4.2; peak 11 GB; loss
+    3.81 -> 2.08; checkpoints 5.8 GB), export reloads with no missing keys; one T1 scene's five prompts on an A40 ran
+    clean (about 38 s per episode). Smoke outputs deleted (results_constraint/_smoke_qwen kept).
+  - [ ] both trainings (qwen_feeder.sh on dt-login04, started 11-06 17:17), then their paired tests; report next to
+    ft_constraint (GD) and scripted.
