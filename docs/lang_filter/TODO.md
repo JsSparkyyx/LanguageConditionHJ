@@ -292,3 +292,13 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   demos in T5 / T7 either (A harmed 0 and 2 of 20; scripted 19 and 13). Success under A 46 / 100 (ft_items_safe_x2 52,
   scripted 83); T6 0 of 20 succeeded, 3.5% of the beads in the target (x2 1%, scripted 80%). Tables reported to Yuxuan
   11-06; the next step is Yuxuan's call.
+- [ ] Qwen version (Yuxuan 11-06: "try two other stuff for me, the qwen version, one for collision avoidance only, one
+  for all the tasks. you can use the existing data first"). HoloBrain_v0.0_Qwen (Qwen2.5-VL-3B vision tower, frozen,
+  + its first language layer only, which trains at 0.1 x lr) from its post_training_robotwin, on the same balanced
+  constraint demos, the GD run's recipe (15k steps, batch 32 on one GPU): qwen_constraint (five tasks) and
+  qwen_constraint_t1 (T1 only, tested on T1 only). Code: configs/config_holobrain_qwen_common.py, VF_CONFIG in
+  train.sh / export.sh (export reads the run's vf_run.json), TASKS in ft_c_train.sbatch, results_constraint/<name>/TASKS
+  for the test pool, jobs/qwen_feeder.sh. Downloads: tmp/holobrain/HoloBrain_v0.0_Qwen (post_training_robotwin,
+  processors, urdf), VLM/Qwen2.5-VL-3B-Instruct (vla_finetuning/ckpt/ symlink).
+  - [ ] smoke test: 100 steps on a 40 GB A100 + export, then one T1 scene's five prompts on an A40.
+  - [ ] both trainings (qwen_feeder.sh), then their paired tests; report next to ft_constraint (GD) and scripted.

@@ -10,11 +10,13 @@ CL=$1; SLOTS=${2:-3}; NAMES=$3
 cd $R
 TASKS=$(python -m vla_finetuning.items.constraint --active)
 [ -n "$TASKS" ] || { echo "[eval pool] task lookup failed"; exit 75; }
+# a model tested on some tasks only (Yuxuan 11-06, the T1-only Qwen run): results_constraint/<name>/TASKS lists them
+tasks_of() { if [ -f $RES/$1/TASKS ]; then cat $RES/$1/TASKS; else echo $TASKS; fi; }
 parts() { case "$2:$1" in scripted:*) echo 1;; *:clean_pour) echo 4;; *:push_zone|*:selective_avoid) echo 2;; *) echo 1;; esac; }
 items() {
   local t n k name
   for t in $TASKS; do echo "scenes $t 0 1"; done
-  for name in $NAMES; do for t in $TASKS; do
+  for name in $NAMES; do for t in $(tasks_of $name); do
     n=$(parts $t $name); for k in $(seq 0 $((n - 1))); do echo "$name $t $k $n"; done
   done; done
 }

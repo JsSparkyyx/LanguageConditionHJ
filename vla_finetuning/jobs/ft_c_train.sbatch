@@ -14,11 +14,13 @@ cd $R
 left=$(squeue -h -j "$SLURM_JOB_ID" -o %L | awk -F: '{s=0; for(i=1;i<=NF;i++) s=s*60+$i; print s}')
 export STAGE_DEADLINE=$(( $(date +%s) + left - 240 ))
 export GRAD_ACCUM=4
-T=$(scripts/lang/in_container.sh python -m vla_finetuning.items.constraint --active)
+# TASKS (env): train on these tasks only (Yuxuan 11-06: a T1-only Qwen run); default every active task.
+# VF_CONFIG (env) passes through to train.sh (the Qwen config for the Qwen runs).
+T=${TASKS:-$(scripts/lang/in_container.sh python -m vla_finetuning.items.constraint --active)}
 [ -n "$T" ] || { echo "[ctrain] task lookup failed"; exit 75; }
 L=$(printf "$R/vla_finetuning/data/lmdb/constraint_%s," $T)
 L=${L%,}
-echo "[ctrain] $RUN on $(hostname) $SLURM_JOB_PARTITION $(nvidia-smi --query-gpu=name --format=csv,noheader), deadline $(date -d @$STAGE_DEADLINE +%T)"
+echo "[ctrain] $RUN tasks $T config ${VF_CONFIG:-gd} on $(hostname) $SLURM_JOB_PARTITION $(nvidia-smi --query-gpu=name --format=csv,noheader), deadline $(date -d @$STAGE_DEADLINE +%T)"
 scripts/lang/in_container.sh bash vla_finetuning/jobs/ft_chain_step.sh $RUN $L 15000 ${SAVE_EVERY:-250} 1 \
   vla_finetuning/jobs/prep_constraint.sh
 rc=$?
