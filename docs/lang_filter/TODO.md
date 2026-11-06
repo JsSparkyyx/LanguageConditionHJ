@@ -279,7 +279,10 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   every prompt, share 0.80 / 0.76 / 0.74), C left it in 66. ft_items_safe_x2 (A/B/C/B2/C2): does not read the
   sentence; T5 / T7 safe whatever the prompt (0 harmed in A), T1 / T3 harmed about half the time in every prompt
   (followed 6 vs harmed in B only 3), T6 share 0.01 (the pour misses the target).
-- [ ] fine-tune ft_constraint on the balanced set (15k steps, 1 GPU; started 11-04 15:26, ~3.6 s/step = ~850 steps
-  per hourly job plus queue waits; step 2,050 at 23:00).
-- [ ] paired test of ft_constraint (the feeder starts it at ws/ft_constraint.DONE), summaries; report the A-vs-B and
+- [x] fine-tune ft_constraint on the balanced set (15k steps, 1 GPU): 11-04 15:26 to 11-05 21:11, 20 hourly jobs;
+  loss 4.08 (step 50) -> 0.53 (650) -> 0.08-0.28 from step 1,300 on; final checkpoint
+  ws/ft_constraint_r1793933423/checkpoints/checkpoint_1 (ws/ft_constraint.DONE). Survived the 11-05 Slurm controller
+  outage (07:02-07:26) and the dt-login02 Lustre hang (12:53; the feeder moved to dt-login04, and no longer reads a
+  failed squeue as "nothing queued").
+- [ ] paired test of ft_constraint (started by the feeder 11-05 21:16, vf-ceval 23585441, 10 parts), summaries; report the A-vs-B and
   A-vs-C tables per task, the T6 share.
