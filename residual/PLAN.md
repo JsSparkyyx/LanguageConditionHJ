@@ -25,8 +25,24 @@ Agreed on 2026-11-09:
   displacement from the live joints to the plan row at the end of the tick. The policy outputs one δ per tick.
 - **Command.** Each tick the robot executes clip(a_nom + δ), interpolated over the tick's 10 physics steps with a
   velocity feed-forward (`step_dtheta` semantics, section 3). δ is the policy's residual per arm joint (12 joints,
-  grippers untouched). No replanning. The plan cursor advances every tick. With δ = 0 this is the planner running
-  as a 25 Hz policy, and that is the evaluation baseline, not the 250 Hz playback.
+  grippers untouched). The plan cursor advances every tick. With δ = 0 this is the planner running as a 25 Hz
+  policy, and that is the evaluation baseline, not the 250 Hz playback.
+- **Replan when the arm is far off the plan** (Yuxuan, 2026-11-09). a_nom aims from the live joints at the plan
+  row, so the planner pulls the arm back onto its old path every tick, and δ does not add up over ticks: the arm
+  sits at most |δ| away from the plan. Example on one joint with δ bounded at 0.06 rad: the plan row is 1.01, the
+  arm ends a tick at 1.07, next tick a_nom = 1.02 − 1.07 = −0.05 and δ = +0.06 puts it at 1.08, still 0.06 off.
+  0.06 rad is about 3 cm at the hand, and getting around an object can take over 10 cm. So replan the arm from
+  its live joints to the same goal (`TickChunkedController._replan_arm`, which keeps the target and constraint) and
+  restart its cursor at row 0. The detour then becomes the new path, the policy no longer has to hold it, and
+  there is no return trip to the old path. Either trigger is fine (Yuxuan):
+  - at a fixed rate, every N ticks (start with N = 5, i.e. 5 Hz). Simpler, and the planner becomes a closed-loop
+    5 Hz nominal;
+  - when any joint of the arm is more than a threshold off its plan row (start with 0.1 rad). Cheaper, since it
+    replans only during detours. The threshold must be below the δ bound, or it never fires.
+
+  Starting δ bound: 0.2 rad per joint. A cuRobo plan costs about 100 ms of wall time, so measure both triggers'
+  cost (replans per episode, ticks per second) in the throughput step and pick one. The δ = 0 baseline uses the
+  same trigger. A failed replan ends the episode as a truncation (bootstrap V(s)).
 - **Reward.** r = 1 / (1 + w‖δ‖²/n) per tick, with δ divided by its bound and n = 12. The correction weight w is
   drawn from U(0, 2) per episode and is a policy input.
 - **Termination.** The episode ends when the named object's rule breaks. Don't touch (`avoid`): an arm collision
@@ -62,11 +78,8 @@ Two notes for the session:
 - γ = 0.99 is PPO's discount for this reward. The root `CLAUDE.md` line "γ = 0.95 only" is about the HJ filter's
   Bellman target and does not apply here. The avoid / stay flag in the state is fine too. The ban on rule-type
   inputs is for the deployed language model, and this policy is a privileged teacher.
-- Found while writing this, not yet discussed with Yuxuan: a_nom is measured from the live joints to the plan row
-  (section 3), so the planner pulls the arm back onto its path every tick and the arm sits only δ away from the
-  plan. The bound on δ therefore caps the detour. At ±0.5 dθmax (dθmax is 0.13 rad per tick for a 3.14 rad/s
-  joint limit) that is about 3 cm at the hand, while getting around an object on the path can take over 10 cm.
-  Size the bound on δ for the detour, and let the final clip on the command keep the speed limit.
+- The final clip on clip(a_nom + δ) is the speed limit, dθmax per joint (0.13 rad per tick for a 3.14 rad/s joint
+  limit). The δ bound is separate and larger: it is how far from the plan the policy may put the arm.
 
 ## 2. The modified RoboTwin tasks (item environments)
 
@@ -176,7 +189,8 @@ is handed back. That is how the HJ filter takes over.
 The residual needs a different loop that sends one arm command per tick (25 Hz): a subclass of `RiskTickController`
 that overrides `_tick_take_dense_action` and, every tick, computes a_nom, asks the policy for δ, executes
 clip(a_nom + δ) over the 10 physics steps, plays the gripper rows as the original does, and advances `i` by 10. It
-never replans.
+replans an arm on the trigger of section 1 (every N ticks, or when the arm is more than the threshold off its
+plan), with `_replan_arm(arm, plan)` (returns None on failure), then sets that arm's cursor back to row 0.
 
 **a_nom** (as in `main/train/rollout.py` `_anom`): per arm, a_nom = pos[min(i + 9, n − 1)] − q_live, the plan row at
 the end of this tick minus the live joints (`robot.get_left_arm_real_jointState()[:-1]` and the right one, in plan
