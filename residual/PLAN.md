@@ -84,6 +84,12 @@ Agreed on 2026-11-09:
 - **Episodes.** The named object is in the planner's way in half of the episodes and out of its way in the other
   half. Small noise on a_nom during training.
 - **Network.** Plain MLPs for actor and critic, with input normalization.
+- **Small initial exploration noise** (Yuxuan, 2026-11-09). PPO adds fresh noise to δ every tick. With replanning,
+  noise that pushes an arm past the replan point is locked into the new path (every replan with the fixed-rate
+  trigger), so early in training the arm can drift and miss grasps or placements by accident. Start the policy's
+  standard deviation small, well below the replan threshold (for example 0.1 of the δ bound, about 0.02 rad), and
+  log it. Also log, per episode, the hand's offset from the plan at the moment each gripper closes and opens
+  (joint and end-effector distance) and task success, so an accidental miss can be told apart from a learned one.
 - **First step: throughput.** Ticks per second of one process without rendering, scene building and cuRobo
   planning included, and how many processes fit on a node. That number sizes the PPO budget.
 - **Evaluation.** The baseline is the same controller with δ = 0.
