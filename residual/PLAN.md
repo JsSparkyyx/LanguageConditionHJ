@@ -58,6 +58,20 @@ Agreed on 2026-11-09:
   changes the return. Use this closed form rather than the critic, because no transition ever starts from a
   finished, settled state, so V is never trained there. Fallback if it proves unstable: hold the arm until a fixed
   horizon, keep paying the reward, and treat the horizon as a time limit with a V(s) bootstrap.
+- **Missing the grasp on purpose** (discussed with Yuxuan, 2026-11-09). The held item makes the robot bigger, so
+  a policy can protect the named object by nudging the hand off the plan just before the gripper closes: nothing
+  is picked up, and in scenes where the held item is what would hit the object, the empty carry passes safely.
+  The residual must still act all the time, including when nothing is held (Yuxuan), so implement two variants
+  as a switch and compare them:
+  - **completion value only on success**: at a finished, settled episode, bootstrap with 1/(1 − γ) only if
+    `task.check_success()` is true, otherwise 0. Note that the careless planner itself fails the task in about
+    30% of episodes, so some of those zeros are not the policy's doing;
+  - **no change**: the completion value is paid whatever the task outcome, to see how severe the problem really is.
+
+  For both, log task success next to the violation rate in training and evaluation (success falling while
+  violations fall is the sign of this problem). In the throughput step's δ = 0 runs, also record which part makes
+  the first contact with the in-the-way object, the held item or an arm sphere (`robot_item_distances` takes the
+  minimum over both). That says how often the incentive exists at all.
 - **State.**
   - robot: both arms' joint positions and velocities, gripper openings, link (collision-sphere) positions, the
     held object's pose;
