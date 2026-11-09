@@ -5,11 +5,12 @@
 # shards are unfinished or a lookup failed (the caller waits or resubmits), 1 when packing failed.
 set -uo pipefail
 VF=/work/nvme/bifq/project/LanguageConditionHJ/vla_finetuning
-D=$VF/data; ROOT=$D/demos_constraint; OUT=$D/lmdb/constraint
+# CSET (env): a shard set of items/constraint.py (t1x: the extra T1 scenes of 11-08, own root, packs and markers)
+D=$VF/data; ROOT=$D/demos_constraint${CSET:+_$CSET}; OUT=$D/lmdb/constraint${CSET:+_$CSET}; SET=${CSET:+--set $CSET}
 cd /work/nvme/bifq/project/LanguageConditionHJ
-tasks=$(python -m vla_finetuning.items.constraint --active) && [ -n "$tasks" ] \
+tasks=$(python -m vla_finetuning.items.constraint $SET --active) && [ -n "$tasks" ] \
   || { echo "[prep_constraint] task lookup failed"; exit 75; }
-table=$(python -m vla_finetuning.items.constraint) && [ -n "$table" ] \
+table=$(python -m vla_finetuning.items.constraint $SET) && [ -n "$table" ] \
   || { echo "[prep_constraint] shard lookup failed"; exit 75; }
 short=0
 while read -r task host shard target start step stop; do

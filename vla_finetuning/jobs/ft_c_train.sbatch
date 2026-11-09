@@ -20,8 +20,11 @@ T=${TASKS:-$(scripts/lang/in_container.sh python -m vla_finetuning.items.constra
 [ -n "$T" ] || { echo "[ctrain] task lookup failed"; exit 75; }
 L=$(printf "$R/vla_finetuning/data/lmdb/constraint_%s," $T)
 L=${L%,}
-echo "[ctrain] $RUN tasks $T config ${VF_CONFIG:-gd} on $(hostname) $SLURM_JOB_PARTITION $(nvidia-smi --query-gpu=name --format=csv,noheader), deadline $(date -d @$STAGE_DEADLINE +%T)"
-scripts/lang/in_container.sh bash vla_finetuning/jobs/ft_chain_step.sh $RUN $L 15000 ${SAVE_EVERY:-250} 1 \
+# LMDBS (env): the packed data, comma-separated (11-08, the 500-scene T1 runs: the 100 scenes above + the t1x set's
+# 400); CSET then makes the prep step pack that set. MAX_STEP (env): the run's total steps (default 15000).
+L=${LMDBS:-$L}
+echo "[ctrain] $RUN tasks $T data $L set ${CSET:-main} config ${VF_CONFIG:-gd} on $(hostname) $SLURM_JOB_PARTITION $(nvidia-smi --query-gpu=name --format=csv,noheader), deadline $(date -d @$STAGE_DEADLINE +%T)"
+scripts/lang/in_container.sh bash vla_finetuning/jobs/ft_chain_step.sh $RUN $L ${MAX_STEP:-15000} ${SAVE_EVERY:-250} 1 \
   vla_finetuning/jobs/prep_constraint.sh
 rc=$?
 echo "[ctrain] rc=$rc $(date '+%F %T')"

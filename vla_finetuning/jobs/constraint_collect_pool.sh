@@ -8,7 +8,7 @@ set -u
 R=/work/nvme/bifq/project/LanguageConditionHJ
 CL=$1; SLOTS=${2:-3}; ROOT=$3; shift 3
 cd $R
-ITEMS=$(python -m vla_finetuning.items.constraint "$@")
+ITEMS=$(python -m vla_finetuning.items.constraint ${CSET:+--set $CSET} "$@")   # CSET (env): t1x = the extra T1 set
 # the shards with the most scenes left first (longest work first: on a 1-node job the slow shards would otherwise
 # start last); the table order when the count fails
 SORTED=$(ITEMS="$ITEMS" python - "$ROOT" <<'PYEOF'

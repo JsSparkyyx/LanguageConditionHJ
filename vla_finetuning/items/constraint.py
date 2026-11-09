@@ -378,11 +378,39 @@ SCENES_PER_TASK = 100
 SHARDS = {"selective_avoid": 2, "push_zone": 4, "tray_transport": 2, "clean_pour": 4, "gap_place": 2}   # T1: per host
 
 
-def shards() -> list[dict]:
+# The extra T1 set (Yuxuan 11-08: "run t1 only qwen and gd both for more data to confirm if it's the data issue"):
+# 80 more complete scenes per T1 host (400; with the 100 above, 500 = 5x the T1 data), own root
+# (data/demos_constraint_t1x), own seeds (600000 + 2000 x host index; disjoint from every range above), own shard names
+# (<host>_x<i>: the packer's uuid has the config name). place_burger_fries keeps ~10% of its seeds (11-04: 20 scenes
+# from 207 seeds, 5.1 h of one slot), so it gets more shards.
+SETS = ("main", "t1x")
+T1X_SEED_BASE = 600000
+T1X_HOST_SPAN = 2000
+T1X_SCENES_PER_HOST = 80
+T1X_SHARDS = {"place_burger_fries": 8}   # default 4 per host
+
+
+def active_tasks(cset: str = "main") -> tuple:
+    return (T1,) if cset == "t1x" else tuple(ACTIVE_TASKS)
+
+
+def shards(cset: str = "main") -> list[dict]:
     """Every shard of the collection: {task, host, shard, target, seed_start, seed_step, seed_stop}; the seeds of a
-    task (T1: of a host) interleave across its shards, so each shard walks its own."""
+    task (T1: of a host) interleave across its shards, so each shard walks its own. cset "t1x": the extra T1 set."""
     from .make_queue import t1_hosts
 
+    if cset == "t1x":
+        out = []
+        for hi, host in enumerate(t1_hosts()):
+            n, want = T1X_SHARDS.get(host, 4), T1X_SCENES_PER_HOST
+            lo = T1X_SEED_BASE + T1X_HOST_SPAN * hi
+            for i in range(n):
+                out.append({"task": T1, "host": host, "shard": f"{host}_x{i}",
+                            "target": want // n + (1 if i < want % n else 0),
+                            "seed_start": lo + i, "seed_step": n, "seed_stop": lo + T1X_HOST_SPAN})
+        return out
+    if cset != "main":
+        raise ValueError(f"unknown shard set {cset!r} (one of {SETS})")
     out = []
     for task in ACTIVE_TASKS:
         hosts = list(t1_hosts()) if task == T1 else [None]
@@ -399,12 +427,18 @@ def shards() -> list[dict]:
 
 
 if __name__ == "__main__":   # the shard table for jobs/constraint_collect_pool.sh: task host shard target start step stop
-    import sys
+    import sys                 # [--set main|t1x] [--active | task ...]
 
-    if sys.argv[1:] == ["--active"]:
-        print(" ".join(ACTIVE_TASKS))
+    argv = sys.argv[1:]
+    cset = "main"
+    if argv[:1] == ["--set"]:
+        cset, argv = argv[1], argv[2:]
+        if cset not in SETS:
+            sys.exit(f"unknown shard set {cset!r} (one of {SETS})")
+    if argv == ["--active"]:
+        print(" ".join(active_tasks(cset)))
         sys.exit(0)
-    want = set(sys.argv[1:])
-    for s in shards():
+    want = set(argv)
+    for s in shards(cset):
         if not want or s["task"] in want:
             print(s["task"], s["host"] or "-", s["shard"], s["target"], s["seed_start"], s["seed_step"], s["seed_stop"])

@@ -32,6 +32,17 @@ for d in [*ws.glob(f"{run}/checkpoints/checkpoint_*"), *ws.glob(f"{run}_r*/check
 print(max(cands)[1] if cands else "")
 EOF
 }
+# PRUNE_OLD_CKPT=1 (env; 11-08, the T1 data runs): once a newer complete checkpoint exists, delete this run's
+# checkpoints in its OTHER resume dirs (each 1-hour step writes a new <run>_r<ts> dir with up to 3 checkpoints: 18 GB
+# per Qwen step, ~200 GiB per finished Qwen run). The dir holding the newest complete checkpoint is never touched.
+prune() {   # <newest complete checkpoint>
+  [ "${PRUNE_OLD_CKPT:-0}" = 1 ] && [ -n "${1:-}" ] && [ -d "$1" ] || return 0
+  local keep d; keep=$(dirname "$1")
+  for d in "$WS/$RUN"/checkpoints/checkpoint_* "$WS/${RUN}"_r*/checkpoints/checkpoint_*; do
+    [ -d "$d" ] && [ "$(dirname "$d")" != "$keep" ] || continue
+    rm -rf "$d" && echo "[ft_chain] pruned $d"
+  done
+}
 CK=$(newest)
 if [ -z "$CK" ] && [ -d "$WS/$RUN" ]; then   # a first step cut before its first save: keep it aside, start again
   mv "$WS/$RUN" "$WS/${RUN}_cut_$(date +%s)"
@@ -46,7 +57,8 @@ el=$(( $(date +%s) - t0 ))
 echo "[ft_chain] train.sh exit $rc after ${el}s $(date)"
 if [ $rc -eq 0 ]; then
   newest 0 > "$WS/$RUN.DONE"
-  echo "[ft_chain] $RUN reached max_step: $(cat "$WS/$RUN.DONE")"; exit 0
+  echo "[ft_chain] $RUN reached max_step: $(cat "$WS/$RUN.DONE")"
+  prune "$(head -1 "$WS/$RUN.DONE")"; exit 0
 fi
 # a deadline cut: 124 (timeout's INT worked), or 137 when the window really ran out (its KILL 60 s later). An earlier
 # 137 is an outside SIGKILL (e.g. the cgroup OOM killer) and fails the job instead of resubmitting it (review 10-28);
@@ -58,6 +70,7 @@ if [ $rc -eq 124 ] || { [ $rc -eq 137 ] && [ $el -ge $(( left - 5 )) ]; }; then
     echo "[ft_chain] cut after ${el}s with no new complete checkpoint (still ${CK:-none}): stopping, not resubmitting"
     exit 1
   fi
+  prune "$CK2"
   exit 75
 fi
 echo "[ft_chain] train.sh died early (rc $rc after ${el}s of ${left}s): not a deadline cut"

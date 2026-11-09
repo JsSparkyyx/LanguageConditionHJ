@@ -4,15 +4,16 @@
 #SBATCH --job-name=vf-ccollect -o /work/nvme/bifq/project/tmp/logs/vf_ccollect_%j.out
 # The constraint fine-tune's demo collection (items/collect_constraint.py, Yuxuan 11-03): the shards spread over the
 # nodes this job got, SLOTS per GPU; resubmitted by constraint_collect_feeder.sh until every shard is DONE.
-# TASKS (optional env): a space-separated subset of the tasks.
+# TASKS (optional env): a space-separated subset of the tasks. CSET (optional env): a shard set of items/constraint.py
+# (t1x: the extra T1 scenes of 11-08, root data/demos_constraint_t1x).
 #   sbatch vla_finetuning/jobs/constraint_collect.sbatch
 set -u
 R=/work/nvme/bifq/project/LanguageConditionHJ
-ROOT=${ROOT:-$R/vla_finetuning/data/demos_constraint}; SLOTS=${SLOTS:-3}
+ROOT=${ROOT:-$R/vla_finetuning/data/demos_constraint${CSET:+_$CSET}}; SLOTS=${SLOTS:-3}
 cd $R
 left=$(squeue -h -j "$SLURM_JOB_ID" -o %L | awk -F: '{s=0; for(i=1;i<=NF;i++) s=s*60+$i; print s}')
 export STAGE_DEADLINE=$(( $(date +%s) + left - 240 ))
 CL=${ROOT}_logs/_claims/$SLURM_JOB_ID; mkdir -p $CL
-echo "[collect] job $SLURM_JOB_ID nodes $SLURM_JOB_NODELIST ($SLURM_NNODES), deadline $(date -d @$STAGE_DEADLINE +%T)"
+echo "[collect] set ${CSET:-main} root $ROOT job $SLURM_JOB_ID nodes $SLURM_JOB_NODELIST ($SLURM_NNODES), deadline $(date -d @$STAGE_DEADLINE +%T)"
 srun --ntasks-per-node=1 --kill-on-bad-exit=0 scripts/lang/in_container.sh bash vla_finetuning/jobs/constraint_collect_pool.sh \
   $CL $SLOTS $ROOT ${TASKS:-}

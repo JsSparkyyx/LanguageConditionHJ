@@ -5,14 +5,17 @@
 # An item is done when its marker exists: results_constraint/scenes/DONE_<task>, results_constraint/<name>/DONE_<task>.p<k>.
 #   bash vla_finetuning/jobs/constraint_eval_pool.sh <claim dir> <slots> "<name> ..."
 set -u
-R=/work/nvme/bifq/project/LanguageConditionHJ; RES=$R/vla_finetuning/results_constraint
+# Env (11-08, the 100-scene T1 test): RES the results root, EVAL_TASKS the tasks, SCENES the scenes per task (T1: split
+# over its five hosts; the list grows in place, old scenes keep their index), PARTS the parts of every (name, task).
+R=/work/nvme/bifq/project/LanguageConditionHJ; RES=${RES:-$R/vla_finetuning/results_constraint}
+SC="--scenes ${SCENES:-20} --scenes-dir $RES/scenes"
 CL=$1; SLOTS=${2:-3}; NAMES=$3
 cd $R
-TASKS=$(python -m vla_finetuning.items.constraint --active)
+TASKS=${EVAL_TASKS:-$(python -m vla_finetuning.items.constraint --active)}
 [ -n "$TASKS" ] || { echo "[eval pool] task lookup failed"; exit 75; }
 # a model tested on some tasks only (Yuxuan 11-06, the T1-only Qwen run): results_constraint/<name>/TASKS lists them
 tasks_of() { if [ -f $RES/$1/TASKS ]; then cat $RES/$1/TASKS; else echo $TASKS; fi; }
-parts() { case "$2:$1" in scripted:*) echo 1;; *:clean_pour) echo 4;; *:push_zone|*:selective_avoid) echo 2;; *) echo 1;; esac; }
+parts() { [ -n "${PARTS:-}" ] && { echo $PARTS; return; }; case "$2:$1" in scripted:*) echo 1;; *:clean_pour) echo 4;; *:push_zone|*:selective_avoid) echo 2;; *) echo 1;; esac; }
 items() {
   local t n k name
   for t in $TASKS; do echo "scenes $t 0 1"; done
@@ -24,14 +27,14 @@ mkdir -p $RES/_logs
 run_item() {   # name task part parts -> rc
   local name=$1 t=$2 k=$3 n=$4
   if [ "$name" = scenes ]; then
-    python -m vla_finetuning.items.evaluate_constraint --make-scenes --tasks $t --child --out $RES/scenes_only \
+    python -m vla_finetuning.items.evaluate_constraint --make-scenes --tasks $t --child --out $RES/scenes_only $SC \
       < /dev/null >> $RES/_logs/scenes_$t.log 2>&1
     return $?
   fi
   local agent=model md=""
   if [ "$name" = scripted ]; then agent=scripted; else md="--model-dir $R/vla_finetuning/models/$name/model"; fi
   python -m vla_finetuning.items.evaluate_constraint --agent $agent $md --model-name $name --out $RES/$name \
-    --tasks $t --child --part $k --parts $n < /dev/null >> $RES/_logs/${name}_${t}_p$k.log 2>&1
+    --tasks $t --child --part $k --parts $n $SC < /dev/null >> $RES/_logs/${name}_${t}_p$k.log 2>&1
 }
 marker() { if [ "$1" = scenes ]; then echo $RES/scenes/DONE_$2; else echo $RES/$1/DONE_$2.p$3; fi; }
 slot() {
