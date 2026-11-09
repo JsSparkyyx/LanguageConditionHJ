@@ -33,10 +33,12 @@ PYEOF
 ) && [ -n "$SORTED" ] && ITEMS=$SORTED
 mkdir -p ${ROOT}_logs/_pool
 # MAX_RUNS (env, default 10; was collect_constraint's 30): Env builds per process before it exits 75 and is relaunched.
-# A collector's GPU memory grows ~0.6 GB per build: on 11-08 the three t1x collectors of each A40 started together,
-# reached ~15 GB each (45.5 of 46 GB) around build 17 at the same moment, and all hung after "cannot create buffer".
+# HANG_S (env, default 900): a collector that writes neither its log nor its shard's runs.jsonl for this long is killed
+# (its process group) and relaunched, at most 3 times per shard and job. Why (11-08): a collector holds ~14-15 GB of
+# the A40's 46 GB from its first minute (ray tracing + cuRobo), so 3 per GPU leave ~1 GB; transient allocations
+# (OIDN denoiser, item masks: "cannot create buffer") then fail, and once all six t1x collectors hung for 30 min.
 slot() {
-  local task host shard target start step stop log rc quick t0 crashes
+  local task host shard target start step stop log rc quick t0 crashes hung pid killed last m now
   while read -r task host shard target start step stop; do
     [ -z "$task" ] && continue
     [ -f ${ROOT}_logs/$task/$shard/DONE ] && continue
@@ -44,15 +46,28 @@ slot() {
     hostarg=""; [ "$host" != "-" ] && hostarg="--host $host"
     log=${ROOT}_logs/_pool/${task}_${shard}.log
     echo "[pool $(hostname -s) s$1] $(date '+%T') $task $shard"
-    quick=0; crashes=0
+    quick=0; crashes=0; hung=0
     while true; do
       t0=$(date +%s)
-      python -m vla_finetuning.items.collect_constraint --task $task $hostarg --root $ROOT --shard $shard \
+      # its own process group (setsid execs it: same pid), so a hang kill takes any children too
+      setsid python -m vla_finetuning.items.collect_constraint --task $task $hostarg --root $ROOT --shard $shard \
         --target $target --seed-start $start --seed-step $step --seed-stop $stop --max-runs ${MAX_RUNS:-10} \
-        < /dev/null >> $log 2>&1
-      rc=$?
+        < /dev/null >> $log 2>&1 &
+      pid=$!; killed=0
+      while kill -0 $pid 2> /dev/null; do
+        sleep 30
+        now=$(date +%s); last=$t0
+        for m in $(stat -c %Y $log ${ROOT}_logs/$task/$shard/runs.jsonl 2> /dev/null); do [ $m -gt $last ] && last=$m; done
+        if [ $(( now - last )) -gt ${HANG_S:-900} ]; then
+          echo "[pool] $(date '+%T') $task $shard: no output for $(( now - last ))s, killing pid $pid (hang $((hung + 1)))" >> $log
+          kill -9 -- -$pid 2> /dev/null || kill -9 $pid 2> /dev/null
+          killed=1; break
+        fi
+      done
+      wait $pid; rc=$?
       if [ $rc -eq 0 ]; then date '+%F %T' > ${ROOT}_logs/$task/$shard/DONE; break; fi
-      if [ $rc -ge 128 ]; then crashes=$((crashes + 1)); [ $crashes -ge 3 ] && break
+      if [ $killed -eq 1 ]; then hung=$((hung + 1)); [ $hung -ge 3 ] && break
+      elif [ $rc -ge 128 ]; then crashes=$((crashes + 1)); [ $crashes -ge 3 ] && break
       elif [ $rc -ne 75 ]; then echo "[pool] $task $shard rc=$rc: left for a look" >> $log; break; fi
       if [ $(( $(date +%s) - t0 )) -lt 240 ]; then quick=$((quick + 1)); else quick=0; fi
       [ $quick -ge 5 ] && break
