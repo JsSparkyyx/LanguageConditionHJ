@@ -253,6 +253,8 @@ are the task only and its expert protects every item, so the model never has to 
   | scripted (made the demos) | 68 | 3 | 67 | 66 | 2 | 83 | 80% |
   | ft_items_safe_x2 (10-27, task-only prompts) | 26 | 23 | 25 | 6 | 6 | 52 | 1% |
   | ft_constraint (this fine-tune) | 37 | 35 | 35 | 6 | 7 | 46 | 3.5% |
+  | qwen_constraint (11-07, HoloBrain Qwen, five tasks) | 37 | 27 | 29 | 13 | 10 | 39 | 12.7% |
+  | qwen_constraint_t1 (11-07, HoloBrain Qwen, T1 only; T1's 20 scenes) | 15 | 10 | 14 | 6 | 2 | 11 of 20 | - |
 
   Per task, A / B / C harmed for ft_constraint: T1 15 / 16 / 15, T3 19 / 14 / 15, T5 0 / 0 / 0, T6 1 / 2 / 1,
   T7 2 / 3 / 4 (scripted: T1 16 / 2 / 16, T3 19 / 0 / 19, T5 19 / 0 / 18, T6 1 / 1 / 0, T7 13 / 0 / 14). Fine-tuning on
@@ -260,3 +262,7 @@ are the task only and its expert protects every item, so the model never has to 
   the sentence (all 6 "followed" scenes are T3, against 5 there where naming another item also "helped"). It also
   does not reproduce the careless T5 / T7 motions (too-fast stop, off-centre slide), so those tasks have nothing to
   stop, and its T6 pour misses the target (0 of 20 succeeded).
+  The Qwen versions (11-07, same demos and recipe): the five-task one does not read the constraint either (T1 13 / 13 /
+  14; T3 17 / 9 / 12, where naming another item also cut the harm). The T1-only one is the only model with a hint:
+  T1 15 / 10 / 14, and in 4 scenes (three of them stack_bowls_two) both phrasings of B kept the item safe while both
+  phrasings of C harmed it, with none the other way; 4 of 20 scenes is not enough to tell from chance (p = 0.12).

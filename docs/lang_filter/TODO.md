@@ -292,7 +292,7 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   demos in T5 / T7 either (A harmed 0 and 2 of 20; scripted 19 and 13). Success under A 46 / 100 (ft_items_safe_x2 52,
   scripted 83); T6 0 of 20 succeeded, 3.5% of the beads in the target (x2 1%, scripted 80%). Tables reported to Yuxuan
   11-06; the next step is Yuxuan's call.
-- [ ] Qwen version (Yuxuan 11-06: "try two other stuff for me, the qwen version, one for collision avoidance only, one
+- [x] Qwen version (Yuxuan 11-06: "try two other stuff for me, the qwen version, one for collision avoidance only, one
   for all the tasks. you can use the existing data first"). HoloBrain_v0.0_Qwen (Qwen2.5-VL-3B vision tower, frozen,
   + its first language layer only, which trains at 0.1 x lr) from its post_training_robotwin, on the same balanced
   constraint demos, the GD run's recipe (15k steps, batch 32 on one GPU): qwen_constraint (five tasks) and
@@ -303,5 +303,12 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   - [x] 11-06 smoke test: 100 steps on a 40 GB A100 (3.1-3.6 s per step of batch 32, GD 4.2; peak 11 GB; loss
     3.81 -> 2.08; checkpoints 5.8 GB), export reloads with no missing keys; one T1 scene's five prompts on an A40 ran
     clean (about 38 s per episode). Smoke outputs deleted (results_constraint/_smoke_qwen kept).
-  - [ ] both trainings (qwen_feeder.sh on dt-login04, started 11-06 17:17), then their paired tests; report next to
-    ft_constraint (GD) and scripted.
+  - [x] both trainings (15k steps; qwen_constraint done 11-07 07:17, qwen_constraint_t1 16:46) and their paired tests
+    (done 11-07 17:34, `results_constraint/qwen_constraint*/summary.md`). Item in the way harmed under A / B / C
+    (scenes of 20 per task): qwen_constraint T1 13 / 13 / 14, T3 17 / 9 / 12, T5 0 / 0 / 0, T6 2 / 1 / 0, T7 5 / 4 / 3,
+    overall 37 / 27 / 29 of 100 (followed 13, other name helped 10; success under A 39; T6 beads in target 12.7%, GD
+    3.5%); qwen_constraint_t1 (T1 only) 15 / 10 / 14 (followed 6, other name helped 2; held-out phrasing B2 11, C2 15).
+    The all-tasks Qwen does not read the constraint either (T3's drop under B comes with a drop under C). The T1-only
+    Qwen is the only model with a hint: in 4 scenes (1, 12, 14, 15; three are stack_bowls_two) B and B2 kept the item
+    safe while C and C2 harmed it, and no scene went the other way; 4 of 20 scenes is not enough to tell from chance
+    (sign test p = 0.12).
