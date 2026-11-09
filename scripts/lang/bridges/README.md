@@ -18,7 +18,7 @@ checks. Every path comes from the repo's location or from the variables below; n
 | what | where on Bridges | how the code finds it |
 |---|---|---|
 | this repo | `<repo>` = `git clone https://github.com/JsSparkyyx/LanguageConditionHJ` | the scripts' own location |
-| RoboTwin with its assets | `<repo>/../RoboTwin` (or `<repo>/RoboTwin`) | `main/envs/env.py` looks only there (`ROBOTWIN_ROOT` is not read by it) |
+| RoboTwin with its assets | `<repo>/../RoboTwin` (or `<repo>/RoboTwin`) | `main/envs/env.py` looks only there; `ROBOTWIN_ROOT` is not read (neither by it nor by the safe planner) |
 | HoloBrain GD checkpoint | anywhere (Delta: `/work/nvme/bifq/project/tmp/holobrain/HoloBrain_v0.0_GD`, 2.1 GB) | `HOLOBRAIN_CKPT` |
 | `bert-base-uncased` | `$HF_HOME/hub/models--bert-base-uncased` (only if compute nodes have no internet) | `HF_HOME` |
 | Qwen runs only: HoloBrain-Qwen + Qwen2.5-VL-3B | `$HF_HOME/hub/models--HorizonRobotics--HoloBrain_v0.0_Qwen` (revision `b82becd9…`) and `models--Qwen--Qwen2.5-VL-3B-Instruct` (`66285546…`), or any directories | `HF_HOME`, or `HOLOBRAIN_QWEN_CKPT` (the `pretrain/` folder) and `QWEN_BASE_DIR` |
