@@ -109,9 +109,13 @@ def make_encoder(backend: str, device: str = "cuda", backend_paths: dict | None 
     if backend == "bert_raw":
         return RawBertText(device=device)
     if backend == "sentence_generic":
-        path = (backend_paths or {}).get("sentence_generic")
-        if not path or not Path(path).exists():
-            raise FileNotFoundError(f"sentence_generic: local model path {path!r} missing")
+        # the configured path (Delta's cache), else $SENTENCE_GENERIC_DIR, else $HF_HOME/all-mpnet-base-v2 (another
+        # machine, 2026-11-09: the config default names Delta's path and runs keep their saved config)
+        tries = [(backend_paths or {}).get("sentence_generic"), os.environ.get("SENTENCE_GENERIC_DIR"),
+                 os.path.join(os.environ["HF_HOME"], "all-mpnet-base-v2") if os.environ.get("HF_HOME") else None]
+        path = next((p for p in tries if p and Path(p).exists()), None)
+        if path is None:
+            raise FileNotFoundError(f"sentence_generic: no local model at {[p for p in tries if p]}")
         return GenericText(path, device=device)
     raise ValueError(f"unknown text backend {backend!r}")
 

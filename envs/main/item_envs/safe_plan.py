@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -86,9 +88,46 @@ DROP_RETRY = ("start_in_collision",)
 
 
 # ------------------------------------------------------------------ robot model ----
+_ASSET_LINE = re.compile(r"^(\s*(?:urdf_path|collision_spheres):\s*)(\S+)(\s*)$")
+
+
+def robotwin_root() -> Path:
+    """The RoboTwin the Env runs: main/envs/env.py's (<repo>/RoboTwin, else <repo>/../RoboTwin; on Delta
+    /work/nvme/bifq/project/RoboTwin, the path this file named until 2026-11-09). Not $ROBOTWIN_ROOT: env.py ignores
+    it, and the planners' yml paths come from the RoboTwin env.py loads."""
+    from main.envs.env import ROBOTWIN_ROOT
+
+    return Path(ROBOTWIN_ROOT)
+
+
+def safe_yml_for(root) -> Path:
+    """The safe model for the RoboTwin at ``root``. configs/curobo_safe/ur5-wsg.yml names its two RoboTwin files
+    (urdf_path, collision_spheres) by absolute path, Delta's, and cuRobo opens them as written. When they are not the
+    files of ``root`` (another machine, 2026-11-09: Bridges-2), a copy naming root's files is written once to the temp
+    dir (file name = content hash) and returned; when they are (Delta), SAFE_YML itself, unchanged."""
+    lines, changed = [], False
+    for line in SAFE_YML.read_text().splitlines(keepends=True):
+        m = _ASSET_LINE.match(line)
+        if m and "/assets/embodiments/" in m.group(2):
+            new = str(Path(root) / "assets" / "embodiments" / m.group(2).split("/assets/embodiments/", 1)[1])
+            if os.path.realpath(m.group(2)) != os.path.realpath(new):
+                line, changed = m.group(1) + new + m.group(3), True
+        lines.append(line)
+    if not changed:
+        return SAFE_YML
+    text = "".join(lines)
+    dst = Path(tempfile.gettempdir()) / f"curobo_safe_ur5-wsg_{hashlib.sha1(text.encode()).hexdigest()[:12]}.yml"
+    if not dst.is_file() or dst.read_text() != text:
+        tmp = dst.with_name(f"{dst.name}.{os.getpid()}.tmp")
+        tmp.write_text(text)
+        os.replace(tmp, dst)
+    return dst
+
+
 def install_safe_yml() -> None:
-    """Make ur5-wsg CuroboPlanners built from now on in this process load configs/curobo_safe/ur5-wsg.yml.
-    Idempotent; call before the Env is built."""
+    """Make ur5-wsg CuroboPlanners built from now on in this process load configs/curobo_safe/ur5-wsg.yml (on a
+    machine whose RoboTwin lives elsewhere, the copy of it that ``safe_yml_for`` writes). Idempotent; call before
+    the Env is built."""
     from main.envs.controller import CuroboIKController
 
     CuroboIKController.install()                  # prepare(): RoboTwin's root on sys.path, then the cache
@@ -97,12 +136,13 @@ def install_safe_yml() -> None:
     if getattr(CuroboPlanner.__init__, "_item_safe_yml", False) or getattr(CuroboPlanner.__init__, "_vf_safe_yml", False):
         return
     prev = CuroboPlanner.__init__
-    stock = os.path.realpath(str(Path(os.environ.get("ROBOTWIN_ROOT", "/work/nvme/bifq/project/RoboTwin"))
-                                 / "assets/embodiments/ur5-wsg/curobo.yml"))
+    root = robotwin_root()
+    stock = os.path.realpath(str(root / "assets/embodiments/ur5-wsg/curobo.yml"))
+    safe_yml = str(safe_yml_for(root))
 
     def init(self, robot_origion_pose, active_joints_name, all_joints, yml_path=None):
         if yml_path is not None and os.path.realpath(str(yml_path)) == stock:
-            yml_path = str(SAFE_YML)
+            yml_path = safe_yml
         prev(self, robot_origion_pose, active_joints_name, all_joints, yml_path=yml_path)
 
     init._item_safe_yml = True

@@ -6,10 +6,12 @@
 #
 #   HOLOBRAIN_CKPT=<dir> PY=<python> bash scripts/lang/bridges/smoke.sh
 # Smaller: SMOKE_EPISODES=1 SMOKE_STEPS=32 SMOKE_BUDGET=300 (~20 min).
+# Data: DATA (training split, default data/lang/warmup) and VAL (default data/lang/val), any location.
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 EPS=${SMOKE_EPISODES:-2}; STEPS=${SMOKE_STEPS:-64}; BUDGET=${SMOKE_BUDGET:-480}
+DATA=$(realpath -m "${DATA:-data/lang/warmup}"); VAL=$(realpath -m "${VAL:-data/lang/val}")
 RUN="${REPO_ROOT}/runs/lang/bridges_smoke_$(date +%m%d_%H%M%S)"
-ARGS=(--data data/lang/warmup --val data/lang/val --run "$RUN" --collect-rounds 2 --episodes-per-round "$EPS"
+ARGS=(--data "$DATA" --val "$VAL" --run "$RUN" --collect-rounds 2 --episodes-per-round "$EPS"
       --grad-steps-per-round "$STEPS" --probe-every-rounds 2 --video-every 1 --no-wandb --resume)
 LOG="${LOG_DIR}/smoke_$(basename "$RUN").log"
 echo "[smoke] run $RUN, log $LOG"

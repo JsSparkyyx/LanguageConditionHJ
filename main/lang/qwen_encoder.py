@@ -36,14 +36,26 @@ import numpy as np
 import torch
 from torch import nn
 
-QWEN_CKPT = os.environ.get(
-    "HOLOBRAIN_QWEN_CKPT",
-    "/work/nvme/bifq/project/tmp/hf-cache/hub/models--HorizonRobotics--HoloBrain_v0.0_Qwen/snapshots/"
-    "b82becd9b5f0cd72ef22796d894de292ac2b0333/pretrain")
-QWEN_BASE = os.environ.get(
-    "QWEN_BASE_DIR",
-    "/work/nvme/bifq/project/tmp/hf-cache/hub/models--Qwen--Qwen2.5-VL-3B-Instruct/snapshots/"
-    "66285546d2b821cf421d4f5eb2576359d3770cd3")
+DELTA_HF_HOME = "/work/nvme/bifq/project/tmp/hf-cache"
+
+
+def hf_snapshot(model: str, rev: str, sub: str = "") -> str:
+    """Snapshot ``rev`` of the Hugging Face model ``model`` ("org/name") in Delta's cache (the only place looked at
+    before 2026-11-09), else in $HF_HOME/hub (another machine, e.g. Bridges-2: download the same revision there,
+    scripts/lang/bridges/README.md). Neither there: the $HF_HOME path (Delta's without HF_HOME), and loading fails
+    naming it."""
+    tail = Path("hub") / ("models--" + model.replace("/", "--")) / "snapshots" / rev / sub
+    homes = [Path(DELTA_HF_HOME)] + ([Path(os.environ["HF_HOME"])] if os.environ.get("HF_HOME") else [])
+    for home in homes:
+        if (home / tail).exists():
+            return str(home / tail)
+    return str(homes[-1] / tail)
+
+
+QWEN_CKPT = os.environ.get("HOLOBRAIN_QWEN_CKPT") or hf_snapshot(
+    "HorizonRobotics/HoloBrain_v0.0_Qwen", "b82becd9b5f0cd72ef22796d894de292ac2b0333", "pretrain")
+QWEN_BASE = os.environ.get("QWEN_BASE_DIR") or hf_snapshot(
+    "Qwen/Qwen2.5-VL-3B-Instruct", "66285546d2b821cf421d4f5eb2576359d3770cd3")
 
 SYSTEM = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
 IMAGE_BLOCK = "<|vision_start|><|image_pad|><|vision_end|>"
