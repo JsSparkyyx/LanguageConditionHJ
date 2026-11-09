@@ -19,9 +19,14 @@ needs only a state value V(s). The recipe follows the ResSafe-style filter in ar
 
 Agreed on 2026-11-09:
 
-- **Command.** Each tick the robot executes clip(a_nom + δ). a_nom is the planner's command for the tick, δ the
-  policy's residual per arm joint (12 joints, grippers untouched). No replanning. The plan cursor advances every
-  tick.
+- **Rate: 25 Hz, our previous setting.** cuRobo's plan has one row per physics step (250 Hz), and the runner's own
+  playback sets a new joint target at every physics step. A normal policy runs at 10 to 25 Hz, so here the planner
+  and the policy both act once per 40 ms tick, as in CrossSafe. The planner is read once per tick as a_nom, the
+  displacement from the live joints to the plan row at the end of the tick. The policy outputs one δ per tick.
+- **Command.** Each tick the robot executes clip(a_nom + δ), interpolated over the tick's 10 physics steps with a
+  velocity feed-forward (`step_dtheta` semantics, section 3). δ is the policy's residual per arm joint (12 joints,
+  grippers untouched). No replanning. The plan cursor advances every tick. With δ = 0 this is the planner running
+  as a 25 Hz policy, and that is the evaluation baseline, not the 250 Hz playback.
 - **Reward.** r = 1 / (1 + w‖δ‖²/n) per tick, with δ divided by its bound and n = 12. The correction weight w is
   drawn from U(0, 2) per episode and is a policy input.
 - **Termination.** The episode ends when the named object's rule breaks. Don't touch (`avoid`): an arm collision
@@ -143,7 +148,8 @@ writes the trace files for every episode, so point training episodes at node-loc
   per process (`main/lang/config.py` `max_inits_per_process`), then restart it. Existing code exits with 75 for
   that.
 - The careless planner breaks the in-the-way object's rule in about 81% of ur5 episodes and finishes the task in
-  about 70% (`envs/docs/item_envs/calibration.md`).
+  about 70% (`envs/docs/item_envs/calibration.md`). These numbers come from the 250 Hz playback, so measure the
+  25 Hz planner's own rates in the throughput step.
 
 ## 3. The cuRobo planner and the per-tick controller
 
@@ -159,16 +165,18 @@ with equal weight per seed (the yaml's `risk_collect` cells, which `risk.sample_
 segments run at 0.6. Higher is faster.
 
 **How a tick runs.** `TickChunkedController._tick_take_dense_action` (`main/envs/controller.py`, about line 1164)
-replaces RoboTwin's `take_dense_action`. Physics runs at 250 Hz and control at 25 Hz, so one tick plays 10 plan
-rows. At each tick boundary it calls `self.tick_hook(ctx)` with
+replaces RoboTwin's `take_dense_action`. Physics runs at 250 Hz and the plan has one row per physics step. This loop
+plays the rows one per physics step (a 250 Hz command), and only its hook runs at 25 Hz, once every 10 rows. At each
+tick boundary it calls `self.tick_hook(ctx)` with
 `ctx = {left_arm, right_arm, i, left_g, right_g, g_i}`: the two arm plans (dicts with `position` and `velocity`
 rows, read with `_path_arrays(plan)`), the row cursor `i`, the gripper plans and their cursor `g_i`. The hook runs
 only while an arm plan is playing. If it returns True, the cursor stays put and the arms are replanned when control
 is handed back. That is how the HJ filter takes over.
 
-The residual needs a different loop: a subclass of `RiskTickController` that overrides `_tick_take_dense_action`
-and, every tick, computes a_nom, asks the policy for δ, executes clip(a_nom + δ) over the 10 physics steps, plays
-the gripper rows as the original does, and advances `i` by 10. It never replans.
+The residual needs a different loop that sends one arm command per tick (25 Hz): a subclass of `RiskTickController`
+that overrides `_tick_take_dense_action` and, every tick, computes a_nom, asks the policy for δ, executes
+clip(a_nom + δ) over the 10 physics steps, plays the gripper rows as the original does, and advances `i` by 10. It
+never replans.
 
 **a_nom** (as in `main/train/rollout.py` `_anom`): per arm, a_nom = pos[min(i + 9, n − 1)] − q_live, the plan row at
 the end of this tick minus the live joints (`robot.get_left_arm_real_jointState()[:-1]` and the right one, in plan
