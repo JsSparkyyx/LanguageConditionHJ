@@ -335,3 +335,14 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
     resume had kept up to 3), plus ws/_old_unbalanced_1104 and ws/smoke_t. Kept: each finished run's final checkpoint
     (its ws/<run>.DONE; ft_items_safe, ft_items_safe_x2, ft_constraint, qwen_constraint, qwen_constraint_t1; 17 GiB)
     and every exported model. vla_finetuning/ws is on the HDD pool (lfs setstripe ddn_hdd): 740 -> 170 GiB of 1,000.
+
+## H. Residual safety policy on the don't-touch task (Yuxuan 2026-11-09; residual/PLAN.md)
+
+- [x] 11-09 Plan read, open points settled with Yuxuan (PLAN section 7): the policy acts every tick (gripper segments
+  too, an arm with no plan holds its anchor), executed a_nom noise 0.01 rad, stop after the throughput step.
+- [x] 11-09 Code in `residual/` (controller, state, episodes, PPO learner, workers, evaluation, wandb, throughput,
+  smoke test); 7 non-simulator tests pass.
+- [ ] Simulator smoke test, two-update training run and the throughput step on one A40 (`residual/jobs/check.sbatch`,
+  job 23690693 on gpuA40x4-preempt, submitted 11-09; every interactive partition was full for the account).
+- [ ] Report the throughput numbers and the δ = 0 baselines per trigger; size the PPO budget with Yuxuan.
+- [ ] First PPO run: deviation trigger, completion value only on task success.

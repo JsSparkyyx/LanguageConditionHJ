@@ -312,3 +312,64 @@ meta, err = r.run()
 - `main/lang/eval_closed.py`: `trace_violations(runner)` (per-rule violation and its first time, from a trace) and
   `wilson_str` (confidence intervals for rates).
 - `docs/lang_filter/TODO.md`: what is running on the cluster now, and the storage notes.
+
+## 7. Decisions of 2026-11-09 (session start) and the implementation
+
+Yuxuan's answers before the code was written:
+
+- **The policy acts on every tick, also while a gripper closes or opens.** A gripper segment has no arm plan, so
+  before this it played outside the per-tick loop (300 physics steps = 30 ticks, 2 to 4 per episode). An arm with no
+  plan in the current motion holds its **anchor**, the last row of its last plan (its start pose before the first
+  one): a_nom = anchor − q_live. Example: the arm ends the grasp descent 0.05 rad off the grasp row on one joint;
+  while the gripper closes, a_nom = −0.05 pulls it back, so δ never adds up on an arm that has no plan.
+- **Training noise goes on the executed motion**: the arm runs clip(a_nom + noise + δ) with noise ~ N(0, 0.01 rad)
+  per joint per tick. The a_nom in the state stays exact. No noise in evaluation or in the δ = 0 baselines.
+- **This session stops after build, test and the throughput step** and reports before any long training. The first
+  PPO run, when started, is the deviation trigger with the completion value paid only on task success.
+
+Defaults chosen in the session (change in `residual/config.py`):
+
+- Each episode names one extra object, in the planner's way in half of the episodes, and its `avoid` or `stay` rule,
+  half each. A per-worker counter keeps the in-the-way share at 50 %: a scene with only in-the-way objects is rebuilt
+  with the next seed once the out-of-the-way episodes lag by 2.
+- How an episode ends: the named rule breaks (terminal, nothing after); the host script returns, the arms hold still
+  and everything rests (both hands below 1 cm/s, every item below 2 cm/s, the named object's tilt below 1 deg/s for
+  50 ticks, at most 300 ticks of waiting): terminal plus the completion value, the waiting ticks pay nothing; a
+  failed replan, a failed plan in the host script, the time limit (50 s) or an error: truncation with V(s).
+- Found while reading the code: **a replanned path starts from rest.** RoboTwin hands cuRobo the joint positions
+  only (`JointState.from_position`), so every replan slows the arm down and up again. The throughput step measures
+  how much (the old plan's speed at the cursor vs the new plan's first-tick speed, per replan).
+- A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
+  named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
+  point of the object's box.
+- Evaluation: 20 in-the-way and 20 out-of-the-way scenes from seeds training never uses (9,000,000 and up), hosts
+  balanced, avoid and stay alternating, w = 1, deterministic policy, no noise; the episode runs to its end to measure
+  task success, and the first break is recorded. The δ = 0 baseline runs once on the same scenes with the same
+  trigger. Videos of the first 2 + 2 scenes at every evaluation.
+
+Code (all in `residual/`, nothing outside it changed):
+
+| file | what |
+|---|---|
+| `config.py` | every knob with today's defaults |
+| `controller.py` | `ResidualTickController`: the 25 Hz loop, anchors, both replan triggers, gripper offsets |
+| `state.py` | the named object's distances (equal to `robot_item_distances`, checked every tick in the smoke test) and the state vector (340 numbers) |
+| `scene.py` | build a scene, which objects are in the way, name a rule |
+| `episode.py` | one episode: reward, termination, settling, transitions; videos |
+| `policy.py`, `ppo.py` | MLP actor and critic with input normalization; GAE and clipped PPO |
+| `worker.py`, `pool.py` | worker processes (several per GPU) and their restarts after 200 Env builds |
+| `train.py` | the learner: PPO updates, evaluation rounds, wandb (`cehj-residual`), checkpoints, resume, exit 75 |
+| `throughput.py` | the first step: δ = 0 episodes per trigger and process count |
+| `smoke.py`, `tests/` | simulator smoke test; non-simulator unit tests |
+| `jobs/check.sbatch` | smoke test → two-update training → throughput on one A40 |
+
+How to run (inside the container, from the repo root):
+
+```bash
+python -m pytest -q residual/tests/test_nonsim.py                      # no simulator
+python -m residual.smoke --out /abs/runs/residual/smoke                  # one A40
+python -m residual.throughput --out /abs/runs/residual/throughput \
+    --settings deviation:8,fixed:8,playback:8 --minutes 8
+python -m residual.train --run /abs/runs/residual/<name> --updates 2000 \
+    --set replan_trigger='"deviation"' completion='"success"'           # wandb online: source scripts/lang/wandb_env.sh first
+```
