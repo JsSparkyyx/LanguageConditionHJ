@@ -321,5 +321,7 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   jobs/t1x_feeder.sh on dt-login01 (started 11-08 18:20, log results_constraint_t1/_logs/feeder.log, ends with
   results_constraint_t1/DONE). The new runs prune their superseded checkpoints (PRUNE_OLD_CKPT).
   - [ ] collection (400 scenes, ~46 slot-hours), the three trainings, the tests; report per model next to scripted.
-  - [ ] ask Yuxuan: the finished runs' superseded checkpoints (~600 GiB in vla_finetuning/ws: every hourly resume
-    kept up to 3; the exported models in vla_finetuning/models are what the tests use) can go.
+  - [x] 11-08 Yuxuan OK ("delete most of it"): the finished runs' superseded checkpoints deleted (627 GiB: every hourly
+    resume had kept up to 3), plus ws/_old_unbalanced_1104 and ws/smoke_t. Kept: each finished run's final checkpoint
+    (its ws/<run>.DONE; ft_items_safe, ft_items_safe_x2, ft_constraint, qwen_constraint, qwen_constraint_t1; 17 GiB)
+    and every exported model. vla_finetuning/ws is on the HDD pool (lfs setstripe ddn_hdd): 740 -> 170 GiB of 1,000.

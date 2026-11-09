@@ -6,7 +6,7 @@
 #   ft_constraint_t1        GD,   the same 100 scenes (starts at once)
 #   ft_constraint_t1_500    GD,   500 scenes: the 100 + the 400 of the t1x set (constraint.py; its first job packs them)
 #   qwen_constraint_t1_500  Qwen, 500 scenes (waits for the t1x pack: two packers would race on one lmdb)
-# The new runs prune their superseded checkpoints (PRUNE_OLD_CKPT, ft_chain_step.sh: the SSD pool had 0.5 TB left).
+# The new runs prune their superseded checkpoints (PRUNE_OLD_CKPT, ft_chain_step.sh: ws/ is on the HDD pool, 740 of 1,000 GiB used on 11-08).
 # Test: the paired A / B / C / B2 / C2 test on 100 T1 scenes (results_constraint_t1: the 20 of results_constraint, same
 # ids, + 80 more), with scripted; 5 parts per model. Every 5 min:
 #   1. the t1x collection (vf-ccollect, A40 interactive) until every shard is DONE;
