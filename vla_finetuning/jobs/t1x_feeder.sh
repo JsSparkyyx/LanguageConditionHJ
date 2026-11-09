@@ -1,17 +1,18 @@
 #!/bin/bash
 # The T1 data test on the login node (Yuxuan 11-08: "run t1 only qwen and gd both for more data to confirm if it's the
 # data issue"; jobs only, no heavy python here). T1-only constraint fine-tunes, the same recipe (15k steps, batch 32 on
-# one GPU), 100 vs 500 training scenes, GD vs Qwen:
+# one GPU), 100 vs 300 training scenes, GD vs Qwen:
 #   qwen_constraint_t1      Qwen, the 100 T1 scenes of data/demos_constraint (done 11-07; tested again on the new scenes)
 #   ft_constraint_t1        GD,   the same 100 scenes (starts at once)
-#   ft_constraint_t1_500    GD,   500 scenes: the 100 + the 400 of the t1x set (constraint.py; its first job packs them)
-#   qwen_constraint_t1_500  Qwen, 500 scenes (waits for the t1x pack: two packers would race on one lmdb)
+#   ft_constraint_t1_300    GD,   300 scenes: the 100 + the 200 of the t1x set (constraint.py; its first job packs them)
+#   qwen_constraint_t1_300  Qwen, 300 scenes (waits for the t1x pack: two packers would race on one lmdb)
+# (500 scenes until 11-09, Yuxuan: "i think 200 new is enough"; the cluster gave 1-hour jobs every 4-8 h)
 # The new runs prune their superseded checkpoints (PRUNE_OLD_CKPT, ft_chain_step.sh: ws/ is on the HDD pool, 740 of 1,000 GiB used on 11-08).
 # Test: the paired A / B / C / B2 / C2 test on 100 T1 scenes (results_constraint_t1: the 20 of results_constraint, same
 # ids, + 80 more), with scripted; 5 parts per model. Every 5 min:
 #   1. the t1x collection (vf-ccollect, A40 interactive) until every shard is DONE;
 #   2. per run not DONE: a training job (vf-tx-<run>) on a training partition where this user has no job
-#      (interactive QOS: 1 per user per partition); the 500-scene runs only after the collection;
+#      (interactive QOS: 1 per user per partition); the 300-scene runs only after the collection;
 #   3. after the collection: the tests of scripted, qwen_constraint_t1 and every DONE run (vf-ceval, A40 interactive;
 #      the job exports a DONE model first);
 #   4. the summaries (numpy, here) and results_constraint_t1/DONE.
@@ -21,13 +22,13 @@ set -u
 R=/work/nvme/bifq/project/LanguageConditionHJ; VF=$R/vla_finetuning; RES=$VF/results_constraint_t1; LM=$VF/data/lmdb
 MAX_JOBS=${MAX_JOBS:-80}
 unset VF_CONFIG TASKS CSET LMDBS NAMES EVAL_TASKS SCENES PARTS RUN
-RUNS="ft_constraint_t1 ft_constraint_t1_500 qwen_constraint_t1_500"
+RUNS="ft_constraint_t1 ft_constraint_t1_300 qwen_constraint_t1_300"
 QWEN=configs/config_holobrain_qwen_common.py
-declare -A CFG=([ft_constraint_t1]="" [ft_constraint_t1_500]="" [qwen_constraint_t1_500]=$QWEN)
-declare -A BIG=([ft_constraint_t1]=0 [ft_constraint_t1_500]=1 [qwen_constraint_t1_500]=1)
-PACKER=ft_constraint_t1_500
+declare -A CFG=([ft_constraint_t1]="" [ft_constraint_t1_300]="" [qwen_constraint_t1_300]=$QWEN)
+declare -A BIG=([ft_constraint_t1]=0 [ft_constraint_t1_300]=1 [qwen_constraint_t1_300]=1)
+PACKER=ft_constraint_t1_300
 PACKED=$LM/constraint_t1x_selective_avoid/PACK_DONE
-L500="$LM/constraint_selective_avoid,$LM/constraint_t1x_selective_avoid"
+LBIG="$LM/constraint_selective_avoid,$LM/constraint_t1x_selective_avoid"
 TESTED="scripted qwen_constraint_t1 $RUNS"; T=selective_avoid; NPARTS=5; NSCENES=100
 CROOT=$VF/data/demos_constraint_t1x
 mkdir -p $RES/_logs; LOG=$RES/_logs/feeder.log
@@ -87,7 +88,7 @@ while true; do
     [ "$fp" = ERR ] && { log "squeue failed"; continue; }
     [ -z "$fp" ] && continue                     # every training partition holds one of this user's jobs
     log "training $run"
-    if [ ${BIG[$run]} = 1 ]; then cs=t1x; lm=$L500; else cs=""; lm=""; fi
+    if [ ${BIG[$run]} = 1 ]; then cs=t1x; lm=$LBIG; else cs=""; lm=""; fi
     RUN=$run TASKS=$T PRUNE_OLD_CKPT=1 VF_CONFIG="${CFG[$run]}" CSET="$cs" LMDBS="$lm" \
       submit train_$run $fp --export=ALL --job-name=vf-tx-$run vla_finetuning/jobs/ft_c_train.sbatch || true
   done

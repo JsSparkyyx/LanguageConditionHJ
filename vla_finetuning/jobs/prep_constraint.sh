@@ -20,7 +20,12 @@ done <<< "$table"
 # the balanced view (Yuxuan 11-04: the same number of demos per task except T6): per complete scene its careless
 # demo and one careful demo, 100 + 100 per task; T6 its 100 safe pours (items/balance_constraint.py)
 BAL=${ROOT}_bal
-python -m vla_finetuning.items.balance_constraint --root "$ROOT" --out "$BAL" || exit 1
+# the t1x set: 40 complete scenes per host (constraint.T1X_SCENES_PER_HOST; some shards had collected more, 11-09)
+CAP=""
+if [ "${CSET:-}" = t1x ]; then
+  CAP="--per-host $(python -c 'from vla_finetuning.items.constraint import T1X_SCENES_PER_HOST as n; print(n)')" || exit 75
+fi
+python -m vla_finetuning.items.balance_constraint --root "$ROOT" --out "$BAL" $CAP || exit 1
 # the demos per task and kind in the view (the collector exits 0 also when its seeds ran out: a shortfall shows here)
 python - "$BAL" $tasks <<'EOF'
 import json, sys

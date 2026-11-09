@@ -379,14 +379,16 @@ SHARDS = {"selective_avoid": 2, "push_zone": 4, "tray_transport": 2, "clean_pour
 
 
 # The extra T1 set (Yuxuan 11-08: "run t1 only qwen and gd both for more data to confirm if it's the data issue"):
-# 80 more complete scenes per T1 host (400; with the 100 above, 500 = 5x the T1 data), own root
+# 40 more complete scenes per T1 host (200; with the 100 above, 300 = 3x the T1 data; Yuxuan 11-09 "i think 200 new is
+# enough", the plan was 80 per host; shards that had collected more keep them, the training view takes 40 per host,
+# balance_constraint.py --per-host), own root
 # (data/demos_constraint_t1x), own seeds (600000 + 2000 x host index; disjoint from every range above), own shard names
 # (<host>_x<i>: the packer's uuid has the config name). place_burger_fries keeps ~10% of its seeds (11-04: 20 scenes
 # from 207 seeds, 5.1 h of one slot), so it gets more shards.
 SETS = ("main", "t1x")
 T1X_SEED_BASE = 600000
 T1X_HOST_SPAN = 2000
-T1X_SCENES_PER_HOST = 80
+T1X_SCENES_PER_HOST = 40
 T1X_SHARDS = {"place_burger_fries": 8}   # default 4 per host
 
 

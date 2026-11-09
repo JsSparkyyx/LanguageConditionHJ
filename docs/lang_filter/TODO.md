@@ -313,14 +313,18 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
     safe while C and C2 harmed it, and no scene went the other way; 4 of 20 scenes is not enough to tell from chance
     (sign test p = 0.12).
 - [ ] T1 data test (Yuxuan 11-08: "run t1 only qwen and gd both for more data to confirm if it's the data issue").
-  T1-only fine-tunes, the same recipe (15k steps, batch 32, one GPU), 100 vs 500 training scenes, GD vs Qwen:
-  qwen_constraint_t1 (Qwen, 100, done 11-07), ft_constraint_t1 (GD, 100), ft_constraint_t1_500 (GD, 500),
-  qwen_constraint_t1_500 (Qwen, 500). The 400 new scenes: shard set t1x of items/constraint.py (80 per host, seeds
+  T1-only fine-tunes, the same recipe (15k steps, batch 32, one GPU), 100 vs 300 training scenes, GD vs Qwen:
+  qwen_constraint_t1 (Qwen, 100, done 11-07), ft_constraint_t1 (GD, 100), ft_constraint_t1_300 (GD, 300),
+  qwen_constraint_t1_300 (Qwen, 300). The 200 new scenes: shard set t1x of items/constraint.py (40 per host, seeds
   600000 + 2000 x host, data/demos_constraint_t1x, packed into data/lmdb/constraint_t1x_selective_avoid next to the
-  old 100). Test: the paired test on 100 T1 scenes (results_constraint_t1: the old 20, same ids, + 80), with scripted.
-  jobs/t1x_feeder.sh on dt-login01 (started 11-08 18:20, log results_constraint_t1/_logs/feeder.log, ends with
+  old 100; 11-09 Yuxuan: "i think 200 new is enough", down from 400: the busy cluster gave each 1-hour job a 4-8 h
+  wait; shards that had collected more keep them on disk, the training view takes the lowest 40 seeds per host). Test: the paired test on 100 T1 scenes (results_constraint_t1: the old 20, same ids, + 80), with scripted.
+  jobs/t1x_feeder.sh on dt-login04 (started 11-08 18:20 on dt-login01, restarted 11-09 12:28 for the 300 runs, log results_constraint_t1/_logs/feeder.log, ends with
   results_constraint_t1/DONE). The new runs prune their superseded checkpoints (PRUNE_OLD_CKPT).
-  - [ ] collection (400 scenes, ~46 slot-hours), the three trainings, the tests; report per model next to scripted.
+  - [ ] collection (200 scenes; 11-09 12:20: 184 complete, bread 27 / burger 0 of 40), the three trainings
+    (11-09: ft_constraint_t1 at step 5,300), the tests; report per model next to scripted.
+  - [x] 11-08 collector hangs: a collector holds ~14-15 GB of an A40 from its first minute, 3 per GPU leave ~1 GB;
+    constraint_collect_pool.sh kills a collector silent for 15 min and relaunches it (9 times by 11-09 12:00).
   - [x] 11-08 Yuxuan OK ("delete most of it"): the finished runs' superseded checkpoints deleted (627 GiB: every hourly
     resume had kept up to 3), plus ws/_old_unbalanced_1104 and ws/smoke_t. Kept: each finished run's final checkpoint
     (its ws/<run>.DONE; ft_items_safe, ft_items_safe_x2, ft_constraint, qwen_constraint, qwen_constraint_t1; 17 GiB)

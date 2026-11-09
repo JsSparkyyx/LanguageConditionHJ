@@ -23,8 +23,15 @@ from collections import defaultdict
 from pathlib import Path
 
 
-def choose(root: Path) -> dict:
-    """{task: {config: [attempts rows of the chosen demos]}}"""
+def host_of(shard: str) -> str:
+    """T1 shard name -> its host: place_bread_basket_x2 -> place_bread_basket (other tasks: s0 -> s0... -> "")."""
+    head, _, tail = shard.rpartition("_")
+    return head if head and tail[:1] in ("s", "x") and tail[1:].isdigit() else ""
+
+
+def choose(root: Path, per_host: int | None = None) -> dict:
+    """{task: {config: [attempts rows of the chosen demos]}}. per_host: at most this many complete scenes per T1 host,
+    the lowest seeds (11-09: the t1x set had collected more than 40 per host on some hosts)."""
     out = {}
     for tdir in sorted(p for p in root.iterdir() if p.is_dir()):
         a_rows, b_rows, s_rows = {}, defaultdict(list), []
@@ -51,9 +58,13 @@ def choose(root: Path) -> dict:
         pick = defaultdict(list)
         for cfg, r in s_rows:
             pick[cfg].append(r)
-        for key in sorted(a_rows):
-            if key not in b_rows:
-                continue
+        keys = sorted(k for k in a_rows if k in b_rows)
+        if per_host is not None:
+            by_host = defaultdict(list)
+            for k in keys:
+                by_host[host_of(k[0])].append(k)
+            keys = sorted(k for ks in by_host.values() for k in sorted(ks, key=lambda k: k[1])[:per_host])
+        for key in keys:
             cfg, r = a_rows[key]
             pick[cfg].append(r)
             cfg, r = random.Random(key[1]).choice(sorted(b_rows[key], key=lambda x: x[0]))
@@ -95,12 +106,13 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--per-host", type=int, default=None, help="at most N complete scenes per T1 host (lowest seeds)")
     args = ap.parse_args(argv)
     root, out = Path(args.root).resolve(), Path(args.out).resolve()
     if out.exists():
         print(f"[balance] {out} exists: kept ({out.with_suffix('.json').read_text().strip()})")
         return 0
-    counts = build(root, out, choose(root))
+    counts = build(root, out, choose(root, args.per_host))
     out.with_suffix(".json").write_text(json.dumps(counts, indent=1))
     for t, c in counts.items():
         print(f"[balance] {t}: {c}")
