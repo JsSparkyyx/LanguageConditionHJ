@@ -312,3 +312,14 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
     Qwen is the only model with a hint: in 4 scenes (1, 12, 14, 15; three are stack_bowls_two) B and B2 kept the item
     safe while C and C2 harmed it, and no scene went the other way; 4 of 20 scenes is not enough to tell from chance
     (sign test p = 0.12).
+- [ ] T1 data test (Yuxuan 11-08: "run t1 only qwen and gd both for more data to confirm if it's the data issue").
+  T1-only fine-tunes, the same recipe (15k steps, batch 32, one GPU), 100 vs 500 training scenes, GD vs Qwen:
+  qwen_constraint_t1 (Qwen, 100, done 11-07), ft_constraint_t1 (GD, 100), ft_constraint_t1_500 (GD, 500),
+  qwen_constraint_t1_500 (Qwen, 500). The 400 new scenes: shard set t1x of items/constraint.py (80 per host, seeds
+  600000 + 2000 x host, data/demos_constraint_t1x, packed into data/lmdb/constraint_t1x_selective_avoid next to the
+  old 100). Test: the paired test on 100 T1 scenes (results_constraint_t1: the old 20, same ids, + 80), with scripted.
+  jobs/t1x_feeder.sh on dt-login01 (started 11-08 18:20, log results_constraint_t1/_logs/feeder.log, ends with
+  results_constraint_t1/DONE). The new runs prune their superseded checkpoints (PRUNE_OLD_CKPT).
+  - [ ] collection (400 scenes, ~46 slot-hours), the three trainings, the tests; report per model next to scripted.
+  - [ ] ask Yuxuan: the finished runs' superseded checkpoints (~600 GiB in vla_finetuning/ws: every hourly resume
+    kept up to 3; the exported models in vla_finetuning/models are what the tests use) can go.
