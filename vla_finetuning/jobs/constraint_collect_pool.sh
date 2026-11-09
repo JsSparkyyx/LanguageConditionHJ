@@ -32,6 +32,9 @@ print("\n".join(sorted(rows, key=lambda l: -left(l))))
 PYEOF
 ) && [ -n "$SORTED" ] && ITEMS=$SORTED
 mkdir -p ${ROOT}_logs/_pool
+# MAX_RUNS (env, default 10; was collect_constraint's 30): Env builds per process before it exits 75 and is relaunched.
+# A collector's GPU memory grows ~0.6 GB per build: on 11-08 the three t1x collectors of each A40 started together,
+# reached ~15 GB each (45.5 of 46 GB) around build 17 at the same moment, and all hung after "cannot create buffer".
 slot() {
   local task host shard target start step stop log rc quick t0 crashes
   while read -r task host shard target start step stop; do
@@ -45,7 +48,8 @@ slot() {
     while true; do
       t0=$(date +%s)
       python -m vla_finetuning.items.collect_constraint --task $task $hostarg --root $ROOT --shard $shard \
-        --target $target --seed-start $start --seed-step $step --seed-stop $stop < /dev/null >> $log 2>&1
+        --target $target --seed-start $start --seed-step $step --seed-stop $stop --max-runs ${MAX_RUNS:-10} \
+        < /dev/null >> $log 2>&1
       rc=$?
       if [ $rc -eq 0 ]; then date '+%F %T' > ${ROOT}_logs/$task/$shard/DONE; break; fi
       if [ $rc -ge 128 ]; then crashes=$((crashes + 1)); [ $crashes -ge 3 ] && break
