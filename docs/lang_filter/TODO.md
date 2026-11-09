@@ -327,7 +327,10 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
     step 6,050), the tests; report per model next to scripted. Estimate (11-09): collection ~11-11, the 300-scene
     runs ~11-14/15, results ~11-15/16.
   - [x] 11-08 collector hangs: a collector holds ~14-15 GB of an A40 from its first minute, 3 per GPU leave ~1 GB;
-    constraint_collect_pool.sh kills a collector silent for 15 min and relaunches it (9 times by 11-09 12:00).
+    constraint_collect_pool.sh kills a collector silent for 15 min and relaunches it (12 times by 11-09 14:40). The
+    freezes hit all three collectors of a GPU at once, about once per job (15-20 min of the GPU lost each time, and
+    the relaunch often found no memory for cuRobo: rc 3, shard skipped until the next job), so from 11-09 14:45
+    constraint_collect.sbatch runs 2 collectors per GPU (SLOTS; the GPU was 60-100 % busy with 3 anyway).
   - [x] 11-08 Yuxuan OK ("delete most of it"): the finished runs' superseded checkpoints deleted (627 GiB: every hourly
     resume had kept up to 3), plus ws/_old_unbalanced_1104 and ws/smoke_t. Kept: each finished run's final checkpoint
     (its ws/<run>.DONE; ft_items_safe, ft_items_safe_x2, ft_constraint, qwen_constraint, qwen_constraint_t1; 17 GiB)

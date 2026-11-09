@@ -9,7 +9,10 @@
 #   sbatch vla_finetuning/jobs/constraint_collect.sbatch
 set -u
 R=/work/nvme/bifq/project/LanguageConditionHJ
-ROOT=${ROOT:-$R/vla_finetuning/data/demos_constraint${CSET:+_$CSET}}; SLOTS=${SLOTS:-3}
+# SLOTS: collectors per GPU, 2 from 11-09 (was 3). Each collector holds ~15-17 GB of the A40's 44 GB, so 3 filled the
+# GPU: about once per job all three froze together (the pool's 15-min watchdog then killed them, 15-20 min of the
+# whole GPU lost, and the relaunch often found no memory for cuRobo, rc 3), and the GPU was already 60-100 % busy.
+ROOT=${ROOT:-$R/vla_finetuning/data/demos_constraint${CSET:+_$CSET}}; SLOTS=${SLOTS:-2}
 cd $R
 left=$(squeue -h -j "$SLURM_JOB_ID" -o %L | awk -F: '{s=0; for(i=1;i<=NF;i++) s=s*60+$i; print s}')
 export STAGE_DEADLINE=$(( $(date +%s) + left - 240 ))
