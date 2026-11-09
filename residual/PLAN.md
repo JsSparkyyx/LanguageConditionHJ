@@ -36,7 +36,13 @@ Agreed on 2026-11-09:
   restart its cursor at row 0. The detour then becomes the new path, the policy no longer has to hold it, and
   there is no return trip to the old path. Either trigger is fine (Yuxuan):
   - at a fixed rate, every N ticks (start with N = 5, i.e. 5 Hz). Simpler, and the planner becomes a closed-loop
-    5 Hz nominal;
+    5 Hz nominal. CrossSafe already has this: `PlanEveryKController` (`plan_play_once_everyk` in
+    `main/envs/controller.py`, run with `main/envs/run.py --controller plan_play_once_everyk --replan-k K`, latency
+    table by `main/aggregate_plank.py`). It plans to the action's gripper pose, plays K physics steps (default 20),
+    replans from the live joints, and ends the action when the gripper is within 2 cm of the pose, or within 4 cm
+    with less than 2 mm of progress per window (`_after_chunk`; that rule stops a leftover spline from replanning
+    forever). It plays the plan rows at 250 Hz without the tick hook and without the item tasks' retiming, so
+    reuse its replan and stopping logic inside the residual tick controller rather than the class itself;
   - when any joint of the arm is more than a threshold off its plan row (start with 0.1 rad). Cheaper, since it
     replans only during detours. The threshold must be below the δ bound, or it never fires.
 
