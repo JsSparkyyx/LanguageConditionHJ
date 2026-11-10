@@ -53,6 +53,8 @@ declare -A n_sub
 # job per run / stage at a time, each listing every partition of its kind.
 TRAINP="gpuA100x4 gpuA100x8 gpuH200x8"; A40=gpuA40x4
 TRAIN_TIME=${TRAIN_TIME:-24:00:00}; A40_TIME=${A40_TIME:-06:00:00}
+# One GPU per job (Yuxuan 11-10: "for vla finetuning don't request 4 gpu"): the collection and test jobs ask for
+# --nodes=1 (their scripts allow 1-4 nodes with one GPU each).
 free_parts() { echo "$1" | tr ' ' ','; }   # general queues: every partition of the list is open to a new job
 submit() {   # kind partitions sbatch-args... (only accepted submissions count towards MAX_JOBS)
   local k=$1 parts=$2; shift 2
@@ -82,7 +84,7 @@ while true; do
     q=$(queued vf-ccollect)
     if [ -z "$q" ] && [ "$(free_parts $A40)" = "$A40" ]; then
       log "collection: $cl shards left"
-      CSET=t1x submit collect $A40 --time=$A40_TIME --export=ALL vla_finetuning/jobs/constraint_collect.sbatch || true
+      CSET=t1x submit collect $A40 --time=$A40_TIME --nodes=1 --export=ALL vla_finetuning/jobs/constraint_collect.sbatch || true
     fi
   fi
   # 2. the trainings
@@ -118,7 +120,7 @@ while true; do
       if [ -z "$q" ] && [ "$(free_parts $A40)" = "$A40" ]; then
         log "tests ($names): $el parts left"
         NAMES="$names" RES=$RES EVAL_TASKS=$T SCENES=$NSCENES PARTS=$NPARTS \
-          submit eval $A40 --time=$A40_TIME --export=ALL vla_finetuning/jobs/constraint_eval.sbatch || true
+          submit eval $A40 --time=$A40_TIME --nodes=1 --export=ALL vla_finetuning/jobs/constraint_eval.sbatch || true
       fi
     elif [ "$names" = "$TESTED" ]; then
       # 4. the summaries
