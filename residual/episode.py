@@ -91,7 +91,8 @@ class _Transitions:
     def arrays(self) -> dict:
         n = len(self)
         return {
-            "obs": np.asarray(self.obs, dtype=np.float32).reshape(n, -1),
+            # an episode can end before its first policy tick (host plan failure, an error): reshape(0, -1) raises
+            "obs": (np.asarray(self.obs, dtype=np.float32).reshape(n, -1) if n else np.zeros((0, 0), np.float32)),
             "u": np.asarray(self.u, dtype=np.float32).reshape(n, N_ACT),
             "logp": np.asarray(self.logp, dtype=np.float32),
             "value": np.asarray(self.value, dtype=np.float32),
@@ -169,8 +170,9 @@ class Episode:
         except Exception as exc:
             print(f"[residual] consistency check failed: {exc}")
 
-    def _check(self, m: dict) -> None:
-        self.tick += 1
+    def _check(self, m: dict, initial: bool = False) -> None:
+        if not initial:   # t = 0 is tick 0: tick k is k x 40 ms into the episode
+            self.tick += 1
         margin = float(m["margin"])
         self.min_margin = min(self.min_margin, margin)
         self.named_held_ever |= bool(m["named_held"])
@@ -344,7 +346,7 @@ class Episode:
         t_play = time.perf_counter()
         t_settle = None
         try:
-            self._check(self.measure())   # t = 0
+            self._check(self.measure(), initial=True)   # t = 0
             task.play_once()
             if task.plan_success is False:
                 end, reason = "truncated", "host_plan_fail"

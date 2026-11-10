@@ -343,6 +343,6 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
 - [x] 11-09 Code in `residual/` (controller, state, episodes, PPO learner, workers, evaluation, wandb, throughput,
   smoke test); 7 non-simulator tests pass.
 - [ ] Simulator smoke test, two-update training run and the throughput step on one A40 (`residual/jobs/check.sbatch`,
-  job 23690693 on gpuA40x4-preempt, submitted 11-09; every interactive partition was full for the account).
+  job 23693092 on gpuA40x4-preempt, submitted 11-09 after a review fixed 10 issues (learner hang at worker restarts, empty episodes, throughput exit hang, truncation state, named distance = one call like the official one, seed blocks); every interactive partition was full for the account).
 - [ ] Report the throughput numbers and the δ = 0 baselines per trigger; size the PPO budget with Yuxuan.
 - [ ] First PPO run: deviation trigger, completion value only on task success.

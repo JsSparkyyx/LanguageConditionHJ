@@ -140,6 +140,7 @@ class Learner:
         self.wandb_id = None
         self.eval_round = 0
         self.baseline: dict | None = None
+        self.norm_ready = False
         self.totals = {"episodes": 0, "transitions": 0, "dropped_stale": 0, "skipped": 0}
         self._stop = False
         self.t_start = time.time()
@@ -159,10 +160,11 @@ class Learner:
         self.opt.load_state_dict(blob["opt"])
         self.update = int(blob["update"])
         self.version = int(blob["version"])
-        self.next_block = int(blob.get("next_block", 0)) + 1000   # fresh seeds after a restart
+        self.next_block = int(blob.get("next_block", 0)) + 200   # blocks spawned after the last checkpoint
         self.wandb_id = blob.get("wandb_id")
         self.eval_round = int(blob.get("eval_round", 0))
         self.baseline = blob.get("baseline")
+        self.norm_ready = bool(blob.get("norm_ready", self.update > 0))
         self.totals = blob.get("totals", self.totals)
         if blob.get("rng") is not None:
             self.rng.bit_generator.state = blob["rng"]
@@ -175,7 +177,7 @@ class Learner:
             "model": state_for_workers(self.model), "opt": self.opt.state_dict(), "update": self.update,
             "version": self.version, "next_block": pool.next_block if pool is not None else self.next_block,
             "wandb_id": self.wandb_id, "eval_round": self.eval_round, "baseline": self.baseline,
-            "totals": self.totals, "rng": self.rng.bit_generator.state, "cfg": self.cfg.to_dict(),
+            "norm_ready": self.norm_ready, "totals": self.totals, "rng": self.rng.bit_generator.state, "cfg": self.cfg.to_dict(),
             "obs_dim": self.obs_dim,
         }
         _atomic_save(blob, self.ckpt_path)
@@ -211,6 +213,7 @@ class Learner:
         scans: list[dict] = []
         next_seed = cfg.seed_base_eval
         batch = max(need * 2, 2 * pool.n)
+        t_scan = time.time()
         while True:
             ids = set()
             for s in range(next_seed, next_seed + batch):
@@ -220,13 +223,20 @@ class Learner:
                 for res in pool.poll(timeout=5.0):
                     if res.get("kind") == "scan":
                         scans.append(res)
+                if time.time() - t_scan > 60.0 * self.args.eval_timeout_min:
+                    print("[residual-train] eval scan: time limit, using the scans so far", flush=True)
+                    for i in ids:
+                        pool.jobs.pop(i, None)
+                    break
             chosen = select_eval_scenes(scans, cfg.eval_in_way, cfg.eval_out_way)
             n_in = sum(c["in_way"] for c in chosen)
             n_out = len(chosen) - n_in
             print(f"[residual-train] eval scan: {len(scans)} seeds -> {n_in} in the way, {n_out} out of the way",
                   flush=True)
+            if self._stop:
+                return   # a partial list must not become the run's fixed evaluation scenes
             if (n_in >= cfg.eval_in_way and n_out >= cfg.eval_out_way) or next_seed - cfg.seed_base_eval > 2000 \
-                    or self._stop:
+                    or time.time() - t_scan > 60.0 * self.args.eval_timeout_min:
                 break
         self.eval_scenes = chosen
         _atomic_json(chosen, self.run / "eval_scenes.json")
@@ -379,9 +389,28 @@ class Learner:
                 ep_log.flush()
                 if eval_state is not None:
                     eval_state["ids"] = {i for i in eval_state["ids"] if i in pool.jobs}   # done or dropped
+                    if eval_state["ids"] and time.time() - eval_state["t0"] > 60.0 * args.eval_timeout_min:
+                        print(f"[residual-train] eval {eval_state['name']}: time limit, {len(eval_state['ids'])} "
+                              f"episodes missing", flush=True)
+                        for i in eval_state["ids"]:
+                            pool.jobs.pop(i, None)
+                        eval_state["ids"] = set()
                 if eval_state is not None and not eval_state["ids"]:
                     self._finish_eval(eval_state, wb)
                     eval_state = None
+                if n_buf >= cfg.steps_per_update and not self.norm_ready:
+                    # the first batch only fits the observation statistics: the actor and critic of update 1 then
+                    # train on the inputs they will see. Its episodes ran without normalization, so the version jumps
+                    # by max_policy_lag + 1 and they (and those still running) are not used for PPO
+                    self.model.norm.update(np.concatenate([e["traj"]["obs"] for e in buf if len(e["traj"]["rew"])]))
+                    self.norm_ready = True
+                    self.version += int(cfg.max_policy_lag) + 1
+                    self.publish()
+                    print(f"[residual-train] observation statistics fitted on {n_buf} transitions; "
+                          f"version {self.version}", flush=True)
+                    buf, n_buf = [], 0
+                    self.save(pool)
+                    continue
                 if n_buf >= cfg.steps_per_update:
                     batch = make_batch([e["traj"] | {"end": e["end"], "boot": e["boot"],
                                                      "last_value": e["last_value"]} for e in buf], cfg.gae_lambda)
@@ -472,6 +501,8 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--learner-threads", type=int, default=4)
     ap.add_argument("--no-wandb", action="store_true")
+    ap.add_argument("--eval-timeout-min", type=float, default=90.0, help="an evaluation round or the scene scan "
+                    "finishes with what it has after this long")
     args = ap.parse_args()
     return Learner(args).main()
 

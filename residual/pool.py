@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import pickle
 import queue
 import time
 from pathlib import Path
@@ -102,8 +103,19 @@ class WorkerPool:
                     self.inflight[wid] = self.jobs[job_id]
                 else:
                     self.inflight.pop(wid, None)
-            elif kind == "result":
-                res = msg[2]
+            elif kind in ("result", "result_file"):
+                if kind == "result_file":
+                    try:
+                        with open(msg[2], "rb") as f:
+                            res = pickle.load(f)
+                        os.unlink(msg[2])
+                    except Exception as exc:
+                        print(f"[pool] result file {msg[2]} unreadable ({exc}); job {msg[3]} dropped", flush=True)
+                        self.inflight.pop(wid, None)
+                        self.jobs.pop(msg[3], None)
+                        continue
+                else:
+                    res = msg[2]
                 self.inflight.pop(wid, None)
                 self.jobs.pop(res.get("job_id", -1), None)
                 out.append(res)
@@ -141,9 +153,19 @@ class WorkerPool:
 
     def close(self, timeout: float = 60.0) -> None:
         self.stop_ev.set()
+        # jobs nobody will take must not keep this process alive at exit (the queue's feeder thread is joined then)
+        self.job_q.cancel_join_thread()
+        try:
+            while True:
+                self.job_q.get_nowait()
+        except Exception:
+            pass
         t_end = time.time() + timeout
-        for p in self.procs.values():
-            p.join(timeout=max(0.1, t_end - time.time()))
+        while time.time() < t_end and any(p.is_alive() for p in self.procs.values()):
+            try:   # keep reading: a worker flushing its last result waits for the reader (worker._exit)
+                self.result_q.get(timeout=0.5)
+            except Exception:
+                pass
         for p in self.procs.values():
             if p.is_alive():
                 p.terminate()

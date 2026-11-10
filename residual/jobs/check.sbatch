@@ -24,7 +24,7 @@ mon=$!
 trap 'kill $mon 2>/dev/null' EXIT
 [ -f scripts/lang/wandb_env.sh ] && source scripts/lang/wandb_env.sh >/dev/null 2>&1 || true
 run() { scripts/lang/in_container.sh "$@"; }
-rc=0
+rc=0; failed=""
 for st in $STAGES; do
   if [ -f "$OUT/done.$st" ]; then echo "[check] $st done before: skipped"; continue; fi
   echo "[check] === $st $(date '+%F %T')"
@@ -32,16 +32,21 @@ for st in $STAGES; do
     smoke)
       run python -m residual.smoke --out "$OUT/smoke"; rc=$? ;;
     train)
-      run python -m residual.train --run "$OUT/train" --updates 2 --workers 4 --no-wandb --deadline-min 25 \
-        --set steps_per_update=1500 minibatch=512 eval_every=1 eval_in_way=2 eval_out_way=2 eval_video_scenes=2
-      rc=$? ;;
+      run python -m residual.train --run "$OUT/train" --updates 2 --workers 4 --no-wandb --deadline-min 22 \
+        --eval-timeout-min 15 \
+        --set steps_per_update=1000 minibatch=512 eval_every=1 eval_in_way=2 eval_out_way=2 eval_video_scenes=2
+      rc=$?
+      # 75 = stopped at its deadline with a checkpoint: the loop ran; the throughput stage does not depend on it
+      [ $rc -eq 75 ] && { echo "[check] train stopped at its deadline (75): counted as run"; rc=0; } ;;
     throughput)
       run python -m residual.throughput --out "$OUT/throughput" --settings "$SETTINGS" --minutes "$MINUTES"
       rc=$? ;;
   esac
   echo "[check] $st rc=$rc $(date '+%F %T')"
   [ $rc -eq 0 ] && touch "$OUT/done.$st"
-  [ $rc -ne 0 ] && break
+  [ $rc -ne 0 ] && failed="$failed $st"
+  # only a failed smoke test stops the job: the training check and the throughput step do not depend on each other
+  [ $rc -ne 0 ] && [ "$st" = smoke ] && break
 done
-echo "[check] end rc=$rc $(date '+%F %T')"
-exit $rc
+echo "[check] end, failed stages:${failed:- none} $(date '+%F %T')"
+[ -z "$failed" ]

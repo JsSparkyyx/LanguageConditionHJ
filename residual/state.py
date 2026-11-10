@@ -139,7 +139,14 @@ class NamedProbe:
             link_dir[j] = _unit(_closest_on_obb(ca, origin, rot, half) - ca)
             if not np.any(link_dir[j]):
                 link_dir[j] = _unit(origin - ca)
-        d_arm = float(link_d.min()) if n_links else float("inf")
+        # the rule's own number: ONE call over every sphere, as robot_item_distances makes it (the per-link calls
+        # above are state features only: item_shapes' search caps its exact checks per call and bounds far spheres
+        # by planes, so a min over 26 calls can differ slightly from the one call)
+        if self.shape is not None:
+            d_arm = float(item_shapes.spheres_min_distance(centers, radii, self.shape)[0])
+        else:
+            d_arm = float(min(cehj._arm_sphere_distance(self.env, "left", origin, rot, half, self.spheres)[0],
+                              cehj._arm_sphere_distance(self.env, "right", origin, rot, half, self.spheres)[0]))
 
         # held payload, exactly robot_item_distances' loop for item k
         held = []   # (side, d, dir, pos, R, half)

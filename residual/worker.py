@@ -19,6 +19,37 @@ import traceback
 from pathlib import Path
 
 EXIT_RESTART = 75
+SEEDS_PER_BLOCK = 1000
+
+
+def _send_result(result_q, spool: Path, wid: int, res: dict) -> None:
+    """The result goes through a file; the queue carries only its path. A message under 4 KB is one atomic pipe
+    write, so a worker that dies (a simulator crash) can never leave half a message for the learner to block on."""
+    import pickle
+
+    spool.mkdir(parents=True, exist_ok=True)
+    _send_result.n = getattr(_send_result, "n", 0) + 1
+    path = spool / f"w{wid:03d}_{os.getpid()}_{_send_result.n:06d}.pkl"
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "wb") as f:
+        pickle.dump(res, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, path)
+    result_q.put(("result_file", wid, str(path), int(res.get("job_id", -1))))
+
+
+def _exit(result_q, log, code: int) -> None:
+    """Exit without losing the last message: a result (~1 MB) is larger than a pipe, and os._exit while the queue's
+    feeder thread is still writing leaves the learner blocked in get() forever (review 11-09, reproduced)."""
+    try:
+        result_q.close()
+        result_q.join_thread()
+    except Exception:
+        pass
+    try:
+        log.flush()
+    except Exception:
+        pass
+    os._exit(code)
 
 
 class SideBalancer:
@@ -111,7 +142,12 @@ def worker_main(wid: int, gpu: int | None, cfg_dict: dict, run_dir: str, job_q, 
         cfg = ResidualConfig.from_dict(cfg_dict)
         run = Path(run_dir)
         rng = np.random.default_rng([int(seed_block), int(wid), 7919])
-        seeds = iter(range(cfg.seed_base_train + seed_block * 100_000, cfg.seed_base_train + (seed_block + 1) * 100_000))
+        # SEEDS_PER_BLOCK seeds per worker life (a life builds at most max_inits_per_process scenes); a block never
+        # reaches the evaluation seeds
+        lo = cfg.seed_base_train + seed_block * SEEDS_PER_BLOCK
+        if lo + SEEDS_PER_BLOCK > cfg.seed_base_eval:
+            raise RuntimeError(f"seed block {seed_block} would reach the evaluation seeds ({cfg.seed_base_eval})")
+        seeds = iter(range(lo, lo + SEEDS_PER_BLOCK))
         balancer = SideBalancer(cfg)
         cache: dict = {}
         builds = 0
@@ -153,18 +189,16 @@ def worker_main(wid: int, gpu: int | None, cfg_dict: dict, run_dir: str, job_q, 
                 builds += int(res.get("builds", 0))
             res["wid"] = wid
             res["wall_job"] = time.perf_counter() - t0
-            result_q.put(("result", wid, res))
+            _send_result(result_q, Path(scratch) / "spool", wid, res)
             if builds >= cfg.max_inits_per_process:
                 print(f"[worker {wid}] {builds} Env builds: restarting (exit {EXIT_RESTART})", flush=True)
                 log.flush()
-                os._exit(EXIT_RESTART)
+                _exit(result_q, log, EXIT_RESTART)
     except Exception as exc:
         traceback.print_exc()
         try:
             result_q.put(("dead", wid, f"{type(exc).__name__}: {exc}"))
         except Exception:
             pass
-        log.flush()
-        os._exit(1)
-    log.flush()
-    os._exit(0)
+        _exit(result_q, log, 1)
+    _exit(result_q, log, 0)

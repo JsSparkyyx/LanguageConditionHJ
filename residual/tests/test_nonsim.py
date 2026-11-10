@@ -155,3 +155,39 @@ def test_select_eval_scenes_balanced():
     assert all(c["item_id"] == "obj_a" for c in ins)                 # the most in-the-way object
     assert {c["rule_kind"] for c in ins} == {"avoid", "stay"}
     assert len({c["seed"] for c in sel}) == len(sel)                 # one case per seed
+
+
+def _child_big_result(q, spool):
+    import numpy as np
+
+    from residual.worker import _exit, _send_result
+
+    res = {"job_id": 7, "kind": "train", "traj": {"obs": np.zeros((600, 340), np.float32)}}   # ~0.8 MB
+    _send_result(q, __import__("pathlib").Path(spool), 3, res)
+    _exit(q, open("/dev/null", "w"), 75)
+
+
+def test_result_survives_worker_exit(tmp_path):
+    """A ~1 MB result followed at once by the planned restart exit (review 11-09: the learner hung in get())."""
+    import multiprocessing as mp
+    import pickle
+
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    p = ctx.Process(target=_child_big_result, args=(q, str(tmp_path)))
+    p.start()
+    msg = q.get(timeout=60)
+    p.join(timeout=30)
+    assert p.exitcode == 75
+    assert msg[0] == "result_file" and msg[3] == 7
+    with open(msg[2], "rb") as f:
+        res = pickle.load(f)
+    assert res["traj"]["obs"].shape == (600, 340)
+
+
+def test_empty_transitions_arrays():
+    from residual.episode import _Transitions
+
+    a = _Transitions(0.99).arrays()
+    assert a["obs"].shape[0] == 0 and a["rew"].shape == (0,)
+    assert make_batch([{**a, "end": "truncated", "boot": 0.0, "last_value": 0.0}], 0.95)["n"] == 0

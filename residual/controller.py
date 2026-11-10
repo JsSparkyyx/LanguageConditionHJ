@@ -113,6 +113,8 @@ class ResidualTickController(RiskTickController):
         try:
             cur = float(self.robot.get_left_gripper_val() if arm == "left" else self.robot.get_right_gripper_val())
             tgt = float(np.asarray(g["result"])[-1])
+            if abs(tgt - cur) < 0.05:   # a gripper call that does not open or close it
+                return
             q = self._arm_qpos()[arm]
             ee = _ee_err(self.robot, arm, self.last_target[arm]) if self.last_target[arm] is not None else None
             self.grip_events.append({
@@ -160,6 +162,7 @@ class ResidualTickController(RiskTickController):
         g_i = 0
         self.in_loop = True
         self._loop = (plans, cursor)
+        normal_exit = False
         try:
             while task.plan_success:
                 n = {a: _n_wp(plans[a]) for a in ARMS}
@@ -205,9 +208,13 @@ class ResidualTickController(RiskTickController):
                 if self.agent is not None:
                     self.agent.tick_done()
                 self._maybe_replan(plans, cursor, since_replan)
+            normal_exit = True
         finally:
             self.in_loop = False
-            self._loop = None
+            # an exception (replan failure, time limit) keeps the last plans and cursor: the truncation bootstrap
+            # V(s_T) then sees the state the policy was in, not the between-motions anchor view
+            if normal_exit:
+                self._loop = None
         return True
 
     def _maybe_replan(self, plans: dict, cursor: dict, since_replan: dict) -> None:

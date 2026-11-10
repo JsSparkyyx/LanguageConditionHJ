@@ -153,15 +153,15 @@ def run_setting(cfg, out: Path, name: str, controller: str, trigger: str | None,
     d.mkdir(parents=True, exist_ok=True)
     pool = WorkerPool(cfg, d, procs, d / "logs", d / "scratch", next_block=seed_offset)
     pool.start()
-    n_jobs = procs * 200   # more than can finish: the wall-time budget decides
-    for _ in range(n_jobs):
-        pool.submit(Job(kind="throughput", policy="zero", noise=False, terminate=False, controller=controller,
-                        trigger=trigger, tag=name).to_dict())
+    job = Job(kind="throughput", policy="zero", noise=False, terminate=False, controller=controller, trigger=trigger,
+              tag=name).to_dict()
     t0 = time.time()
     t_stop = t0 + 60.0 * minutes
     eps, mem_samples = [], []
     with open(d / "episodes.jsonl", "a") as f:
         while time.time() < t_stop:
+            while pool.pending_jobs() < 2 * procs:   # a few queued jobs at a time: the wall-time budget decides
+                pool.submit(dict(job, job_id=-1))
             for res in pool.poll(timeout=5.0):
                 res.pop("traj", None)
                 eps.append(res)
