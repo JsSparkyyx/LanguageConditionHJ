@@ -35,12 +35,16 @@ mkdir -p $RES/_logs; LOG=$RES/_logs/feeder.log
 cd $R
 log() { echo "$(date '+%F %T') $*" >> $LOG; }
 # A failed squeue (Slurm controller down, 11-05) must not read as "nothing queued": queued prints ERR, never empty.
-queued() { local o; o=$(squeue -h -u $USER -n $1 -o %i 2>/dev/null) || { echo ERR; return; }; echo "$o" | head -1; }
+# --me, not -u $USER: on 11-09 the cluster's user lookup failed for hours ("Invalid user: yyang69") and squeue -u then
+# printed that error with exit 0 and no jobs, so the feeder took every queue for empty. Any output that is not job ids
+# (an error message) counts as a failure too.
+sq() { local o; o=$(squeue -h --me -o %i "$@" 2>&1) || return 1; echo "$o" | grep -qv '^[0-9]*$' && return 1; echo "$o"; }
+queued() { local o; o=$(sq -n $1) || { echo ERR; return; }; echo "$o" | head -1; }
 declare -A n_sub
 TRAINP="gpuA100x4-interactive gpuA100x8-interactive gpuH200x8-interactive"; A40=gpuA40x4-interactive
 free_parts() {   # partitions (space list) -> those where this user has no job, comma-joined; ERR on a failed squeue
   local p o out=""
-  for p in $1; do o=$(squeue -h -u $USER -p $p -o %i 2>/dev/null) || { echo ERR; return; }; [ -z "$o" ] && out="$out,$p"; done
+  for p in $1; do o=$(sq -p $p) || { echo ERR; return; }; [ -z "$o" ] && out="$out,$p"; done
   echo "${out#,}"
 }
 submit() {   # kind partitions sbatch-args... (only accepted submissions count towards MAX_JOBS)
