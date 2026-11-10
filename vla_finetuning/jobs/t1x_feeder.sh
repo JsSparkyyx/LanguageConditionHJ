@@ -19,7 +19,8 @@
 #      the job exports a DONE model first);
 #   4. the summaries (numpy, here) and results_constraint_t1/DONE.
 # Stops submitting a kind after MAX_JOBS (a stuck stage then waits for a look). Log: results_constraint_t1/_logs/feeder.log
-#   setsid nohup bash vla_finetuning/jobs/t1x_feeder.sh > /dev/null 2>&1 < /dev/null &
+#   setsid nohup bash vla_finetuning/jobs/t1x_feeder.sh > /dev/null 2>> vla_finetuning/results_constraint_t1/_logs/feeder.stderr < /dev/null &
+# (stderr kept: on 11-10 a feeder vanished between two checks with no log line, cause unknown)
 set -u
 R=/work/nvme/bifq/project/LanguageConditionHJ; VF=$R/vla_finetuning; RES=$VF/results_constraint_t1; LM=$VF/data/lmdb
 MAX_JOBS=${MAX_JOBS:-80}
