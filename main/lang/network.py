@@ -472,14 +472,128 @@ class LangCriticHead(nn.Module):
         return softmin(V, self.temperature), V
 
 
+CHUNK_POINTS = 3   # a chunk is summarized at this many evenly spaced points (its cumulative commands)
+
+
+def chunk_ticks(cfg) -> tuple:
+    """The ticks each summary point of a decision covers: (1,) for a one-tick critic, (4, 8, 12) for chunk 12."""
+    n = int(getattr(cfg, "critic_chunk", 1))
+    return (1,) if n == 1 else tuple(n * (k + 1) // CHUNK_POINTS for k in range(CHUNK_POINTS))
+
+
+class ActionCriticHead(LangCriticHead):
+    """LangCriticHead for the action-sensitivity test (ACTION_SENSITIVITY_PLAN section 3): a chunk as the action
+    (cfg.critic_chunk > 1) and / or the revised injection (cfg.critic_injection == "revised"). MLP readout only.
+
+    Action: dtheta [B, A] (one tick) or the per-tick commands [B, T, A], T = cfg.critic_chunk. A chunk is read at
+    its summary points c_k = dtheta_1 + ... + dtheta_k, k = chunk_ticks(cfg). Per body token the features are, for
+    each point, [own joint's entry of c_k, J_lin c_k (3), J_ang c_k (3)], then the valid flag: 7 P + 1 numbers
+    (8 for one tick, 22 for a chunk). The Jacobians are the current state's, so a chunk is linearized over its
+    length. The post-action link position uses the last point.
+
+        linear:  Linear(7 P + 1, 256) on the raw features, added to the body tokens (CrossSafe's injection).
+        revised: body tokens through an RMSNorm first; each feature divided by its bound (own joint: dtheta_max x
+                 the ticks covered; translation / rotation: the reference sizes act_ref x the ticks covered, set
+                 once by set_action_ref and saved with the weights); MLP(7 P + 1 -> 256 -> 256) + RMSNorm; added.
+                 The mean action embedding over the valid body tokens also joins the readout's input
+                 ((K + 3) x 256 instead of (K + 2) x 256).
+    """
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        if self.readout != "mlp":
+            raise ValueError("ActionCriticHead needs critic_readout = mlp")
+        self.ticks = chunk_ticks(cfg)
+        self.chunk = int(getattr(cfg, "critic_chunk", 1))
+        self.revised = str(getattr(cfg, "critic_injection", "linear")) == "revised"
+        F = 7 * len(self.ticks) + 1
+        if self.revised:
+            del self.act_proj
+            self.body_norm = nn.RMSNorm(DIM)
+            self.act_mlp = nn.Sequential(nn.Linear(F, DIM), nn.SiLU(), nn.Linear(DIM, DIM))
+            self.act_norm = nn.RMSNorm(DIM)
+            hidden = int(getattr(cfg, "critic_mlp_hidden", 512))
+            self.readout_mlp = nn.Sequential(nn.Linear((self.K + 3) * DIM, hidden), nn.SiLU(), nn.Linear(hidden, 1))
+            # bounds: per action column dtheta_max (rad / tick), then the translation (m) and rotation (rad) one
+            # saturated tick gives a link; ones until set_action_ref (ref_set says whether it was called)
+            self.register_buffer("act_dmax", torch.ones(32))
+            self.register_buffer("act_ref", torch.ones(2))
+            self.register_buffer("ref_set", torch.zeros((), dtype=torch.bool))
+        else:
+            self.act_proj = nn.Linear(F, DIM)
+
+    def set_action_ref(self, dtheta_max, s_p: float, s_w: float) -> None:
+        dm = torch.as_tensor(dtheta_max, dtype=self.act_dmax.dtype).flatten()
+        if dm.numel() > self.act_dmax.numel():
+            raise ValueError(f"{dm.numel()} action columns, the buffer holds {self.act_dmax.numel()}")
+        new = torch.ones_like(self.act_dmax)
+        new[: dm.numel()] = torch.where(dm > 0, dm, torch.ones_like(dm)).to(new.device)
+        self.act_dmax.copy_(new)
+        self.act_ref.copy_(torch.tensor([float(s_p), float(s_w)], dtype=self.act_ref.dtype))
+        self.ref_set.fill_(True)
+
+    def features(self, dtheta, Jlin, Jang, joint_index, n_res: int, dtype):
+        """-> feat [B, M + n_res, 7 P + 1] (normalized under the revised injection), dp_last [B, M + n_res, 3]."""
+        if (dtheta.dim() == 3) != (self.chunk > 1) or (dtheta.dim() == 3 and dtheta.shape[1] != self.chunk):
+            raise ValueError(f"critic_chunk {self.chunk}: got an action of shape {tuple(dtheta.shape)}")
+        cs = dtheta.cumsum(1) if dtheta.dim() == 3 else None
+        parts, dp_last, valid = [], None, None
+        for n in self.ticks:
+            c = dtheta if cs is None else cs[:, n - 1]
+            eff, dp_last = action_effects(c, Jlin, Jang, joint_index, n_res, dtype)
+            f, valid = eff[..., :7], eff[..., 7:]
+            if self.revised:
+                B, M = f.shape[0], joint_index.shape[-1]
+                ji = (joint_index if joint_index.dim() == 2 else joint_index.unsqueeze(0).expand(B, -1)).to(f.device)
+                own = self.act_dmax.to(f.dtype)[ji.long().clamp_min(0)]                    # [B, M]
+                own = torch.cat([own, own.new_ones(B, n_res)], 1).unsqueeze(-1) * n
+                f = torch.cat([f[..., :1] / own, f[..., 1:4] / (self.act_ref[0].to(f.dtype) * n),
+                               f[..., 4:7] / (self.act_ref[1].to(f.dtype) * n)], -1)
+            parts.append(f)
+        return torch.cat(parts + [valid], -1), dp_last
+
+    def forward(self, enc: LangEncoded, dtheta, Jlin, Jang, joint_index):
+        M = joint_index.shape[-1]
+        n_res = enc.body.shape[1] - M
+        feat, dp = self.features(dtheta.to(enc.body.device), Jlin, Jang, joint_index, n_res, enc.body.dtype)
+        if self.revised:
+            if not bool(self.ref_set):
+                raise RuntimeError("revised injection: set_action_ref was never called (and no checkpoint set it)")
+            e = self.act_norm(self.act_mlp(feat))
+            b = self.body_norm(enc.body) + e
+        else:
+            b = enc.body + self.act_proj(feat)
+        x = enc.pos + dp
+        b, r, q = _run_blocks(self.blocks, self.use_ckpt, b, x, enc.mask, enc.r, enc.queries, enc.scene,
+                              enc.scene_pos, enc.scene_mask, enc.words, enc.word_mask, enc.r0)
+        m = enc.mask[..., None]                                            # [B, 22, 1]
+        n_valid = m.sum(1).clamp_min(1).to(b.dtype)
+        parts = [r, q, (b.masked_fill(~m, 0.0).sum(1) / n_valid)[:, None]]
+        if self.revised:
+            parts.append((e.masked_fill(~m, 0.0).sum(1) / n_valid)[:, None])
+        z = self.readout_norm(torch.cat(parts, 1)).flatten(1)
+        return self.readout_mlp(z).squeeze(-1), None
+
+
+def make_critic_head(cfg) -> LangCriticHead:
+    if str(getattr(cfg, "critic_injection", "linear")) == "linear" and int(getattr(cfg, "critic_chunk", 1)) == 1:
+        return LangCriticHead(cfg)
+    return ActionCriticHead(cfg)
+
+
 class LangTwinCritic(nn.Module):
-    """Two LangCriticHeads on the same LangEncoded (TwinCritic's interface:
-    forward -> (q1, q2, v1, v2), qmin) so SafetyFilter is reused unchanged.
-    v1, v2 are None under the MLP readout (only qmin / q1, q2 are read)."""
+    """Two critic heads (make_critic_head: LangCriticHead, or ActionCriticHead for a chunk critic / the revised
+    injection) on the same LangEncoded (TwinCritic's interface: forward -> (q1, q2, v1, v2), qmin) so SafetyFilter
+    is reused unchanged. v1, v2 are None under the MLP readout (only qmin / q1, q2 are read)."""
 
     def __init__(self, cfg):
         super().__init__()
-        self.c1, self.c2 = LangCriticHead(cfg), LangCriticHead(cfg)
+        self.c1, self.c2 = make_critic_head(cfg), make_critic_head(cfg)
+
+    def set_action_ref(self, dtheta_max, s_p: float, s_w: float) -> None:
+        for c in (self.c1, self.c2):
+            if hasattr(c, "set_action_ref") and getattr(c, "revised", False):
+                c.set_action_ref(dtheta_max, s_p, s_w)
 
     def forward(self, enc, dtheta, Jlin, Jang, joint_index):
         q1, v1 = self.c1(enc, dtheta, Jlin, Jang, joint_index)

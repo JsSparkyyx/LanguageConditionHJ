@@ -195,6 +195,15 @@ class LangConfig(FrozenConfig):
     # saved before the field loads as "softmin", so those checkpoints rebuild the head they trained
     critic_readout: str = "mlp"
     critic_mlp_hidden: int = 512
+    # ACTION_SENSITIVITY_PLAN (2026-11-10), section 3. critic_injection: how the action enters the critic. "linear" =
+    # CrossSafe's one Linear on the raw action effects, added to the body tokens. "revised" = RMSNorm on the body
+    # tokens first, the effects divided by their bounds, MLP(. -> 256 -> 256) + RMSNorm, and the mean action embedding
+    # of the valid body tokens joins the MLP readout's input. critic_chunk: the ticks one decision covers: 1 = one
+    # tick (the action is dtheta [B, A]); 12 = a 0.48 s chunk (the action is the per-tick commands [B, 12, A],
+    # summarized by their cumulative sums after 4, 8 and 12 ticks). A config saved before the fields reads
+    # "linear" / 1, so its checkpoint rebuilds the head it trained
+    critic_injection: str = "linear"
+    critic_chunk: int = 1
     # E6 scene-count curve: train on the first N episodes per (task, embodiment) of a fixed nested order (0 = all).
     # Training sampler only (the validation / probe sampler always sees every episode)
     train_episodes_per_task: int = 0
@@ -273,6 +282,11 @@ class LangConfig(FrozenConfig):
         assert self.item_out_root, "item_out_root must never be None/empty"
         assert self.fusion_dtype in ("fp32", "tf32", "bf16"), self.fusion_dtype
         assert self.critic_readout in ("mlp", "softmin"), self.critic_readout
+        assert self.critic_injection in ("linear", "revised"), self.critic_injection
+        assert int(self.critic_chunk) == 1 or (int(self.critic_chunk) >= 3 and int(self.critic_chunk) % 3 == 0), \
+            "critic_chunk is 1 or a multiple of 3 (three summary points)"
+        assert (self.critic_injection == "linear" and int(self.critic_chunk) == 1) or self.critic_readout == "mlp", \
+            "the revised injection and the chunk critic use the MLP readout"
         assert self.train_episodes_per_task >= 0, self.train_episodes_per_task
         # the frozen fusion reads HoloBrain's text_feat_map words (256-d); other backends cannot feed it
         assert not self.scene_fusion or self.text_backend == "holobrain_bert", \
