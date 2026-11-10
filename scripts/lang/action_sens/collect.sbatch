@@ -1,8 +1,9 @@
 #!/bin/bash
-#SBATCH --account=bifq-delta-gpu --partition=gpuA40x4-interactive --nodes=1-4 --ntasks-per-node=1
+#SBATCH --account=bifq-delta-gpu --partition=gpuA40x4-interactive --nodes=1 --ntasks-per-node=1
 #SBATCH --gpus-per-node=1 --cpus-per-task=16 --mem=60g --time=01:00:00
 #SBATCH --job-name=as-collect -o /work/nvme/bifq/project/LanguageConditionHJ/runs/lang/action_sens/logs/collect_%j.out
-# The boundary branch collection (ACTION_SENSITIVITY_PLAN step 2; collect_branches.py): 1 to 4 A40 nodes, WORKERS
+# The boundary branch collection (ACTION_SENSITIVITY_PLAN step 2; collect_branches.py): ONE A40 (Yuxuan 11-10:
+# always one GPU per job unless he says otherwise), WORKERS
 # processes per GPU (default 2; a worker holds the HoloBrain encoder and a ray-traced simulator). Resumable: a
 # finished planner episode is skipped, an unfinished one leaves no rows; the workers stop before the time limit.
 # Exit 0 = every episode done, 75 = run again (feeder.sh resubmits).
