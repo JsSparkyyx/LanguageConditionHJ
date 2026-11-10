@@ -14,7 +14,8 @@
 #   2. per run not DONE: a training job (vf-tx-<run>) on a training partition where this user has no job
 #      (interactive QOS: 1 per user per partition); the 300-scene runs only after the collection. While more than one
 #      run can train, each job asks for ONE partition (11-10: a waiting job that lists several partitions holds this
-#      user's slot in each, so the runs trained one at a time); a run training alone lists every free one;
+#      user's slot in each, so the runs trained one at a time); a run training alone lists every free one.
+#      From 11-10 14:40 the GENERAL partitions instead (see TRAINP below): no such limit, 24-hour training jobs;
 #   3. after the collection: the tests of scripted, qwen_constraint_t1 and every DONE run (vf-ceval, A40 interactive;
 #      the job exports a DONE model first);
 #   4. the summaries (numpy, here) and results_constraint_t1/DONE.
@@ -46,12 +47,13 @@ log() { echo "$(date '+%F %T') $*" >> $LOG; }
 sq() { local o; o=$(squeue -h --me -o %i "$@" 2>&1) || return 1; echo "$o" | grep -qv '^[0-9]*$' && return 1; echo "$o"; }
 queued() { local o; o=$(sq -n $1) || { echo ERR; return; }; echo "$o" | head -1; }
 declare -A n_sub
-TRAINP="gpuA100x4-interactive gpuA100x8-interactive gpuH200x8-interactive"; A40=gpuA40x4-interactive
-free_parts() {   # partitions (space list) -> those where this user has no job, comma-joined; ERR on a failed squeue
-  local p o out=""
-  for p in $1; do o=$(sq -p $p) || { echo ERR; return; }; [ -z "$o" ] && out="$out,$p"; done
-  echo "${out#,}"
-}
+# 11-10 (Yuxuan: "move it to non-interactive queues and let them wait and run on general queues, the chance for
+# interactive should be left for this experiment", the action-sensitivity test): the general partitions, with longer
+# jobs (the wait is long, so a job should do a whole stage once it starts). No 1-job-per-partition limit there: one
+# job per run / stage at a time, each listing every partition of its kind.
+TRAINP="gpuA100x4 gpuA100x8 gpuH200x8"; A40=gpuA40x4
+TRAIN_TIME=${TRAIN_TIME:-24:00:00}; A40_TIME=${A40_TIME:-06:00:00}
+free_parts() { echo "$1" | tr ' ' ','; }   # general queues: every partition of the list is open to a new job
 submit() {   # kind partitions sbatch-args... (only accepted submissions count towards MAX_JOBS)
   local k=$1 parts=$2; shift 2
   if [ ${n_sub[$k]:-0} -ge $MAX_JOBS ]; then log "$k: $MAX_JOBS jobs submitted, waiting for a look"; return 1; fi
@@ -80,7 +82,7 @@ while true; do
     q=$(queued vf-ccollect)
     if [ -z "$q" ] && [ "$(free_parts $A40)" = "$A40" ]; then
       log "collection: $cl shards left"
-      CSET=t1x submit collect $A40 --export=ALL vla_finetuning/jobs/constraint_collect.sbatch || true
+      CSET=t1x submit collect $A40 --time=$A40_TIME --export=ALL vla_finetuning/jobs/constraint_collect.sbatch || true
     fi
   fi
   # 2. the trainings
@@ -102,11 +104,10 @@ while true; do
     fp=$(free_parts "$TRAINP")
     [ "$fp" = ERR ] && { log "squeue failed"; continue; }
     [ -z "$fp" ] && continue                     # every training partition holds one of this user's jobs
-    [ $n_train -gt 1 ] && fp=${fp%%,*}           # several runs to train: one partition each (header, step 2)
     log "training $run"
     if [ ${BIG[$run]} = 1 ]; then cs=t1x; lm=$LBIG; else cs=""; lm=""; fi
     RUN=$run TASKS=$T PRUNE_OLD_CKPT=1 VF_CONFIG="${CFG[$run]}" CSET="$cs" LMDBS="$lm" \
-      submit train_$run $fp --export=ALL --job-name=vf-tx-$run vla_finetuning/jobs/ft_c_train.sbatch || true
+      submit train_$run $fp --time=$TRAIN_TIME --export=ALL --job-name=vf-tx-$run vla_finetuning/jobs/ft_c_train.sbatch || true
   done
   # 3. the tests (the A40 slot is the collection's until it is done)
   if [ "$cl" = 0 ]; then
@@ -117,7 +118,7 @@ while true; do
       if [ -z "$q" ] && [ "$(free_parts $A40)" = "$A40" ]; then
         log "tests ($names): $el parts left"
         NAMES="$names" RES=$RES EVAL_TASKS=$T SCENES=$NSCENES PARTS=$NPARTS \
-          submit eval $A40 --export=ALL vla_finetuning/jobs/constraint_eval.sbatch || true
+          submit eval $A40 --time=$A40_TIME --export=ALL vla_finetuning/jobs/constraint_eval.sbatch || true
       fi
     elif [ "$names" = "$TESTED" ]; then
       # 4. the summaries
