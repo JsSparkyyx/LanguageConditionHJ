@@ -12,7 +12,9 @@
 # ids, + 80 more), with scripted; 5 parts per model. Every 5 min:
 #   1. the t1x collection (vf-ccollect, A40 interactive) until every shard is DONE;
 #   2. per run not DONE: a training job (vf-tx-<run>) on a training partition where this user has no job
-#      (interactive QOS: 1 per user per partition); the 300-scene runs only after the collection;
+#      (interactive QOS: 1 per user per partition); the 300-scene runs only after the collection. While more than one
+#      run can train, each job asks for ONE partition (11-10: a waiting job that lists several partitions holds this
+#      user's slot in each, so the runs trained one at a time); a run training alone lists every free one;
 #   3. after the collection: the tests of scripted, qwen_constraint_t1 and every DONE run (vf-ceval, A40 interactive;
 #      the job exports a DONE model first);
 #   4. the summaries (numpy, here) and results_constraint_t1/DONE.
@@ -79,6 +81,12 @@ while true; do
     fi
   fi
   # 2. the trainings
+  n_train=0   # runs that can train now
+  for run in $RUNS; do
+    [ -f $VF/ws/$run.DONE ] && continue
+    if [ ${BIG[$run]} = 1 ]; then [ "$cl" = 0 ] || continue; [ $run = $PACKER ] || [ -f $PACKED ] || continue; fi
+    n_train=$((n_train + 1))
+  done
   done_runs=""
   for run in $RUNS; do
     if [ -f $VF/ws/$run.DONE ]; then done_runs="$done_runs $run"; continue; fi
@@ -91,6 +99,7 @@ while true; do
     fp=$(free_parts "$TRAINP")
     [ "$fp" = ERR ] && { log "squeue failed"; continue; }
     [ -z "$fp" ] && continue                     # every training partition holds one of this user's jobs
+    [ $n_train -gt 1 ] && fp=${fp%%,*}           # several runs to train: one partition each (header, step 2)
     log "training $run"
     if [ ${BIG[$run]} = 1 ]; then cs=t1x; lm=$LBIG; else cs=""; lm=""; fi
     RUN=$run TASKS=$T PRUNE_OLD_CKPT=1 VF_CONFIG="${CFG[$run]}" CSET="$cs" LMDBS="$lm" \
