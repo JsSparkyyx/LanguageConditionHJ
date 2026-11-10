@@ -3,6 +3,7 @@
 The scripts here run the language-conditioned safety filter (`main/lang/`) without Delta's container: the rounds
 training (VANILLA_PLAN 6.2) with the settings of Delta's 2026-10-23 runs, the data collection behind them, and the
 checks. Every path comes from the repo's location or from the variables below; nothing points at Delta.
+The short checklist for a new machine (what to copy, set and check): `docs/lang_filter/NEW_MACHINE_SETUP.md`.
 
 | script | what it does | where |
 |---|---|---|
