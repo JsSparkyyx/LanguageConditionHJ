@@ -348,3 +348,21 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   job 23693092 on gpuA40x4-preempt, submitted 11-09 after a review fixed 10 issues (learner hang at worker restarts, empty episodes, throughput exit hang, truncation state, named distance = one call like the official one, seed blocks); every interactive partition was full for the account).
 - [ ] Report the throughput numbers and the δ = 0 baselines per trigger; size the PPO budget with Yuxuan.
 - [ ] First PPO run: deviation trigger, completion value only on task success.
+
+## I. Why the critic ignores the action (Yuxuan 2026-11-10; docs/lang_filter/ACTION_SENSITIVITY_PLAN.md)
+
+Code `scripts/lang/action_sens/` (+ `main/lang/network.py` `ActionCriticHead`, config switches `critic_chunk`,
+`critic_injection`); outputs `runs/lang/action_sens/`, data `data/lang_asens/`. The pass numbers were fixed on 11-10
+14:54 in `runs/lang/action_sens/criteria.json` (rank agreement >= 0.70 and spread ratio >= 0.25 on the held-out branch
+states). This experiment has the interactive partitions; the VLA jobs of section G wait on the general queues
+(Yuxuan 11-10).
+
+- [ ] step 1, free check (`fit_check.py`: regress Q on V95 at the 117 old branch states, 3 folds, softmin / linear
+  / revised): job as-step1 queued 11-10.
+- [ ] step 2, boundary branch data (`collect_branches.py`: 25 planner episodes, about 4 states each, 7 decisions per
+  state, every tick stored as a normal shard): smoke job as-smoke queued 11-10 (1 episode, 2 states); then
+  `collect.sbatch` through `feeder.sh` (A40 interactive, 1-4 nodes x 2 workers, at most 10 one-hour jobs).
+- [ ] step 3, the six critics A-F (`train_critic.py train`, 6,000 steps, 1-hour resumable jobs, `feeder.sh`):
+  trainer smoke job as-trsmoke queued 11-10.
+- [ ] step 4, scores (`train_critic.py score`) and `docs/lang_filter/ACTION_SENSITIVITY_REPORT.md`.
+
