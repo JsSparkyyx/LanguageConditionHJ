@@ -319,13 +319,15 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   600000 + 2000 x host, data/demos_constraint_t1x, packed into data/lmdb/constraint_t1x_selective_avoid next to the
   old 100; 11-09 Yuxuan: "i think 200 new is enough", down from 400: the busy cluster gave each 1-hour job a 4-8 h
   wait; shards that had collected more keep them on disk, the training view takes the lowest 40 seeds per host). Test: the paired test on 100 T1 scenes (results_constraint_t1: the old 20, same ids, + 80), with scripted.
-  jobs/t1x_feeder.sh on dt-login04 (started 11-08 18:20 on dt-login01, restarted 11-09 12:28 for the 300 runs, log results_constraint_t1/_logs/feeder.log, ends with
+  jobs/t1x_feeder.sh on dt-login01 (started 11-08 18:20 on dt-login01, restarted 11-09 12:28 on dt-login04 for the 300 runs, and 11-10 12:50 on dt-login01 with one partition per training job, so the three runs can train at once; log results_constraint_t1/_logs/feeder.log, ends with
   results_constraint_t1/DONE). The new runs prune their superseded checkpoints (PRUNE_OLD_CKPT).
   - [ ] collection (200 scenes; 11-09 14:00: plate / blocks / bowls full, bread 28 and burger 0 of 40; burger
     started 13:56 and is the slowest host, ~18 runs per usable scene in the old set: ~5-6 more 1-hour A40 jobs), the
     three trainings (~750 steps per 1-hour job, ~20 jobs per run, a job every ~3-5 h; 11-09 14:00 ft_constraint_t1 at
     step 6,050), the tests; report per model next to scripted. Estimate (11-09): collection ~11-11, the 300-scene
-    runs ~11-14/15, results ~11-15/16.
+    runs ~11-14/15, results ~11-15/16. 11-10 12:45: ft_constraint_t1 at step 9,800, jobs starting every ~3.5 h; collection 179 of 200 usable
+    (burger 24, bread 35 of 40). Run one at a time (a waiting job held all three training partitions), the 300-scene
+    runs would have ended ~11-16; the feeder now gives each run its own partition.
   - [x] 11-08 collector hangs: a collector holds ~14-15 GB of an A40 from its first minute, 3 per GPU leave ~1 GB;
     constraint_collect_pool.sh kills a collector silent for 15 min and relaunches it (12 times by 11-09 14:40). The
     freezes hit all three collectors of a GPU at once, about once per job (15-20 min of the GPU lost each time, and
