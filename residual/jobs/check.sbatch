@@ -23,7 +23,8 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader || true
 mon=$!
 trap 'kill $mon 2>/dev/null' EXIT
 [ -f scripts/lang/wandb_env.sh ] && source scripts/lang/wandb_env.sh >/dev/null 2>&1 || true
-run() { scripts/lang/in_container.sh "$@"; }
+# STAGE_TIMEOUT (s): a stage stops before the job's walltime (interactive jobs: 1 h); every stage resumes
+run() { timeout --signal=TERM --kill-after=60 "${STAGE_TIMEOUT:-6000}" scripts/lang/in_container.sh "$@"; }
 rc=0; failed=""
 for st in $STAGES; do
   if [ -f "$OUT/done.$st" ]; then echo "[check] $st done before: skipped"; continue; fi
