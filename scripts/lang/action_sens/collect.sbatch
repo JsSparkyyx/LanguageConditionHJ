@@ -13,13 +13,18 @@ cd $R
 left=$(squeue -h -j "$SLURM_JOB_ID" -o %L | awk -F: '{s=0; for(i=1;i<=NF;i++) s=s*60+$i; print s}')
 export STAGE_DEADLINE=$(( $(date +%s) + ${left:-3600} - 240 ))
 echo "[as-collect] job $SLURM_JOB_ID nodes $SLURM_JOB_NODELIST ($SLURM_NNODES), deadline $(date -d @$STAGE_DEADLINE +%T)"
+# ROUND (env, default 1): 1 = the first 25 planner episodes into data/lang_asens, 2 = 125 more into data/lang_asens2
+# (plan section 7.2 b, all 9 decisions). N_EPISODES: the episodes that make the collection complete.
+ROUND=${ROUND:-1}
+D=data/lang_asens; N=${N_EPISODES:-25}
+[ "$ROUND" = 2 ] && { D=data/lang_asens2; N=${N_EPISODES:-125}; }
 srun --ntasks-per-node=1 --kill-on-bad-exit=0 scripts/lang/in_container.sh \
-  python scripts/lang/action_sens/collect_branches.py run --workers ${WORKERS:-2} ${EXTRA:-}
+  python scripts/lang/action_sens/collect_branches.py run --round $ROUND --workers ${WORKERS:-2} ${EXTRA:-}
 rc=$?
-left=$(ls data/lang_asens/episodes/*/result.json 2>/dev/null | wc -l)
-echo "[as-collect] rc=$rc, $left episodes done $(date '+%F %T')"
-if [ "$left" -ge "${N_EPISODES:-25}" ]; then
-  scripts/lang/in_container.sh python scripts/lang/action_sens/collect_branches.py table && date '+%F %T' > data/lang_asens/COLLECT_DONE
+left=$(ls $D/episodes/*/result.json 2>/dev/null | wc -l)
+echo "[as-collect] round $ROUND rc=$rc, $left of $N episodes done $(date '+%F %T')"
+if [ "$left" -ge "$N" ]; then
+  scripts/lang/in_container.sh python scripts/lang/action_sens/collect_branches.py table --round $ROUND && date '+%F %T' > $D/COLLECT_DONE
   exit 0
 fi
 exit 75

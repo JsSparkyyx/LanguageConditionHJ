@@ -12,6 +12,11 @@ from it, each restored first:
     t1_c0, t1_c50        a 1-tick decision: the planner's path at c x its rate for 1 tick (c = 0: a freeze, the
                          zero command), then the planner at full rate from where its plan cursor stands
     ch_c0 ... ch_c75     a chunk decision: the same for 12 ticks (0.48 s), c = 0, 0.25, 0.5, 0.75
+    t3_c0, t3_c50        a 3-tick decision (120 ms, "the lower rate"; added 2026-11-11, plan section 7): c = 0, 0.5.
+                         Listed last, so the first seven keep their index in the episode ids and the states files
+
+--round 2 (plan section 7.2 b): 125 more planner episodes (seeds 6026-6150) into data/lang_asens2, all 9 decisions.
+The first round (seeds 6001-6025, data/lang_asens) has the first 7 decisions only.
 
 Every continuation runs twice from the same restore. Pass 1 is physics only, until 50 ticks after the last motion
 (t5_branch's settle rule, cap 300 ticks): its h trace gives the truth (V95, min h, fell). Pass 2 repeats it with a
@@ -67,11 +72,16 @@ N_CTX = 3         # context rows in front of every branch episode
 EID_BASE = 700_000_000
 # (name, H ticks, speed scale c)
 DECISIONS = [("plan", 0, 1.0), ("t1_c0", 1, 0.0), ("t1_c50", 1, 0.5),
-             ("ch_c0", CHUNK, 0.0), ("ch_c25", CHUNK, 0.25), ("ch_c50", CHUNK, 0.5), ("ch_c75", CHUNK, 0.75)]
-# 25 planner episodes, time scales 0.75-1.3; every 5th is held out for scoring (one or two of each scale)
+             ("ch_c0", CHUNK, 0.0), ("ch_c25", CHUNK, 0.25), ("ch_c50", CHUNK, 0.5), ("ch_c75", CHUNK, 0.75),
+             ("t3_c0", 3, 0.0), ("t3_c50", 3, 0.5)]
+# planner episodes at time scales 0.75-1.3; every 5th is held out for scoring (one or two of each scale per 20).
+# Round 1: seeds 6001-6025 (20 train / 5 held out). Round 2: seeds 6026-6150 (100 / 25), its own root
 TS_CYCLE = (1.3, 1.15, 1.0, 0.75)
-DEFAULT_EPISODES = [(6001 + k, TS_CYCLE[k % 4]) for k in range(25)]
-HELD_OUT = {6001 + k for k in range(25) if k % 5 == 4}
+N_ROUND = {1: (0, 25), 2: (25, 150)}
+OUT_ROUND = {1: OUT, 2: REPO / "data/lang_asens2"}
+ALL_EPISODES = [(6001 + k, TS_CYCLE[k % 4]) for k in range(150)]
+DEFAULT_EPISODES = ALL_EPISODES[:25]
+HELD_OUT = {6001 + k for k in range(150) if k % 5 == 4}
 LEADS = (0.8, 0.6, 0.4, 0.2)   # wanted lead times (s) to the planner's brake of the branch states
 ROBOT_FIELDS = ("state_tokens", "body_tokens", "link_pos", "body_mask", "joint_index", "Jlin", "Jang", "dtheta_max")
 
@@ -622,9 +632,10 @@ def save_episode(ep: Episode, out: dict, root: Path) -> None:
     tmp.replace(ep.dir / "result.json")
 
 
-def parse_episodes(spec):
+def parse_episodes(spec, rnd: int = 1):
     if not spec:
-        return list(DEFAULT_EPISODES)
+        a, b = N_ROUND[int(rnd)]
+        return list(ALL_EPISODES[a:b])
     return [(int(t.split(":")[0]), float(t.split(":")[1])) for t in str(spec).split(",")]
 
 
@@ -640,7 +651,7 @@ def worker(args) -> int:
     from main.train.collect import CKPT_DIR, make_kinematics
 
     out = Path(args.out)
-    eps = parse_episodes(args.episodes)
+    eps = parse_episodes(args.episodes, args.round)
     todo = [(s, ts) for s, ts in eps if not (out / "episodes" / f"s{s}_ts{ts:g}" / "result.json").exists()]
     if not todo:
         print("[asens] nothing to do", flush=True)
@@ -791,7 +802,7 @@ def table(args) -> int:
         by.setdefault(r["state_id"], []).append(r["V95"])
     sp = [max(v) - min(v) for v in by.values()]
     if sp:
-        print(f"  V95 spread over a state's {len(DECISIONS)} decisions: mean {np.mean(sp):.3f}, median "
+        print(f"  V95 spread over a state's {len(rows) // max(len(by), 1)} decisions: mean {np.mean(sp):.3f}, median "
               f"{np.median(sp):.3f}; states with spread > 0.05: {sum(s > 0.05 for s in sp)} of {len(sp)}")
     for e in eps:
         print(f"  {e['episode']}: states {e['n_states']} tipped {e['tipped']} wall {e['wall_s'] or 0:.0f}s "
@@ -806,7 +817,8 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
     r.add_argument("--episodes", default="", help="seed:time_scale,... (default: the 25 planned episodes)")
-    r.add_argument("--out", default=str(OUT))
+    r.add_argument("--out", default="", help="default: data/lang_asens (round 1), data/lang_asens2 (round 2)")
+    r.add_argument("--round", type=int, default=1, choices=sorted(N_ROUND))
     r.add_argument("--max-states", type=int, default=0, help="smoke: this many branch states per episode")
     r.add_argument("--max-episodes", type=int, default=0)
     r.add_argument("--workers", type=int, default=1)
@@ -816,8 +828,10 @@ def main(argv=None) -> int:
     r.add_argument("--rows-per-episode", type=int, default=4500, help="room a new episode needs in the shard")
     r.add_argument("--episode-est", type=float, default=1500.0, help="seconds per episode before one is measured")
     t = sub.add_parser("table")
-    t.add_argument("--out", default=str(OUT))
+    t.add_argument("--out", default="")
+    t.add_argument("--round", type=int, default=1, choices=sorted(N_ROUND))
     args = ap.parse_args(argv)
+    args.out = args.out or str(OUT_ROUND[int(args.round)])
     args.out = str(Path(args.out).resolve())   # the env build chdirs into RoboTwin: every path must be absolute
     if args.cmd == "run":
         import main.lang  # noqa: F401  (main.item_envs on the path)

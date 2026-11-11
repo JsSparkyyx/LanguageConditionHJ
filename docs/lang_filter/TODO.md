@@ -352,17 +352,32 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
 ## I. Why the critic ignores the action (Yuxuan 2026-11-10; docs/lang_filter/ACTION_SENSITIVITY_PLAN.md)
 
 Code `scripts/lang/action_sens/` (+ `main/lang/network.py` `ActionCriticHead`, config switches `critic_chunk`,
-`critic_injection`); outputs `runs/lang/action_sens/`, data `data/lang_asens/`. The pass numbers were fixed on 11-10
+`critic_injection`); outputs `runs/lang/action_sens/`, data `data/lang_asens/` (round 1) and `data/lang_asens2/` (round 2). The pass numbers were fixed on 11-10
 14:54 in `runs/lang/action_sens/criteria.json` (rank agreement >= 0.70 and spread ratio >= 0.25 on the held-out branch
 states). This experiment has the interactive partitions; the VLA jobs of section G wait on the general queues
 (Yuxuan 11-10).
 
-- [ ] step 1, free check (`fit_check.py`: regress Q on V95 at the 117 old branch states, 3 folds, softmin / linear
-  / revised): job as-step1 queued 11-10.
-- [ ] step 2, boundary branch data (`collect_branches.py`: 25 planner episodes, about 4 states each, 7 decisions per
-  state, every tick stored as a normal shard): smoke job as-smoke queued 11-10 (1 episode, 2 states); then
-  `collect.sbatch` through `feeder.sh` (A40 interactive, 1-4 nodes x 2 workers, at most 10 one-hour jobs).
-- [ ] step 3, the six critics A-F (`train_critic.py train`, 6,000 steps, 1-hour resumable jobs, `feeder.sh`):
-  trainer smoke job as-trsmoke queued 11-10.
-- [ ] step 4, scores (`train_critic.py score`) and `docs/lang_filter/ACTION_SENSITIVITY_REPORT.md`.
-
+- [x] step 1, free check (`fit_check.py`, 117 old branch states, 3 folds; 300 steps and again 1,500 steps on 11-10):
+  the current injection cannot fit the action differences even when given the answer (training states: rank 0.62,
+  spread ratio 0.00); the revised one fits its training states (0.94 / 0.93) and ranks new states at chance (0.52).
+  Outputs `runs/lang/action_sens/step1/`, `step1_long_linear/`, `step1_long_revised/`.
+- [x] step 2, first collection (`collect_branches.py`, 11-10): 25 planner episodes, 100 states, 7 decisions each
+  (700 branches) in two one-hour A40 jobs, `data/lang_asens/` (21 GB). 20 episodes train, 5 held out.
+- [x] step 3, first round: A, C, D trained (6,000 steps), all fail: held-out rank / spread ratio A 0.75 / 0.00002,
+  C 0.63 / 0.0001, D 0.68 / 0.04 (D on its training states 0.47 / 0.09). E dropped by Yuxuan on 11-11. F (1 tick,
+  revised, no branch data) and B (1 tick, revised, small branch data, old mix) still training on 11-11.
+- [ ] second round (plan section 7, Yuxuan 11-11; code committed 11-11): `feeder.sh` (running on dt-login01 since
+  11-11 14:33) submits everything, one GPU per job:
+  - collection round 2: `collect.sbatch` with ROUND=2, seeds 6026-6150 (125 planner episodes, about 500 states), all
+    9 decisions (the two 3-tick ones, t3_c0 and t3_c50, are new) into `data/lang_asens2/` (about 12 one-hour A40
+    jobs, about 140 GB; 100 episodes train, 25 held out). Done = `data/lang_asens2/COLLECT_DONE`.
+  - now: D2 (chunk, small data, new batch mix), G (3 ticks, normal rows only). B and F finish.
+  - after the collection: B2 (1 tick), H (3 ticks), D3 (chunk), all on the large data with the new mix.
+  - new batch mix: 50% normal rows, 25% branch continuation rows, 25% decision rows (drawn one branch at a time).
+  - 3-tick critic: the summed command of 3 ticks as one action (model unchanged, the bounds of the revised
+    injection x 3), target unrolled over 3 ticks.
+  - G has no probe states until the round-2 collection has written some (the first round has no 3-tick decisions):
+    each of its jobs loads the states that exist when it starts; `score` scores the final checkpoint on all of them.
+- [ ] step 4, scores (`train_critic.py score`: held-out, training states, and the first round's held-out states for
+  the large-data runs) and `docs/lang_filter/ACTION_SENSITIVITY_REPORT.md` with the tables of plan sections 4 and
+  7.4 (training and held-out side by side at every probe: `<run>/diag.jsonl`).

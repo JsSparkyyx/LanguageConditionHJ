@@ -4,7 +4,7 @@
 #SBATCH --mem=64g --time=01:00:00
 #SBATCH --job-name=as-train
 # One job of an action-sensitivity critic run (ACTION_SENSITIVITY_PLAN step 3; train_critic.py train).
-# NAME (env): the run, A .. F. Resumable: the trainer stops itself before the time limit (exit 75) and the next job
+# NAME (env): the run (train_critic.py RUNS: A .. F, and the second round's D2, G, B2, H, D3). Resumable: the trainer stops itself before the time limit (exit 75) and the next job
 # continues from its state. The partition comes from the command line (feeder.sh). EXTRA (env): more arguments.
 #   sbatch --partition=gpuA100x4-interactive --export=ALL,NAME=E -J as-tr-E -o runs/lang/action_sens/logs/train_E_%j.out scripts/lang/action_sens/train.sbatch
 set -u

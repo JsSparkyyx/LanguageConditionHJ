@@ -5,7 +5,7 @@
     python scripts/lang/action_sens/train_critic.py train --name A [--grad-steps 6000] [--time-budget 3000] [--resume]
     python scripts/lang/action_sens/train_critic.py score [--names A B ...]       # -> runs/lang/action_sens/scores.json
 
-The six runs (RUNS): the decision a critic scores (1 tick, or a 12-tick chunk), how the action enters it (current
+The runs (RUNS): the decision a critic scores (1 tick, 3 ticks, or a 12-tick chunk), how the action enters it (current
 Linear injection, or the revised one), and the data (the vanilla run's warmup + ring restricted to the tray-sliding
 task, with or without the boundary branch data as a quarter of each batch). All use the MLP readout. Otherwise the
 vanilla run's settings (its lang_config: gamma 0.95, batch 64, lr 3e-4, TF32 train step), from scratch.
@@ -17,6 +17,18 @@ Critic only: no actor loss; the action in the target is the stored one.
              With row t+12 in the episode and not its last: y_t+12 = mean of the target twins at (s_t+12, the
              stored chunk of row t+12), then y_t+k = (1 - g) h_t+k + g min(h_t+k, y_t+k+1) for k = 11 .. 0.
              Else the episode ends inside the chunk: the recursion starts at its last row L with y_L = h_L.
+
+Second round (plan section 7, 2026-11-11):
+    3 ticks: "the lower rate". The action is the sum of the 3 stored commands of rows t .. t+2 and enters the model
+             as a one-tick action does (critic_chunk stays 1; the revised injection's bounds are 3 x one tick's).
+             Target: as the chunk's with 3 in place of 12.
+    batch mix "new": 50% normal rows, 25% branch continuation rows, 25% decision rows. A decision row is one of
+             the first max(H, 1) rows of a branch from its state row (H = the branch's decision length; the
+             planner branch counts its state row): the rows whose action is part of the decision. They are drawn
+             one branch at a time (every branch equally often, then one of its decision rows), so about 45% of them
+             are state rows, where the 7 or 9 branches show the same state with different actions.
+             Mix "old" (first round): 75% normal, 25% any branch row (decision rows about 2%).
+    data:    "small" = the first round's 100 states (data/lang_asens), "large" = small + data/lang_asens2.
 
 Every --probe-every steps the fixed probe states (the held-out branch states and as many training ones) are scored:
 rank agreement and spread ratio over each state's decisions (section 4 of the plan), and the spread of Q over 16
@@ -47,7 +59,8 @@ from main.lang.train import EXIT_RESUME, LOG_EVERY, LangTrainer, _t, caches_of, 
 
 VANILLA = REPO / "runs/lang/rounds_ur5_g095_1023"
 NORMAL = [REPO / "data/lang_1023/warmup", VANILLA / "ring"]
-BRANCH = REPO / "data/lang_asens"
+BRANCH = REPO / "data/lang_asens"        # round 1: 100 states, 7 decisions ("small")
+BRANCH2 = REPO / "data/lang_asens2"      # round 2: about 500 states, 9 decisions ("large" = both)
 OUT = REPO / "runs/lang/action_sens"
 NORM = REPO / "runs/lang/diag_1030/retrain/action_norm.json"
 CRITERIA = OUT / "criteria.json"
@@ -55,17 +68,35 @@ T5 = "tray_transport"
 CHUNK = 12
 BRANCH_FRAC = 0.25
 N_RAND = 16
-# name: (decision ticks, injection, branch data)
-RUNS = {"A": (1, "linear", True), "B": (1, "revised", True), "C": (CHUNK, "linear", True),
-        "D": (CHUNK, "revised", True), "E": (CHUNK, "linear", False), "F": (1, "revised", False)}
+# shares of a batch: (normal, branch continuation, decision); None = any branch row
+MIX = {"old": (0.75, None, 0.25), "new": (0.50, 0.25, 0.25)}
+
+
+def _run(ticks, injection, branch, mix="old"):
+    return {"decision_ticks": ticks, "injection": injection, "branch_data": branch, "mix": mix}
+
+
+# branch_data: None (normal rows only), "small" or "large". E was dropped on 2026-11-11 (C failed with more help)
+RUNS = {"A": _run(1, "linear", "small"), "B": _run(1, "revised", "small"), "C": _run(CHUNK, "linear", "small"),
+        "D": _run(CHUNK, "revised", "small"), "E": _run(CHUNK, "linear", None), "F": _run(1, "revised", None),
+        "D2": _run(CHUNK, "revised", "small", "new"), "G": _run(3, "revised", None),
+        "B2": _run(1, "revised", "large", "new"), "H": _run(3, "revised", "large", "new"),
+        "D3": _run(CHUNK, "revised", "large", "new")}
 ENC_FIELDS = ("state_tokens", "body_tokens", "link_pos", "body_mask", "joint_index", "Jlin", "Jang", "dtheta_max",
               "scene_tokens", "scene_pos")
 PASS = {"rank_agree_min": 0.70, "spread_ratio_min": 0.25, "gt_tol": 0.05}
 
 
-def run_cfg(chunk: int, injection: str) -> LangConfig:
+def run_cfg(ticks: int, injection: str) -> LangConfig:
+    """The model takes a chunk only for the 12-tick decision; a 3-tick decision is one summed action."""
     cfg = LangConfig.load(VANILLA / "lang_config.json")
-    return dataclasses.replace(cfg, critic_readout="mlp", critic_injection=injection, critic_chunk=int(chunk))
+    return dataclasses.replace(cfg, critic_readout="mlp", critic_injection=injection,
+                               critic_chunk=CHUNK if int(ticks) == CHUNK else 1)
+
+
+def branch_dirs(scope, small_root: Path = BRANCH) -> list:
+    """The data roots of a run's branch scope (None -> [])."""
+    return [] if not scope else ([Path(small_root)] + ([BRANCH2] if scope == "large" else []))
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +134,36 @@ def branch_keep(sampler, held_out: bool = False) -> np.ndarray:
     return keep
 
 
+def branch_masks(sampler, held_out: bool = False):
+    """-> (keep, dec, w) over a branch sampler's rows. keep: branch_keep. dec: the decision rows, the first
+    max(H, 1) rows of a branch from its state row (H = the branch's decision length). w: 12 / max(H, 1), the times a
+    decision row is repeated in the draw so that every branch is drawn equally often."""
+    N = sampler.sid.size
+    keep, dec, w = np.zeros(N, bool), np.zeros(N, bool), np.ones(N, np.int64)
+    o = 0
+    for s in sampler.sources:
+        n = s.rows.size
+        for e in np.unique(s.eid):
+            ln = s.lines.get(int(e)) or {}
+            br = ln.get("branch")
+            if br is None or bool(br.get("held_out")) != bool(held_out):
+                continue
+            m = np.flatnonzero(s.eid == e)
+            nc, hb = int(ln.get("n_ctx", 3)), max(int(br.get("H", 0)), 1)
+            t = s.t[m]
+            keep[o + m] = t >= nc
+            dec[o + m] = (t >= nc) & (t < nc + hb)
+            w[o + m] = max(CHUNK // hb, 1)
+        o += n
+    return keep, dec, w
+
+
+def reweight(sampler, w: np.ndarray) -> None:
+    """Repeat every row w times in the sampler's draw pools."""
+    sampler.by_task = {t: np.repeat(i, w[i]) for t, i in sampler.by_task.items()}
+    sampler.mixed_by_task = {t: np.repeat(i, w[i]) for t, i in sampler.mixed_by_task.items()}
+
+
 class EpIndex:
     """Per source: for every ring slot, how many more rows its episode has (rem), and slot -> index row."""
 
@@ -125,21 +186,20 @@ class EpIndex:
 
 
 class Batcher:
-    """Batches of 64: normal rows, plus branch rows as BRANCH_FRAC of the batch. Chunk critics also get, per sample,
-    the stored commands of the chunk, the h of its rows, and the state and stored chunk at its end (a second read)."""
+    """Batches of 64 from parts [(sampler, rows, kind)], kind 0 normal / 1 branch (continuation, or any branch row
+    under the old mix) / 2 decision. Critics of 3 or 12 ticks also get, per sample, the stored commands of the
+    decision window, the h of its rows, and the state and stored window at its end (a second read)."""
 
-    def __init__(self, tr: "CriticTrainer", bsampler, chunk: int, seed: int):
+    def __init__(self, tr: "CriticTrainer", parts: list, chunk: int, seed: int):
         self.tr, self.chunk = tr, int(chunk)
-        self.parts = [(tr.sampler, tr.cfg.batch_size)]
-        if bsampler is not None:
-            nb = int(round(BRANCH_FRAC * tr.cfg.batch_size))
-            self.parts = [(tr.sampler, tr.cfg.batch_size - nb), (bsampler, nb)]
+        self.parts = [p for p in parts if p[1] > 0]
         self.rng = np.random.default_rng(seed)
         self.idx = {}
         if self.chunk > 1:
-            for smp, _ in self.parts:
+            for smp, _, _ in self.parts:
                 for s in smp.sources:
-                    self.idx[id(s)] = EpIndex(s)
+                    if id(s) not in self.idx:
+                        self.idx[id(s)] = EpIndex(s)
         self.q: queue.Queue = queue.Queue(maxsize=3)
         self.stop_flag = False
         self.err = None
@@ -176,10 +236,11 @@ class Batcher:
 
     def make(self) -> dict:
         outs = []
-        for smp, n in self.parts:
+        for smp, n, kind in self.parts:
             picks = smp.plan(n, self.rng)
             b = smp.sample(len(picks), rng=self.rng, picks=picks)
-            b["_branch"] = np.full(len(picks), smp is not self.tr.sampler)
+            b["_branch"] = np.full(len(picks), kind > 0)
+            b["_kind"] = np.full(len(picks), kind, np.int64)
             if self.chunk > 1:
                 self._chunk_part(smp, picks, b)
             outs.append(b)
@@ -251,30 +312,41 @@ def concat(bs: list) -> dict:
 
 
 class States:
-    """The branch states of some episodes (collect_branches.py's states files), stacked."""
+    """The branch states of some episodes (collect_branches.py's states files), stacked, with the decisions a
+    critic of `ticks` ticks scores: the planner's and the decisions of that length (1-tick: plan, t1_*; 3-tick:
+    plan, t3_*; chunk: plan, ch_*). Files without a decision of that length are left out (the first round has no
+    3-tick ones)."""
 
-    def __init__(self, files):
-        parts, self.episode, self.sentence = [], [], []
+    def __init__(self, files, ticks: int):
+        self.ticks = int(ticks)
+        parts, self.episode, self.sentence, self.names = [], [], [], None
         for p in files:
             d = torch.load(p, map_location="cpu", weights_only=False)
-            parts.append(d)
-            n = d["V95"].shape[0]
+            idx = [i for i, h in enumerate(d["decision_H"]) if h == 0 or h == self.ticks]
+            names = [d["decisions"][i] for i in idx]
+            if len(idx) < 2:
+                continue
+            if self.names is None:
+                self.names = names
+            elif names != self.names:
+                raise RuntimeError(f"{p}: decisions {names}, the other files have {self.names}")
+            q = {k: np.asarray(d[k]) for k in ENC_FIELDS + ("lead",)}
+            q.update({k: np.asarray(d[k])[:, idx] for k in ("cmds", "V95", "min_h", "fell")})
+            parts.append(q)
+            n = q["V95"].shape[0]
             self.episode += [Path(p).stem] * n
             self.sentence += [d["sentences"][0]] * n
-        d0 = parts[0]
-        self.names, self.H = list(d0["decisions"]), list(d0["decision_H"])
-        self.arr = {k: np.concatenate([np.asarray(d[k]) for d in parts]) for k in ENC_FIELDS + ("cmds", "V95", "min_h",
-                                                                                               "fell", "lead")}
-        self.n = self.arr["V95"].shape[0]
+        self.n = 0
+        if parts:
+            self.arr = {k: np.concatenate([q[k] for q in parts]) for k in parts[0]}
+            self.n = self.arr["V95"].shape[0]
 
-    def decisions(self, chunk: int) -> list[int]:
-        """A one-tick critic scores the planner's and the 1-tick decisions, a chunk critic the planner's and the
-        chunk decisions."""
-        return [i for i, h in enumerate(self.H) if h == 0 or (h == 1) == (chunk == 1)]
-
-    def actions(self, chunk: int) -> np.ndarray:
-        c = self.arr["cmds"][:, self.decisions(chunk)]                 # [N, D, 12, A]
-        return c[:, :, 0] if chunk == 1 else c[:, :, :chunk]
+    def actions(self) -> np.ndarray:
+        """[N, D, A] for a 1-tick critic, the summed [N, D, A] for a 3-tick one, [N, D, 12, A] for a chunk."""
+        c = self.arr["cmds"]                                            # [N, D, 12, A]
+        if self.ticks == 1:
+            return c[:, :, 0]
+        return c[:, :, :CHUNK] if self.ticks == CHUNK else c[:, :, : self.ticks].sum(2)
 
 
 def section4(Q: np.ndarray, V: np.ndarray, tol: float) -> dict:
@@ -294,12 +366,13 @@ def section4(Q: np.ndarray, V: np.ndarray, tol: float) -> dict:
 
 
 @torch.no_grad()
-def score_states(tr, S: States, chunk: int, rand_u: np.ndarray | None = None, bs: int = 16) -> dict:
+def score_states(tr, S: States, rand_u: np.ndarray | None = None, bs: int = 16) -> dict:
     """Q (min of the twins) of every scored decision at every state [N, D], and at N_RAND random actions."""
     was = tr.policy_enc.training
     tr.policy_enc.eval(), tr.critics.eval()
-    acts = S.actions(chunk)
+    acts = S.actions()
     D = acts.shape[1]
+    chunk = tr.chunk
     Q = np.zeros((S.n, D), np.float32)
     QR = np.zeros((S.n, N_RAND), np.float32) if rand_u is not None else None
     for c0 in range(0, S.n, bs):
@@ -313,7 +386,7 @@ def score_states(tr, S: States, chunk: int, rand_u: np.ndarray | None = None, bs
             dm = _t(sub["dtheta_max"], dev=tr.dev)
             for r in range(N_RAND):
                 u = _t(rand_u[sl, r], dev=tr.dev)                        # [n, T, A] in [-1, 1]
-                groups.append(u[:, 0] * dm if chunk == 1 else u * dm[:, None])
+                groups.append(u[:, 0] * dm * tr.H if chunk == 1 else u * dm[:, None])
         for g0 in range(0, len(groups), 4):
             grp = groups[g0:g0 + 4]
             m = len(grp)
@@ -328,15 +401,14 @@ def score_states(tr, S: States, chunk: int, rand_u: np.ndarray | None = None, bs
                 else:
                     QR[sl, k - D] = qm[:, a]
     tr.policy_enc.train(was), tr.critics.train(was)
-    return {"Q": Q, "QR": QR, "V": S.arr["V95"][:, S.decisions(chunk)].astype(np.float32),
-            "names": [S.names[i] for i in S.decisions(chunk)]}
+    return {"Q": Q, "QR": QR, "V": S.arr["V95"].astype(np.float32), "names": list(S.names)}
 
 
 def rand_actions(n: int, chunk: int, A: int, seed: int = 20261110) -> np.ndarray:
     """[n, N_RAND, T, A] in [-1, 1] (x dtheta_max = commands). One tick: uniform in the box. A chunk: the first half
     hold one uniform command for all its ticks (the widest cumulative steps), the rest draw every tick afresh."""
     rng = np.random.default_rng(seed)
-    T = max(chunk, 1)
+    T = CHUNK if chunk == CHUNK else 1     # a 3-tick action is one summed command
     u = rng.uniform(-1, 1, size=(n, N_RAND, T, A)).astype(np.float32)
     u[:, : N_RAND // 2] = u[:, : N_RAND // 2, :1]
     return u
@@ -348,13 +420,17 @@ def rand_actions(n: int, chunk: int, A: int, seed: int = 20261110) -> np.ndarray
 
 
 class CriticTrainer(LangTrainer):
-    def __init__(self, cfg, run, roots, caches, seed: int = 0):
+    def __init__(self, cfg, run, roots, caches, seed: int = 0, ticks: int = 0):
         super().__init__(cfg, run, roots, (), caches, tasks=(T5,), embodiments=("ur5-wsg",), use_wandb=False,
                          seed=seed, prefetch=False)
-        self.chunk = int(cfg.critic_chunk)
+        self.chunk = int(cfg.critic_chunk)       # the model's: 12 (per-tick commands) or 1 (one action)
+        self.H = int(ticks) if ticks else self.chunk   # ticks one decision covers: 1, 3 or 12
+        assert self.H == self.chunk or self.chunk == 1, (self.H, self.chunk)
         if cfg.critic_injection == "revised":
             sc = json.loads(NORM.read_text())
-            self.critics.set_action_ref(sc["dtheta_max"], sc["s_p"], sc["s_w"])
+            k = float(self.H) if self.chunk == 1 else 1.0   # a summed action's bounds: H x one tick's
+            self.critics.set_action_ref([k * float(v) for v in np.asarray(sc["dtheta_max"]).reshape(-1)],
+                                        k * sc["s_p"], k * sc["s_w"])
             self.critics_targ.load_state_dict(self.critics.state_dict())
         self.batcher = None
         self._src = {s.name: s for s in self.sampler.sources}
@@ -384,9 +460,13 @@ class CriticTrainer(LangTrainer):
         with matmul_tf32(getattr(self.cfg, "tf32_train", False)):
             return self._grad_step(b, words, wmask, log)
 
+    def act_of(self, cmds):
+        """Per-tick commands [B, H, A] -> the model's action: the chunk itself, or the summed command (3 ticks)."""
+        return cmds if self.chunk > 1 else cmds.sum(1)
+
     def _target(self, b, words, wmask, h):
         g, d = self.gamma(), self.dev
-        if self.chunk == 1:
+        if self.H == 1:
             enc_n, Jl, Ja, ji = self.encode(b, words, wmask, "_next", target=True)
             a_n = _t(self.stored_next(b), dev=d)
             q1, q2, _, _ = self.critics_targ(enc_n, a_n, Jl, Ja, ji)
@@ -399,10 +479,10 @@ class CriticTrainer(LangTrainer):
             idx = torch.nonzero(boot).squeeze(1)
             sub = {f: np.asarray(b[f + "_end"])[boot.cpu().numpy()] for f in ENC_FIELDS}
             enc_e, Jl, Ja, ji = self.encode(sub, words[idx], wmask[idx], target=True)
-            q1, q2, _, _ = self.critics_targ(enc_e, _t(b["chunk_cmds_next"], dev=d)[idx], Jl, Ja, ji)
+            q1, q2, _, _ = self.critics_targ(enc_e, self.act_of(_t(b["chunk_cmds_next"], dev=d)[idx]), Jl, Ja, ji)
             y = y.clone()
             y[idx] = 0.5 * (q1 + q2).to(y.dtype)
-        for k in range(self.chunk - 1, -1, -1):
+        for k in range(self.H - 1, -1, -1):
             yk = (1 - g) * hs[:, k] + g * torch.minimum(hs[:, k], y)
             y = torch.where(k < L, yk, y)
         return y
@@ -411,7 +491,7 @@ class CriticTrainer(LangTrainer):
         d = self.dev
         enc, Jlin, Jang, ji = self.encode(b, words, wmask)
         h = _t(b["h"], dev=d)
-        act = _t(b["dtheta"] if self.chunk == 1 else b["chunk_cmds"], dev=d)
+        act = _t(b["dtheta"], dev=d) if self.H == 1 else self.act_of(_t(b["chunk_cmds"], dev=d))
         with torch.no_grad():
             y = self._target(b, words, wmask, h)
         q1, q2, _, _ = self.critics(enc, act, Jlin, Jang, ji)
@@ -438,72 +518,133 @@ class CriticTrainer(LangTrainer):
                 qp = self.critics.qmin(enc.detach(), act[perm], Jlin, Jang, ji)
                 qm = torch.minimum(q1, q2)
                 br = _t(b["_branch"], torch.bool, d)
+                dc = _t(b["_kind"], torch.int64, d) == 2
                 out.update({"q/mean": float(qm.mean()), "y/mean": float(y.mean()), "h/mean": float(h.mean()),
                             "critic/action_sens": float((qm - qp).abs().mean()),
                             "q/abs_err": float((qm - y).abs().mean()),
                             "q/abs_err_branch": float((qm - y).abs()[br].mean()) if bool(br.any()) else float("nan"),
-                            "data/branch_frac": float(br.float().mean())})
-                if self.chunk > 1:
+                            "q/abs_err_decision": float((qm - y).abs()[dc].mean()) if bool(dc.any()) else float("nan"),
+                            "data/branch_frac": float(br.float().mean()),
+                            "data/decision_frac": float(dc.float().mean())})
+                if self.H > 1:
                     out["target/boot_frac"] = float(np.mean(b["chunk_boot"]))
         return out
 
     def ckpt_dict(self) -> dict:
         dct = super().ckpt_dict()
-        dct["asens"] = {"chunk": self.chunk, "injection": self.cfg.critic_injection}
+        dct["asens"] = {"chunk": self.chunk, "ticks": self.H, "injection": self.cfg.critic_injection}
         return dct
 
 
 def make_trainer(name: str, run: Path, seed: int, with_batcher: bool = True, branch_root: Path = BRANCH):
+    import copy
+
     from main.lang.data import LangSampler
 
-    chunk, inj, use_branch = RUNS[name]
-    cfg = run_cfg(chunk, inj)
+    R = RUNS[name]
+    ticks = int(R["decision_ticks"])
+    cfg = run_cfg(ticks, R["injection"])
     roots = roots_of([str(p) for p in NORMAL])
     caches = caches_of([str(p) for p in (REPO / "data/lang_1023/warmup", REPO / "data/lang_1023/val",
                                          REPO / "data/lang_1023/val20")])
-    tr = CriticTrainer(cfg, run, roots, caches, seed=seed)
-    bs = None
-    if use_branch:
-        broots = roots_of([str(branch_root / "branches")])
+    tr = CriticTrainer(cfg, run, roots, caches, seed=seed, ticks=ticks)
+    B = int(cfg.batch_size)
+    parts = [(tr.sampler, B, 0)]
+    if R["branch_data"]:
+        dirs = branch_dirs(R["branch_data"], branch_root)
+        broots = roots_of([str(d / "branches") for d in dirs])
         if not broots:
-            raise SystemExit(f"no branch shards under {branch_root}/branches")
+            raise SystemExit(f"no branch shards under {[str(d) for d in dirs]}")
         bs = LangSampler(broots, cfg, tasks=(T5,), embodiments=("ur5-wsg",), seed=seed + 5, n_threads=8)
-        restrict(bs, branch_keep(bs))
+        keep, dec, w = branch_masks(bs)
         tr.add_source_index(bs)
         n_ep = len({(j, int(e)) for j, s in enumerate(bs.sources) for e in np.unique(s.eid)})
-        print(f"[asens] branch data: {len(bs)} training rows of {bs.sid.size} in {len(bs.sources)} shards "
-              f"({n_ep} branch episodes with the held-out ones)", flush=True)
-        if not len(bs):
+        f_norm, f_cont, f_dec = MIX[R["mix"]]
+        n_dec = int(round(f_dec * B))
+        if f_cont is None:          # first round: a quarter of the batch from any branch row
+            restrict(bs, keep)
+            parts = [(tr.sampler, B - n_dec, 0), (bs, n_dec, 1)]
+            n_rows = (len(bs), int((bs.ok & dec).sum()))
+        else:
+            cont, dcs = copy.copy(bs), copy.copy(bs)
+            restrict(cont, keep & ~dec)
+            restrict(dcs, keep & dec)
+            n_rows = (len(cont), len(dcs))
+            reweight(dcs, w)
+            n_cont = int(round(f_cont * B))
+            parts = [(tr.sampler, B - n_cont - n_dec, 0), (cont, n_cont, 1), (dcs, n_dec, 2)]
+        print(f"[asens] branch data ({R['branch_data']}, mix {R['mix']}): {n_ep} branch episodes in "
+              f"{len(bs.sources)} shards (with the held-out ones); training rows: "
+              + (f"{n_rows[0]} branch rows, {n_rows[1]} of them decision rows" if f_cont is None else
+                 f"{n_rows[0]} continuation, {n_rows[1]} decision") + f"; batch parts {[p[1] for p in parts]}",
+              flush=True)
+        if not n_rows[0] or (f_cont is not None and not n_rows[1]):
             raise SystemExit("the branch shards have no training rows")
     if with_batcher:
-        tr.batcher = Batcher(tr, bs, chunk, seed + 9)
+        tr.batcher = Batcher(tr, parts, tr.H, seed + 9)
     return tr
 
 
-def probe_sets(branch_root: Path = BRANCH):
-    files = sorted((branch_root / "states").glob("s*.pt"))
+def probe_files(dirs) -> tuple[list, list]:
+    """(held-out, training) states files of some data roots."""
     held, train = [], []
-    for p in files:
-        meta = torch.load(p, map_location="cpu", weights_only=False)["meta"]
-        (held if meta.get("held_out") else train).append(p)
+    for d in dirs:
+        for p in sorted((Path(d) / "states").glob("s*.pt")):
+            meta = torch.load(p, map_location="cpu", weights_only=False)["meta"]
+            (held if meta.get("held_out") else train).append(p)
     return held, train
+
+
+def probe_dirs(name: str, small_root: Path = BRANCH) -> list:
+    """Where a run's probe states come from: its branch data's roots; both roots for a 3-tick critic (the first
+    round has no 3-tick decisions) and for a run without branch data, the small root."""
+    R = RUNS[name]
+    if int(R["decision_ticks"]) == 3 or R["branch_data"] == "large":
+        return [Path(small_root), BRANCH2]
+    return [Path(small_root)]
+
+
+def probe_sets(name: str, tr, small_root: Path = BRANCH, train_cap: int | None = None) -> dict:
+    """{key: (States, random actions)}. held: the held-out states of the run's roots. train: training states (as
+    many files as 2 x the held-out ones, evenly spread, or train_cap). held1: with two roots, the first round's
+    held-out states alone, the set the small-data runs are scored on."""
+    dirs = probe_dirs(name, small_root)
+    held, trn = probe_files(dirs)
+    n_tr = train_cap if train_cap is not None else max(len(held), 1) * 2
+    if len(trn) > n_tr:
+        trn = [trn[i] for i in np.linspace(0, len(trn) - 1, n_tr).round().astype(int)] if len(dirs) > 1 else trn[:n_tr]
+    groups = [("held", held), ("train", trn)]
+    if len(dirs) > 1:
+        groups.append(("held1", probe_files(dirs[:1])[0]))
+    sets = {}
+    for k, (key, files) in enumerate(groups):
+        S = States(files, tr.H) if files else None
+        if S is not None and S.n:
+            sets[key] = (S, rand_actions(S.n, tr.chunk, S.arr["dtheta_max"].shape[1], seed=20261110 + k))
+    return sets
+
+
+def probe_metrics(tr, S: States, U, tol: float) -> tuple[dict, dict]:
+    r = score_states(tr, S, U)
+    m = section4(r["Q"].astype(np.float64), r["V"].astype(np.float64), tol)
+    m["spread16"] = float((r["QR"].max(1) - r["QR"].min(1)).mean())
+    m["q_mean"] = r["Q"].mean(0).tolist()
+    return m, r
 
 
 def write_probe(tr, sets: dict, path: Path, step: int, tol: float) -> dict:
     t0 = time.time()
     out = {"step": int(step)}
     for key, (S, U) in sets.items():
-        r = score_states(tr, S, tr.chunk, U)
-        m = section4(r["Q"].astype(np.float64), r["V"].astype(np.float64), tol)
-        m["spread16"] = float((r["QR"].max(1) - r["QR"].min(1)).mean())
-        m["q_mean"] = r["Q"].mean(0).tolist()
+        m, _ = probe_metrics(tr, S, U, tol)
         out.update({f"{key}/{k}": v for k, v in m.items()})
     out["probe_s"] = time.time() - t0
     with open(path, "a") as f:
         f.write(json.dumps(out) + "\n")
     msg = " | ".join(f"{k}: rank {out[f'{k}/rank_agree'] if out[f'{k}/rank_agree'] is not None else float('nan'):.2f} "
-                     f"({out[f'{k}/n_pairs']} pairs) spread ratio {out[f'{k}/spread_ratio']:.3f} spread16 "
-                     f"{out[f'{k}/spread16']:.4f} mae {out[f'{k}/mae']:.3f}" for k in sets)
+                     f"({out[f'{k}/n_pairs']} pairs, {out[f'{k}/n_states']} states) spread ratio "
+                     f"{out[f'{k}/spread_ratio']:.3f} spread16 {out[f'{k}/spread16']:.4f} mae {out[f'{k}/mae']:.3f}"
+                     for k in sets)
     print(f"[probe] step {step} ({out['probe_s']:.0f} s) {msg}", flush=True)
     return out
 
@@ -523,16 +664,10 @@ def train(args) -> int:
     if args.resume and (run / "state.pt").exists():
         tr.load_state()
         print(f"[asens] resumed at step {tr.step}", flush=True)
-    held, trn = probe_sets(Path(args.branch_root))
-    sets = {}
-    A = None
-    for key, files in (("held", held), ("train", trn[: max(len(held), 1) * 2])):
-        if files:
-            S = States(files)
-            A = S.arr["dtheta_max"].shape[1]
-            sets[key] = (S, rand_actions(S.n, tr.chunk, A, seed=20261110 + (key == "train")))
+    sets = probe_sets(name, tr, Path(args.branch_root))
     if not sets:
-        print("[asens] no branch states yet: probes are skipped", flush=True)
+        print("[asens] no branch states with this decision length yet: probes are skipped (a later job of the run "
+              "picks them up)", flush=True)
     diag = run / "diag.jsonl"
     done = set()
     if diag.exists():
@@ -542,8 +677,11 @@ def train(args) -> int:
             except Exception:
                 pass
     tr.install_signal()
-    print(f"[asens] run {name}: decision {tr.chunk} tick(s), injection {tr.cfg.critic_injection}, branch data "
-          f"{RUNS[name][2]}; setup {time.time() - t_start:.0f} s, step {tr.step} -> {args.grad_steps}", flush=True)
+    R = RUNS[name]
+    print(f"[asens] run {name}: decision {tr.H} tick(s), injection {tr.cfg.critic_injection}, branch data "
+          f"{R['branch_data']}, mix {R['mix']}; probe states "
+          f"{ {k: v[0].n for k, v in sets.items()} }; setup {time.time() - t_start:.0f} s, step {tr.step} -> "
+          f"{args.grad_steps}", flush=True)
     tol = float(crit["gt_tol"])
     if tr.step == 0 and 0 not in done and sets:
         write_probe(tr, sets, diag, 0, tol)
@@ -584,12 +722,12 @@ def train(args) -> int:
 
 
 def score(args) -> int:
+    """Every run's final checkpoint on its held-out states (the pass / fail), its training states and, for a run
+    with both data roots, the first round's held-out states alone -> scores.json, scores_<run>.npz."""
+    from main.lang.train import load_policy
+
     crit = json.loads(CRITERIA.read_text())
     tol = float(crit["gt_tol"])
-    held, _ = probe_sets(Path(args.branch_root))
-    if not held:
-        raise SystemExit("no held-out branch states")
-    S = States(held)
     res = {}
     path = OUT / "scores.json"
     if path.exists():
@@ -602,27 +740,33 @@ def score(args) -> int:
             continue
         tr = make_trainer(name, OUT / "score_tmp" / name, 0, with_batcher=False, branch_root=Path(args.branch_root))
         st = torch.load(ck, map_location="cuda", weights_only=False)
-        from main.lang.train import load_policy
-
         load_policy(tr.policy_enc, st)
         tr.critics.load_state_dict(st["critics"])
-        U = rand_actions(S.n, tr.chunk, S.arr["dtheta_max"].shape[1])
-        r = score_states(tr, S, tr.chunk, U)
-        m = section4(r["Q"].astype(np.float64), r["V"].astype(np.float64), tol)
-        m["spread16"] = float((r["QR"].max(1) - r["QR"].min(1)).mean())
-        m["decisions"] = r["names"]
-        m["q_mean_per_decision"] = r["Q"].mean(0).tolist()
-        m["v_mean_per_decision"] = r["V"].mean(0).tolist()
+        sets = probe_sets(name, tr, Path(args.branch_root), train_cap=int(args.train_cap))
+        if "held" not in sets:
+            print(f"[score] {name}: no held-out states with a {tr.H}-tick decision", flush=True)
+            continue
+        out, npz = {}, {}
+        for key, (S, U) in sets.items():
+            m, r = probe_metrics(tr, S, U, tol)
+            m["decisions"] = r["names"]
+            m["q_mean_per_decision"] = m.pop("q_mean")
+            m["v_mean_per_decision"] = r["V"].mean(0).tolist()
+            out[key] = m
+            npz.update({f"{key}_Q": r["Q"], f"{key}_QR": r["QR"], f"{key}_V": r["V"],
+                        f"{key}_episode": np.array(S.episode), f"{key}_lead": S.arr["lead"]})
+            print(f"[score] {name} {key}: rank agreement {m['rank_agree']} over {m['n_pairs']} pairs "
+                  f"({m['n_states']} states), spread ratio {m['spread_ratio']:.3f} (Q {m['q_spread']:.3f} / truth "
+                  f"{m['true_spread']:.3f}), spread over 16 random {m['spread16']:.4f}, MAE {m['mae']:.3f}", flush=True)
+        m = dict(out["held"])
+        m["train"], m["held1"] = out.get("train"), out.get("held1")
         m["step"] = int(st.get("step", -1))
         m["passes"] = bool(m["rank_agree"] is not None and m["rank_agree"] >= crit["rank_agree_min"]
                            and m["spread_ratio"] >= crit["spread_ratio_min"])
-        m["run"] = dict(zip(("decision_ticks", "injection", "branch_data"), RUNS[name]))
-        np.savez_compressed(OUT / f"scores_{name}.npz", Q=r["Q"], QR=r["QR"], V=r["V"], names=np.array(r["names"]),
-                            episode=np.array(S.episode), lead=S.arr["lead"])
+        m["run"] = dict(RUNS[name])
+        np.savez_compressed(OUT / f"scores_{name}.npz", names=np.array(out["held"]["decisions"]), **npz)
         res[name] = m
-        print(f"[score] {name}: rank agreement {m['rank_agree']} over {m['n_pairs']} pairs, spread ratio "
-              f"{m['spread_ratio']:.3f} (Q {m['q_spread']:.3f} / truth {m['true_spread']:.3f}), spread over 16 random "
-              f"{m['spread16']:.4f}, MAE {m['mae']:.3f} -> {'PASS' if m['passes'] else 'fail'}", flush=True)
+        print(f"[score] {name} -> {'PASS' if m['passes'] else 'fail'}", flush=True)
         del tr
         torch.cuda.empty_cache()
         tmp = path.with_suffix(".tmp")
@@ -634,6 +778,15 @@ def score(args) -> int:
 def criteria(args) -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     if CRITERIA.exists():
+        doc = json.loads(CRITERIA.read_text())
+        if "round2" not in doc:   # the same numbers; only the list of runs and the 3-tick decisions are new
+            doc["round2"] = {"added": time.strftime("%Y-%m-%d %H:%M:%S"),
+                             "note": "plan section 7 (2026-11-11): the pass numbers are unchanged. 3-tick critics "
+                                     "score plan, t3_c0, t3_c50. Runs with the large branch data are scored on all "
+                                     "held-out states (both collections); their score on the first round's held-out "
+                                     "states is reported next to it.",
+                             "runs": {k: v for k, v in RUNS.items() if k not in doc.get("runs", {})}}
+            CRITERIA.write_text(json.dumps(doc, indent=1))
         print(f"{CRITERIA} exists (fixed before step 3):\n{CRITERIA.read_text()}")
         return 0
     doc = {"fixed": time.strftime("%Y-%m-%d %H:%M:%S"), **PASS,
@@ -641,10 +794,10 @@ def criteria(args) -> int:
                    "(pairs of one state's scored decisions whose V95 differ by more than gt_tol; the share Q orders "
                    "as the truth does) AND the spread ratio >= spread_ratio_min (mean over states of max - min of Q "
                    "over the scored decisions, divided by the same for V95). One-tick critics score plan, t1_c0, "
-                   "t1_c50; chunk critics plan, ch_c0, ch_c25, ch_c50, ch_c75. Scored at the final checkpoint "
-                   "(6,000 steps).",
-           "runs": {k: dict(zip(("decision_ticks", "injection", "branch_data"), v)) for k, v in RUNS.items()},
-           "source": "docs/lang_filter/ACTION_SENSITIVITY_PLAN.md section 4"}
+                   "t1_c50; 3-tick critics plan, t3_c0, t3_c50; chunk critics plan, ch_c0, ch_c25, ch_c50, ch_c75. "
+                   "Scored at the final checkpoint (6,000 steps).",
+           "runs": dict(RUNS),
+           "source": "docs/lang_filter/ACTION_SENSITIVITY_PLAN.md sections 4 and 7"}
     CRITERIA.write_text(json.dumps(doc, indent=1))
     print(CRITERIA.read_text())
     return 0
@@ -663,10 +816,11 @@ def main(argv=None) -> int:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--probe-every", type=int, default=250)
     p.add_argument("--state-every", type=int, default=250)
-    p.add_argument("--branch-root", default=str(BRANCH))
+    p.add_argument("--branch-root", default=str(BRANCH), help="the first round's (small) branch data root")
     p = sub.add_parser("score")
     p.add_argument("--names", nargs="+", default=sorted(RUNS))
     p.add_argument("--branch-root", default=str(BRANCH))
+    p.add_argument("--train-cap", type=int, default=60, help="training states files scored per run")
     args = ap.parse_args(argv)
     if args.mode == "criteria":
         return criteria(args)
