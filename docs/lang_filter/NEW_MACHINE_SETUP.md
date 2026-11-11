@@ -188,3 +188,28 @@ On 2026-11-09, on Delta, from a fresh clone and a RoboTwin in another location (
 - tests: 366 passed in `tests/lang`, 517 passed in `envs/tests/item_envs`.
 
 The GPU smoke test from that clone was still waiting in the queue.
+
+## Moving the action-sensitivity experiment (added 2026-11-11, not yet run on another machine)
+
+The critic experiment of `ACTION_SENSITIVITY_PLAN.md` reads only paths inside the repo, so it moves with one copy
+script and three job scripts in `scripts/lang/action_sens/portable/`.
+
+1. **Copy.** Clone the repo on the new machine, then copy the data to the same relative paths (about 110 GB real
+   size on 11-11; the files are sparse, so use rsync):
+   ```bash
+   # on Delta (push), or the mirror image on the new machine (pull)
+   scripts/lang/action_sens/portable/transfer.sh . me@other:/path/LanguageConditionHJ          # DRY=1 lists only
+   ```
+   Also copy the HoloBrain GD checkpoint and `bert-base-uncased` (section 1). With Globus, which fills sparse files
+   (400 GB here), pack first: `tar -S -cf asens.tar <the paths transfer.sh lists>` and unpack with `tar -S -xf`.
+2. **Trainings** (no simulator, any CUDA GPU, about 80 min per run):
+   ```bash
+   export HOLOBRAIN_CKPT=<dir>/HoloBrain_v0.0_GD PY=<python> SBATCH_FLAGS="-A <account> -p <partition> --gpus=<type>:1"
+   scripts/lang/action_sens/portable/submit.sh train D2 G B
+   ```
+3. **Collection** (the simulator: RoboTwin next to the repo, the environment of section 1, a ray-tracing GPU):
+   `scripts/lang/action_sens/portable/submit.sh collect 4` runs 4 one-GPU jobs side by side; the 113 planner
+   episodes left on 11-11 take about 7.5 min each per worker, 2 workers per GPU. Episodes already collected on Delta
+   are skipped if `data/lang_asens2` was copied. Stop Delta's collection first (two machines must not collect the
+   same episodes).
+4. Then `submit.sh train B2 H D3`, and `submit.sh score`.
