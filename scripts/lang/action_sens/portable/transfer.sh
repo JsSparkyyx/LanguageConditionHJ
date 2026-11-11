@@ -21,6 +21,12 @@
 #   asens2   only data/lang_asens2 (run it again after more collection jobs: rsync sends what is new)
 #   parents  the planner episodes of both collections (not read by the trainer; 3 GB + )
 #   step1    the 117 old branch states of step 1 (runs/lang/diag_1030/t5_branch, 0.3 GB)
+# Delta asks for a password and Duo on every connection and this script makes several: open one shared connection
+# first and let rsync reuse it (on the other machine, pulling):
+#   ssh -M -S ~/.ssh/cm-delta -fN me@login.delta.ncsa.illinois.edu
+#   RSYNC_RSH="ssh -S ~/.ssh/cm-delta" transfer.sh me@login.delta.ncsa.illinois.edu:/work/nvme/bifq/project/LanguageConditionHJ .
+#   ssh -S ~/.ssh/cm-delta -O exit me@login.delta.ncsa.illinois.edu       # when done
+# Interrupted? Run the same command again: finished files are skipped.
 # DRY=1 lists what would be sent. The buffer files are sparse (created at full size, mostly empty): rsync --sparse
 # keeps them small. Globus does not: there, pack with `tar -S` first (see NEW_MACHINE_SETUP.md).
 # Do not copy data/lang_asens2 while a collection job is writing to it: wait for the job to end.
@@ -29,7 +35,8 @@
 set -eu
 SRC=${1:?source repo}; DST=${2:?destination repo}; shift 2
 WHAT=${*:-train}
-FLAGS=(-a --sparse --partial --info=progress2,stats1 -R)
+# -K: a destination directory that is a symlink (e.g. data -> another storage) is followed, not replaced
+FLAGS=(-a --sparse --partial --info=progress2,stats1 -R -K)
 [ "${DRY:-0}" = 1 ] && FLAGS+=(--dry-run)
 EXC=(--exclude 'videos/' --exclude '_runner/' --exclude 'locks/' --exclude 'logs/' --exclude 'score_tmp/'
      --exclude 'smoke/' --exclude '*.tmp' --exclude 'wandb/')

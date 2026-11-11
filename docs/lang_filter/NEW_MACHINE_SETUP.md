@@ -213,3 +213,11 @@ script and three job scripts in `scripts/lang/action_sens/portable/`.
    are skipped if `data/lang_asens2` was copied. Stop Delta's collection first (two machines must not collect the
    same episodes).
 4. Then `submit.sh train B2 H D3`, and `submit.sh score`.
+
+`submit.sh` uses Slurm's `sbatch`. On a cluster with another scheduler (LSF `bsub`, as on WashU RIS compute1), run
+the same job scripts as plain bash inside a one-GPU job, from the repo root, with the same variables exported:
+`NAME=D2 bash scripts/lang/action_sens/portable/train.sbatch` and
+`ROUND=2 bash scripts/lang/action_sens/portable/collect.sbatch` (several at once are fine). Without Slurm they have
+no time budget: a training runs its 6,000 steps (about 80 min), a collection job runs until every episode is done,
+so give the jobs enough wall time (a killed job loses at most 250 steps or the episode in progress; start it again).
+The scores: `$PY scripts/lang/action_sens/train_critic.py score --names A B C D F D2 G B2 H D3`.
