@@ -142,8 +142,13 @@ probe every 250 steps.
 | D | chunk | revised | normal + branch | all three |
 | E | chunk | current | normal | chunk alone |
 | F | 1 tick | revised | normal | injection alone |
-| G | 3 ticks | current | normal | the lower rate alone (the question "does about 8 Hz ease it by itself") |
-| H | 3 ticks | current | normal + branch | data + the lower rate |
+| G | 3 ticks | revised | normal | the lower rate without branch data (the question "does about 8 Hz ease it by itself") |
+| H | 3 ticks | revised | normal + branch | data + the lower rate |
+
+G and H use the revised injection (2026-11-11): step 1 showed that the current injection cannot fit action
+differences even when given the answer, and runs A and C with it stayed at a spread ratio of 1e-4 or less, so a
+run with the current injection says nothing about the rate. Compare G with F and H with B (same injection and
+data, 1 tick).
 
 "Normal" is the vanilla run's warmup and ring, restricted to the tray-sliding task. Branch rows are sampled so
 that they make up a quarter of each batch.
