@@ -13,7 +13,7 @@ set -u
 R=/work/nvme/bifq/project/LanguageConditionHJ; O=$R/runs/lang/action_sens; D=$R/data/lang_asens
 RUNS=${RUNS:-"E F A B C D"}; COLLECT=${COLLECT:-1}
 MAX_JOBS=${MAX_JOBS:-12}
-TRAINP="gpuA100x8-interactive gpuH200x8-interactive gpuA100x4-interactive"; A40=gpuA40x4-interactive
+TRAINP=${TRAINP:-"gpuA100x8-interactive gpuA100x4-interactive gpuH200x8-interactive"}; A40=gpuA40x4-interactive   # H200 last: its queue held a job 13 h on 11-10
 LOG=$O/logs/feeder.log
 mkdir -p $O/logs $O/runs
 cd $R
