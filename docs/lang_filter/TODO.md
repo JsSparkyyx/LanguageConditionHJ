@@ -366,8 +366,8 @@ states). This experiment has the interactive partitions; the VLA jobs of section
 - [x] step 3, first round: A, C, D trained (6,000 steps), all fail: held-out rank / spread ratio A 0.75 / 0.00002,
   C 0.63 / 0.0001, D 0.68 / 0.04 (D on its training states 0.47 / 0.09). E dropped by Yuxuan on 11-11. F (1 tick,
   revised, no branch data) and B (1 tick, revised, small branch data, old mix) still training on 11-11.
-- [ ] second round (plan section 7, Yuxuan 11-11; code committed 11-11): `feeder.sh` (running on dt-login01 since
-  11-11 14:33) submits everything, one GPU per job:
+- [ ] second round (plan section 7, Yuxuan 11-11; code committed 11-11); on Delta `feeder.sh` submitted it (stopped
+  11-11 17:33, see the move below), one GPU per job:
   - collection round 2: `collect.sbatch` with ROUND=2, seeds 6026-6150 (125 planner episodes, about 500 states), all
     9 decisions (the two 3-tick ones, t3_c0 and t3_c50, are new) into `data/lang_asens2/` (about 12 one-hour A40
     jobs, about 140 GB; 100 episodes train, 25 held out). Done = `data/lang_asens2/COLLECT_DONE`.
@@ -378,11 +378,12 @@ states). This experiment has the interactive partitions; the VLA jobs of section
     injection x 3), target unrolled over 3 ticks.
   - G has no probe states until the round-2 collection has written some (the first round has no 3-tick decisions):
     each of its jobs loads the states that exist when it starts; `score` scores the final checkpoint on all of them.
-- [ ] move to WashU RIS (Yuxuan 11-11 17:29: no queue wait there, A40s, env / HoloBrain / RoboTwin set up): the data
-  goes with `scripts/lang/action_sens/portable/transfer.sh` (about 110 GB), jobs with `portable/` (NEW_MACHINE_SETUP
-  last section). Delta's round-2 collection is stopped at 12 of 125 episodes (the other machine continues it; the
-  feeder here runs with COLLECT=0 and only keeps D2, G, B queued as a fallback). Bring `runs/lang/action_sens/`
-  back before the report.
+- [ ] move to WashU RIS (Yuxuan 11-11: no queue wait there, A40s, env / HoloBrain / RoboTwin set up). **Nothing of
+  this experiment runs on Delta since 11-11 17:33**: feeder stopped, jobs B / D2 / G / collection cancelled (Yuxuan).
+  State then: round-2 collection 12 of 125 episodes, B at step 4,250, D2 / G / B2 / H / D3 not started, no scores.
+  Handoff with results and the steps to continue: `docs/lang_filter/ACTION_SENSITIVITY_STATUS.md`. Data goes with
+  `scripts/lang/action_sens/portable/transfer.sh` (about 110 GB). Do not restart the collection on Delta. Bring
+  `runs/lang/action_sens/` back (or say where it lives) before the report.
 - [ ] step 4, scores (`train_critic.py score`: held-out, training states, and the first round's held-out states for
   the large-data runs) and `docs/lang_filter/ACTION_SENSITIVITY_REPORT.md` with the tables of plan sections 4 and
   7.4 (training and held-out side by side at every probe: `<run>/diag.jsonl`).

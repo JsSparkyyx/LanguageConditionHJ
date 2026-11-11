@@ -3,6 +3,8 @@
 Written 2026-11-10 with Yuxuan, for the code agent. Read `docs/lang_filter/DIAG_ACTOR_2026-10-30.md` first.
 Updated 2026-11-11: a lower decision rate (one action per 3 ticks, about 8 Hz) added as a point to try, and a
 second round after the first results (section 7, which is what to run now).
+Status on 2026-11-11 (what ran, the results, what is left, how to continue on another machine):
+`docs/lang_filter/ACTION_SENSITIVITY_STATUS.md`.
 
 ## 1. The problem and the three hypotheses
 

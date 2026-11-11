@@ -191,6 +191,7 @@ The GPU smoke test from that clone was still waiting in the queue.
 
 ## Moving the action-sensitivity experiment (added 2026-11-11, not yet run on another machine)
 
+What has run, the results and the order of work are in `ACTION_SENSITIVITY_STATUS.md`.
 The critic experiment of `ACTION_SENSITIVITY_PLAN.md` reads only paths inside the repo, so it moves with one copy
 script and three job scripts in `scripts/lang/action_sens/portable/`.
 
