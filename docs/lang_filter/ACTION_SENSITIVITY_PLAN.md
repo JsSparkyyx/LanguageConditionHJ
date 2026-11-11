@@ -1,7 +1,8 @@
 # Why the critic ignores the action: data, time step or injection (plan)
 
 Written 2026-11-10 with Yuxuan, for the code agent. Read `docs/lang_filter/DIAG_ACTOR_2026-10-30.md` first.
-Updated 2026-11-11: a lower decision rate (one action per 3 ticks, about 8 Hz) added as a point to try.
+Updated 2026-11-11: a lower decision rate (one action per 3 ticks, about 8 Hz) added as a point to try, and a
+second round after the first results (section 7, which is what to run now).
 
 ## 1. The problem and the three hypotheses
 
@@ -140,7 +141,7 @@ probe every 250 steps.
 | B | 1 tick | revised | normal + branch | data + injection |
 | C | chunk | current | normal + branch | data + chunk |
 | D | chunk | revised | normal + branch | all three |
-| E | chunk | current | normal | chunk alone |
+| E | chunk | current | normal | chunk alone (dropped 2026-11-11: C failed with more help, so E cannot pass) |
 | F | 1 tick | revised | normal | injection alone |
 | G | 3 ticks | revised | normal | the lower rate without branch data (the question "does about 8 Hz ease it by itself") |
 | H | 3 ticks | revised | normal + branch | data + the lower rate |
@@ -199,3 +200,94 @@ in.
 - Step 3: eight runs of 6,000 steps. They read stored tokens only, so they can use the A100 partitions. Run G
   needs no branch data, so it can start right away.
 - Tell Yuxuan the job count before each submission round.
+
+## 7. Second round (2026-11-11)
+
+### 7.1 Results of the first round
+
+- **Free check on the old states.** The current injection cannot fit the action differences even when given the
+  answer. The revised one fits its training states and ranks new states at chance.
+- **Branch data.** 25 planner episodes, 100 states, 7 decisions each (700 branches) in two one-hour A40 jobs. 20
+  episodes for training, 5 held out. No 3-tick decisions yet.
+- **Critics**, held-out states, step 6,000 (pass: rank at least 0.70 and spread ratio at least 0.25).
+
+| run | decision | injection | branch data | rank | spread ratio | result |
+|---|---|---|---|---|---|---|
+| A | 1 tick | current | yes | 0.75 | 0.00002 | fails |
+| C | chunk | current | yes | 0.63 | 0.0001 | fails |
+| D | chunk | revised | yes | 0.68 | 0.04 (peak 0.10 near step 4,000 to 5,000) | fails |
+| B, F | 1 tick | revised | yes / no | | | queued or running |
+
+What this says. The injection is a real cause: with the current one nothing moves Q, whatever the data or the
+decision length. The revised injection with the chunk and the branch data is about 400 times better and still far
+too flat. Two likely reasons for that are tested in this round.
+
+### 7.2 What changes
+
+**(a) The batch mix.** The training data has three kinds of rows.
+- Normal rows: the original buffer, the action is the planner's.
+- Branch continuation rows: the part of a branch after its decision has ended, the planner again.
+- Decision rows: the rows whose action window (1, 3 or 12 ticks) overlaps the branch's decision. Only these show
+  "same state, different action, different outcome".
+
+In the first round a quarter of the batch was drawn evenly from all branch rows. A branch lasts 100 to 150 ticks
+and its decision 1 to 12, so decision rows were about 2 to 3% of a batch (under 1% for 1-tick decisions). The
+new mix fixes their share.
+
+| row kind | first round | second round |
+|---|---|---|
+| normal | 75% | 50% |
+| branch continuation | about 23% | 25% |
+| decision | about 2% | 25% |
+
+Training stays from scratch on the full data. The continuation rows stay because the target at a decision row
+bootstraps from the critic's value where the decision ends, and the normal rows stay because the critic has to
+work over the whole task.
+
+**(b) More branch states.** About 500 new states from about 125 planner episodes (4 per episode, the last second
+before the brake, time scales 0.75 to 1.3), with all 9 decisions of section 3.1, the two 3-tick ones included.
+Split by episode, 100 for training and 25 held out. The first round's states keep their split and join the
+matching side. At the first collection's rate this is about 10 to 13 one-hour A40 jobs. Tell Yuxuan the count
+before submitting.
+
+**(c) The lower rate.** Runs G and H of section 4, with the revised injection.
+
+### 7.3 Runs
+
+All from scratch, revised injection, 6,000 steps, the same probes. "Small" is the first round's 100 states,
+"large" adds the new 500.
+
+| run | decision | branch data | batch mix | when | answers |
+|---|---|---|---|---|---|
+| D2 | chunk | small | new | now | was the batch mix the limit (against D) |
+| G | 3 ticks | none | normal rows only | now | does about 8 Hz ease it by itself (against F) |
+| B2 | 1 tick | large | new | after the collection | the 25 Hz reference under the new recipe |
+| H | 3 ticks | large | new | after the collection | about 8 Hz with action contrast (against B2) |
+| D3 | chunk | large | new | after the collection | do more states help (against D2), and the chunk against H |
+
+Submit D2, G and the collection now. B and F from the first round keep running.
+
+### 7.4 What to report
+
+For every run, at every probe: rank agreement with the number of pairs behind it, and the spread ratio, **on the
+training states and on the held-out states side by side**. Also score run D's existing checkpoint on its training
+states (no new run). High on training and low on held-out means the critic memorizes and more states are the fix.
+Low on both means it never learned the action's effect.
+
+| result | conclusion |
+|---|---|
+| D2 well above D | the batch mix was the limit |
+| D3 well above D2 | more boundary states help, keep collecting |
+| G passes | a lower rate alone is enough |
+| H passes, B2 fails | about 8 Hz with branch data is enough, no chunks needed |
+| only D3 passes | the decision has to be about 0.5 s long |
+| nothing passes, high on training states | still too few states |
+| nothing passes, low on training states too | the model still cannot carry the action, try the items below |
+
+### 7.5 Set aside for later (Yuxuan: not now)
+
+- A loss on the difference between two decisions from the same state, where the state's part cancels.
+- A direct fit of the chunk critic on the true branch values (no Bellman), as a ceiling for this model and data.
+- A stronger injection: the action embedding added to the query tokens before they read the scene, pooled from
+  the gripper and held-object tokens, with the commanded change of velocity as an extra feature.
+

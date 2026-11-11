@@ -1,6 +1,6 @@
 # Known issues in training a language-conditioned HJ safety filter
 
-A living list of what went wrong, why, and what is being done. Last updated 2026-11-10.
+A living list of what went wrong, why, and what is being done. Last updated 2026-11-11.
 
 Each issue has the same four parts. What happens, why, the evidence, and the status. "Measured" means we have
 numbers for it. "Hypothesis" means it is a likely cause that has not been isolated yet.
@@ -124,9 +124,12 @@ The geometric attention also uses the link positions after the action, but a 2 m
 **Evidence (measured).** Token size 7,850 to 14,000 with an action part of about 1. Scaling the action inputs to
 unit size alone raised the spread of Q only 2.1 times.
 
-**Status.** Hypothesis as a contributing cause. Test planned with a normalization before the action is added,
-action features divided by their bounds and passed through a small MLP, and the action embedding fed directly
-to the readout.
+**Status.** Confirmed as a cause (2026-11-11). With the original injection the critic could not fit action
+differences even when trained directly on the true outcomes, and adding branch data or a 0.5 s chunk left Q flat
+(Q moved by 0.0001 of the true change or less). A revised injection (a normalization before the action is added,
+action features divided by their bounds and passed through a small MLP, the action embedding fed directly to the
+readout) raised that to 0.04 with the chunk and the branch data. That is about 400 times better and still far too
+flat, so it is necessary and not sufficient.
 
 ## Issue 5. A softmin readout sends the gradient to heads that do not see the action
 
@@ -237,7 +240,7 @@ table as a metric), and score sentence pairs on held-out scenes.
 | 1. one tick is too small an action | cause (hypothesis) | test planned, action chunks |
 | 2. one action per state in the data | cause (hypothesis) | test planned, branch data at the boundary |
 | 3. ignoring the action is stable | mechanism | follows from 1 and 2 |
-| 4. action drowned at injection | cause (hypothesis) | test planned, revised injection |
+| 4. action drowned at injection | cause (confirmed) | revised injection is necessary, not sufficient alone |
 | 5. softmin readout | measured | replaced by an MLP readout, not sufficient alone |
 | 6. actor collapses to a freeze | consequence | none needed |
 | 7. a freeze is not safe | measured | longer decisions, earlier warning |
@@ -250,3 +253,4 @@ table as a metric), and score sentence pairs on held-out scenes.
 - Numbers come from `STATUS_2026-10-30.md`, `DIAG_ACTOR_2026-10-30.md` and `grounding_report_2026-10-09.md` in
   this folder. The planned test of issues 1, 2 and 4 is `ACTION_SENSITIVITY_PLAN.md`.
 - 2026-11-10. First version.
+- 2026-11-11. Issue 4 confirmed by the first round of the action-sensitivity test.
