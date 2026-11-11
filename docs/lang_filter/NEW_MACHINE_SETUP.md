@@ -215,7 +215,8 @@ script and three job scripts in `scripts/lang/action_sens/portable/`.
    same episodes).
 4. Then `submit.sh train B2 H D3`, and `submit.sh score`.
 
-`submit.sh` uses Slurm's `sbatch`. On a cluster with another scheduler (LSF `bsub`, as on WashU RIS compute1), run
+`submit.sh` uses Slurm's `sbatch`. With LSF (`bsub`, as on WashU RIS compute1) use `submit_lsf.sh` with the same
+arguments and `BSUB_FLAGS` in place of `SBATCH_FLAGS` (its header has an example). Or run
 the same job scripts as plain bash inside a one-GPU job, from the repo root, with the same variables exported:
 `NAME=D2 bash scripts/lang/action_sens/portable/train.sbatch` and
 `ROUND=2 bash scripts/lang/action_sens/portable/collect.sbatch` (several at once are fine). Without Slurm they have

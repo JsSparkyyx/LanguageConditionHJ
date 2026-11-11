@@ -167,16 +167,31 @@ ssh -S ~/.ssh/cm-delta -O exit <user>@login.delta.ncsa.illinois.edu
 ```bash
 export HOLOBRAIN_CKPT=<dir>/HoloBrain_v0.0_GD     # required
 export PY=<python of the simulator environment>   # default: python
-# with Slurm: export SBATCH_FLAGS="-A <account> -p <partition> --gpus=<type>:1"
+# LSF (WashU RIS compute1): everything your one-GPU jobs need, e.g.
+export BSUB_FLAGS="-G compute-<group> -q general -a 'docker(<image>)' -n 16 -R 'rusage[mem=64GB]' -gpu 'num=1:gmodel=<A40 model name>'"
+# Slurm instead: export SBATCH_FLAGS="-A <account> -p <partition> --gpus=<type>:1"
 ```
+
+The repo and its data must be visible at the same paths inside the job (RIS containers: `LSF_DOCKER_VOLUMES`).
+If the storage does not allow running files directly ("Permission denied"), call every script as `bash <script>`.
 
 Everything here is the GD version (HoloBrain-0 GD encoder with its BERT), γ = 0.95. Every job uses **one GPU**
 (Yuxuan's rule: one GPU per job unless he says otherwise). Several jobs at once are fine.
 
 ### 5.3 Order of work
 
-Run each line from the repo root inside a one-GPU job (with Slurm, `scripts/lang/action_sens/portable/submit.sh`
-submits them; with LSF, wrap them in a `bsub` job).
+With LSF, `submit_lsf.sh` submits each step as its own one-GPU job (with Slurm, `submit.sh` takes the same
+arguments). `DRY=1` in front prints the `bsub` lines without submitting:
+
+```bash
+bash scripts/lang/action_sens/portable/submit_lsf.sh collect 2      # step 1: two collection jobs side by side
+bash scripts/lang/action_sens/portable/submit_lsf.sh train D2 G B   # step 2
+bash scripts/lang/action_sens/portable/submit_lsf.sh train B2 H D3  # step 3, after the collection
+bash scripts/lang/action_sens/portable/submit_lsf.sh score          # step 4
+```
+
+Logs go to `runs/lang/action_sens/logs/<job name>_<job id>.out`. What each step runs, if you prefer to start it by
+hand from the repo root inside a one-GPU job:
 
 1. **Start the collection** (A40, the long part):
    ```bash
@@ -259,7 +274,7 @@ source and destination swapped, or keep them on the new machine and say so in th
 | `scripts/lang/action_sens/fit_check.py` | step 1 |
 | `scripts/lang/action_sens/collect_branches.py` | the branch collector (`run --round 2`, `table`) |
 | `scripts/lang/action_sens/train_critic.py` | `train --name <run>`, `score`, `criteria`; the runs are in its `RUNS` |
-| `scripts/lang/action_sens/portable/` | `transfer.sh`, `train.sbatch`, `collect.sbatch`, `submit.sh` (any machine) |
+| `scripts/lang/action_sens/portable/` | `transfer.sh`, `train.sbatch`, `collect.sbatch` (plain bash), `submit_lsf.sh` (LSF), `submit.sh` (Slurm) |
 | `scripts/lang/action_sens/{feeder.sh, train.sbatch, collect.sbatch}` | Delta only (its queues and container) |
 | `runs/lang/action_sens/runs/<run>/diag.jsonl` | every probe of a run |
 | `runs/lang/action_sens/criteria.json` | the pass numbers |
