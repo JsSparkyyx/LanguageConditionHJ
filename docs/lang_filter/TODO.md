@@ -378,6 +378,11 @@ states). This experiment has the interactive partitions; the VLA jobs of section
     injection x 3), target unrolled over 3 ticks.
   - G has no probe states until the round-2 collection has written some (the first round has no 3-tick decisions):
     each of its jobs loads the states that exist when it starts; `score` scores the final checkpoint on all of them.
+- [ ] move to WashU RIS (Yuxuan 11-11 17:29: no queue wait there, A40s, env / HoloBrain / RoboTwin set up): the data
+  goes with `scripts/lang/action_sens/portable/transfer.sh` (about 110 GB), jobs with `portable/` (NEW_MACHINE_SETUP
+  last section). Delta's round-2 collection is stopped at 12 of 125 episodes (the other machine continues it; the
+  feeder here runs with COLLECT=0 and only keeps D2, G, B queued as a fallback). Bring `runs/lang/action_sens/`
+  back before the report.
 - [ ] step 4, scores (`train_critic.py score`: held-out, training states, and the first round's held-out states for
   the large-data runs) and `docs/lang_filter/ACTION_SENSITIVITY_REPORT.md` with the tables of plan sections 4 and
   7.4 (training and held-out side by side at every probe: `<run>/diag.jsonl`).
