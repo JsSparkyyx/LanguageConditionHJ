@@ -1,6 +1,7 @@
 # Why the critic ignores the action: data, time step or injection (plan)
 
 Written 2026-11-10 with Yuxuan, for the code agent. Read `docs/lang_filter/DIAG_ACTOR_2026-10-30.md` first.
+Updated 2026-11-11: a lower decision rate (one action per 3 ticks, about 8 Hz) added as a point to try.
 
 ## 1. The problem and the three hypotheses
 
@@ -14,7 +15,11 @@ tasks in one model. Three hypotheses are left. They can combine, so they are tes
    different speeds do not help: they are different states, and the critic can read the speed from the frames.
    What is missing is the same state near the boundary (true value close to 0) continued with different motions.
 2. **Time step.** At 25 Hz one action changes the true outcome very little (median 0.03), so even with contrast
-   in the data the signal may be too small. A 0.5 s action chunk makes one decision's effect much larger.
+   in the data the signal may be too small. Two ways to make one decision's effect larger are tried:
+   - **a lower rate** (Yuxuan, 2026-11-11): one action held for 3 ticks, 120 ms, about 8 Hz. Its effect is about
+     3 times one tick's, and its share of what the critic fits about 9 times larger (from 0.25% to about 2%). The
+     critic stays a single-action critic, so nothing else in the method changes;
+   - **a 0.5 s action chunk** (12 ticks), whose effect is about 16 times one tick's.
 3. **Injection.** The action enters the critic as raw numbers (link translation about 0.002 m per tick) through
    one Linear layer, added to tokens of size about 1e4, and the readout sees it only through those tokens.
 
@@ -27,7 +32,8 @@ experiment on one task and one robot (ur5-wsg). γ = 0.95 per tick everywhere.
   (1 safe, 0 harm, −1 badly harmed). Here the rule is "keep the tall block upright".
 - **True value of a continuation**: the backward recursion the branch tool already uses, on that continuation's
   h trace, y_T = h_T at the last tick T and y_t = (1 − γ) h_t + γ min(h_t, y_{t+1}). Called V95 below.
-- **Decision**: what the critic scores. Two lengths, H = 1 tick and H = 12 ticks (0.48 s, "chunk").
+- **Decision**: what the critic scores. Three lengths, H = 1 tick (today, 25 Hz), H = 3 ticks (120 ms, the
+  "lower rate") and H = 12 ticks (0.48 s, the "chunk").
 - **Speed scale c**: the planner's own path played at c times its rate for the H ticks of the decision, then the
   planner resumes at full rate from where its plan cursor stands. c = 1 is the planner itself, c = 0 a freeze.
 - **Branch**: the simulator restored to a saved state and continued with one decision, then the planner, until
@@ -42,8 +48,8 @@ Extend the branch tool (`scripts/lang/diag_1030/t5_branch.py`, exact save and re
 - **States.** About 100 states from about 25 planner episodes at time scales 0.75 to 1.3, taken in the last
   second before the planner's brake. That is where the earlier truth table puts the boundary (planner value
   0.15 at 0.6 s or more before the brake, −0.10 at 0.4 to 0.6 s).
-- **Branches per state (7).** The planner (c = 1), two 1-tick decisions (c = 0 and 0.5), four chunk decisions
-  (c = 0, 0.25, 0.5, 0.75).
+- **Branches per state (9).** The planner (c = 1), two 1-tick decisions (c = 0 and 0.5), two 3-tick decisions
+  (c = 0 and 0.5), four chunk decisions (c = 0, 0.25, 0.5, 0.75).
 - **Stored.** Every tick of every branch in the normal shard format (tokens, robot inputs, h, the commanded joint
   step), plus a branch table: state id, episode, tick, decision length H, c, the per-tick commands of the
   decision, V95, min h, whether the block fell.
@@ -52,7 +58,26 @@ Extend the branch tool (`scripts/lang/diag_1030/t5_branch.py`, exact save and re
 The continuation after every decision is the planner, so the data follows one Markov rule ("decision, then
 planner") and matches the normal buffer, which is all planner.
 
-### 3.2 A critic that takes a chunk (hypothesis 2)
+### 3.2 A critic at a lower rate: one action per 3 ticks (hypothesis 2)
+
+The stored 25 Hz data is reused. Nothing is recollected and the simulator stays at 25 Hz.
+
+- **Why 3 and not 2.** The effect is larger (about 9 times one tick's share, against 4 times for 2 ticks), 3 ticks
+  is the filter's existing takeover block, and 120 ms is close to the 10 Hz that learned policies run at.
+- **Input.** One action A = dθ_t + dθ_{t+1} + dθ_{t+2}, the three stored joint steps added: the displacement over
+  120 ms. It enters the critic exactly as a one-tick action does (the same 8 features per body token, computed
+  from A), so the model is unchanged. With the revised injection, the bound that divides it is 3·dθmax.
+- **Rows.** Any tick whose next 3 ticks are in the same episode starts a step (even and odd ticks, so no row is
+  lost).
+- **Target.** As for the chunk below with 3 in place of 12: y_{t+3} = mean of the target twins at
+  (s_{t+3}, dθ_{t+3} + dθ_{t+4} + dθ_{t+5}), then the one-tick recursion for k = 2, 1, 0. γ stays 0.95 per tick,
+  so the time horizon is unchanged and a violation at an in-between tick is not missed.
+- **Approximation.** The data was executed at 25 Hz, so the three commands inside a step can differ slightly.
+  Adding them treats the step as one straight motion, which is negligible for the planner's smooth motion.
+- **Later, in closed loop** (not in this plan): the filter would decide every third tick and its action would be
+  executed as three equal 40 ms parts. The environment, the per-tick recording and the labels stay at 25 Hz.
+
+### 3.3 A critic that takes a chunk (hypothesis 2)
 
 - **Input.** A chunk A = (dθ_1 … dθ_12), the commanded joint steps of 12 ticks. Summarize it at three points,
   the cumulative steps after 4, 8 and 12 ticks: c_k = dθ_1 + … + dθ_k. Per body token, the features are the
@@ -65,7 +90,7 @@ planner") and matches the normal buffer, which is all planner.
   y_{t+k} = (1 − γ) h_{t+k} + γ min(h_{t+k}, y_{t+k+1}) for k = 11 … 0, and the target is y_t. If the episode
   ends inside the chunk, start the recursion at its last tick as the one-tick code does.
 
-### 3.3 Revised injection (hypothesis 3)
+### 3.4 Revised injection (hypothesis 3)
 
 In `main/lang/` only (subclass `LangCriticHead`, new config switch, old checkpoints still load).
 
@@ -98,7 +123,7 @@ Cost: minutes on any GPU. If the state files are gone, skip this step and do the
 
 ### Step 2. Collect the boundary branch data (A40 jobs)
 
-Start it alongside step 1, since the queue is slow. First a smoke job: 2 states, all 7 branches, to measure
+Start it alongside step 1, since the queue is slow. First a smoke job: 2 states, all 9 branches, to measure
 seconds per branch and check that a restored branch reproduces the planner's own continuation. Then size the
 collection to the budget in section 6 and tell Yuxuan the number of jobs before submitting.
 
@@ -117,6 +142,8 @@ probe every 250 steps.
 | D | chunk | revised | normal + branch | all three |
 | E | chunk | current | normal | chunk alone |
 | F | 1 tick | revised | normal | injection alone |
+| G | 3 ticks | current | normal | the lower rate alone (the question "does about 8 Hz ease it by itself") |
+| H | 3 ticks | current | normal + branch | data + the lower rate |
 
 "Normal" is the vanilla run's warmup and ring, restricted to the tray-sliding task. Branch rows are sampled so
 that they make up a quarter of each batch.
@@ -124,7 +151,7 @@ that they make up a quarter of each batch.
 ### Step 4. Score and decide
 
 On the held-out states, score every branch's decision with each critic. Single-tick critics score the 1-tick
-decisions, chunk critics the chunk decisions, and both score the planner's.
+decisions, 3-tick critics the 3-tick decisions, chunk critics the chunk decisions, and all score the planner's.
 
 - **Rank agreement**: over pairs of branches of one state whose V95 differ by more than 0.05, the share where Q
   orders them as the truth does (chance 0.5). Report how many pairs that is: for 1-tick decisions it may be few,
@@ -142,6 +169,9 @@ numbers in a file before step 3 starts.
 | A fails, B passes | data and injection |
 | A and B fail, C or D pass | the one-tick step is the limit, chunks are needed (D vs C says whether the injection matters too) |
 | E or F pass without branch data | that change alone is enough |
+| G passes | a lower rate alone is enough: move the whole system to one action per 3 ticks, no chunks needed |
+| G fails, H passes | the lower rate works once the data has contrast, and is simpler than chunks |
+| H fails, C or D pass | about 8 Hz is still too fast, the decision has to be about 0.5 s long |
 | nothing passes | the critic cannot learn it from this data, report before going further |
 
 Write the results to `docs/lang_filter/ACTION_SENSITIVITY_REPORT.md` in plain words, with the table above filled
@@ -161,5 +191,6 @@ in.
 - Step 1: no simulator, minutes of GPU.
 - Step 2: A40 only (cuRobo and ray tracing). Target at most 10 one-hour jobs. If the smoke job says 100 states
   do not fit, reduce the number of states, not the branches per state.
-- Step 3: six runs of 6,000 steps. They read stored tokens only, so they can use the A100 partitions.
+- Step 3: eight runs of 6,000 steps. They read stored tokens only, so they can use the A100 partitions. Run G
+  needs no branch data, so it can start right away.
 - Tell Yuxuan the job count before each submission round.
