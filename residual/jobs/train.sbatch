@@ -1,14 +1,16 @@
 #!/bin/bash
 #SBATCH --account=bifq-delta-gpu
 #SBATCH --partition=gpuA40x4
-#SBATCH --nodes=1 --gpus-per-node=4 --ntasks-per-node=1 --cpus-per-task=64
-#SBATCH --mem=240g --time=48:00:00
+#SBATCH --nodes=1 --gpus-per-node=1 --ntasks-per-node=1 --cpus-per-task=16
+#SBATCH --mem=96g --time=48:00:00
 #SBATCH --requeue --signal=B:USR1@300
 #SBATCH --job-name=residual-train
 #SBATCH --output=/work/nvme/bifq/project/tmp/logs/residual_train_%j.out
 # PPO training of the residual policy (residual/PLAN.md). Resumable: the learner checkpoints every update, exits 75
 # at its deadline or on a signal, and this script relaunches it on 75; USR1 (300 s before the walltime) requeues the
-# job. Not to be submitted before the throughput step sized the budget (Yuxuan 11-09).
+# job. One GPU per job (Yuxuan 11-10). Throughput 11-12, one A40, deviation trigger, delta = 0: 8 workers 208
+# ticks/s (~135 policy transitions/s), 12 workers 233 ticks/s (CPU-bound on 16 cores). Not to be submitted before
+# the budget is agreed with Yuxuan.
 #   sbatch --export=ALL,RUN=residual_dev_success_v1,WPG=8,UPDATES=2000 residual/jobs/train.sbatch
 #   (first run: replan_trigger "deviation", completion "success"; SETS passes other --set overrides)
 set -u

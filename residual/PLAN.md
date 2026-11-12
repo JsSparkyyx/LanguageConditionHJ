@@ -343,6 +343,30 @@ Defaults chosen in the session (change in `residual/config.py`):
   at 0.01. Also: a new cuRobo plan is at least about 77 rows (8 ticks) even for a few-mm move, so the fixed trigger
   with N = 5 never reached a plan's end (250 replans, then the time limit). The fixed trigger now skips a replan when
   the current plan ends within N ticks anyway.
+- Throughput step (2026-11-12, one A40, 16 cores, 6 minutes per setting, delta = 0, training noise on,
+  `runs/residual/check_1109/throughput/summary.json`):
+
+  | setting | sim ticks/s (all workers) | per worker | replans per episode | success | in the way: broken | out of the way: broken |
+  |---|---|---|---|---|---|---|
+  | planner playback, 8 workers | 267 | 34 | 0 | 0.64 | 0.70 | 0.01 |
+  | 25 Hz loop, deviation, 1 worker | 53 | 53 | 6.9 | 0.58 | 0.59 | 0.00 |
+  | 25 Hz loop, deviation, 8 workers | 208 | 28 | 4.7 | 0.53 | 0.66 | 0.00 |
+  | 25 Hz loop, deviation, 12 workers | 233 | 21 | 2.9 | 0.57 | 0.76 | 0.02 |
+  | 25 Hz loop, fixed 5 Hz, 8 workers | 42 | 6 | 169 (median 42) | 0.29 | 0.50 | 0.00 |
+
+  About 65% of the sim ticks are policy ticks (the rest is settling), so 8 workers give about 135 training
+  transitions per second. 12 workers add only 12%: the 16 cores are the limit (load 16 to 22). Each worker uses
+  2.2 GB of GPU memory. A scene build costs about 3.5 s of a 13 s episode. About 14% of the episodes end in a host
+  planning failure in every setting, the 25 Hz loop included.
+  Replans start from rest: the old plan's median speed at the cursor 0.80 rad/s, the new plan's first row 0.01 rad/s.
+  Under the fixed trigger the arm therefore crawls (finished episodes 306 policy ticks against 222, a third of
+  them reach the time limit) and each replan costs 0.44 s: the fixed trigger is 5 times slower in wall time.
+  The 25 Hz loop lowers success a little against playback (0.53 to 0.58 against 0.64). At a grasp's close, the hand
+  is 1.9 cm (median) off the plan's last row, because the move segment ends when the cursor passes the plan's end
+  and the arm still lags.
+- Training check (2 updates, 4 workers): runs end to end; 0 of 24 episodes succeed with the initial random
+  residual (std 0.02 rad per joint per tick), against 0.53 at delta = 0. With the completion value paid only on
+  success, success is then rare at the start.
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.
