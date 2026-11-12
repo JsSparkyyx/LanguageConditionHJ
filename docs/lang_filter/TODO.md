@@ -352,7 +352,8 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   one A40; fixed 5 Hz trigger 5x slower (replans start from rest); delta = 0 success 0.53-0.58, in the way broken ~0.66.
 - [ ] First PPO run (Yuxuan 11-12: 12 h, 350 updates, deviation, completion only on success, init_std 0.025):
   job 23824247, `runs/residual/residual_dev_success_s025_1112`, wandb `cehj-residual`.
-- [ ] Rerun of the train check stage (job 23823793) to see the end-of-run evaluation round complete.
+- [x] 11-12 Rerun of the train check stage (job 23823793): the end-of-run evaluation round completes (summary,
+  videos; a video episode takes ~110 s against 13 s); the 9 non-simulator tests pass (RoboTwin conda python).
 - [ ] Later: fixed vs deviation trigger, completion "success" vs "always".
 
 ## I. Why the critic ignores the action (Yuxuan 2026-11-10; docs/lang_filter/ACTION_SENSITIVITY_PLAN.md)
