@@ -187,7 +187,8 @@ On 2026-11-09, on Delta, from a fresh clone and a RoboTwin in another location (
 - the checkpoints and the Qwen models loaded;
 - tests: 366 passed in `tests/lang`, 517 passed in `envs/tests/item_envs`.
 
-The GPU smoke test from that clone was still waiting in the queue.
+The GPU smoke test from that clone never ran: its job waited in Delta's queue from 11-09 and was cancelled on 11-12
+(Yuxuan: not needed). The first GPU job on the new machine is that test.
 
 ## Moving the action-sensitivity experiment (added 2026-11-11, not yet run on another machine)
 
