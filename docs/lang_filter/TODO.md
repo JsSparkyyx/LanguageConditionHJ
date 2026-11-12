@@ -344,10 +344,16 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   too, an arm with no plan holds its anchor), executed a_nom noise 0.01 rad, stop after the throughput step.
 - [x] 11-09 Code in `residual/` (controller, state, episodes, PPO learner, workers, evaluation, wandb, throughput,
   smoke test); 7 non-simulator tests pass.
-- [ ] Simulator smoke test, two-update training run and the throughput step on one A40 (`residual/jobs/check.sbatch`,
-  job 23693092 on gpuA40x4-preempt, submitted 11-09 after a review fixed 10 issues (learner hang at worker restarts, empty episodes, throughput exit hang, truncation state, named distance = one call like the official one, seed blocks); every interactive partition was full for the account).
-- [ ] Report the throughput numbers and the δ = 0 baselines per trigger; size the PPO budget with Yuxuan.
-- [ ] First PPO run: deviation trigger, completion value only on task success.
+- [x] 11-12 Simulator smoke test, two-update training run and the throughput step on one A40, as 1-hour interactive
+  jobs (`residual/jobs/check.sbatch`, feeder `residual/jobs/chain_check.sh`; outputs `runs/residual/check_1109/`).
+  Fixed on the way: the fixed trigger never reached a plan's end (new plans are >= 8 ticks), open evaluation rounds
+  are finished after the last update, no grasp pose = host failure.
+- [x] 11-12 Throughput and delta = 0 baselines reported (PLAN section 7): 8 workers ~135 training transitions/s on
+  one A40; fixed 5 Hz trigger 5x slower (replans start from rest); delta = 0 success 0.53-0.58, in the way broken ~0.66.
+- [ ] First PPO run (Yuxuan 11-12: 12 h, 350 updates, deviation, completion only on success, init_std 0.025):
+  job 23824247, `runs/residual/residual_dev_success_s025_1112`, wandb `cehj-residual`.
+- [ ] Rerun of the train check stage (job 23823793) to see the end-of-run evaluation round complete.
+- [ ] Later: fixed vs deviation trigger, completion "success" vs "always".
 
 ## I. Why the critic ignores the action (Yuxuan 2026-11-10; docs/lang_filter/ACTION_SENSITIVITY_PLAN.md)
 

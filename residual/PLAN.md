@@ -367,6 +367,9 @@ Defaults chosen in the session (change in `residual/config.py`):
 - Training check (2 updates, 4 workers): runs end to end; 0 of 24 episodes succeed with the initial random
   residual (std 0.02 rad per joint per tick), against 0.53 at delta = 0. With the completion value paid only on
   success, success is then rare at the start.
+- First PPO run (Yuxuan, 2026-11-12): 12 hours, 350 updates, one A40 with 8 workers, deviation trigger, completion
+  value only on success, start noise init_std 0.025 of the bound (0.005 rad per tick, not 0.02, so successes stay
+  common early). Run `runs/residual/residual_dev_success_s025_1112`, job 23824247 (gpuA40x4).
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.
