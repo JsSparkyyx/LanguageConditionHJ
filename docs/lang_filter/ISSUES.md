@@ -1,6 +1,6 @@
 # Known issues in training a language-conditioned HJ safety filter
 
-A living list of what went wrong, why, and what is being done. Last updated 2026-11-11.
+A living list of what went wrong, why, and what is being done. Last updated 2026-11-12.
 
 Each issue has the same four parts. What happens, why, the evidence, and the status. "Measured" means we have
 numbers for it. "Hypothesis" means it is a likely cause that has not been isolated yet.
@@ -66,7 +66,11 @@ the true value by a median 0.03, while the value varies across states with a sta
 The action is roughly (0.03 / 0.6)² ≈ 0.25% of the target's variance. Whole continuations of 1 s or more differ
 by 0.49.
 
-**Status.** Hypothesis as the main cause. Test planned with a 0.5 s action chunk as the critic's input.
+**Status.** Not the limit near the boundary (2026-11-12). The 0.03 above is a median over all ticks of the drag.
+At states in the last second before the brake, the true value differs by 0.36 on average between two one-tick
+choices (a hard stop for a single tick tips the block), 0.51 between two 3-tick choices and 0.72 between two
+0.5 s chunks. Critics that take a 3-tick action or a chunk stayed flat as well (Q moved by 0.07 to 0.08 of the
+true change). The argument still explains why Q is flat far from the boundary.
 
 ## Issue 2. The data has one action per state
 
@@ -87,8 +91,12 @@ critic can read the speed from the frames.
 **Evidence (measured).** Random actions were 0.9% of the planner's ticks. Every other stored action was the
 planner's own.
 
-**Status.** Hypothesis as a main cause. Test planned with branch data. The simulator is restored to one saved
-state near the boundary and continued with several different motions, each run to its real outcome.
+**Status.** Necessary, not sufficient (2026-11-12). Branch data was collected. The simulator is restored to one
+saved state near the boundary and continued with several different motions, each run to its real outcome (600
+states, 7 to 9 continuations each). Trained on it with a quarter of every batch drawn from the rows that show the
+contrast, the critic still moved Q by less than 0.13 of the true change, on its own training states too. More
+states did not help. The open question is the training target: whether the bootstrapped target carries the
+difference between two choices at all.
 
 ## Issue 3. Ignoring the action is a stable solution
 
@@ -237,8 +245,8 @@ table as a metric), and score sentence pairs on held-out scenes.
 
 | issue | kind | status |
 |---|---|---|
-| 1. one tick is too small an action | cause (hypothesis) | test planned, action chunks |
-| 2. one action per state in the data | cause (hypothesis) | test planned, branch data at the boundary |
+| 1. one tick is too small an action | not the limit near the boundary | a lower rate and chunks did not fix it |
+| 2. one action per state in the data | necessary, not sufficient | branch data collected, critic still flat, target under test |
 | 3. ignoring the action is stable | mechanism | follows from 1 and 2 |
 | 4. action drowned at injection | cause (confirmed) | revised injection is necessary, not sufficient alone |
 | 5. softmin readout | measured | replaced by an MLP readout, not sufficient alone |
@@ -254,3 +262,4 @@ table as a metric), and score sentence pairs on held-out scenes.
   this folder. The planned test of issues 1, 2 and 4 is `ACTION_SENSITIVITY_PLAN.md`.
 - 2026-11-10. First version.
 - 2026-11-11. Issue 4 confirmed by the first round of the action-sensitivity test.
+- 2026-11-12. Issues 1 and 2 updated after the second round (ten critics, all flat).

@@ -2,7 +2,8 @@
 
 Written 2026-11-10 with Yuxuan, for the code agent. Read `docs/lang_filter/DIAG_ACTOR_2026-10-30.md` first.
 Updated 2026-11-11: a lower decision rate (one action per 3 ticks, about 8 Hz) added as a point to try, and a
-second round after the first results (section 7, which is what to run now).
+second round after the first results (section 7).
+Updated 2026-11-12: a third round after the second round's results (section 8, which is what to run now).
 Status on 2026-11-11 (what ran, the results, what is left, how to continue on another machine):
 `docs/lang_filter/ACTION_SENSITIVITY_STATUS.md`.
 
@@ -290,6 +291,121 @@ Low on both means it never learned the action's effect.
 
 - A loss on the difference between two decisions from the same state, where the state's part cancels.
 - A direct fit of the chunk critic on the true branch values (no Bellman), as a ceiling for this model and data.
+  Taken up on 2026-11-12 as section 8.4.
 - A stronger injection: the action embedding added to the query tokens before they read the scene, pooled from
   the gripper and held-object tokens, with the commanded change of velocity as an extra feature.
+
+## 8. Third round (2026-11-12)
+
+### 8.1 Results of the second round
+
+All ten critics of both rounds fail. Held-out and training states, rank agreement / spread ratio (pass: 0.70 and
+0.25 on held-out states). All runs except A and C use the revised injection.
+
+| run | decision | branch data, batch mix | held-out | training states |
+|---|---|---|---|---|
+| A | 1 tick, current injection | small, old | 0.75 / 0.000 | 0.62 / 0.000 |
+| F | 1 tick | none | 0.78 / 0.004 | 0.67 / 0.002 |
+| C | chunk, current injection | small, old | 0.63 / 0.000 | 0.61 / 0.000 |
+| D | chunk | small, old | 0.68 / 0.042 | 0.47 / 0.094 |
+| B | 1 tick | small, old | 0.81 / 0.013 | 0.62 / 0.011 |
+| D2 | chunk | small, new | 0.76 / 0.076 | 0.60 / 0.124 |
+| G | 3 ticks | none | 0.36 / 0.000 | 0.49 / 0.000 |
+| B2 | 1 tick | large, new | 0.68 / 0.005 | 0.67 / 0.005 |
+| H | 3 ticks | large, new | 0.63 / 0.067 | 0.63 / 0.065 |
+| D3 | chunk | large, new | 0.55 / 0.077 | 0.55 / 0.068 |
+
+What it says.
+- **The signal is large.** Within one state the true value differs by 0.36 on average between the 1-tick
+  decisions, 0.51 between the 3-tick ones and 0.72 between the chunks. A hard stop tips the block in about 95% of
+  branches, slowing to 75% is the safest. So near the boundary "one tick is too small" does not hold, and the
+  lower rate was not the fix (G flat, H 0.067).
+- **The batch mix and more states are not the fix** (D2 like D, D3 like D2).
+- **The critic does not fit its own training states** (about 0.1 at best), so it is not memorizing. It is shown
+  the decision rows in a quarter of every batch and still does not learn them.
+- **The revised injection can carry the action when the answer is given directly** (step 1: training states
+  0.94 / 0.93). So the open question is the training target.
+
+### 8.2 The question
+
+A decision row's Bellman target is built from the critic's own value where the decision ends. Two things can go
+wrong, and a flat Q looks the same under both.
+
+- **(a) The critic cannot use the action.** The targets of two decisions at one state differ, and Q does not
+  follow them.
+- **(b) The targets do not differ.** After a hard stop the tray is still and the block starts to wobble. After
+  slowing, the tray moves and the block is steady. If the critic gives those two situations the same value, both
+  decisions get the same target, and Q correctly learns that the decision makes no difference. The fault is then
+  in reading the item's state from the tokens, or in how slowly values travel back through the target network,
+  not in the action path.
+
+### 8.3 Two checks on the existing checkpoints (no training)
+
+Use the final checkpoints of D2, B2, H and D3, on training and held-out states.
+
+**Check 1. Do the targets differ between the decisions?** For every state and each of its decisions, take the
+decision row (the row that starts at the branch tick) and compute three numbers: the true value V95, the Bellman
+target y exactly as the run's training step builds it (its target twins, the unrolled recursion over the
+decision), and Q. For each of the three, take the spread over the state's decisions (highest minus lowest) and
+average over states. Report the three spreads, target ÷ truth and Q ÷ target.
+
+| result | meaning |
+|---|---|
+| target spread near the truth's, Q flat | (a): the critic does not follow targets that differ |
+| target spread small | (b): the targets carry no difference, look at check 2 |
+
+**Check 2. Does the critic follow the block after the decision?** For every state, take its branches at
+k = 3, 12, 25 and 50 ticks after the branch tick. At each k compute Q(s_{t+k}, the stored action or chunk there)
+for every branch, and the true value from that tick on (V95 of the rest of the branch's h trace). Report, per k,
+the rank agreement and spread ratio across a state's branches, and the share of branch pairs whose h already
+differs by more than 0.1 at that tick. If Q stays flat across branches even where h has already separated, the
+critic does not read the item's state.
+
+### 8.4 Train with the measured outcome as the target
+
+Every stored planner episode and every branch was run to its end, so the true value from any stored tick is
+known. Use it as the target in place of the bootstrapped one.
+
+```
+bootstrapped (rounds 1 and 2):   y_t = (1 − γ) h_t + γ min( h_t, Q̄(s_{t+1}, a_{t+1}) )      Q̄ is the critic's own guess
+measured outcome (this round):   y_T = h_T at the last tick T,
+                                 y_t = (1 − γ) h_t + γ min( h_t, y_{t+1} )                  only recorded margins
+```
+
+- The second line is V95 computed from the row's own tick to the end of its episode or branch. No critic appears
+  on the right, so there is no target network and nothing has to travel back tick by tick.
+- For a 3-tick or chunk critic the target of the row at tick t is the same number, V95 from tick t. Unrolling the
+  recursion over the decision from V95 at its end gives exactly that.
+- It is the correct answer here because the data follows one fixed rule, "this decision, then the planner", and
+  what the planner did afterwards is what was recorded. It is a test recipe: the final filter needs the value
+  under the safest continuation, which was not recorded.
+- Normal rows: use only episodes that are stored completely and driven by the planner from start to end, with
+  V95 from their own h trace. Report how many rows that leaves.
+- Everything else as in the second round: from scratch, revised injection, large branch data, the new batch mix,
+  both twins regress on the target with the same Huber loss, 6,000 steps, the same probes on training and
+  held-out states.
+
+| run | decision |
+|---|---|
+| M1 | 1 tick |
+| M3 | 3 ticks |
+| M12 | chunk |
+
+| result | meaning | next |
+|---|---|---|
+| passes on held-out states | the model and the data are fine, the bootstrapped chain was losing the signal | make the chain work: longer training (8.5), n-step targets |
+| fits training states, fails held-out | it cannot generalize how the item's state and the action map to the outcome | perception of the item's state, more varied scenes |
+| fails on training states | the model cannot carry it | the stronger injection of section 7.5 |
+
+### 8.5 Longer bootstrapped training
+
+Resume D3 and H from their checkpoints to 20,000 steps, probes as before. With a slowly updated target network,
+6,000 steps may be too few for values to travel back from the tip to the decision, and the order of the spread
+ratios (chunk above 3 ticks above 1 tick) fits that. The pass bar stays defined at step 6,000. Report the curve
+to 20,000 separately.
+
+### 8.6 Order
+
+The two checks first (minutes). M1, M3, M12 and the two resumed runs can start at the same time. The difference
+loss and the stronger injection (section 7.5) stay set aside until these results are in.
 
