@@ -442,6 +442,35 @@ class Learner:
                     if cfg.eval_every and self.update % int(cfg.eval_every) == 0:
                         snap = self.publish(self.run / "eval" / f"weights_v{self.version:05d}.pt")
                         pending_rounds.append((f"u{self.update:05d}", "model", str(snap)))
+            if not self._stop and (eval_state is not None or pending_rounds):
+                # the last updates are done: finish the evaluation rounds still open (the 11-11 check stopped with
+                # its baseline round half run), training episodes off, within the eval time limit and the deadline
+                pool.set_training(False)
+                while (eval_state is not None or pending_rounds) and not self._stop:
+                    if deadline is not None and time.time() > deadline:
+                        print("[residual-train] deadline reached during the last evaluation", flush=True)
+                        break
+                    if eval_state is None:
+                        name, policy, weights = pending_rounds.pop(0)
+                        ids = {pool.submit(j) for j in self._eval_jobs(name, policy, weights, videos=True)}
+                        eval_state = {"name": name, "ids": ids, "eps": [], "t0": time.time(), "policy": policy,
+                                      "update": self.update}
+                        print(f"[residual-train] eval round {name}: {len(ids)} episodes", flush=True)
+                    for res in pool.poll(timeout=2.0):
+                        if res.get("kind") == "eval" and res.get("tag") == eval_state["name"]:
+                            res.pop("traj", None)
+                            eval_state["eps"].append(res)
+                            eval_state["ids"].discard(res.get("job_id"))
+                    eval_state["ids"] = {i for i in eval_state["ids"] if i in pool.jobs}
+                    if eval_state["ids"] and time.time() - eval_state["t0"] > 60.0 * args.eval_timeout_min:
+                        print(f"[residual-train] eval {eval_state['name']}: time limit, {len(eval_state['ids'])} "
+                              f"episodes missing", flush=True)
+                        for i in eval_state["ids"]:
+                            pool.jobs.pop(i, None)
+                        eval_state["ids"] = set()
+                    if not eval_state["ids"]:
+                        self._finish_eval(eval_state, wb)
+                        eval_state = None
             if self._stop and self.update < args.updates:
                 exit_code = EXIT_RESUME
         finally:
