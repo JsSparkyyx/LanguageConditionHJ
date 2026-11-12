@@ -339,6 +339,10 @@ Defaults chosen in the session (change in `residual/config.py`):
 - Found while reading the code: **a replanned path starts from rest.** RoboTwin hands cuRobo the joint positions
   only (`JointState.from_position`), so every replan slows the arm down and up again. The throughput step measures
   how much (the old plan's speed at the cursor vs the new plan's first-tick speed, per replan).
+- Smoke test (2026-11-11, A40): confirmed, the old plan moved at 0.9 rad/s at the cursor and the new plan's first row
+  at 0.01. Also: a new cuRobo plan is at least about 77 rows (8 ticks) even for a few-mm move, so the fixed trigger
+  with N = 5 never reached a plan's end (250 replans, then the time limit). The fixed trigger now skips a replan when
+  the current plan ends within N ticks anyway.
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.

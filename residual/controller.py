@@ -234,7 +234,11 @@ class ResidualTickController(RiskTickController):
             pos, _ = _path_arrays(plan)
             dev = float(np.max(np.abs(q[a] - pos[min(cursor[a] - 1, n - 1)])))
             self.stats["max_dev"] = max(self.stats["max_dev"], dev)
-            fire = (trig == "fixed" and since_replan[a] >= int(self.cfg.replan_every)) or (
+            # fixed: no replan when the plan ends within one replan period anyway. A new cuRobo plan is at least
+            # ~77 rows (8 ticks) even for a few-mm move, so replanning every 5 ticks would never reach a plan's end
+            # (smoke 11-11: 250 replans, timeout)
+            every = int(self.cfg.replan_every)
+            fire = (trig == "fixed" and since_replan[a] >= every and n - cursor[a] > every * STEPS_PER_TICK) or (
                 trig == "deviation" and dev > float(self.cfg.replan_threshold))
             if not fire:
                 continue

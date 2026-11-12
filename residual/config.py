@@ -28,7 +28,7 @@ class ResidualConfig:
     delta_bound: float = 0.2            # rad per joint: how far from the plan the policy may put the arm
     speed_kappa: float = 1.0            # final clip = URDF velocity limit x tick x kappa (0.13 rad/tick at 3.14 rad/s)
     replan_trigger: str = "deviation"   # "deviation" | "fixed" | "none"
-    replan_every: int = 5               # fixed: replan every N ticks (5 = 5 Hz)
+    replan_every: int = 5               # fixed: replan every N ticks (5 = 5 Hz), not when the plan ends within N ticks
     replan_threshold: float = 0.1       # deviation: replan when any joint is this far off its plan row (rad)
     nom_noise_std: float = 0.01         # rad, per joint per tick, added to the EXECUTED a_nom in training (Yuxuan 11-09)
     act_in_gripper_segments: bool = True  # gripper close / open run through the 25 Hz loop (Yuxuan 11-09)
