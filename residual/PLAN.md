@@ -369,7 +369,9 @@ Defaults chosen in the session (change in `residual/config.py`):
   success, success is then rare at the start.
 - First PPO run (Yuxuan, 2026-11-12): 12 hours, 350 updates, one A40 with 8 workers, deviation trigger, completion
   value only on success, start noise init_std 0.025 of the bound (0.005 rad per tick, not 0.02, so successes stay
-  common early). Run `runs/residual/residual_dev_success_s025_1112`, job 23824247 (gpuA40x4).
+  common early). Run `runs/residual/residual_dev_success_s025_1112`. The gpuA40x4 job waited 12.5 h, so it runs as
+  1-hour interactive pieces instead (Yuxuan, 11-12): `jobs/train_chunk.sbatch` (learner deadline 50 min, resume from
+  the checkpoint) submitted by the feeder `jobs/chain_train.sh` until `<run>/done`.
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.

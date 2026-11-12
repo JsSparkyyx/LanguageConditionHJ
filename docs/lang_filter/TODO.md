@@ -351,7 +351,9 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
 - [x] 11-12 Throughput and delta = 0 baselines reported (PLAN section 7): 8 workers ~135 training transitions/s on
   one A40; fixed 5 Hz trigger 5x slower (replans start from rest); delta = 0 success 0.53-0.58, in the way broken ~0.66.
 - [ ] First PPO run (Yuxuan 11-12: 12 h, 350 updates, deviation, completion only on success, init_std 0.025):
-  job 23824247, `runs/residual/residual_dev_success_s025_1112`, wandb `cehj-residual`.
+  `runs/residual/residual_dev_success_s025_1112`, wandb `cehj-residual`. Job 23824247 waited 12.5 h in gpuA40x4
+  (1,200 ahead); 11-12 12:48 moved to 1-hour interactive pieces (Yuxuan): `residual/jobs/train_chunk.sbatch`, feeder
+  `residual/jobs/chain_train.sh` on dt-login02, log `tmp/residual/chain_train_residual_dev_success_s025_1112.log`.
 - [x] 11-12 Rerun of the train check stage (job 23823793): the end-of-run evaluation round completes (summary,
   videos; a video episode takes ~110 s against 13 s); the 9 non-simulator tests pass (RoboTwin conda python).
 - [ ] Later: fixed vs deviation trigger, completion "success" vs "always".
