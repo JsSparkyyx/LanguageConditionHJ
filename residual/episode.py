@@ -365,7 +365,10 @@ class Episode:
         except Exception as exc:  # never crash a worker on one bad episode
             end, reason = "truncated", "error"
             err = f"{type(exc).__name__}: {exc}"
-            traceback.print_exc()
+            if isinstance(exc, AssertionError) and "target_pose cannot be None" in str(exc):
+                reason = "host_plan_fail"    # RoboTwin found no reachable grasp pose (grasp_actor), a host failure
+            else:
+                traceback.print_exc()
         finally:
             task.scene.step = orig_step
         t_end = time.perf_counter()
