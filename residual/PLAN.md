@@ -362,7 +362,7 @@ Defaults chosen in the session (change in `residual/config.py`):
   Under the fixed trigger the arm therefore crawls (finished episodes 306 policy ticks against 222, a third of
   them reach the time limit) and each replan costs 0.44 s: the fixed trigger is 5 times slower in wall time.
   The 25 Hz loop lowers success a little against playback (0.53 to 0.58 against 0.64). At a grasp's close, the hand
-  is 1.9 cm (median) off the plan's last row, because the move segment ends when the cursor passes the plan's end
+  is 1.9 cm (median) off the plan's last row, probably because the move segment ends when the cursor passes the plan's end
   and the arm still lags.
 - Training check (2 updates, 4 workers): runs end to end; 0 of 24 episodes succeed with the initial random
   residual (std 0.02 rad per joint per tick), against 0.53 at delta = 0. With the completion value paid only on
