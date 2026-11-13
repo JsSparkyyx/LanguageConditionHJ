@@ -424,3 +424,72 @@ python -m residual.throughput --out /abs/runs/residual/throughput \
 python -m residual.train --run /abs/runs/residual/<name> --updates 2000 \
     --set replan_trigger='"deviation"' completion='"success"'           # wandb online: source scripts/lang/wandb_env.sh first
 ```
+
+## 8. The sliding tray (`tray_slide`, T8), added 2026-11-13
+
+Run it with `--set task=tray_slide`; T1 stays the default and runs exactly as before (same state of 340 numbers,
+same reward, same defaults). Everything that differs between the tasks goes through `tasks.py` (`task_hooks`):
+building a scene, naming a rule, the probe and the state, the evaluation scenes, and how the numbers are split.
+
+**The task** (`envs/robotwin_tasks/tray_slide.py`, card `envs/docs/item_envs/task_cards/T8.md`). One arm pinches
+the tray's handle tab and drags the tray 32-38 cm sideways into a pad. On the tray stand a wine glass (`glass`,
+tall: falls at a gentle stop) and a can (`can`, short: falls only at a hard stop). Rule per item: keep it standing
+(`upright|<item>|-`, 45°).
+
+**The nominal** is the careless `fast` drag (0.70 m/s, 3 cm brake, the yaml's default): in the robot check the
+glass fell in 8 of 8 runs and the can in 6 of 8. The residual has to slow the drag down or ease the stop. Other
+named drags can be mixed in with `tray_behaviours` (drawn per episode, for example `["fast","medium"]`; at `medium`
+only the glass falls); the default is `fast` alone.
+
+**The named item.** Each episode names the glass or the can, equally often (a per-worker counter, as T1 keeps its
+in-the-way share). The task's own draw (`task.referent_id`) is not used. "In the way" here means that the named drag
+tips this item in most runs (`fast`: both). Training and evaluation numbers are split by the named item
+(`glass/broken`, `can/broken`, ...) instead of in the way / out of the way.
+
+**Ending and reward: as T1.** r = 1 / (1 + w‖δ‖²/12) per tick. The episode ends when the named item tilts past
+45°. The completion value 100 is paid only on task success: the tray's centre within 4 cm of the pad's centre
+(`check_success`). **The other item does not count**: it may fall without ending the episode or costing reward,
+and its fall is logged (`other_broken`). Reason: if both counted, every episode would need the glass's slow drag and
+the named item would not matter. With only the named one, the can needs less slowing than the glass (the can stands
+at 0.45 m/s, the glass falls there), and the correction cost makes "slow down only as much as this item needs" the
+best policy, so the policy has to look at which item is named.
+
+**State (186 numbers, world frame):**
+
+- robot: arm joints and their velocities [24], gripper openings [2], both hands' pose (position, rotation 6D) [18],
+  which arm drags [2];
+- planner: a_nom [12], the plan rows 5 to 25 ticks ahead [60], per arm whether a plan plays [2] and how far its
+  cursor is through the plan [2], whether the risky drag is the current motion [1];
+- tray: position [3], rotation 6D [6], linear and angular velocity [6], acceleration over the last tick [3], pad
+  centre minus tray centre [2];
+- the named item first, then the other, 20 each: position relative to the tray, rotation 6D, linear and angular
+  velocity, tilt, upright margin (45° minus tilt), height, base radius and the task's tipping acceleration g r / c;
+- which item is named (one-hot glass / can) [2], and w [1].
+
+**How the residual can slow the drag: resync instead of replan.** The drag (and the descent to the tab and the
+retreat) is one via-path plan: a straight line through dense IK waypoints, played on its own time law. The T1 replan
+(`_replan_arm`) would rebuild that path through ALL its waypoints from the first one, so back toward the start, and
+from rest. So for via-path plans (`_item_profiled`) the deviation trigger instead moves the plan cursor to the row
+nearest the live joints ("resync", `controller.nearest_row`; no planning, no wall time). Example: at 0.70 m/s the
+plan moves the hand 2.8 cm per tick; the policy returns δ = −0.7 a_nom, so the hand moves about 0.8 cm; after a tick
+or two a joint is 0.03 rad behind its row and the cursor jumps back to where the hand is. The plan then goes on from
+there at the plan's own speed there, so holding back by a steady share slows the whole time law, the brake
+included, and the lag never builds up. The threshold is `resync_threshold` = 0.03 rad, smaller than T1's 0.1, so that
+the arm is never far behind: the move also ends only when the arm is within 0.03 rad of the plan's last row, and the
+pull to that row while the gripper opens stays small. `profiled_replan="replan"` switches back to the old replan. T1's
+hosts have no via-path plans, so T1 never resyncs.
+
+**Evaluation.** `eval_pairs` = 20 scenes from seeds 9,000,000 up, each run twice, once with the glass named and once
+with the can (the same scene with the other rule). The δ = 0 baseline runs on the same scenes. On an A100 (no RT
+cores) run with `eval_video_scenes=0`; on an A40 the T1 overlay videos work.
+
+**Code.** `tasks.py` (hooks), `tray.py` (probe, state, balancer, evaluation scenes), the resync in `controller.py`,
+`smoke_tray.py` (simulator smoke test: δ = 0 rates per item, the margin against the runner's own, a scripted
+hold-back residual that must slow the tray and still finish), `jobs/tray_check.sbatch` (smoke, then a two-update
+training run, on one GPU), `tests/test_tray_nonsim.py`. `throughput.py` and `smoke.py` stay T1 only.
+
+```bash
+python -m pytest -q residual/tests                                       # no simulator
+python -m residual.smoke_tray --out /abs/runs/residual/smoke_tray        # one GPU
+python -m residual.train --run /abs/runs/residual/<name> --updates 2000 --set task=tray_slide
+```
