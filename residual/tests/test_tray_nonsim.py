@@ -92,6 +92,25 @@ def test_resync_moves_the_cursor_back_and_never_replans(monkeypatch):
     assert cursor["left"] == 101 and c.stats["resyncs"] == 1
 
 
+def test_resync_never_jumps_forward_or_on_a_sideways_offset(monkeypatch):
+    """Smoke 11-13: exploration noise made the cursor random-walk, mostly forward (drag at 1.7 m/s). Only a real lag
+    along the path moves the cursor, and only back."""
+    c = _ctrl(ResidualConfig())
+    plan = _line_plan()
+    pos = plan["position"]
+    state = {"q": pos[170].copy()}               # the arm AHEAD of the cursor (row 149)
+    monkeypatch.setattr(type(c), "_arm_qpos", lambda self: {"left": state["q"], "right": np.zeros(6)})
+    cursor = {"left": 150, "right": 0}
+    c._maybe_replan({"left": plan, "right": None}, cursor, {"left": 0, "right": 0})
+    assert cursor["left"] == 150 and c.stats["resyncs"] == 0
+    state["q"] = pos[149] + 0.05 * np.array([1, -1, 1, -1, 1, -1])   # off the path sideways, on time
+    c._maybe_replan({"left": plan, "right": None}, cursor, {"left": 0, "right": 0})
+    assert cursor["left"] == 150 and c.stats["resyncs"] == 0
+    state["q"] = pos[120] + 0.05 * np.array([1, -1, 1, -1, 1, -1])   # sideways AND lagging: the lag is removed
+    c._maybe_replan({"left": plan, "right": None}, cursor, {"left": 0, "right": 0})
+    assert cursor["left"] == 121 and c.stats["resyncs"] == 1
+
+
 def test_resync_past_the_end_keeps_the_move_going(monkeypatch):
     c = _ctrl(ResidualConfig())
     plan = _line_plan()

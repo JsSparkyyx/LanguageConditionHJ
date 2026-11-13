@@ -17,9 +17,10 @@
 
 Via-path plans (``_item_profiled``: an item task's straight move with its own time law, e.g. the tray drag of
 ``tray_slide``; T1's hosts have none) are not replanned: a replan would rebuild the whole via path from its FIRST
-waypoint, behind the hand. With ``profiled_replan = "resync"`` the cursor instead jumps to the plan row nearest the
-live joints when any joint is more than ``resync_threshold`` off its row (``nearest_row``), also once the cursor has
-passed the plan's end (the move ends only when the arm is within the threshold of the last row). So a residual that
+waypoint, behind the hand. With ``profiled_replan = "resync"`` the cursor instead jumps BACK to the plan row nearest
+the live joints when any joint is more than ``resync_threshold`` off its row and that row removes at least half the
+threshold of the deviation (a real lag along the path, not a sideways offset; ``nearest_row``), also once the cursor
+has passed the plan's end (the move ends only when the arm is within the threshold of the last row). So a residual that
 holds the arm back slows the plan's time law itself: the plan continues from where the arm is, at the speed the plan
 has there, and the lag never builds up (PLAN section 8).
 
@@ -300,13 +301,18 @@ class ResidualTickController(RiskTickController):
         if not fire:
             return
         since_replan[a] = 0
-        j, d_new = nearest_row(pos, q, min(cursor[a] - 1, n - 1))
+        here = min(cursor[a], n)
+        # only BACK along the plan: the residual may slow the time law, never speed it up (smoke 11-13: forward
+        # jumps on exploration noise drove the drag to 1.7 m/s against the plan's 0.70)
+        j, d_new = nearest_row(pos[:here], q, here - 1)
         new_cursor = j + 1
-        if new_cursor == min(cursor[a], n):
-            return   # the nearest row already (an arm off the path sideways): a_nom pulls it back
+        # and only when the arm really lags along the path: a sideways offset barely changes with the row
+        # (d_new ~ dev) and is left to a_nom, which pulls the arm back onto the path
+        if new_cursor >= here or d_new > dev - 0.5 * float(self.cfg.resync_threshold):
+            return
         self.stats["resyncs"] += 1
-        self.stats["resync_rows"] += int(min(cursor[a], n) - new_cursor)
+        self.stats["resync_rows"] += int(here - new_cursor)
         if len(self.replan_log) < 200:
             self.replan_log.append({"arm": a, "tick": int(self.stats["policy_ticks"]), "kind": "resync", "dev": dev,
-                                    "dev_after": d_new, "rows_back": int(min(cursor[a], n) - new_cursor), "rows": n})
+                                    "dev_after": d_new, "rows_back": int(here - new_cursor), "rows": n})
         cursor[a] = new_cursor

@@ -188,6 +188,10 @@ def main() -> int:
         ok = (traj["obs"].shape[1] == hooks.obs_dim(cfg) and np.all(np.isfinite(traj["obs"]))
               and traj["rew"].min() > 0 and traj["rew"].max() <= 1.0 + 1e-6)
     check("training episode transitions", ok, detail)
+    # exploration noise must not speed the drag up through the resync (11-13: forward jumps, 1.7 m/s)
+    check("resyncs only move back", res.get("resync_rows", -1) >= 0
+          and all(x.get("rows_back", 0) > 0 for x in res.get("replan_log", []) if x.get("kind") == "resync"),
+          {"resyncs": res.get("resyncs"), "resync_rows": res.get("resync_rows"), "tray_v_max": res.get("tray_v_max")})
 
     (out / "smoke_tray.json").write_text(json.dumps(report, indent=2, default=str))
     print(f"[smoke-tray] {len(fails)} failed: {fails}", flush=True)
