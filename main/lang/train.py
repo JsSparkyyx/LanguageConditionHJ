@@ -55,7 +55,7 @@ from . import ensure_item_path
 ensure_item_path()
 
 
-from .config import CANON_EMBODIMENTS, CANON_TASKS, LangConfig  # noqa: E402
+from .config import CANON_EMBODIMENTS, CANON_TASKS, CANON_TASKS_7, LangConfig, task_list  # noqa: E402
 from .neck_buffer import ROW_FIELDS  # noqa: E402
 from .network import LangPolicyEncoder, LangTwinCritic, make_actor, n_params, param_groups, set_probe  # noqa: E402
 
@@ -1088,7 +1088,8 @@ def add_common(p):
     p.add_argument("--val", nargs="*", default=[])
     p.add_argument("--run", required=True)
     p.add_argument("--tasks", default="all",
-                   help="comma list or 'all' (the five training tasks, TRAIN_TASKS); a resumed run keeps the saved choice")
+                   help="comma list; 'all' = the five training tasks (TRAIN_TASKS), e.g. tray_slide or all,tray_slide; "
+                        "a resumed run keeps the saved choice")
     p.add_argument("--embodiments", default="ur5-wsg",
                    help="comma list or 'all' (default ur5-wsg: one embodiment); a resumed run keeps the saved choice")
     p.add_argument("--relabel", choices=("paired", "random", "fixed"), default=None)
@@ -1149,7 +1150,8 @@ def code_identity(tasks, roots) -> dict:
                                     capture_output=True, text=True, timeout=20).stdout.strip())
     except Exception:
         head, dirty = "", None
-    return {"h_code": h_code_hash(CANON_TASKS), "h_code_v2": h_code_hash_v2(tasks or CANON_TASKS),
+    # h_code over the seven tasks before tray_slide (config.CANON_TASKS_7): the value older states recorded
+    return {"h_code": h_code_hash(CANON_TASKS_7), "h_code_v2": h_code_hash_v2(tasks or CANON_TASKS),
             "git_head": head, "git_dirty": dirty, "data_roots": sorted(str(Path(r).resolve()) for r in roots)}
 
 
@@ -1197,7 +1199,7 @@ def _config_from_flags(args) -> LangConfig:
     if args.activation_checkpointing:
         kw["activation_checkpointing"] = True
     if args.tasks != "all":
-        kw["task_choices"] = tuple(args.tasks.split(","))
+        kw["task_choices"] = task_list(args.tasks)   # e.g. tray_slide, or all,tray_slide (the five plus T8)
     if args.embodiments != "all":
         kw["embodiment_choices"] = tuple(args.embodiments.split(","))
     for item in args.set:

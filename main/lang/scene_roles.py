@@ -3,7 +3,8 @@
 ``in_way_reasons(env, record) -> {id: reason}``: string ids (``item_id`` for
 objects and bead sets, ``region_id`` for mats / bins / plates) of every referent
 that counts as in the way, with why, read only from the task's own scene
-metadata — deterministic per seed, unlike the nominal's motion (cuRobo is
+metadata (T8 tray_slide: from the named behaviour of the episode's nominal) —
+deterministic per seed, unlike the nominal's motion (cuRobo is
 nondeterministic run to run). Since 2026-10-08 the referents the nominal hits in
 some runs only (T1 near-path objects and off-path objects within 10 cm of a
 second corridor, T6's diagonal container) count as in the way too (Yuxuan,
@@ -39,6 +40,12 @@ T1_OFF_PATH_MIN_DIST = 0.10  # m: spawn.py objects.off_path_min_dist (T1 yaml)
 # scenes). Records without slot names fall back to this azimuth cut (45 +- 20 vs 90 +- 20 deg).
 T6_UNCLEAR_SLOT = "far_across"
 T6_UNCLEAR_AZ_DEG = 67.5
+# T8 tray_slide: the items each named nominal behaviour tips (item ids = robotwin_tasks/tray_slide.py kinds), from the
+# T8 card's final robot check (8 scenes each): slow 0 / 0 (glass / can fell), medium 5 / 0, fast 8 / 6,
+# recover_glass 0 / 0, recover_can 8 / 1. A recovery's own item is saved (the nominal slows down for it), so it is
+# not in the way: recover_glass tips nothing, recover_can the glass (it slows from 0.70 only to 0.45 m/s, the glass's
+# medium speed). Items that fall in most runs count as in the way (as T1's near-path objects, decision 3)
+T8_FALLS = {"slow": (), "medium": ("glass",), "fast": ("glass", "can"), "recover_glass": (), "recover_can": ("glass",)}
 
 
 def referent(rule: dict, record: dict) -> str | None:
@@ -94,7 +101,8 @@ def _beads(record) -> set:
 
 def in_way_reasons(env, record) -> dict:
     """{referent id: why it counts as in the way} of the episode's scene (Section 3.5): T1 on_path / near_path /
-    second_corridor, T2 / T4 beads, T3 on_path, T5 tall, T6 aimed / diagonal (and the bead set: beads), T7 hit."""
+    second_corridor, T2 / T4 beads, T3 on_path, T5 tall, T6 aimed / diagonal (and the bead set: beads), T7 hit,
+    T8 the items the episode's named behaviour tips (T8_FALLS; reason = the behaviour, e.g. {"glass": "medium"})."""
     task = record.get("task")
     info = getattr(env.task, "episode_info", None) or {}
     if task == "selective_avoid":
@@ -127,6 +135,14 @@ def in_way_reasons(env, record) -> dict:
     if task == "gap_place":
         hit = info.get("hit")
         return {hit: "hit"} if hit else {}
+    if task == "tray_slide":
+        # the risk is the nominal's speed, not the layout: the items its named behaviour tips, reason = behaviour
+        knobs = getattr(env.task, "risk_knobs", None) or {}
+        b = knobs.get("behaviour") or (info.get("drag_profile") or {}).get("behaviour")
+        if b not in T8_FALLS:
+            raise KeyError(f"in_way: tray_slide behaviour {b!r} unknown (known: {sorted(T8_FALLS)})")
+        ids = {o["item_id"] for o in record["objects"] if o.get("role") == "candidate"}
+        return {i: str(b) for i in T8_FALLS[b] if i in ids}
     raise KeyError(f"in_way: unknown task {task!r}")
 
 

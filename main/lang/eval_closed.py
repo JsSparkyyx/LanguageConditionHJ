@@ -49,7 +49,10 @@ from . import REPO, ensure_item_path
 
 ensure_item_path()
 
-from .config import CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, TRAIN_TASKS, LangConfig, eval_seed  # noqa: E402
+from .config import (  # noqa: E402
+    CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, TRAIN_TASKS, LangConfig, episode_risk, eval_seed, task_list,
+    task_runs_on,
+)
 
 NOMINAL_RUNS = 2
 MAX_REDRAWS = 7
@@ -168,6 +171,9 @@ def nominal_scene(task: str, emb: str, scene_idx: int, cfg: LangConfig, cache_di
     host = CANON_T1_HOSTS[scene_idx % 5] if task == "selective_avoid" else None
     seed0 = eval_seed(task, emb, scene_idx, 0, host)
     key = f"{task}_{host or '-'}_{emb}_{seed0}_{cfg.max_steps_per_episode}_{code_hash}_{cfg.bank_hash}"
+    mix = (getattr(cfg, "behaviour_mix", None) or {}).get(task)
+    if mix:   # tray_slide: the run's behaviour mix decides each seed's nominal (config.episode_risk)
+        key += "_mix" + hashlib.md5(json.dumps(mix, sort_keys=True).encode()).hexdigest()[:8]
     path = cache_dir / f"{key}.json"
     if path.exists():
         return json.loads(path.read_text())
@@ -180,6 +186,7 @@ def nominal_scene(task: str, emb: str, scene_idx: int, cfg: LangConfig, cache_di
             set_global_seeds(seed)
             inits["n"] += 1
             runner = ItemEpisodeRunner(task, embodiment=emb, seed=seed, host=host, render="none",
+                                       risk=episode_risk(cfg, task, seed),
                                        out_root=str(cache_dir / "runs" / f"r{k}"),
                                        max_steps=10 * int(cfg.max_steps_per_episode))
             try:
@@ -336,7 +343,8 @@ def filter_run(models: Models, cfg: LangConfig, nom: dict, rule: dict, kind: str
     if emb not in kins:
         kins[emb] = make_kinematics(CKPT_DIR, emb)
     cfg_ep = dataclasses.replace(models.cfg, task=task, embodiment=emb, item_host=host, item_active_rule=None,
-                                 item_out_root=str(REPO / "runs/lang/_eval_runner"))
+                                 item_out_root=str(REPO / "runs/lang/_eval_runner"),
+                                 item_risk=episode_risk(models.cfg, task, seed))   # the nominal runs' behaviour
     set_global_seeds(seed)
     inits["n"] += 1
     ro = LangRolloutController(cfg_ep, seed, mode="filtered", encoder=encoder, kin=kins[emb],
@@ -413,7 +421,7 @@ def child(args) -> int:
     kins, inits = {}, {"n": 0}
     cache_dir = REPO / "runs/lang/_nominal_cache"
     axes = [] if args.axes in ("", "none") else args.axes.split(",")   # none: nominal + control runs only
-    tasks = TRAIN_TASKS if args.tasks == "all" else tuple(args.tasks.split(","))
+    tasks = task_list(args.tasks)   # all = TRAIN_TASKS; e.g. all,tray_slide
     crashes = defaultdict(int)
     cr_path = out_dir / f"crashes_{tag}.json"
     if cr_path.exists():
@@ -424,7 +432,9 @@ def child(args) -> int:
             f.write(json.dumps({**row, "code_hash": code_hash, "filter_hash": filter_hash, "ckpt_sha": sha,
                                 "ckpt_step": models.step}, default=str) + "\n")
 
-    work = [(task, si) for task in tasks for si in range(int(args.scenes_per_combo))]
+    # the tasks registered for this embodiment only (tray_slide: ur5-wsg)
+    work = [(task, si) for task in tasks if task_runs_on(task, args.embodiment)
+            for si in range(int(args.scenes_per_combo))]
     work = [w for k, w in enumerate(work) if k % int(args.n_shards) == int(args.shard)]
     for task, si in work:
         if True:

@@ -24,6 +24,16 @@ sidecar (created, resumed, rolled back and flushed with the pair). ``--replay
     python -m main.lang.collect warmup --lang-version 2 --embodiment ur5-wsg \\
         --tasks selective_avoid,gap_place --replay data/lang/warmup/shard_g0 --out data/lang_v2/warmup/shard_g0
 
+T8 tray_slide (2026-11-13; ur5-wsg only, schedules skip it elsewhere): each episode's nominal behaviour is drawn from
+its seed (config.episode_risk, LangConfig.behaviour_mix). Its own episode ids through --g-base (warmup g 0-30 and
+validation g 0-25 are taken on disk): the validation set is 20 ur5-wsg episodes at g 26 (ids 86M + attempt), the
+warmup at g 40 (ids 41M + attempt), e.g.
+
+    python -m main.lang.collect validation --embodiment ur5-wsg --tasks tray_slide --shard 0 --n-shards 1 \\
+        --episodes-per-task 20 --g-base 26 --out data/lang/val_tray/shard_g26
+    python -m main.lang.collect warmup --embodiment ur5-wsg --tasks tray_slide --shard <i> --n-shards <n> \\
+        --episodes-per-task 30 --g-base 40 --out data/lang/warmup_tray/shard_g<40 + i>
+
 V6 (qwen_impl.md 6): ``--encoder holobrain_qwen`` collects with HoloBrain-Qwen's front end (297 scene tokens per
 frame, the kv_buffer/ sidecar with each frame's prefix keys / values, and by default the frames/ sidecar with the
 native renders); ``--spawn-pool pre_1012`` draws T1 objects from the pool before 2026-10-12, so a replay of a
@@ -50,8 +60,8 @@ from . import ensure_item_path
 ensure_item_path()
 
 from .config import (  # noqa: E402
-    CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, TRAIN_TASKS, LangConfig, check_stream, shard_g,
-    val_offset, valg_offset, warmup_offset,
+    CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, TRAIN_TASKS, LangConfig, check_stream, episode_risk, shard_g,
+    task_list, task_runs_on, val_offset, valg_offset, warmup_offset,
 )
 
 
@@ -69,11 +79,13 @@ def shard_schedule(tasks, emb: str, shard: int, n_shards: int, episodes_per_task
     """Whole cycles over the tasks for one shard: cycles = episodes_per_task /
     n_shards, order within a cycle shuffled with seed g. T1's host in cycle c
     of shard i is t1_hosts[(i * cycles + c) mod 5] (balanced over the union
-    when 5 divides episodes_per_task). -> [(task, emb, host)]."""
+    when 5 divides episodes_per_task). Tasks not registered for emb are left out (tray_slide: ur5-wsg only).
+    -> [(task, emb, host)]."""
     if episodes_per_task % n_shards:
         raise ValueError(f"n_shards={n_shards} must divide episodes_per_task={episodes_per_task}")
     cycles = episodes_per_task // n_shards
     rng = np.random.default_rng(g)
+    tasks = [t for t in tasks if task_runs_on(t, emb)]
     out = []
     for c in range(cycles):
         order = list(tasks)
@@ -333,9 +345,10 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             seed = check_stream(episode_offset, attempt) if fixed is None else fixed
             attempt += 1
             inits["n"] += 1
+            # item_risk: a speed-risk task's behaviour for this seed (config.episode_risk; None for the others)
             cfg_ep = dataclasses.replace(
                 cfg, task=task, embodiment=emb, item_host=host, item_active_rule=None,
-                item_out_root=str(out_root / "_runner"),
+                item_out_root=str(out_root / "_runner"), item_risk=episode_risk(cfg, task, seed),
             )
             try:
                 cand = LangRolloutController(
@@ -384,6 +397,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         layout = getattr(env.task, "layout_info", None) or {}
         region_rows = mask_region_rows(runner)
         smeta = scene_meta(env, runner)   # before run(): run() closes the env (actor poses gone)
+        # the nominal's named behaviour (tray_slide's risk knob; its designations follow it), only where a task has one
+        behaviour = (getattr(env.task, "risk_knobs", None) or {}).get("behaviour")
         named, sentence, cf_sentence, cf_rule = None, None, None, None
         from .vlm_prompts import allowed_consequences
 
@@ -483,6 +498,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         rows = np.arange(n_before, len(buf)) % buf.capacity
         violated, hmin = _rule_outcomes(sidecar, rows, len(record["rules"]))
         line = {
+            **({"behaviour": behaviour} if behaviour is not None else {}),
             "episode_id": seed, "task": task, "host": runner.host if task == "selective_avoid" else None,
             "embodiment": emb, "seed": seed, "filter": bool(use_filter and named is not None),
             "named_rule_id": named["rule_id"] if named else None,
@@ -679,6 +695,10 @@ def collect_fields(cfg) -> dict:
             d.pop(k, None)
     if d.get("encoder", "holobrain_gd") == "holobrain_gd":
         d.pop("qwen_attn", None)
+    # the behaviour mix of the config's own tasks only (2026-11-13): a shard without tray_slide keeps its hash
+    mix = {t: m for t, m in (d.pop("behaviour_mix", None) or {}).items() if t in (d.get("task_choices") or ())}
+    if mix:
+        d["behaviour_mix"] = mix
     return d
 
 
@@ -981,7 +1001,7 @@ def plan_shard(args, kind: str):
     Version 2 (--lang-version 2): cfg.lang_version = 2 (in collect_hash) and meta["lang_version"] = 2; a version-1
     meta is exactly the one before V5. --replay <shard>: the shard's recorded episodes (replay_plan) with its shard
     / g / offset / masks / task list, refused when today's collection config differs from its config."""
-    tasks = None if args.tasks == "all" else tuple(args.tasks.split(","))
+    tasks = None if args.tasks == "all" else task_list(args.tasks)
     replay = getattr(args, "replay", None)
     enc = getattr(args, "encoder", None) or "holobrain_gd"
     cfg = LangConfig()
@@ -1156,7 +1176,7 @@ def cmd_recon(args) -> int:
     """Phase 0: `per_task` nominal episodes per task for one embodiment into a
     scratch root (round-robin T1 hosts), for the parity / timing checks."""
     cfg = LangConfig()
-    tasks = TRAIN_TASKS if args.tasks == "all" else tuple(args.tasks.split(","))
+    tasks = task_list(args.tasks)
     out = Path(args.out).resolve()
     _check_fresh(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -1187,7 +1207,8 @@ def main(argv=None) -> int:
         p.add_argument("--n-shards", type=int, default=None, help="required unless --replay")
         p.add_argument("--episodes-per-task", type=int, default=None,
                        help=f"default {30 if kind == 'warmup' else 5} (with --replay: the replayed shard's)")
-        p.add_argument("--tasks", default="all", help="comma list; with --replay, the recorded episodes to replay")
+        p.add_argument("--tasks", default="all", help="comma list (all = TRAIN_TASKS, e.g. all,tray_slide); with --replay, "
+                       "the recorded episodes to replay")
         p.add_argument("--video-every", type=int, default=0)
         p.add_argument("--agent-view", type=int, default=0, metavar="N",
                        help="save the agent-view frame every N ticks for the VLM labeler (0 = off)")
@@ -1207,11 +1228,13 @@ def main(argv=None) -> int:
                        help="collect a finished shard's recorded episodes again (task, host, episode id; all "
                             "statuses), one build each, with its masks setting; the new shard's slots and ids must "
                             "equal the recorded ones and every slot must keep rows (else exit 1)")
+        # warmup too since 2026-11-13: a tray_slide-only shard gets ids no shard on disk uses (warmup g 0-30 and
+        # validation g 0-25 are taken; e.g. warmup --g-base 40, validation --g-base 26)
+        p.add_argument("--g-base", type=int, default=0, help="added to the shard's g (its episode-id offset)")
         if kind == "validation":
             p.add_argument("--stream", choices=("default", "grounding"), default="default",
                            help="grounding: the 20-per-task ur5-wsg validation ids (config.valg_offset; T1 / T7 at "
                                 "g 0-3, round 3 E1; T2-T6 at g 4-8, decision 4)")
-            p.add_argument("--g-base", type=int, default=0, help="added to the shard's g (its episode-id offset)")
     p = sub.add_parser("recon")
     p.add_argument("--out", required=True)
     p.add_argument("--embodiment", required=True, choices=CANON_EMBODIMENTS)

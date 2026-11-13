@@ -28,18 +28,49 @@ from . import REPO
 # canonical index tuples: emb_idx / task_idx / host_idx are indices HERE, never
 # in the (possibly filtered) task_choices / embodiment_choices, so a
 # single-task or single-embodiment run evaluates on the same seeds as `full`
+#
+# A new task is only ever APPENDED: stored task ids and evaluation seeds index this tuple. T8 tray_slide
+# (2026-11-12, ur5-wsg only) is index 7
 CANON_TASKS = ("selective_avoid", "granular_pour", "push_zone", "granular_carry",
-               "tray_transport", "clean_pour", "gap_place")
+               "tray_transport", "clean_pour", "gap_place", "tray_slide")
+# the seven tasks before tray_slide: train.code_identity's first h hash (h_code) is taken over them, so states that
+# recorded only that hash still resume
+CANON_TASKS_7 = CANON_TASKS[:7]
 # the tasks new runs train, collect and evaluate on: T1, T3, T5, T6, T7 (Yuxuan 2026-10-22: T4 granular_carry dropped,
 # "we don't need that much tasks"; 2026-10-23: T2 granular_pour replaced by the redesigned T6 clean_pour, three bowls,
 # since T2's one rule is not text-conditioned). The dropped tasks' episodes stay in the shards and CANON_TASKS keeps
-# their indices; runs saved with other task lists keep them
-TRAIN_TASKS = tuple(t for t in CANON_TASKS if t not in ("granular_carry", "granular_pour"))
+# their indices; runs saved with other task lists keep them. T8 tray_slide is not in the default: a run asks for it
+# with --tasks (task_list: "tray_slide" alone, or "all,tray_slide" = the five plus T8)
+TRAIN_TASKS = tuple(t for t in CANON_TASKS_7 if t not in ("granular_carry", "granular_pour"))
 CANON_EMBODIMENTS = ("ur5-wsg", "franka-panda")
 CANON_T1_HOSTS = ("place_container_plate", "place_burger_fries", "stack_blocks_two",
                   "stack_bowls_two", "place_bread_basket")  # registry order (host_tasks)
 
 TASK_SHORT = {t: f"T{i + 1}" for i, t in enumerate(CANON_TASKS)}
+
+# Per-episode nominal behaviours (the task's risk knob "behaviour") of the tasks whose risk is the nominal's speed,
+# not the layout: {task: {behaviour: weight}}; one behaviour per episode, drawn from its seed (episode_risk).
+# T8 tray_slide (T8 card, final robot check): slow tips nothing, medium the glass only (about 3 scenes in 4), fast
+# both. Its yaml's careless nominal is always fast, so both rules would break in every episode and relabeling would
+# find no benign rule at a harmful state. The mix: medium gives the pairs (glass harmful, can benign at the same
+# ticks); fast makes the can harmful too, so "the can" cannot mean "safe"; slow makes the glass benign too, so
+# "the glass" cannot mean "harmful". Weights: Yuxuan, 2026-11-13. recover_glass / recover_can (the nominal slows down
+# by itself) are left out: they were built for the VLA demos, and a run can add them (--set behaviour_mix=...)
+BEHAVIOUR_MIX = {"tray_slide": {"medium": 0.5, "fast": 0.25, "slow": 0.25}}
+
+
+def task_list(spec: str) -> tuple:
+    """A --tasks value as a task tuple: a comma list of CANON_TASKS names, where "all" stands for TRAIN_TASKS.
+    Examples: "all" -> the five training tasks; "tray_slide" -> T8 alone; "all,tray_slide" -> the five plus T8."""
+    out = []
+    for part in str(spec).split(","):
+        part = part.strip()
+        for t in (TRAIN_TASKS if part == "all" else (part,)):
+            if t not in CANON_TASKS:
+                raise ValueError(f"--tasks {spec!r}: unknown task {t!r} (known: {', '.join(CANON_TASKS)})")
+            if t not in out:
+                out.append(t)
+    return tuple(out)
 
 # Section 4.2 bounds
 WARMUP_G_MAX = 50
@@ -94,6 +125,38 @@ def eval_seed(task: str, emb: str, scene_idx: int, attempt: int = 0, host: str |
     return s
 
 
+def task_runs_on(task: str, emb: str) -> bool:
+    """The item registry lists this embodiment for the task (tray_slide: ur5-wsg only). An unregistered name gives
+    True: the runner raises on it."""
+    from main.item_envs.registry import ITEM_TASKS
+
+    entry = ITEM_TASKS.get(task)
+    return entry is None or emb in entry.embodiments
+
+
+def episode_risk(cfg, task: str, seed: int) -> dict | None:
+    """The risk-knob override of one episode (cfg.item_risk of build_item_training_env). An explicit cfg.item_risk
+    wins; else, for a task in cfg.behaviour_mix, {"behaviour": b} with b drawn from the episode's seed on its own
+    stream (a replayed or re-evaluated seed gets the same behaviour); else None (the task yaml's own draw).
+    Example: tray_slide seed 101000007 -> {"behaviour": "medium"} every time, whatever ran before it."""
+    if task == "tray_slide" and getattr(cfg, "spawn_pool", "current") == "heldout":
+        # the OOD scenes need the held-out wine glass (088_wineglass id 3), but robotwin_tasks/tray_slide.py always
+        # draws its training ids and marks no item heldout_model: refuse instead of collecting training scenes
+        raise NotImplementedError("tray_slide has no held-out item pool yet (robotwin_tasks/tray_slide.py draws "
+                                  "GLASS_IDS only; GLASS_HELDOUT_IDS is unused)")
+    if getattr(cfg, "item_risk", None) is not None:
+        return cfg.item_risk
+    mix = (getattr(cfg, "behaviour_mix", None) or {}).get(task)
+    if not mix:
+        return None
+    import numpy as np
+
+    names = sorted(mix)
+    w = np.asarray([float(mix[n]) for n in names])
+    rng = np.random.default_rng([int(seed), 0xBE4A])
+    return {"behaviour": names[int(rng.choice(len(names), p=w / w.sum()))]}
+
+
 def check_stream(offset: int, attempt: int) -> int:
     """episode id = offset + attempt, asserted inside its stream and int32."""
     assert 0 <= attempt < STREAM_SPAN, f"attempt {attempt} overflows its stream"
@@ -138,6 +201,9 @@ class LangConfig(FrozenConfig):
     item_risk: dict | None = None
     item_active_rule: str | None = None
     item_out_root: str = "runs/item_envs"
+    # per-episode nominal behaviours of the speed-risk tasks (BEHAVIOUR_MIX, episode_risk). collect.collect_fields
+    # keeps only the entries of the config's own tasks, so shards and runs without tray_slide keep their hashes
+    behaviour_mix: dict = field(default_factory=lambda: {t: dict(m) for t, m in BEHAVIOUR_MIX.items()})
 
     # --- model ---
     k_prev: int = 2

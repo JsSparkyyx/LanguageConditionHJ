@@ -2,7 +2,8 @@
 
 from collections import Counter
 
-from main.lang.config import CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS
+# the seven tasks on both embodiments (tray_slide, ur5-wsg only: test_tray_slide.py)
+from main.lang.config import CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS_7 as CANON_TASKS
 from main.lang.rounds import RoundSchedule
 
 

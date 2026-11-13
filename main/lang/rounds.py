@@ -42,7 +42,7 @@ from . import ensure_item_path
 ensure_item_path()
 
 from .collect import InitLimit, item_n_tok, open_extras, read_lines, run_episodes, stage_deadline  # noqa: E402
-from .config import CANON_EMBODIMENTS, CANON_TASKS, round_offset  # noqa: E402
+from .config import CANON_EMBODIMENTS, CANON_TASKS, round_offset, task_runs_on  # noqa: E402
 from .train import EXIT_RESUME, LOG_EVERY, STATE_EVERY, LangTrainer, check_resume_identity, code_identity  # noqa: E402
 
 
@@ -52,7 +52,10 @@ class RoundSchedule:
     """Global (task, embodiment) cursor + a T1 host cursor per embodiment."""
 
     def __init__(self, tasks, embodiments, t1_hosts):
-        self.combos = [(t, e) for t in tasks for e in embodiments]
+        # only the (task, embodiment) pairs the item registry lists (tray_slide: ur5-wsg only)
+        self.combos = [(t, e) for t in tasks for e in embodiments if task_runs_on(t, e)]
+        if not self.combos:
+            raise ValueError(f"no task of {tuple(tasks)} runs on {tuple(embodiments)} (item registry)")
         self.t1_hosts = tuple(t1_hosts)
         self.cursor = 0
         self.host_cursor = {e: 0 for e in embodiments}

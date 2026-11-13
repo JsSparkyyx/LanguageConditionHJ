@@ -60,7 +60,7 @@ ensure_item_path()
 from main.item_envs import language  # noqa: E402
 from main.item_envs.item_buffer import FAILS_SOON_H  # noqa: E402
 
-from .config import CANON_TASKS, TASK_SHORT, TRAIN_TASKS, LangConfig  # noqa: E402
+from .config import CANON_TASKS, TASK_SHORT, TRAIN_TASKS, LangConfig, task_list  # noqa: E402
 from .data import BEAD_TASKS, LangSource, stable_hash  # noqa: E402
 from .scene_roles import referent  # noqa: E402
 
@@ -1367,7 +1367,7 @@ def main(argv=None) -> int:
     caches = [Path(c) for c in args.text_cache] if args.text_cache else caches_of(args.val)
     embs = args.embodiments if args.embodiments in ("trained", "all") else tuple(args.embodiments.split(","))
     ev = Evaluator(Path(args.run), args.ckpt, roots, text_caches=caches, batch=args.batch, embodiments=embs,
-                   tasks=TRAIN_TASKS if args.tasks == "all" else args.tasks.split(","), zero_tag=args.zero_tag,
+                   tasks=task_list(args.tasks), zero_tag=args.zero_tag,
                    fuse_cache=args.fuse_cache)
     # before scoring (review F5): never replace another set's results in place without --force
     out = Path(args.run) / "eval_offline" / (args.out_name or Path(args.ckpt).stem)

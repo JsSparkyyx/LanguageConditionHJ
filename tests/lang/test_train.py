@@ -152,7 +152,7 @@ def test_training_defaults_to_one_embodiment_and_resume_keeps_the_saved_one(tmp_
     # a run started on both embodiments resumes on both, though the default flag is now ur5-wsg
     run = tmp_path / "old"
     run.mkdir()
-    dataclasses.replace(LangConfig(), task_choices=CANON_TASKS).save(run / "lang_config.json")   # seven tasks
+    dataclasses.replace(LangConfig(), task_choices=CANON_TASKS).save(run / "lang_config.json")   # all eight tasks
     (run / "state.pt").write_bytes(b"x")
     old = config_from_args(SimpleNamespace(**{**vars(args), "run": str(run), "resume": True}))
     assert trained_subsets(old) == (None, None)
