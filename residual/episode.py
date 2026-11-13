@@ -13,6 +13,9 @@ How an episode ends (residual/PLAN.md section 1):
 Reward per policy tick: r = 1 / (1 + w * |delta / delta_bound|^2 / 12), w ~ U(0, 2) per episode (a state input).
 Ticks that run without the policy (an untagged plan played by RoboTwin) pay 1 each inside the open transition, with
 the discount: a transition's ``rew`` sums gamma^k r_k and ``disc`` = gamma^(its ticks).
+
+What differs per task (the scene, the named rule, the probe and the state) comes from ``tasks.task_hooks(cfg.task)``;
+for ``tray_slide`` the named rule is one item's upright rule and the other item is only logged (PLAN section 8).
 """
 
 from __future__ import annotations
@@ -31,8 +34,8 @@ ensure_paths()
 from main.item_envs.runner import ItemTimeout, _velocity6  # noqa: E402
 
 from .controller import ReplanFailed, ResidualTickController  # noqa: E402
-from .scene import build_runner  # noqa: E402
-from .state import NamedProbe, build_obs, robot_reading  # noqa: E402
+from .state import robot_reading  # noqa: E402
+from .tasks import task_hooks  # noqa: E402
 
 AVOID_CONTACT = 0.01   # m: the avoid rule's buffer (an arm sphere or the held object within 1 cm breaks it)
 
@@ -107,9 +110,10 @@ class Episode:
         self.env = runner.env
         self.task = self.env.task
         self.w = float(job.w) if job.w is not None else float(rng.uniform(cfg.w_min, cfg.w_max))
-        self.probe = NamedProbe(runner, named, cfg)
-        self.trans = _Transitions(cfg.gamma)
+        self.hooks = task_hooks(cfg.task)
         self.n_phys = 0
+        self.probe = self.hooks.make_probe(runner, named, cfg, clock=lambda: self.n_phys)
+        self.trans = _Transitions(cfg.gamma)
         self.m = None
         self.m_phys = -1
         self.tick = 0                 # every measured tick (policy, off-loop, settling)
@@ -145,7 +149,10 @@ class Episode:
         from main.item_envs import robot_distance as rd
 
         try:
-            dists = rd.robot_item_distances(self.env, self.runner.items)
+            if self.named.kind in ("avoid", "stay"):
+                dists = rd.robot_item_distances(self.env, self.runner.items)
+            else:   # upright (tray_slide): no distance in the rule; compare the margin, the distances stay inf
+                dists = np.full(len(self.runner.items), np.inf)
             margins = self.runner._rule_margins(dists)
             d_off = float(dists[self.named.item_index])
             m_off = float(margins[self.named.rule_index])
@@ -154,15 +161,17 @@ class Episode:
             c = self.consistency or {"n": 0, "n_near": 0, "max_dist_err": 0.0, "max_margin_err": 0.0,
                                      "max_margin_err_near": 0.0, "sign_flips": 0, "worst": None}
             c["n"] += 1
-            if np.isfinite(d_off) or np.isfinite(m["dist"]):
-                err_d = abs(d_off - m["dist"]) if np.isfinite(d_off) and np.isfinite(m["dist"]) else float("inf")
+            upright = self.named.kind == "upright"
+            if np.isfinite(d_off) or np.isfinite(m["dist"]) or upright:
+                err_d = abs(d_off - m["dist"]) if np.isfinite(d_off) and np.isfinite(m["dist"]) else (
+                    0.0 if upright else float("inf"))
                 err_m = abs(m_off - m["margin"]) if np.isfinite(m_off) and np.isfinite(m["margin"]) else float("inf")
                 if err_m > c["max_margin_err"]:
                     c["worst"] = {"tick": self.tick, "dist_official": d_off, "dist_mine": m["dist"],
                                   "margin_official": m_off, "margin_mine": m["margin"]}
                 c["max_dist_err"] = max(c["max_dist_err"], err_d)
                 c["max_margin_err"] = max(c["max_margin_err"], err_m)
-                if min(d_off, m["dist"]) < 0.03 or self.named.kind == "stay":
+                if min(d_off, m["dist"]) < 0.03 or self.named.kind != "avoid":
                     c["n_near"] += 1
                     c["max_margin_err_near"] = max(c["max_margin_err_near"], err_m)
                 c["sign_flips"] += int((m_off < 0) != (m["margin"] < 0))
@@ -195,7 +204,7 @@ class Episode:
             u, logp, v = np.zeros(N_ACT), 0.0, 0.0
             obs = None
         else:
-            obs = build_obs(cfg, self.probe, m, robot_reading(self.env), view, self.w)
+            obs = self.hooks.build_obs(cfg, self.probe, m, robot_reading(self.env), view, self.w)
             u, logp, v = self.model.act(obs, deterministic=self.job.deterministic)
             delta = float(cfg.delta_bound) * np.clip(u, -1.0, 1.0)
         c = float(np.sum((delta / float(cfg.delta_bound)) ** 2) / N_ACT)
@@ -234,18 +243,17 @@ class Episode:
             broken = self.first_violation is not None
             frame = _draw_cube(frame, uv, (255, 60, 60) if broken else (255, 200, 40))
             frame = to_record_size(frame)
-            unit = 0.05 if self.named.kind == "avoid" else 0.03
+            unit = self.hooks.margin_unit(self.named)
             self.margin_hist.append(float(np.clip(m["margin"] / unit, -1, 1)))
             self.corr_hist.append(self._last_corr)
-            n = self.named
             st = self.ctrl.stats if self.ctrl is not None and hasattr(self.ctrl, "stats") else {}
             lines = [
                 f"{self.runner.host} seed {self.runner.seed}",
-                f"don't {'touch' if n.kind == 'avoid' else 'move'} the {n.category}",
-                f"({'in the way' if n.in_way else 'out of the way'}: {n.reason})",
+                *self.hooks.describe(self.named),
                 f"{'delta = 0 (planner)' if self.job.policy == 'zero' else 'residual policy'}  w {self.w:.2f}",
-                f"t {self.tick * TICK_DT:5.2f} s  margin {m['margin'] * 100:+5.1f} cm",
-                f"|delta|/bound {self._last_corr:.2f}  replans {st.get('replans', 0)}",
+                f"t {self.tick * TICK_DT:5.2f} s  {self.hooks.margin_text(m['margin'])}",
+                f"|delta|/bound {self._last_corr:.2f}  replans {st.get('replans', 0)}"
+                + (f"  resyncs {st['resyncs']}" if st.get("resyncs") else ""),
             ]
             if broken:
                 lines.append(f"!rule broken at t {self.first_violation * TICK_DT:.2f} s")
@@ -384,7 +392,7 @@ class Episode:
         if job.kind == "train" and end == "truncated" and self.model is not None and len(self.trans):
             try:
                 view = ctrl.view_now()
-                obs = build_obs(cfg, self.probe, self.measure(), robot_reading(self.env), view, self.w)
+                obs = self.hooks.build_obs(cfg, self.probe, self.measure(), robot_reading(self.env), view, self.w)
                 _u, _lp, last_value = self.model.act(obs, deterministic=True)
             except Exception as exc:
                 print(f"[residual] final value failed ({exc}): bootstrap 0")
@@ -427,6 +435,10 @@ class Episode:
         }
         if self.consistency is not None:
             out["consistency"] = self.consistency
+        try:
+            out.update(self.hooks.episode_extra(self))   # T1: nothing; tray: the other item, the drag, resyncs
+        except Exception as exc:
+            print(f"[residual] episode extras failed: {exc}")
         if job.kind == "train":
             out["traj"] = self.trans.arrays()
         return out
@@ -441,11 +453,13 @@ def run_episode(cfg, job: Job, model, rng: np.random.Generator, out_root: str, c
     """
     builds, rejected, wall_build = 0, [], 0.0
     runner, named = None, None
+    hooks = task_hooks(cfg.task)
+    hooks.prepare_job(cfg, job, rng)   # tray_slide: the episode's drag behaviour (T1: nothing)
     while builds < max_builds:
         seed = int(job.seed) if job.seed is not None else int(next_seed())
         t0 = time.perf_counter()
         try:
-            runner = build_runner(cfg, seed, out_root)
+            runner = hooks.build_runner(cfg, seed, out_root, job)
         except Exception as exc:
             builds += 1
             wall_build += time.perf_counter() - t0

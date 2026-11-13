@@ -32,12 +32,13 @@ class Named:
     category: str = ""
 
 
-def build_runner(cfg, seed: int, out_root: str):
-    """ItemEpisodeRunner with Env, objects, physics and rules built, no controller (render off)."""
+def build_runner(cfg, seed: int, out_root: str, risk: dict | None = None):
+    """ItemEpisodeRunner with Env, objects, physics and rules built, no controller (render off). ``risk``: the
+    runner's risk override (tray_slide: the named drag behaviour; None for T1)."""
     from main.item_envs.runner import ItemEpisodeRunner
 
     r = ItemEpisodeRunner(cfg.task, embodiment=cfg.embodiment, seed=int(seed), render="none", out_root=out_root,
-                          max_steps=int(cfg.max_physics_steps))
+                          max_steps=int(cfg.max_physics_steps), risk=risk)
     try:
         r.setup(build_controller=False)
     except BaseException:

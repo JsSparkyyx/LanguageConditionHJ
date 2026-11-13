@@ -15,12 +15,20 @@
    the same target and constraint (``_replan_arm``) and its cursor restarts at row 0. A failed replan ends the
    episode as a truncation.
 
+Via-path plans (``_item_profiled``: an item task's straight move with its own time law, e.g. the tray drag of
+``tray_slide``; T1's hosts have none) are not replanned: a replan would rebuild the whole via path from its FIRST
+waypoint, behind the hand. With ``profiled_replan = "resync"`` the cursor instead jumps to the plan row nearest the
+live joints when any joint is more than ``resync_threshold`` off its row (``nearest_row``), also once the cursor has
+passed the plan's end (the move ends only when the arm is within the threshold of the last row). So a residual that
+holds the arm back slows the plan's time law itself: the plan continues from where the arm is, at the speed the plan
+has there, and the lag never builds up (PLAN section 8).
+
 Gripper-only segments (close / open, 300 physics steps = 30 ticks) also run through this loop, so the policy acts
 every tick (Yuxuan 11-09). Untagged plans (not from this controller's ``plan``) still play through RoboTwin's own
 ``take_dense_action`` without ticks; their physics steps are counted (``stats["untagged_steps"]``).
 
 The agent interface: ``agent.policy_tick(view) -> delta [12]`` with ``view = {"a_nom": [12], "future": [F, 12],
-"active": [2]}``, then ``agent.tick_done()`` after the tick's physics (it may raise to end the episode).
+"active": [2], "progress": [2]}`` (progress: per arm, the cursor's share of its plan, 0 without one), then ``agent.tick_done()`` after the tick's physics (it may raise to end the episode).
 """
 
 from __future__ import annotations
@@ -44,6 +52,15 @@ class ReplanFailed(Exception):
     pass
 
 
+def nearest_row(pos: np.ndarray, q: np.ndarray, ref: int) -> tuple[int, float]:
+    """(row, distance) of the plan row nearest ``q`` by the largest joint difference (the trigger's own measure);
+    among equally near rows the one closest to ``ref``."""
+    d = np.max(np.abs(np.asarray(pos, dtype=np.float64) - np.asarray(q, dtype=np.float64)[None]), axis=1)
+    cand = np.flatnonzero(d <= float(d.min()) + 1e-12)
+    j = int(cand[int(np.argmin(np.abs(cand - int(ref))))])
+    return j, float(d[j])
+
+
 class ResidualTickController(RiskTickController):
     controller_name = "residual_tick"
 
@@ -61,7 +78,7 @@ class ResidualTickController(RiskTickController):
         self.stats = {
             "policy_ticks": 0, "gripper_ticks": 0, "untagged_steps": 0, "untagged_calls": 0,
             "replans": 0, "replans_fixed": 0, "replans_deviation": 0, "replan_failures": 0, "replan_time": 0.0,
-            "max_dev": 0.0, "clip_frac": 0.0, "clip_ticks": 0,
+            "max_dev": 0.0, "clip_frac": 0.0, "clip_ticks": 0, "resyncs": 0, "resync_rows": 0,
         }
         self._dmax = {a: None for a in ARMS}
 
@@ -84,6 +101,7 @@ class ResidualTickController(RiskTickController):
         a_nom = np.zeros(2 * N_ARM)
         future = np.zeros((len(fut), 2 * N_ARM))
         active = np.zeros(2)
+        progress = np.zeros(2)
         for k, a in enumerate(ARMS):
             sl = slice(k * N_ARM, (k + 1) * N_ARM)
             plan = plans.get(a)
@@ -95,10 +113,11 @@ class ResidualTickController(RiskTickController):
                 for f, t in enumerate(fut):
                     future[f, sl] = pos[min(i + spt * t + spt - 1, n - 1)] - q[a]
                 active[k] = 1.0 if i < n else 0.0
+                progress[k] = min(1.0, i / max(n, 1))
             else:
                 a_nom[sl] = self.anchor[a] - q[a]
                 future[:, sl] = (self.anchor[a] - q[a])[None]
-        return {"a_nom": a_nom, "future": future, "active": active}
+        return {"a_nom": a_nom, "future": future, "active": active, "progress": progress}
 
     def view_now(self) -> dict:
         """The planner part of the state right now (stale plans while the loop runs; anchors outside it)."""
@@ -227,13 +246,17 @@ class ResidualTickController(RiskTickController):
             if plan is None:
                 continue
             n = _n_wp(plan)
-            if cursor[a] >= n:      # finished: the arm holds the last row, a_nom pulls it back
+            resync = bool(plan.get("_item_profiled")) and self.cfg.profiled_replan == "resync"
+            if cursor[a] >= n and not resync:      # finished: the arm holds the last row, a_nom pulls it back
                 continue
             if q is None:
                 q = self._arm_qpos()
             pos, _ = _path_arrays(plan)
             dev = float(np.max(np.abs(q[a] - pos[min(cursor[a] - 1, n - 1)])))
             self.stats["max_dev"] = max(self.stats["max_dev"], dev)
+            if resync:
+                self._maybe_resync(a, pos, q[a], dev, cursor, since_replan, trig)
+                continue
             # fixed: no replan when the plan ends within one replan period anyway. A new cuRobo plan is at least
             # ~77 rows (8 ticks) even for a few-mm move, so replanning every 5 ticks would never reach a plan's end
             # (smoke 11-11: 250 replans, timeout)
@@ -266,3 +289,24 @@ class ResidualTickController(RiskTickController):
             cursor[a] = 0
             since_replan[a] = 0
             self.anchor[a] = np.asarray(_path_arrays(new)[0][-1], dtype=np.float64).copy()
+
+    def _maybe_resync(self, a: str, pos: np.ndarray, q: np.ndarray, dev: float, cursor: dict, since_replan: dict,
+                      trig: str) -> None:
+        """Via-path plan: move the cursor to the row nearest the live joints (no planning, no wall time)."""
+        n = int(pos.shape[0])
+        every = int(self.cfg.replan_every)
+        fire = (trig == "deviation" and dev > float(self.cfg.resync_threshold)) or (
+            trig == "fixed" and since_replan[a] >= every)
+        if not fire:
+            return
+        since_replan[a] = 0
+        j, d_new = nearest_row(pos, q, min(cursor[a] - 1, n - 1))
+        new_cursor = j + 1
+        if new_cursor == min(cursor[a], n):
+            return   # the nearest row already (an arm off the path sideways): a_nom pulls it back
+        self.stats["resyncs"] += 1
+        self.stats["resync_rows"] += int(min(cursor[a], n) - new_cursor)
+        if len(self.replan_log) < 200:
+            self.replan_log.append({"arm": a, "tick": int(self.stats["policy_ticks"]), "kind": "resync", "dev": dev,
+                                    "dev_after": d_new, "rows_back": int(min(cursor[a], n) - new_cursor), "rows": n})
+        cursor[a] = new_cursor

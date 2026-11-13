@@ -137,7 +137,7 @@ def worker_main(wid: int, gpu: int | None, cfg_dict: dict, run_dir: str, job_q, 
         torch.set_num_threads(1)
         from .config import ResidualConfig
         from .episode import Job, run_episode
-        from .scene import build_runner, scan_record
+        from .tasks import task_hooks
 
         cfg = ResidualConfig.from_dict(cfg_dict)
         run = Path(run_dir)
@@ -148,7 +148,8 @@ def worker_main(wid: int, gpu: int | None, cfg_dict: dict, run_dir: str, job_q, 
         if lo + SEEDS_PER_BLOCK > cfg.seed_base_eval:
             raise RuntimeError(f"seed block {seed_block} would reach the evaluation seeds ({cfg.seed_base_eval})")
         seeds = iter(range(lo, lo + SEEDS_PER_BLOCK))
-        balancer = SideBalancer(cfg)
+        hooks = task_hooks(cfg.task)
+        balancer = hooks.make_chooser(cfg)   # T1: SideBalancer; tray: glass / can equally often
         cache: dict = {}
         builds = 0
         while not stop_ev.is_set():
@@ -166,11 +167,11 @@ def worker_main(wid: int, gpu: int | None, cfg_dict: dict, run_dir: str, job_q, 
             t0 = time.perf_counter()
             if job.kind == "scan":
                 try:
-                    r = build_runner(cfg, int(job.seed), scratch)
+                    r = hooks.build_runner(cfg, int(job.seed), scratch, job)
                     builds += 1
                     try:
                         res = {"kind": "scan", "job_id": job.job_id, "seed": int(job.seed), "tag": job.tag,
-                               **scan_record(r)}
+                               **hooks.scan_record(r)}
                     finally:
                         r.close()
                 except Exception as exc:

@@ -14,6 +14,8 @@ TICK_DT = 0.04          # s: one control tick (25 Hz)
 STEPS_PER_TICK = 10     # physics steps per tick (250 Hz physics)
 N_ARM = 6               # ur5 arm joints per arm
 N_ACT = 2 * N_ARM       # the residual's dimension: both arms' joints, grippers untouched
+TASKS = ("selective_avoid", "tray_slide")   # residual/tasks.py: the per-task hooks
+TRAY_BEHAVIOURS = ("slow", "medium", "fast", "recover_glass", "recover_can")   # robotwin_tasks/tray_slide.BEHAVIOURS
 
 
 @dataclass
@@ -32,6 +34,11 @@ class ResidualConfig:
     replan_threshold: float = 0.1       # deviation: replan when any joint is this far off its plan row (rad)
     nom_noise_std: float = 0.01         # rad, per joint per tick, added to the EXECUTED a_nom in training (Yuxuan 11-09)
     act_in_gripper_segments: bool = True  # gripper close / open run through the 25 Hz loop (Yuxuan 11-09)
+    # via-path plans (the item tasks' own straight moves with a time law, e.g. the tray drag; T1 hosts have none):
+    # "resync" puts the plan cursor back on the row nearest the live joints instead of replanning (a replan would
+    # rebuild the whole via path from its first waypoint); "replan" uses the normal replan. PLAN section 8
+    profiled_replan: str = "resync"
+    resync_threshold: float = 0.03      # rad: resync a via-path plan when any joint is this far off its row
 
     # ---------------------------------------------------------- reward ----
     gamma: float = 0.99
@@ -48,6 +55,10 @@ class ResidualConfig:
     settle_v_ee: float = 0.01           # m/s: both hands
     settle_v_item: float = 0.02         # m/s: every item
     settle_tilt_rate: float = 1.0       # deg/s: the named object's tilt
+
+    # ------------------------------------------------- tray_slide (T8) ----
+    tray_behaviours: tuple = ("fast",)  # the nominal drag, drawn per episode (tray_slide.BEHAVIOURS names)
+    eval_pairs: int = 20                # tray evaluation scenes, each run once with the glass and once with the can named
 
     # ----------------------------------------------------------- state ----
     future_ticks: tuple = (5, 10, 15, 20, 25)
@@ -124,6 +135,15 @@ class ResidualConfig:
             raise ValueError(f"replan_threshold {self.replan_threshold} must be in (0, delta_bound={self.delta_bound})")
         if not (0.0 <= self.w_min <= self.w_max):
             raise ValueError("need 0 <= w_min <= w_max")
+        if self.profiled_replan not in ("resync", "replan"):
+            raise ValueError(f"profiled_replan must be resync / replan, got {self.profiled_replan!r}")
+        if self.profiled_replan == "resync" and not (0.0 < self.resync_threshold < self.delta_bound):
+            raise ValueError(f"resync_threshold {self.resync_threshold} must be in (0, delta_bound={self.delta_bound})")
+        if self.task not in TASKS:
+            raise ValueError(f"task must be one of {TASKS}, got {self.task!r}")
+        bad = [b for b in self.tray_behaviours if b not in TRAY_BEHAVIOURS]
+        if bad or not self.tray_behaviours:
+            raise ValueError(f"tray_behaviours must be a non-empty list of {TRAY_BEHAVIOURS}, got {self.tray_behaviours}")
 
 
 def apply_sets(cfg: ResidualConfig, sets: list[str] | None) -> ResidualConfig:

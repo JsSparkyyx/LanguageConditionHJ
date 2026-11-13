@@ -11,7 +11,8 @@ Evaluation (every ``eval_every`` updates, on fixed scenes that training never us
 named object is in the planner's way and ``eval_out_way`` scenes where it is not, deterministic policy, w = eval_w,
 no noise, the episode runs to its end (so task success is measured; the first break of the named rule is recorded).
 The delta = 0 baseline (same controller and trigger) runs once on the same scenes. Videos of the first
-``eval_video_scenes`` scenes at every evaluation.
+``eval_video_scenes`` scenes at every evaluation. ``tray_slide`` (``--set task=tray_slide``): ``eval_pairs`` scenes,
+each run with the glass and with the can named; the numbers are split by the named item (PLAN section 8).
 
 Resume: rerunning the same command continues from ``<run>/checkpoint.pt`` (same wandb run). SIGUSR1 / SIGTERM or
 ``--deadline-min`` stop at the next safe point with a checkpoint and exit 75 (``scripts/lang/long.sbatch``
@@ -112,7 +113,7 @@ class Learner:
 
         from .config import N_ACT, ResidualConfig, apply_sets
         from .policy import build_model
-        from .state import obs_dim
+        from .tasks import task_hooks
 
         self.args = args
         self.run = Path(args.run).resolve()
@@ -129,8 +130,9 @@ class Learner:
         if args.workers_per_gpu is not None:
             cfg.workers_per_gpu = int(args.workers_per_gpu)
         self.cfg = cfg
+        self.hooks = task_hooks(cfg.task)
         torch.set_num_threads(max(1, min(8, int(args.learner_threads))))
-        self.obs_dim = obs_dim(cfg)
+        self.obs_dim = self.hooks.obs_dim(cfg)
         self.model = build_model(cfg, self.obs_dim, N_ACT)
         self.opt = torch.optim.Adam(self.model.parameters(), lr=cfg.lr, eps=1e-5)
         self.rng = np.random.default_rng(int(args.seed))
@@ -225,7 +227,7 @@ class Learner:
     # ------------------------------------------------------------------- eval ----
     def _scan_eval_scenes(self, pool) -> None:
         cfg = self.cfg
-        need = cfg.eval_in_way + cfg.eval_out_way
+        need = self.hooks.eval_need(cfg)
         scans: list[dict] = []
         next_seed = cfg.seed_base_eval
         batch = max(need * 2, 2 * pool.n)
@@ -244,14 +246,12 @@ class Learner:
                     for i in ids:
                         pool.jobs.pop(i, None)
                     break
-            chosen = select_eval_scenes(scans, cfg.eval_in_way, cfg.eval_out_way)
-            n_in = sum(c["in_way"] for c in chosen)
-            n_out = len(chosen) - n_in
-            print(f"[residual-train] eval scan: {len(scans)} seeds -> {n_in} in the way, {n_out} out of the way",
-                  flush=True)
+            chosen = self.hooks.select_eval_scenes(scans, cfg)
+            enough, what = self.hooks.eval_enough(chosen, cfg)
+            print(f"[residual-train] eval scan: {len(scans)} seeds -> {what}", flush=True)
             if self._stop:
                 return   # a partial list must not become the run's fixed evaluation scenes
-            if (n_in >= cfg.eval_in_way and n_out >= cfg.eval_out_way) or next_seed - cfg.seed_base_eval > 2000 \
+            if enough or next_seed - cfg.seed_base_eval > 2000 \
                     or time.time() - t_scan > 60.0 * self.args.eval_timeout_min:
                 break
         self.eval_scenes = chosen
@@ -265,34 +265,35 @@ class Learner:
         vid_dir = self.run / "eval" / round_name / "videos"
         vid_dir.mkdir(parents=True, exist_ok=True)
         n_vid_side = cfg.eval_video_scenes // 2
-        jobs, seen = [], {True: 0, False: 0}
+        jobs, seen = [], {}
         for i, sc in enumerate(self.eval_scenes or []):
             side = bool(sc["in_way"])
+            group = self.hooks.scene_group(sc)   # T1: in_way / out_of_way; tray: glass / can
             vid = None
-            if videos and seen[side] < n_vid_side:
-                vid = str(vid_dir / (f"{'in' if side else 'out'}{seen[side]}_{sc['host']}_s{sc['seed']}_"
+            k = seen.get(group, 0)
+            if videos and k < n_vid_side:
+                vid = str(vid_dir / (f"{self.hooks.video_prefix[group]}{k}_{sc['host']}_s{sc['seed']}_"
                                      f"{sc['rule_kind']}_{sc['category']}.mp4"))
-            seen[side] += 1
+            seen[group] = k + 1
             jobs.append(Job(kind="eval", seed=int(sc["seed"]), in_way=side, rule_kind=sc["rule_kind"],
                             item_id=sc["item_id"], w=cfg.eval_w, policy=policy, deterministic=True, noise=False,
                             terminate=False, video=vid, weights=weights, tag=round_name,
-                            extra={"scene": i}).to_dict())
+                            extra={"scene": i, **self.hooks.scene_job_extra(sc)}).to_dict())
         return jobs
 
-    @staticmethod
-    def eval_summary(eps: list[dict]) -> dict:
+    def eval_summary(self, eps: list[dict]) -> dict:
         eps = [e for e in eps if not e.get("skipped")]
         out = {"n": len(eps)}
-        for side, name in ((True, "in_way"), (False, "out_of_way")):
-            sub = [e for e in eps if e["in_way"] == side]
+        for name, pred in self.hooks.groups:   # T1: in_way / out_of_way; tray: glass / can
+            sub = [e for e in eps if pred(e)]
             out[f"{name}/n"] = len(sub)
             out[f"{name}/broken"] = _rate(e["violated"] for e in sub)
             out[f"{name}/success"] = _rate(e["success"] for e in sub)
             out[f"{name}/safe_success"] = _rate(e["success"] and not e["violated"] for e in sub)
             out[f"{name}/correction_rms"] = _rate(e["corr_rms"] for e in sub)
             out[f"{name}/replans"] = _rate(e["replans"] for e in sub)
-            out[f"{name}/named_held"] = _rate(e["named_held"] for e in sub)
-            for k in ("avoid", "stay"):
+            out.update({f"{name}/{k}": v for k, v in self.hooks.group_extra(sub, eval_round=True).items()})
+            for k in self.hooks.rule_kinds:
                 out[f"{name}/broken_{k}"] = _rate(e["violated"] for e in sub if e["rule_kind"] == k)
         out["success"] = _rate(e["success"] for e in eps)
         out["truncated"] = _rate(e["end"] == "truncated" for e in eps)
@@ -305,12 +306,13 @@ class Learner:
     def train_stats(self, eps: list[dict]) -> dict:
         cfg = self.cfg
         out = {"episodes": len(eps), "transitions": int(sum(len(e["traj"]["rew"]) for e in eps))}
-        for side, name in ((True, "in_way"), (False, "out_of_way")):
-            sub = [e for e in eps if e["in_way"] == side]
+        for name, pred in self.hooks.groups:
+            sub = [e for e in eps if pred(e)]
             out[f"{name}/share"] = len(sub) / max(1, len(eps))
             out[f"{name}/broken"] = _rate(e["end"] == "violation" for e in sub)
             out[f"{name}/success"] = _rate(e["success"] for e in sub)
             out[f"{name}/correction_rms"] = _rate(e["corr_rms"] for e in sub)
+            out.update({f"{name}/{k}": v for k, v in self.hooks.group_extra(sub, eval_round=False).items()})
         for end in ("violation", "finished", "truncated"):
             out[f"end/{end}"] = _rate(e["end"] == end for e in eps)
         for r in ("replan_fail", "host_plan_fail", "timeout", "error"):
@@ -449,8 +451,7 @@ class Learner:
                                  "perf/total_transitions": self.totals["transitions"]})
                     self._log(wb, logs)
                     print(f"[residual-train] update {self.update}: {len(buf)} eps {n_buf} steps in {dt:.0f}s | "
-                          f"in-way broken {tstats['in_way/broken']:.2f} success {tstats['success']:.2f} "
-                          f"corr in {tstats['in_way/correction_rms']:.3f} out {tstats['out_of_way/correction_rms']:.3f} "
+                          f"{self.hooks.update_line(tstats)} "
                           f"std {tstats['std_rad']:.4f} rad | kl {stats['kl']:.4f} ev {stats['explained_var']:.2f}",
                           flush=True)
                     buf, n_buf = [], 0
@@ -516,7 +517,7 @@ class Learner:
         if name == "baseline":
             self.baseline = summ
         elif self.baseline is not None:
-            for k in ("in_way/broken", "in_way/success", "out_of_way/success", "success"):
+            for k in self.hooks.baseline_keys:
                 logs[f"eval/{k}_baseline"] = self.baseline.get(k)
         vids = sorted([p for p in (d / "videos").glob("*.mp4") if p.stat().st_mtime >= st["t0"] - 1],
                       key=lambda p: p.name)
@@ -529,9 +530,8 @@ class Learner:
                 print(f"[residual-train] video log failed ({exc})", flush=True)
         self._log(wb, logs)
         self.eval_round += 1
-        print(f"[residual-train] eval {name}: in-way broken {summ['in_way/broken']:.2f} success "
-              f"{summ['in_way/success']:.2f} | out-of-way corr {summ['out_of_way/correction_rms']:.3f} success "
-              f"{summ['out_of_way/success']:.2f} ({summ['n']} eps, {summ['wall_s']:.0f}s)", flush=True)
+        print(f"[residual-train] eval {name}: {self.hooks.eval_line(summ)} ({summ['n']} eps, {summ['wall_s']:.0f}s)",
+              flush=True)
 
 
 def main() -> int:
