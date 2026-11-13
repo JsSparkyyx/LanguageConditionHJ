@@ -469,8 +469,12 @@ best policy, so the policy has to look at which item is named.
 **How the residual can slow the drag: resync instead of replan.** The drag (and the descent to the tab and the
 retreat) is one via-path plan: a straight line through dense IK waypoints, played on its own time law. The T1 replan
 (`_replan_arm`) would rebuild that path through ALL its waypoints from the first one, so back toward the start, and
-from rest. So for via-path plans (`_item_profiled`) the deviation trigger instead moves the plan cursor to the row
-nearest the live joints ("resync", `controller.nearest_row`; no planning, no wall time). Example: at 0.70 m/s the
+from rest. So for via-path plans (`_item_profiled`) the deviation trigger instead moves the plan cursor BACK to the
+row nearest the live joints ("resync", `controller.nearest_row`; no planning, no wall time). It moves only back,
+and only when the arm really lags along the path (the new row removes at least half the threshold of the deviation).
+A sideways offset is left to a_nom, which pulls the arm back onto the path. Why: in the first smoke test the
+cursor could also jump forward, and the exploration noise then sped the drag up to 1.7 m/s, against the plan's 0.70.
+So the residual can slow the time law down but never speed it up. Example: at 0.70 m/s the
 plan moves the hand 2.8 cm per tick; the policy returns δ = −0.7 a_nom, so the hand moves about 0.8 cm; after a tick
 or two a joint is 0.03 rad behind its row and the cursor jumps back to where the hand is. The plan then goes on from
 there at the plan's own speed there, so holding back by a steady share slows the whole time law, the brake
@@ -487,6 +491,22 @@ cores) run with `eval_video_scenes=0`; on an A40 the T1 overlay videos work.
 `smoke_tray.py` (simulator smoke test: δ = 0 rates per item, the margin against the runner's own, a scripted
 hold-back residual that must slow the tray and still finish), `jobs/tray_check.sbatch` (smoke, then a two-update
 training run, on one GPU), `tests/test_tray_nonsim.py`. `throughput.py` and `smoke.py` stay T1 only.
+
+**Smoke test, 2026-11-13** (A100, job 23907203, 3 seeds from 9,500,000, `tmp/residual/tray_check_1113b`). cuRobo
+does not start on the A100 ("no kernel image"), so the approach move falls back to mplib. The drag is an mplib via
+path anyway, and every episode ran.
+
+- δ = 0 at 25 Hz: the glass and the can fell in 3 of 3 scenes each, the tray reached the pad in all of them, with
+  no resyncs. The tray's peak speed was 0.71-0.75 m/s, as with the 250 Hz playback (0.73).
+- The named margin equals the runner's own `rule_margins` on every tick (error 0).
+- A scripted residual that holds back 70% of a_nom during the drag: tray peak 0.21-0.35 m/s, 38-50 resyncs, the
+  glass and the can both stayed standing, and the tray reached the pad in 3 of 3 scenes. So slowing the drag
+  through the residual works.
+- Training check (2 updates, 4 workers): runs end to end, and the numbers are split by item. With the random initial
+  residual (0.02 rad per joint per tick) every episode broke its rule. Its jitter alone shakes the tray (peaks up to
+  1.2 m/s), so start this task with a small `init_std` as the T1 run does (0.025).
+- Open: after a slow drag the settle wait hit its cap (300 ticks) in 2 of 3 scenes. That costs sim time, not
+  correctness. Throughput is not measured for this task yet.
 
 ```bash
 python -m pytest -q residual/tests                                       # no simulator
