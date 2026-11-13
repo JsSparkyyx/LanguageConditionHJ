@@ -6,7 +6,7 @@ both can fall and each needs its own speed:
 
     slow    (time_scale SPEEDS["slow"])    neither falls        -> "slide the tray", or keep the glass standing
     medium  (time_scale SPEEDS["medium"])  the glass falls, the can stands -> keep the can standing
-    fast    (time_scale SPEEDS["fast"])    both fall            -> the careless drag (the start alone tips the glass)
+    fast    (time_scale SPEEDS["fast"])    both fall            -> the careless drag (harder brake, FAST_STOP_DIST)
 
 The mechanism is T5's: one arm pinches the tray's handle tab and drags it SIDEWAYS along the table toward the table
 centre in ONE continuous move (via path); an upright item of base radius r with its centre of mass at height c tips
@@ -16,11 +16,12 @@ cruise speed of time_scale and, ``slow_at`` of the way along, slows to the cruis
 ``change_dist`` before the brake.
 
 Risk knobs (``task.risk_knobs``, set at run time):
-    behaviour    a named behaviour (BEHAVIOURS: slow, medium, fast, recover_glass, recover_can); sets the two below
-                 and the cruise speed, and wins over time_scale
+    behaviour    a named behaviour (BEHAVIOURS: slow, medium, fast, recover_glass, recover_can); sets slow_to,
+                 the cruise speed and the brake length, and wins over time_scale
     slow_to      time scale of the second cruise (None: one cruise speed)
     slow_at      where the change starts, as a fraction of the drag length (default SLOW_AT)
     change_dist  m over which the speed changes (default CHANGE_DIST)
+    accel_dist   m over which the drag speeds up (default TRAY_ACCEL_DIST)
 
 Physical design (prepare_episode): the runner's physics randomisation sets each item's centre of mass to the actor
 origin, which for these meshes is the BASE (they would never tip), and draws the friction for the category (a slippery
@@ -92,28 +93,30 @@ UPRIGHT_MAX_DEG = 45.0
 
 # --- nominal motion ---
 TRAY_SPEED = 0.30  # m/s cruise at time_scale 1.0 (as T5)
-SPEEDS = {"slow": 0.5, "medium": 1.75, "fast": 2.5}  # time scales of the three behaviours (calibration: T8 card)
-TRAY_ACCEL_DIST = 0.10  # m: smooth start (peak accel 0.75 v^2 / this; T5 0.06 — a fast start must not tip the glass)
+SPEEDS = {"slow": 0.5, "medium": 1.5, "fast": 2.33}  # time scales: 0.15, 0.45, 0.70 m/s (calibration: T8 card)
+TRAY_ACCEL_DIST = 0.15  # m: smooth start (peak accel 0.75 v^2 / this; at 0.10 the fast start alone tipped the can)
 TRAY_STOP_DIST = 0.04  # m: brake at the pad (peak decel 0.75 v^2 / this)
-SLOW_AT = 0.30  # recovery: the change starts this far along the drag (fraction)
-CHANGE_DIST = 0.10  # m over which a recovery changes speed
+FAST_STOP_DIST = 0.03  # m: the careless fast drag brakes harder (at 0.04 its stop tipped the can in only 2 of 4)
+SLOW_AT = 0.30  # recovery: the change starts this far along the drag (fraction; clamped to after the speed-up)
+CHANGE_DIST = 0.12  # m over which a recovery changes speed
 SAFE_SPEED = 0.10  # m/s x safe_time_scale: approach / descend / retreat
-# the nominal behaviours by name (risk knob "behaviour"): (cruise, slow down to) as SPEEDS keys
+# the nominal behaviours by name (risk knob "behaviour"): cruise and "slow down to" as SPEEDS keys, and the brake
+# length. Robot check, 2026-11-13 (T8 card, 6 scenes each): which items fell
 BEHAVIOURS = {
-    "slow": ("slow", None),               # nothing falls: the task alone, or "keep the glass standing"
-    "medium": ("medium", None),           # the glass falls, the can stands: "keep the can standing"
-    "fast": ("fast", None),               # both fall: the careless drag
-    "recover_glass": ("medium", "slow"),  # starts too fast for the glass, slows down (a fast start alone tips it)
-    "recover_can": ("fast", "medium"),    # starts fast, slows down enough for the can
+    "slow": ("slow", None, TRAY_STOP_DIST),             # neither: the task alone, or "keep the glass standing"
+    "medium": ("medium", None, TRAY_STOP_DIST),         # the glass (4 of 6, at the stop), never the can: "keep the can"
+    "fast": ("fast", None, FAST_STOP_DIST),             # both (6 of 6): the careless drag
+    "recover_glass": ("medium", "slow", TRAY_STOP_DIST),  # starts at medium (its stop tips the glass), slows: none fell
+    "recover_can": ("fast", "medium", TRAY_STOP_DIST),    # starts fast (its stop tips the can), slows: the can 0 of 10
 }
 
 
 def behaviour_scales(name):
-    """(time_scale, slow_to) of a named behaviour; slow_to None = one cruise speed."""
+    """(time_scale, slow_to, stop_dist) of a named behaviour; slow_to None = one cruise speed."""
     if name not in BEHAVIOURS:
         raise ValueError(f"tray_slide: unknown behaviour {name!r}; known: {sorted(BEHAVIOURS)}")
-    a, b = BEHAVIOURS[name]
-    return float(SPEEDS[a]), (None if b is None else float(SPEEDS[b]))
+    a, b, sd = BEHAVIOURS[name]
+    return float(SPEEDS[a]), (None if b is None else float(SPEEDS[b])), float(sd)
 
 
 class tray_slide(tray_transport):
@@ -258,9 +261,11 @@ class tray_slide(tray_transport):
         knobs = dict(getattr(self, "risk_knobs", None) or {})
         ts = float(getattr(self, "_time_scale_risky", 1.0))
         if knobs.get("behaviour") is not None:
-            ts, knobs["slow_to"] = behaviour_scales(str(knobs["behaviour"]))
+            ts, knobs["slow_to"], sd = behaviour_scales(str(knobs["behaviour"]))
+            knobs.setdefault("stop_dist", sd)
         v = TRAY_SPEED * ts
-        prof = {"kind": "hard_stop", "length": float(length), "v": v, "accel_dist": TRAY_ACCEL_DIST,
+        prof = {"kind": "hard_stop", "length": float(length), "v": v,
+                "accel_dist": float(knobs.get("accel_dist", TRAY_ACCEL_DIST)),
                 "stop_dist": float(knobs.get("stop_dist", TRAY_STOP_DIST))}
         if knobs.get("slow_to") is not None:
             prof.update(kind="speed_change", v2=TRAY_SPEED * float(knobs["slow_to"]),
@@ -323,7 +328,7 @@ class tray_slide(tray_transport):
         if ok_before and not self.plan_success:
             self.plan_success = True
             self.episode_info["drag_fallback"] = True
-            self._steps_to(arm, target_pose, prof["v"], stop=True, accel_dist=TRAY_ACCEL_DIST,
+            self._steps_to(arm, target_pose, prof["v"], stop=True, accel_dist=prof["accel_dist"],
                            stop_dist=prof["stop_dist"])
 
     # ---------------------------------------------------------------- success ----

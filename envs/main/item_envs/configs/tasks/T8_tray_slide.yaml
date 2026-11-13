@@ -18,20 +18,29 @@ items:
   glass: {model: 088_wineglass, ids: [1, 2], heldout_ids: [3], height: [0.19, 0.21], mass: [0.15, 0.25], com_frac: 0.59}
   can:   {model: 071_can, ids: [0, 2, 3, 5], height: [0.11, 0.12], mass: [0.30, 0.40], com_frac: 0.49}
   friction: [0.8, 1.0]
+  # mass: the task draws these ranges, but the runner's physics step then sets every item's mass to its category's
+  # objects.yaml midpoint x physics.yaml mass_scale (glass and can 0.14-0.26 kg); tipping does not depend on mass
 referent: {glass: 0.5, can: 0.5}
 # the three behaviours, as time scales of the 0.30 m/s base speed (calibration: envs/docs/item_envs/task_cards/T8.md)
-speeds: {slow: 0.5, medium: 1.75, fast: 2.5}   # 0.15, 0.525, 0.75 m/s
-motion: {speed: 0.30, accel_dist: 0.10, stop_dist: 0.04, slow_at: 0.30, change_dist: 0.10, safe_speed: 0.10}
+speeds: {slow: 0.5, medium: 1.5, fast: 2.33}   # 0.15, 0.45, 0.70 m/s
+motion: {speed: 0.30, accel_dist: 0.15, stop_dist: 0.04, fast_stop_dist: 0.03, slow_at: 0.30, change_dist: 0.12, safe_speed: 0.10}
+# named behaviours (risk knob "behaviour", tray_slide.BEHAVIOURS): cruise -> slow down to, brake length
+#   slow           0.15 m/s, 4 cm brake         nothing falls
+#   medium         0.45 m/s, 4 cm brake         the glass falls (at the stop), the can stands
+#   fast           0.70 m/s, 3 cm brake         both fall
+#   recover_glass  0.45 -> 0.15 m/s, 4 cm brake  nothing falls
+#   recover_can    0.70 -> 0.45 m/s, 4 cm brake  the glass falls, the can stands
 success_tol: 0.04
 
 risk:
-  time_scale: {dist: choice, values: [2.5]}   # the careless drag: fast (both items fall)
+  time_scale: {dist: choice, values: [2.33]}   # the careless drag: fast (both items fall); the behaviour knob sets it too
   safe_time_scale: 0.6
-  task: {}
+  task:
+    behaviour: fast
 
 # nominal_mode="safe": the slow drag (nothing falls)
 safe_mode:
-  risk: {time_scale: 0.5}
+  risk: {time_scale: 0.5, behaviour: slow}
 
 rules:
   - {consequence: upright, items: {role: candidate}, theta_max_deg: 45}
