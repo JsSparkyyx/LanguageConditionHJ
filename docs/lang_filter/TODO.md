@@ -354,6 +354,10 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   `runs/residual/residual_dev_success_s025_1112`, wandb `cehj-residual`. Job 23824247 waited 12.5 h in gpuA40x4
   (1,200 ahead); 11-12 12:48 moved to 1-hour interactive pieces (Yuxuan): `residual/jobs/train_chunk.sbatch`, feeder
   `residual/jobs/chain_train.sh` on dt-login02, log `tmp/residual/chain_train_residual_dev_success_s025_1112.log`.
+  11-13 09:25: update 197 of 350 after 8 pieces; the feeder stopped at the Slurm maintenance (07:43, refused sbatch
+  counted as pieces; fixed), restarted (pid 3040332). In the way broken: training 0.66 (updates 24-48) -> 0.57
+  (174-198), evaluation pooled 0.57 (u10-90) -> 0.52 (u100-190), delta = 0 baseline 0.65 (20 eps). Corrections grow
+  equally in and out of the way; every update stops after one epoch on the KL limit (0.03), std unchanged.
 - [x] 11-12 Rerun of the train check stage (job 23823793): the end-of-run evaluation round completes (summary,
   videos; a video episode takes ~110 s against 13 s); the 9 non-simulator tests pass (RoboTwin conda python).
 - [ ] Later: fixed vs deviation trigger, completion "success" vs "always".

@@ -24,6 +24,11 @@ while true; do
     if [ $stale -ge 3 ]; then echo "$(date '+%F %T') three pieces without a new checkpoint: chain stops" >> $LOG; exit 1; fi
   fi
   out=$(sbatch --export=ALL,RUN=$RUN,UPDATES=$UPDATES residual/jobs/train_chunk.sbatch 2>&1)
+  if ! [[ "$out" =~ Submitted\ batch\ job\ [0-9]+ ]]; then
+    # sbatch refused (Slurm maintenance 11-13 07:43): retry later, not counted as a piece
+    echo "$(date '+%F %T') sbatch failed: $(echo "$out" | grep -v '^=*$' | head -2 | tr '\n' ' ')" >> $LOG
+    sleep 300; continue
+  fi
   submitted=1
   echo "$(date '+%F %T') piece submitted: $out" >> $LOG
   sleep 120
