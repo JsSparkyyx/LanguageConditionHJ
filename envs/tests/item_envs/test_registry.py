@@ -23,7 +23,7 @@ T1_HOSTS = (
 
 def test_registered_tasks_phase4():
     assert set(ITEM_TASKS) == {"smoke_items", "selective_avoid", "granular_pour", "push_zone", "granular_carry", "tray_transport",
-                               "clean_pour", "gap_place"}
+                               "clean_pour", "gap_place", "tray_slide"}
 
 
 def test_smoke_entry_shape():
@@ -80,7 +80,7 @@ def test_get_task_entry_unknown_key():
 
 def test_production_tasks_excludes_test_only():
     assert production_tasks() == ["selective_avoid", "granular_pour", "push_zone", "granular_carry", "tray_transport",
-                                  "clean_pour", "gap_place"]
+                                  "clean_pour", "gap_place", "tray_slide"]
 
 
 def test_entry_validation():

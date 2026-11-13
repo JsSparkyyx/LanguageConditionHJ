@@ -24,6 +24,37 @@ def test_hard_stop_cruises_and_brakes_within_stop_dist(v):
     assert acc.max() == pytest.approx(0.75 * v * v / da, rel=0.02)  # the gentler start
 
 
+@pytest.mark.parametrize("v,v2", [(0.54, 0.15), (0.15, 0.36), (0.54, 0.36)])
+def test_speed_change_two_cruises_and_ramps(v, v2):
+    """T8 recovery law (2026-11-12): cruise at v, change to v2 from ``switch`` over change_dist, brake at the end."""
+    L, da, sw, dc, ds = 0.35, 0.10, 0.12, 0.10, 0.03
+    prof = {"kind": "speed_change", "length": L, "v": v, "v2": v2, "accel_dist": da, "switch": sw,
+            "change_dist": dc, "stop_dist": ds}
+    lam, dlam = time_law(prof)
+    s, vel = lam * L, dlam * L
+    acc = np.diff(vel) / PHYSICS_DT
+    assert lam[0] == 0.0 and lam[-1] == 1.0 and np.all(np.diff(lam) >= -1e-12)
+    # the speed agrees with the distance (no jump in the position)
+    assert np.max(np.abs(np.gradient(s, PHYSICS_DT)[1:-1] - vel[1:-1])) < 2e-3
+    first = (s > da + 1e-3) & (s < sw - 1e-3)
+    second = (s > sw + dc + 1e-3) & (s < L - ds - 1e-3)
+    assert first.any() and np.allclose(vel[first], v, rtol=1e-6)
+    assert second.any() and np.allclose(vel[second], v2, rtol=1e-6)
+    peaks = [0.75 * v * v / da, 0.75 * abs(v * v - v2 * v2) / dc, 0.75 * v2 * v2 / ds]
+    up = [peaks[0]] + ([peaks[1]] if v2 > v else [])
+    down = [peaks[2]] + ([peaks[1]] if v2 < v else [])
+    assert acc.max() == pytest.approx(max(up), rel=0.03)
+    assert -acc.min() == pytest.approx(max(down), rel=0.03)
+
+
+def test_speed_change_without_v2_is_hard_stop():
+    prof = {"length": 0.27, "v": 0.3, "accel_dist": 0.06, "stop_dist": 0.02}
+    a = time_law({**prof, "kind": "hard_stop"})
+    for extra in ({}, {"v2": 0.3}):
+        b = time_law({**prof, "kind": "speed_change", **extra})
+        assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+
 def test_minjerk_rest_to_rest_single_peak():
     lam, dlam = time_law({"kind": "minjerk", "duration": 2.0})
     assert lam[0] == 0.0 and lam[-1] == pytest.approx(1.0)

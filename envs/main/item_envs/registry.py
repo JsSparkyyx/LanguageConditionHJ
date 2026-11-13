@@ -116,6 +116,15 @@ ITEM_TASKS: dict[str, TaskEntry] = {
         robotwin_task="gap_place",
         config=_CONFIG_TASKS / "T7_gap_place.yaml",
     ),
+    # T8 (Yuxuan 2026-11-12): T5 with a wine glass and a can, both able to fall at their own speed, for the VLA
+    # test on the tray task alone
+    "tray_slide": TaskEntry(
+        key="tray_slide",
+        kind="robotwin",
+        robotwin_task="tray_slide",
+        embodiments=("ur5-wsg",),
+        config=_CONFIG_TASKS / "T8_tray_slide.yaml",
+    ),
 }
 
 
