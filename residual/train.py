@@ -191,6 +191,17 @@ class Learner:
         return path
 
     # ------------------------------------------------------------------ wandb ----
+    def _log(self, wb, logs: dict) -> None:
+        """Every logged number also goes to <run>/metrics.jsonl (the 11-12 run had no wandb for its first piece)."""
+        row = {"update": self.update, "time": time.time()}
+        row.update({k: v for k, v in logs.items() if isinstance(v, (int, float)) and not isinstance(v, bool)})
+        try:
+            with open(self.run / "metrics.jsonl", "a") as f:
+                f.write(json.dumps(row) + "\n")
+        except Exception as exc:
+            print(f"[residual-train] metrics.jsonl write failed ({exc})", flush=True)
+        _safe_wandb_log(wb, logs, self.update)
+
     def init_wandb(self):
         if self.args.no_wandb:
             return None
@@ -198,7 +209,12 @@ class Learner:
             import wandb
 
             if self.wandb_id is None:
-                self.wandb_id = wandb.util.generate_id()
+                gen = getattr(getattr(wandb, "util", None), "generate_id", None)
+                if gen is None:   # newer wandb moved it
+                    import uuid
+
+                    gen = lambda: uuid.uuid4().hex[:8]
+                self.wandb_id = gen()
             run = wandb.init(project=self.cfg.wandb_project, name=self.run.name, id=self.wandb_id, resume="allow",
                              dir=str(self.run), config=self.cfg.to_dict())
             return run
@@ -431,7 +447,7 @@ class Learner:
                                  "perf/restarts_crash": pool.restarts["crash"],
                                  "perf/dropped_stale": self.totals["dropped_stale"],
                                  "perf/total_transitions": self.totals["transitions"]})
-                    _safe_wandb_log(wb, logs, self.update)
+                    self._log(wb, logs)
                     print(f"[residual-train] update {self.update}: {len(buf)} eps {n_buf} steps in {dt:.0f}s | "
                           f"in-way broken {tstats['in_way/broken']:.2f} success {tstats['success']:.2f} "
                           f"corr in {tstats['in_way/correction_rms']:.3f} out {tstats['out_of_way/correction_rms']:.3f} "
@@ -511,7 +527,7 @@ class Learner:
                 logs[f"{prefix}/videos"] = [wandb.Video(str(p), format="mp4", caption=p.stem) for p in vids]
             except Exception as exc:
                 print(f"[residual-train] video log failed ({exc})", flush=True)
-        _safe_wandb_log(wb, logs, self.update)
+        self._log(wb, logs)
         self.eval_round += 1
         print(f"[residual-train] eval {name}: in-way broken {summ['in_way/broken']:.2f} success "
               f"{summ['in_way/success']:.2f} | out-of-way corr {summ['out_of_way/correction_rms']:.3f} success "
