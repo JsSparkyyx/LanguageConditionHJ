@@ -372,6 +372,24 @@ Defaults chosen in the session (change in `residual/config.py`):
   common early). Run `runs/residual/residual_dev_success_s025_1112`. The gpuA40x4 job waited 12.5 h, so it runs as
   1-hour interactive pieces instead (Yuxuan, 11-12): `jobs/train_chunk.sbatch` (learner deadline 50 min, resume from
   the checkpoint) submitted by the feeder `jobs/chain_train.sh` until `<run>/done`.
+- Result of the first run (finished 2026-11-13 20:23, 350 updates in 15 one-hour pieces, about 5.8 M transitions;
+  the same 40 evaluation scenes every 10 updates, deterministic policy):
+
+  | evaluation rounds | in the way: broken | in the way: success | in the way: safe success | out of the way: broken | out of the way: success |
+  |---|---|---|---|---|---|
+  | delta = 0 baseline (20 + 20) | 0.65 | 0.60 | 0.20 | 0.05 | 0.45 |
+  | updates 10-100 (200 + 200) | 0.57 | 0.61 | 0.24 | 0.05 | 0.64 |
+  | updates 110-200 | 0.51 | 0.66 | 0.34 | 0.06 | 0.57 |
+  | updates 210-300 | 0.54 | 0.57 | 0.20 | 0.06 | 0.62 |
+  | updates 310-350 (80 + 80) | 0.60 | 0.56 | 0.17 | 0.05 | 0.51 |
+
+  Training episodes (with noise), in the way broken: 0.66 (updates 24-73), 0.58 (174-223), 0.61 (324-350); success
+  0.35 -> 0.31. Best around updates 110-200, then back toward the baseline. Of the 13 in-the-way scenes the baseline
+  breaks, one is fixed in every round, six are broken in every round. The correction grows the same in and out of the
+  way (0.036 -> 0.066 of the bound): no state-dependent correction was learned.
+  Diagnosis: every update stops after one epoch on the KL limit, and 42-47% of the samples are clipped in that one
+  epoch (healthy: 0.1-0.2). With std 0.005 rad a small move of the mean is a large probability ratio, so each step is
+  large and noisy relative to the exploration, and the std never moved (0.0252 -> 0.0262 of the bound).
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.
