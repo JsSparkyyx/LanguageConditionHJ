@@ -374,7 +374,7 @@ def main(argv=None) -> int:
         (out / "summary.md").write_text(markdown(res))
         print(markdown(res))
         return 0
-    if args.agent == "model" and not args.model_dir:
+    if args.agent == "model" and not args.model_dir and not args.make_scenes:
         ap.error("--agent model needs --model-dir")
     args.model_name = args.model_name or args.agent
     import main.lang  # noqa: F401
