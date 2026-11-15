@@ -30,6 +30,14 @@ Second round (plan section 7, 2026-11-11):
              Mix "old" (first round): 75% normal, 25% any branch row (decision rows about 2%).
     data:    "small" = the first round's 100 states (data/lang_asens), "large" = small + data/lang_asens2.
 
+Third round (plan section 8, 2026-11-12):
+    target "measured" (runs M1, M3, M12): y_t = V95 of the sample's rule column from its row t to the end of its
+             episode or branch (y_last = h_last, y_t = (1 - g) h_t + g min(h_t, y_t+1)), only recorded margins, no
+             critic and no target network. The same number for a 1-tick, 3-tick or chunk critic. Normal rows only
+             from episodes stored completely and driven by the planner on every tick (planner_episodes); large
+             branch data, the new mix, MSE on both twins as in rounds 1 and 2 (M3_huber: Huber, delta 0.5).
+    Resuming D3 / H to 20,000 steps: train --name D3 --run <a copy of runs/D3> --resume --grad-steps 20000.
+
 Every --probe-every steps the fixed probe states (the held-out branch states and as many training ones) are scored:
 rank agreement and spread ratio over each state's decisions (section 4 of the plan), and the spread of Q over 16
 random actions / chunks -> <run>/diag.jsonl.
@@ -72,16 +80,29 @@ N_RAND = 16
 MIX = {"old": (0.75, None, 0.25), "new": (0.50, 0.25, 0.25)}
 
 
-def _run(ticks, injection, branch, mix="old"):
-    return {"decision_ticks": ticks, "injection": injection, "branch_data": branch, "mix": mix}
+def _run(ticks, injection, branch, mix="old", target="bootstrap", loss="mse"):
+    r = {"decision_ticks": ticks, "injection": injection, "branch_data": branch, "mix": mix}
+    if target != "bootstrap":
+        r["target"] = target
+    if loss != "mse":
+        r["loss"] = loss
+    return r
 
 
-# branch_data: None (normal rows only), "small" or "large". E was dropped on 2026-11-11 (C failed with more help)
+# branch_data: None (normal rows only), "small" or "large". E was dropped on 2026-11-11 (C failed with more help).
+# target "measured" (third round, plan section 8.4, 2026-11-12): y_t = V95 of the row's own recorded h from tick t
+# to the end of its episode or branch, no critic in the target; normal rows only from complete planner episodes.
 RUNS = {"A": _run(1, "linear", "small"), "B": _run(1, "revised", "small"), "C": _run(CHUNK, "linear", "small"),
         "D": _run(CHUNK, "revised", "small"), "E": _run(CHUNK, "linear", None), "F": _run(1, "revised", None),
         "D2": _run(CHUNK, "revised", "small", "new"), "G": _run(3, "revised", None),
         "B2": _run(1, "revised", "large", "new"), "H": _run(3, "revised", "large", "new"),
-        "D3": _run(CHUNK, "revised", "large", "new")}
+        "D3": _run(CHUNK, "revised", "large", "new"),
+        "M1": _run(1, "revised", "large", "new", "measured"), "M3": _run(3, "revised", "large", "new", "measured"),
+        "M12": _run(CHUNK, "revised", "large", "new", "measured"),
+        # the same as M3 with a Huber loss (delta HUBER_DELTA, as fit_check.py) in place of MSE (Yuxuan 2026-11-12)
+        "M3_huber": _run(3, "revised", "large", "new", "measured", "huber"),
+        "H_huber": _run(3, "revised", "large", "new", "bootstrap", "huber")}   # H with the Huber loss
+HUBER_DELTA = 0.5
 ENC_FIELDS = ("state_tokens", "body_tokens", "link_pos", "body_mask", "joint_index", "Jlin", "Jang", "dtheta_max",
               "scene_tokens", "scene_pos")
 PASS = {"rank_agree_min": 0.70, "spread_ratio_min": 0.25, "gt_tol": 0.05}
@@ -185,13 +206,66 @@ class EpIndex:
         self.h = A["h_rules"]
 
 
+def planner_episodes(s) -> tuple[set, dict]:
+    """Episodes of a normal source that are stored completely and driven by the planner on every tick: a line with
+    status ok, not a filter episode, rows [r0, r1) holding exactly n_ticks rows of that episode id with t_in_ep
+    0 .. n-1, and action_source 0 (planner) on every row. -> (episode ids, counts of what was left out and why)."""
+    A = s.rs.buf.arrays
+    n = int(s.rs.buf.n)
+    p = s.root / "buffer" / "action_source.npy"
+    src = np.asarray(np.load(p, mmap_mode="r")[:n]) if p.exists() else None
+    ok, why = set(), {"filter": 0, "status": 0, "incomplete": 0, "not_planner": 0}
+    for e, ln in s.lines.items():
+        if (s.rs.records.get(int(e)) or {}).get("task") != T5:
+            continue
+        if ln.get("filter"):
+            why["filter"] += 1
+            continue
+        if ln.get("status") != "ok":
+            why["status"] += 1
+            continue
+        r0, r1 = (int(x) for x in ln["rows"])
+        if r1 > n or r1 - r0 != int(ln.get("n_ticks", -1)) \
+                or not (np.asarray(A["episode_id"][r0:r1]) == int(e)).all() \
+                or not (np.asarray(A["t_in_ep"][r0:r1]) == np.arange(r1 - r0)).all():
+            why["incomplete"] += 1
+            continue
+        if src is None or (np.asarray(src[r0:r1]) != 0).any():
+            why["not_planner"] += 1
+            continue
+        ok.add(int(e))
+    return ok, why
+
+
+def measured_table(s, gamma: float, eids: set | None) -> np.ndarray:
+    """V [n, R] (float32, NaN where not defined): for every stored row t of the episodes eids (None = every episode
+    of the source) and every rule column, V95 of that column's recorded h from t to the episode's last stored row:
+    V_last = h_last, V_t = (1 - g) h_t + g min(h_t, V_t+1). A branch is stored to 5 ticks after its last motion and
+    nothing moves afterwards, so its h stays at h_last and this equals the V95 of the whole continuation."""
+    A = s.rs.buf.arrays
+    n = int(s.rs.buf.n)
+    ep = np.asarray(A["episode_id"][:n]).astype(np.int64)
+    t = np.asarray(A["t_in_ep"][:n]).astype(np.int64)
+    h = np.asarray(A["h_rules"][:n], np.float64)
+    cont = np.zeros(n, bool)                              # row i+1 continues row i's episode
+    cont[:-1] = (ep[1:] == ep[:-1]) & (t[1:] == t[:-1] + 1)
+    V = np.empty_like(h)
+    g = float(gamma)
+    V[n - 1] = h[n - 1]
+    for i in range(n - 2, -1, -1):
+        V[i] = (1 - g) * h[i] + g * np.minimum(h[i], V[i + 1]) if cont[i] else h[i]
+    if eids is not None:
+        V[~np.isin(ep, np.fromiter(eids, np.int64, len(eids)))] = np.nan
+    return V.astype(np.float32)
+
+
 class Batcher:
     """Batches of 64 from parts [(sampler, rows, kind)], kind 0 normal / 1 branch (continuation, or any branch row
     under the old mix) / 2 decision. Critics of 3 or 12 ticks also get, per sample, the stored commands of the
     decision window, the h of its rows, and the state and stored window at its end (a second read)."""
 
-    def __init__(self, tr: "CriticTrainer", parts: list, chunk: int, seed: int):
-        self.tr, self.chunk = tr, int(chunk)
+    def __init__(self, tr: "CriticTrainer", parts: list, chunk: int, seed: int, need_end: bool = True):
+        self.tr, self.chunk, self.need_end = tr, int(chunk), bool(need_end)
         self.parts = [p for p in parts if p[1] > 0]
         self.rng = np.random.default_rng(seed)
         self.idx = {}
@@ -247,46 +321,55 @@ class Batcher:
         return concat(outs)
 
     def _chunk_part(self, smp, picks, b) -> None:
-        H = self.chunk
-        B = len(picks)
-        A = np.asarray(b["dtheta"]).shape[-1]
-        cmds = np.zeros((B, H, A), np.float32)
-        cmds2 = np.zeros((B, H, A), np.float32)
-        hseq = np.zeros((B, H + 1), np.float32)
-        L = np.zeros(B, np.int64)             # last row of the recursion (H with a bootstrap)
-        boot = np.zeros(B, bool)
-        picks2, where2 = [], []
-        off = {id(s): o for s, o in zip(smp.sources, np.cumsum([0] + [s.rows.size for s in smp.sources[:-1]]))}
-        for k, (gi, col, _) in enumerate(picks):
-            s = smp.sources[int(smp.sid[gi])]
-            ix = self.idx[id(s)]
-            slot = int(s.rows[int(smp.loc[gi])])
-            rem = int(ix.rem[slot])
-            n = min(rem, H)                                   # rows after t that the chunk reaches
-            cmds[k, : n + (1 if n < H else 0)] = np.asarray(ix.dtheta[slot: slot + n + (1 if n < H else 0)])
-            hs = np.asarray(ix.h[slot: slot + n + 1, col], np.float32)
-            hseq[k, : n + 1] = hs
-            hseq[k, n + 1:] = hs[-1]
-            j = int(ix.inv[slot + H]) if rem > H else -1      # row t+H in the episode and not its last
-            if j >= 0:
-                boot[k], L[k] = True, H
-                m = min(int(ix.rem[slot + H]) + 1, H)
-                cmds2[k, :m] = np.asarray(ix.dtheta[slot + H: slot + H + m])
-                picks2.append((int(off[id(s)] + j), int(col), -1))
-                where2.append(k)
-            else:
-                L[k] = n
-        b["chunk_cmds"], b["chunk_h"], b["chunk_L"], b["chunk_boot"] = cmds, hseq, L, boot
-        b["chunk_cmds_next"] = cmds2
-        if picks2:
-            b2 = smp.sample(len(picks2), rng=self.rng, picks=picks2)
-            for f in ENC_FIELDS:
-                full = np.zeros((B,) + np.asarray(b2[f]).shape[1:], np.asarray(b2[f]).dtype)
-                full[where2] = b2[f]
-                b[f + "_end"] = full
+        chunk_fields(smp, picks, b, self.chunk, self.idx, self.rng, need_end=self.need_end)
+
+
+def chunk_fields(smp, picks, b, H: int, idx: dict, rng, need_end: bool = True) -> None:
+    """The decision window of every pick (H rows from its row): the stored commands, the h of its rows, where the
+    recursion ends and whether it bootstraps there, the stored window at that end, and (need_end) the state at that
+    end, a second read. idx: {id(source): EpIndex}. A measured-outcome target needs only the commands (need_end
+    False skips the second read)."""
+    B = len(picks)
+    A = np.asarray(b["dtheta"]).shape[-1]
+    cmds = np.zeros((B, H, A), np.float32)
+    cmds2 = np.zeros((B, H, A), np.float32)
+    hseq = np.zeros((B, H + 1), np.float32)
+    L = np.zeros(B, np.int64)             # last row of the recursion (H with a bootstrap)
+    boot = np.zeros(B, bool)
+    picks2, where2 = [], []
+    off = {id(s): o for s, o in zip(smp.sources, np.cumsum([0] + [s.rows.size for s in smp.sources[:-1]]))}
+    for k, (gi, col, _) in enumerate(picks):
+        s = smp.sources[int(smp.sid[gi])]
+        ix = idx[id(s)]
+        slot = int(s.rows[int(smp.loc[gi])])
+        rem = int(ix.rem[slot])
+        n = min(rem, H)                                   # rows after t that the chunk reaches
+        cmds[k, : n + (1 if n < H else 0)] = np.asarray(ix.dtheta[slot: slot + n + (1 if n < H else 0)])
+        hs = np.asarray(ix.h[slot: slot + n + 1, col], np.float32)
+        hseq[k, : n + 1] = hs
+        hseq[k, n + 1:] = hs[-1]
+        j = int(ix.inv[slot + H]) if rem > H else -1      # row t+H in the episode and not its last
+        if j >= 0:
+            boot[k], L[k] = True, H
+            m = min(int(ix.rem[slot + H]) + 1, H)
+            cmds2[k, :m] = np.asarray(ix.dtheta[slot + H: slot + H + m])
+            picks2.append((int(off[id(s)] + j), int(col), -1))
+            where2.append(k)
         else:
-            for f in ENC_FIELDS:
-                b[f + "_end"] = np.zeros_like(np.asarray(b[f]))
+            L[k] = n
+    b["chunk_cmds"], b["chunk_h"], b["chunk_L"], b["chunk_boot"] = cmds, hseq, L, boot
+    b["chunk_cmds_next"] = cmds2
+    if not need_end:
+        return
+    if picks2:
+        b2 = smp.sample(len(picks2), rng=rng, picks=picks2)
+        for f in ENC_FIELDS:
+            full = np.zeros((B,) + np.asarray(b2[f]).shape[1:], np.asarray(b2[f]).dtype)
+            full[where2] = b2[f]
+            b[f + "_end"] = full
+    else:
+        for f in ENC_FIELDS:
+            b[f + "_end"] = np.zeros_like(np.asarray(b[f]))
 
 
 def concat(bs: list) -> dict:
@@ -435,6 +518,8 @@ class CriticTrainer(LangTrainer):
         self.batcher = None
         self._src = {s.name: s for s in self.sampler.sources}
         self._dth = {}
+        self.measured = None          # {source name: V [n, R]} for a measured-outcome target (measured_table)
+        self.loss_kind = "mse"        # or "huber" (HUBER_DELTA)
 
     def add_source_index(self, sampler):
         for s in sampler.sources:
@@ -464,8 +549,19 @@ class CriticTrainer(LangTrainer):
         """Per-tick commands [B, H, A] -> the model's action: the chunk itself, or the summed command (3 ticks)."""
         return cmds if self.chunk > 1 else cmds.sum(1)
 
+    def measured_y(self, b) -> np.ndarray:
+        """The measured-outcome target of every sample: V95 of its rule column from its row to its episode's end."""
+        y = np.array([self.measured[name][int(r), int(c)] for name, r, c in zip(b["source"], b["row"], b["rule_col"])],
+                     np.float32)
+        if not np.isfinite(y).all():
+            raise RuntimeError(f"{int((~np.isfinite(y)).sum())} samples without a measured value (rows of episodes "
+                               "left out of the table were drawn)")
+        return y
+
     def _target(self, b, words, wmask, h):
         g, d = self.gamma(), self.dev
+        if self.measured is not None:
+            return _t(self.measured_y(b), dev=d)
         if self.H == 1:
             enc_n, Jl, Ja, ji = self.encode(b, words, wmask, "_next", target=True)
             a_n = _t(self.stored_next(b), dev=d)
@@ -495,7 +591,10 @@ class CriticTrainer(LangTrainer):
         with torch.no_grad():
             y = self._target(b, words, wmask, h)
         q1, q2, _, _ = self.critics(enc, act, Jlin, Jang, ji)
-        loss = F.mse_loss(q1, y) + F.mse_loss(q2, y)
+        if self.loss_kind == "huber":
+            loss = F.huber_loss(q1, y, delta=HUBER_DELTA) + F.huber_loss(q2, y, delta=HUBER_DELTA)
+        else:
+            loss = F.mse_loss(q1, y) + F.mse_loss(q2, y)
         self.opt_e.zero_grad(set_to_none=True)
         self.opt_c.zero_grad(set_to_none=True)
         loss.backward()
@@ -548,7 +647,23 @@ def make_trainer(name: str, run: Path, seed: int, with_batcher: bool = True, bra
     caches = caches_of([str(p) for p in (REPO / "data/lang_1023/warmup", REPO / "data/lang_1023/val",
                                          REPO / "data/lang_1023/val20")])
     tr = CriticTrainer(cfg, run, roots, caches, seed=seed, ticks=ticks)
+    tr.loss_kind = R.get("loss", "mse")
     B = int(cfg.batch_size)
+    measured = R.get("target") == "measured"
+    if measured:      # plan section 8.4: normal rows only from complete planner episodes, V95 of their own h trace
+        tr.measured, keep, n_ep, why_all = {}, [], 0, {}
+        for s in tr.sampler.sources:
+            ok, why = planner_episodes(s)
+            tr.measured[s.name] = measured_table(s, tr.gamma(), ok)
+            keep.append(np.isfinite(tr.measured[s.name][s.rows, 0]))
+            n_ep += len(ok)
+            for k, v in why.items():
+                why_all[k] = why_all.get(k, 0) + v
+        keep = np.concatenate(keep)
+        n_before = int(tr.sampler.ok.sum())
+        restrict(tr.sampler, keep)
+        print(f"[asens] measured target: normal data keeps {n_ep} complete planner episodes of {T5}, "
+              f"{int(tr.sampler.ok.sum())} of {n_before} trainable normal rows; left out: {why_all}", flush=True)
     parts = [(tr.sampler, B, 0)]
     if R["branch_data"]:
         dirs = branch_dirs(R["branch_data"], branch_root)
@@ -558,6 +673,11 @@ def make_trainer(name: str, run: Path, seed: int, with_batcher: bool = True, bra
         bs = LangSampler(broots, cfg, tasks=(T5,), embodiments=("ur5-wsg",), seed=seed + 5, n_threads=8)
         keep, dec, w = branch_masks(bs)
         tr.add_source_index(bs)
+        if measured:   # every branch is stored to its end: V95 from every row
+            for s in bs.sources:
+                if s.name in tr.measured:
+                    raise RuntimeError(f"two data roots named {s.name}")
+                tr.measured[s.name] = measured_table(s, tr.gamma(), None)
         n_ep = len({(j, int(e)) for j, s in enumerate(bs.sources) for e in np.unique(s.eid)})
         f_norm, f_cont, f_dec = MIX[R["mix"]]
         n_dec = int(round(f_dec * B))
@@ -581,7 +701,7 @@ def make_trainer(name: str, run: Path, seed: int, with_batcher: bool = True, bra
         if not n_rows[0] or (f_cont is not None and not n_rows[1]):
             raise SystemExit("the branch shards have no training rows")
     if with_batcher:
-        tr.batcher = Batcher(tr, parts, tr.H, seed + 9)
+        tr.batcher = Batcher(tr, parts, tr.H, seed + 9, need_end=not measured)
     return tr
 
 
@@ -679,7 +799,7 @@ def train(args) -> int:
     tr.install_signal()
     R = RUNS[name]
     print(f"[asens] run {name}: decision {tr.H} tick(s), injection {tr.cfg.critic_injection}, branch data "
-          f"{R['branch_data']}, mix {R['mix']}; probe states "
+          f"{R['branch_data']}, mix {R['mix']}, target {R.get('target', 'bootstrap')}, loss {tr.loss_kind}; probe states "
           f"{ {k: v[0].n for k, v in sets.items()} }; setup {time.time() - t_start:.0f} s, step {tr.step} -> "
           f"{args.grad_steps}", flush=True)
     tol = float(crit["gt_tol"])

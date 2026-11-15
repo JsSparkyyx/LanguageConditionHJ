@@ -657,7 +657,7 @@ def worker(args) -> int:
         print("[asens] nothing to do", flush=True)
         return 0
     deadline = float(os.environ["STAGE_DEADLINE"]) if os.environ.get("STAGE_DEADLINE") else None
-    tag = f"{os.environ.get('SLURM_JOB_ID', 'x')}n{os.uname().nodename.split('.')[0]}p{os.getpid()}"
+    tag = f"{os.environ.get('SLURM_JOB_ID') or os.environ.get('LSB_JOBID', 'x')}n{os.uname().nodename.split('.')[0]}p{os.getpid()}"
     torch.backends.cuda.matmul.allow_tf32 = False
     cfg = LangConfig.load(VAN / "lang_config.json")
     install_vocab(getattr(cfg, "vocab", "current"))
@@ -760,7 +760,7 @@ def run_cmd(args) -> int:
     logdir.mkdir(parents=True, exist_ok=True)
     procs = []
     for w in range(int(args.workers)):
-        f = open(logdir / f"worker_{os.environ.get('SLURM_JOB_ID', 'x')}_{os.uname().nodename.split('.')[0]}_"
+        f = open(logdir / f"worker_{os.environ.get('SLURM_JOB_ID') or os.environ.get('LSB_JOBID', 'x')}_{os.uname().nodename.split('.')[0]}_"
                           f"{os.environ.get('CUDA_VISIBLE_DEVICES', 'g').replace(',', '-')}_{w}.log", "a")
         procs.append(subprocess.Popen([sys.executable, __file__] + argv + ["--workers", "1"], stdout=f,
                                       stderr=subprocess.STDOUT))
