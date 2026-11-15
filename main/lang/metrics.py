@@ -365,6 +365,8 @@ class LangRoundMetrics:
             "first_harm_t": float(t[np.argmax(h < 0)]) if harm and t.size == h.size else float("nan"),
             "first_intervene_t": float(tq[np.argmax(inter)]) if inter.any() and tq.size == inter.size else float("nan"),
             "realized_cmd_ratio": float(trace.get("mean_realized_ratio", float("nan"))),
+            # the actor of the interventions (T8_BOUNDARY_PLAN.md): "argmax", or "boundary" in runs that train one
+            "actor": line.get("actor", "argmax"),
         }
         return row
 
@@ -394,6 +396,13 @@ class LangRoundMetrics:
                       "v_le_h_frac"):
                 vals = [float(r[k]) for r in sel if r.get(k) is not None and r[k] == r[k]]   # older rows lack new keys
                 out[f"round_overview/{d}/{k}"] = float(np.mean(vals)) if vals else float("nan")
+        if any(r.get("actor", "argmax") != "argmax" for r in rows):   # runs with a boundary actor: per actor too
+            for kind in sorted({r.get("actor", "argmax") for r in rows}):
+                sel = [r for r in rows if r.get("actor", "argmax") == kind]
+                out[f"round_overview/actor_{kind}/n"] = len(sel)
+                for k in ("harm_named", "any_intervention", "intervention_rate", "task_success", "v_le_h_frac"):
+                    vals = [float(r[k]) for r in sel if r.get(k) is not None and r[k] == r[k]]
+                    out[f"round_overview/actor_{kind}/{k}"] = float(np.mean(vals)) if vals else float("nan")
         out["round_overview/n_filter_episodes"] = len(rows)
         out["round_overview/n_not_run"] = len(all_rows) - len(rows)
         out["round_overview/n_exception_scored"] = sum(1 for r in rows if r.get("status") == "exception")

@@ -48,6 +48,13 @@ from .train import EXIT_RESUME, LOG_EVERY, STATE_EVERY, LangTrainer, check_resum
 
 
 
+
+def _nets(tr) -> tuple:
+    """(policy encoder, argmax actor, critics[, boundary actor]): the networks rounds collection rolls out with
+    (run_episodes' models) and switches between eval and train mode."""
+    b = getattr(tr, "actor_b", None)
+    return (tr.policy_enc, tr.actor, tr.critics) + ((b,) if b is not None else ())
+
 class RoundSchedule:
     """Global (task, embodiment) cursor + a T1 host cursor per embodiment."""
 
@@ -281,7 +288,7 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                 from main.train.collect import CKPT_DIR
 
                 encoder = HoloBrainEncoder(str(CKPT_DIR), device="cuda")
-            for m in (tr.policy_enc, tr.actor, tr.critics):
+            for m in _nets(tr):
                 m.eval()
             t0, walls = time.time(), []
             slots = r_pos["slots"]
@@ -295,7 +302,7 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                 t_ep = time.time()
                 try:
                     summ = collect_fn(cfg, run / "ring", [slots[k]], round_offset(r), ring_buf, ring_side,
-                                      encoder=encoder, kins=kins, models=(tr.policy_enc, tr.actor, tr.critics),
+                                      encoder=encoder, kins=kins, models=_nets(tr),
                                       filter_frac=float(cfg.filter_episode_frac), rng_policy=rng_policy,
                                       attempt0=r_pos["attempt"], inits=inits,
                                       video_every=1 if (args.video_every and r % args.video_every == 0) else 0,
@@ -313,7 +320,7 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
                 why = wait_labels([run / "ring"], vlm, out_of_time, prefix=f"[round {r}] ", want=True)
                 if why:
                     return stop(r_pos, why)
-            for m in (tr.policy_enc, tr.actor, tr.critics):
+            for m in _nets(tr):
                 m.train()
             if not ring_added:
                 tr.sampler.add_source(run / "ring")
@@ -330,7 +337,7 @@ def _run_rounds(cfg, args, roots, vals, caches, tasks, embs, *, trainer=None, co
             r_pos["steps_target"] = tr.step + n_steps
             save(r_pos)
         t0 = time.time()
-        for m in (tr.policy_enc, tr.actor, tr.critics):
+        for m in _nets(tr):
             m.train()
         while tr.step < int(r_pos["steps_target"]):
             if out_of_time():

@@ -60,7 +60,8 @@ from . import ensure_item_path
 ensure_item_path()
 
 from .config import (  # noqa: E402
-    CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, TRAIN_TASKS, LangConfig, check_stream, episode_risk, shard_g,
+    CANON_EMBODIMENTS, CANON_T1_HOSTS, CANON_TASKS, TRAIN_TASKS, LangConfig, check_stream, episode_actor, episode_risk,
+    shard_g,
     task_list, task_runs_on, val_offset, valg_offset, warmup_offset,
 )
 
@@ -261,7 +262,8 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     host, seed) is a replayed episode (--replay): that seed, one build, no new
     seed on failure (a skipped line). Returns a summary
     dict; appends one line per slot to out_root/lang_episodes.jsonl.
-    models: (policy_enc, actor, critics) for filter episodes (Phase 4),
+    models: (policy_enc, actor, critics) for filter episodes (Phase 4), plus the boundary actor as a fourth entry
+    when the run trains one (each filter episode then draws its actor, config.episode_actor),
     None = nominal only. slot_offset: index of slots[0] in the full schedule
     (resume). writer: the data root's WriterLock, checked about once a second during an episode and before
     every flush and line (round 2 B1). with_masks=False skips the per-tick segmentation masks (zeros in
@@ -350,11 +352,14 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                 cfg, task=task, embodiment=emb, item_host=host, item_active_rule=None,
                 item_out_root=str(out_root / "_runner"), item_risk=episode_risk(cfg, task, seed),
             )
+            # the actor of this episode's interventions: models[3] is the boundary actor when the run trains one
+            # (T8_BOUNDARY_PLAN.md section 5; drawn from the seed, so a resume repeats it)
+            actor_kind = episode_actor(cfg, seed) if (models and use_filter and len(models) > 3) else "argmax"
             try:
                 cand = LangRolloutController(
                     cfg_ep, seed, mode="collect", encoder=encoder, kin=kins[emb],
                     policy_enc=models[0] if (models and use_filter) else None,
-                    actor=models[1] if (models and use_filter) else None,
+                    actor=(models[3] if actor_kind == "boundary" else models[1]) if (models and use_filter) else None,
                     critics=models[2] if (models and use_filter) else None,
                     filter_active=use_filter, buf=buf, episode_id=seed,
                     perturb_prob=cfg.perturb_prob, rng=np.random.RandomState(seed),
@@ -501,6 +506,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
             **({"behaviour": behaviour} if behaviour is not None else {}),
             "episode_id": seed, "task": task, "host": runner.host if task == "selective_avoid" else None,
             "embodiment": emb, "seed": seed, "filter": bool(use_filter and named is not None),
+            **({"actor": actor_kind} if use_filter and named is not None else {}),
             "named_rule_id": named["rule_id"] if named else None,
             "named_consequence": named["consequence"] if named else None,
             "designation": desig.get(named["rule_id"]) if named else None,
@@ -533,7 +539,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         summary["status"][line["status"]] = summary["status"].get(line["status"], 0) + 1
         summary["wall"] += line["wall_s"]
         print(f"{log_prefix}[collect] {task}{'/' + str(line['host']) if line['host'] else ''}/{emb} "
-              f"seed {seed}: {'FILTER' if line['filter'] else 'nominal'} "
+              f"seed {seed}: {('FILTER/' + line['actor']) if line['filter'] else 'nominal'} "
               f"{line['named_rule_id'] or ''} {line['designation'] or ''} {sentence or ''} | "
               f"status {line['status']} success {line['success']} ticks {line['n_ticks']} "
               f"violated {sum(violated)}/{len(violated)} wall {line['wall_s']:.0f}s", flush=True)
@@ -1010,6 +1016,11 @@ def plan_shard(args, kind: str):
         cfg = dataclasses.replace(cfg, encoder=enc, text_backend="holobrain_qwen" if enc == "holobrain_qwen"
                                   else cfg.text_backend, spawn_pool=getattr(args, "spawn_pool", None) or "current",
                                   qwen_attn=getattr(args, "qwen_attn", None) or "sdpa")
+    if getattr(args, "perturb_prob", None) is not None:
+        # the nominal's random joint kicks (CrossSafe perturb_prob, 0.05 by default; per tick p = perturb_prob x
+        # 10/60). T8 data uses 0.001 (Yuxuan, 2026-11-15: at 0.05 a kick while the arm holds the tray tipped both
+        # items in slow drags). In collect_hash, so the shard records it
+        cfg = dataclasses.replace(cfg, perturb_prob=float(args.perturb_prob))
     frames = getattr(args, "frames", None)
     frames = cfg.qwen if frames is None else bool(frames)
     if frames and not cfg.qwen:
@@ -1231,6 +1242,8 @@ def main(argv=None) -> int:
         # warmup too since 2026-11-13: a tray_slide-only shard gets ids no shard on disk uses (warmup g 0-30 and
         # validation g 0-25 are taken; e.g. warmup --g-base 40, validation --g-base 26)
         p.add_argument("--g-base", type=int, default=0, help="added to the shard's g (its episode-id offset)")
+        p.add_argument("--perturb-prob", type=float, default=None,
+                       help="the nominal's random-kick probability (default: the config's, 0.05)")
         if kind == "validation":
             p.add_argument("--stream", choices=("default", "grounding"), default="default",
                            help="grounding: the 20-per-task ur5-wsg validation ids (config.valg_offset; T1 / T7 at "

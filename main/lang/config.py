@@ -157,6 +157,19 @@ def episode_risk(cfg, task: str, seed: int) -> dict | None:
     return {"behaviour": names[int(rng.choice(len(names), p=w / w.sum()))]}
 
 
+
+def episode_actor(cfg, seed: int) -> str:
+    """Which actor drives a filter episode's interventions (T8_BOUNDARY_PLAN.md section 5): "boundary" with
+    probability cfg.boundary_actor_frac when the run trains the boundary actor, else "argmax". Drawn from the
+    episode's seed on its own stream, so a resumed or replayed episode gets the same actor.
+    Example: boundary_actor on, frac 0.5 -> about half the filter episodes use the boundary actor."""
+    if not getattr(cfg, "boundary_actor", False):
+        return "argmax"
+    import numpy as np
+
+    rng = np.random.default_rng([int(seed), 0xB0D1])
+    return "boundary" if rng.random() < float(cfg.boundary_actor_frac) else "argmax"
+
 def check_stream(offset: int, attempt: int) -> int:
     """episode id = offset + attempt, asserted inside its stream and int32."""
     assert 0 <= attempt < STREAM_SPAN, f"attempt {attempt} overflows its stream"
@@ -328,6 +341,13 @@ class LangConfig(FrozenConfig):
 
     # --- rounds / collection ---
     filter_release_margin: float = 0.0
+    # A second, boundary-seeking actor (T8_BOUNDARY_PLAN.md, Yuxuan 2026-11-15): trained so that Q(s, beta(s)) lies in
+    # [boundary_lo, boundary_hi] (h units), never in the critic's target, never deployed. Each filter episode of
+    # rounds collection uses it with probability boundary_actor_frac (episode_actor), the argmax actor otherwise
+    boundary_actor: bool = False
+    boundary_lo: float = 0.0
+    boundary_hi: float = 0.1
+    boundary_actor_frac: float = 0.5
     named_harm_frac: float = 0.5
     episodes_per_round: int = 4
     grad_steps_per_round: int = 2048

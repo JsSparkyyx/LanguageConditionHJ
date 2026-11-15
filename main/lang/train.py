@@ -313,6 +313,14 @@ class LangTrainer:
         self.opt_e = torch.optim.Adam(self.policy_enc.parameters(), lr=cfg.lr)
         self.opt_c = torch.optim.Adam(self.critics.parameters(), lr=cfg.lr)
         self.opt_a = torch.optim.Adam(self.actor.parameters(), lr=cfg.lr)
+        # the boundary actor (T8_BOUNDARY_PLAN.md): its own weights and optimiser, only when the run trains it. Its
+        # initial weights come from a forked RNG, so the other networks' updates start exactly as without it
+        self.actor_b = None
+        if getattr(cfg, "boundary_actor", False):
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(seed + 0xB0D1)
+                self.actor_b = make_actor(cfg).to(device)
+        self.opt_b = torch.optim.Adam(self.actor_b.parameters(), lr=cfg.lr) if self.actor_b is not None else None
         # V6: the words come from HoloBrain-Qwen's layer 0 against each frame's stored prefix (qwen_words), no store
         self.text = None if cfg.qwen else TextStore(text_caches, cfg.text_backend, device,
                                                      extra_path=self.run / "text_cache_extra.pt",
@@ -626,6 +634,7 @@ class LangTrainer:
         loss_pi.backward()
         gn["grad/actor"] = float(torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 10.0))
         self.opt_a.step()
+        b_out = self._boundary_step(enc_d, Jlin, Jang, ji, dmax, jv, alpha, gn) if self.actor_b is not None else {}
         for p in frozen:
             p.requires_grad_(True)
         with torch.no_grad():
@@ -636,10 +645,33 @@ class LangTrainer:
             self.timer.add("step", self._step_t0, self.timer.mark())
             self._step_t0 = None
         self.step += 1
-        out = {"loss/q": float(loss_q), "loss/pi": float(loss_pi), "alpha": alpha, "gamma": gamma, **gn, **aux_out}
+        out = {"loss/q": float(loss_q), "loss/pi": float(loss_pi), "alpha": alpha, "gamma": gamma, **gn, **aux_out,
+               **b_out}
         if log:
             out.update(self._diagnostics(b, enc_d, q1, q2, y, h, logp, dtheta, dmax, Jlin, Jang, ji))
         return out
+
+    def _boundary_step(self, enc_d, Jlin, Jang, ji, dmax, jv, alpha: float, gn: dict) -> dict:
+        """One update of the boundary actor beta (T8_BOUNDARY_PLAN.md section 4), inside the argmax actor's frozen
+        block (encoder and critics frozen, features detached): an L1 hinge that is zero while
+        Q(s, beta(s)) = min(Q1, Q2) lies in [boundary_lo, boundary_hi] and has slope 1 outside it (the scale of the
+        argmax actor's -Q), plus the same entropy and pre-tanh terms. Example: Q = 0.4 with the band [0, 0.1] gives
+        a hinge of 0.3 and a gradient toward actions with lower Q."""
+        lo, hi = float(self.cfg.boundary_lo), float(self.cfg.boundary_hi)
+        a_b, logp_b, _, pre_b = self.actor_b(enc_d.body, ji, dmax)
+        q1b, q2b, _, _ = self.critics(enc_d, a_b, Jlin, Jang, ji)
+        qb = torch.minimum(q1b, q2b)
+        hinge = F.relu(qb - hi) + F.relu(lo - qb)
+        pen_b = (pre_b.pow(2) * jv).sum(-1) / jv.sum(-1).clamp_min(1)
+        loss_b = (hinge + alpha * logp_b + 1e-3 * pen_b).mean()
+        self.opt_b.zero_grad(set_to_none=True)
+        loss_b.backward()
+        gn["grad/actor_b"] = float(torch.nn.utils.clip_grad_norm_(self.actor_b.parameters(), 10.0))
+        self.opt_b.step()
+        qd = qb.detach()
+        return {"loss/pi_b": float(loss_b), "actor_b/hinge": float(hinge.detach().mean()),
+                "actor_b/q_mean": float(qd.mean()), "actor_b/in_band_frac": float(((qd >= lo) & (qd <= hi)).float().mean()),
+                "actor_b/entropy": float(-logp_b.detach().mean())}
 
     @torch.no_grad()
     def _diagnostics(self, b, enc_d, q1, q2, y, h, logp, dtheta, dmax, Jlin, Jang, ji) -> dict:
@@ -776,6 +808,8 @@ class LangTrainer:
         d = {k: getattr(pe, k).state_dict() if isinstance(getattr(pe, k), torch.nn.Module) else getattr(pe, k).detach().cpu()
              for k in CKPT_PARTS if hasattr(pe, k)}
         d["trunk"] = d.pop("blocks")
+        if self.actor_b is not None:   # data collection only: evaluation never loads it
+            d["actor_boundary"] = self.actor_b.state_dict()
         d.update({"actor": self.actor.state_dict(), "critics": self.critics.state_dict(),
                   "lang_config": self.cfg.to_dict(), "bank_hash": self.cfg.bank_hash,
                   "text_backend": self.cfg.text_backend, "step": self.step, "round": self.round,
@@ -830,6 +864,11 @@ class LangTrainer:
                              "(--set 'critic_readout=\"softmin\"' to continue a softmin model)")
         load_policy(self.policy_enc, ck)
         self.actor.load_state_dict(ck["actor"])
+        if self.actor_b is not None:
+            if "actor_boundary" in ck:
+                self.actor_b.load_state_dict(ck["actor_boundary"])
+            else:
+                print(f"[lang-train] {path}: no boundary actor in the checkpoint, it starts from scratch", flush=True)
         self.critics.load_state_dict(ck["critics"])
         self.policy_enc_targ.load_state_dict(self.policy_enc.state_dict())
         self.critics_targ.load_state_dict(self.critics.state_dict())
@@ -845,6 +884,8 @@ class LangTrainer:
               "prefetch_rng": self._last_rng_after if self._last_rng_after is not None
               else (self.prefetch.rng_state() if self.prefetch is not None else None),
               "lang_config": self.cfg.to_dict(), **self.identity, **(extra or {})}
+        if self.actor_b is not None:
+            st.update({"actor_boundary": self.actor_b.state_dict(), "opt_b": self.opt_b.state_dict()})
         p = self._publish(st, self.run / "state.pt")
         if self.text is not None:
             self.text.save_extra()
@@ -856,6 +897,11 @@ class LangTrainer:
             getattr(self, k).load_state_dict(st[k])
         for k in ("opt_e", "opt_c", "opt_a"):
             getattr(self, k).load_state_dict(st[k])
+        if self.actor_b is not None:
+            if "actor_boundary" not in st:
+                raise ValueError("state.pt has no boundary actor, the run's config trains one")
+            self.actor_b.load_state_dict(st["actor_boundary"])
+            self.opt_b.load_state_dict(st["opt_b"])
         self.step, self.round = int(st["step"]), int(st.get("round", 0))
         torch.set_rng_state(st["torch_rng"].cpu())
         if st.get("cuda_rng") is not None and self.dev.startswith("cuda"):
