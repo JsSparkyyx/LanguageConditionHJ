@@ -1,0 +1,16 @@
+{
+  "seen": [
+    "Slide {A} into the black frame.",
+    "Drag {A} across the table into the black square.",
+    "Pull {A} by its handle into the black frame.",
+    "Move {A} with the glass and the can on it into the black frame.",
+    "Grab the handle of {A} and slide it into the black square.",
+    "Hold the handle of {A} and drag it into the black frame.",
+    "Bring {A} into the black frame by its handle."
+  ],
+  "unseen": [
+    "Drag {A} over to the black frame.",
+    "Slide {A} and everything on it into the black square.",
+    "Take {A} by the handle and move it into the black frame."
+  ]
+}

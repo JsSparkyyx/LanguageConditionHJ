@@ -24,8 +24,9 @@ L=${L%,}
 # 400); CSET then makes the prep step pack that set. MAX_STEP (env): the run's total steps (default 15000).
 L=${LMDBS:-$L}
 echo "[ctrain] $RUN tasks $T data $L set ${CSET:-main} config ${VF_CONFIG:-gd} on $(hostname) $SLURM_JOB_PARTITION $(nvidia-smi --query-gpu=name --format=csv,noheader), deadline $(date -d @$STAGE_DEADLINE +%T)"
+# PREP (env): the data prep script (11-13: jobs/prep_tray.sh for the sliding-tray run, with LMDBS=data/lmdb/tray_slide)
 scripts/lang/in_container.sh bash vla_finetuning/jobs/ft_chain_step.sh $RUN $L ${MAX_STEP:-15000} ${SAVE_EVERY:-250} 1 \
-  vla_finetuning/jobs/prep_constraint.sh
+  ${PREP:-vla_finetuning/jobs/prep_constraint.sh}
 rc=$?
 echo "[ctrain] rc=$rc $(date '+%F %T')"
 exit $rc
