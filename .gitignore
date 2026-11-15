@@ -36,3 +36,6 @@ wandb/
 VLM/*/
 !VLM/
 vla_videos/
+
+# Cluster-local notes, job scripts, logs, secrets (WashU LSF, 2026-11)
+notes/
