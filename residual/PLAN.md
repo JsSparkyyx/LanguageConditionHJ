@@ -394,6 +394,14 @@ Defaults chosen in the session (change in `residual/config.py`):
   (was 3e-4), KL checked before every mini-batch step (`kl_check="minibatch"`: stop when the KL to the collecting
   policy passes 1.5 x target_kl); completion still only on success, deviation trigger, 350 updates, 1-hour interactive
   pieces. Run `runs/residual/residual_dev_success_s05_lr1e4_mbkl_1115`.
+  Status at update 100 (2026-11-15 17:10, 5 pieces): the updates are now gentle (KL 0.015-0.022, clipped 0.21-0.30,
+  all 5 epochs = 25 steps; the mini-batch check cut update 74 after 4 steps), but nothing is learned yet. Evaluation,
+  in the way broken: baseline 0.60, updates 10-50 0.55 / 0.55 / 0.65 / 0.75 / 0.65, updates 60-100 0.55 / 0.60 /
+  0.70 / 0.70 / 0.70; the out-of-the-way correction grows 0.010 -> 0.026 as in run 1; std still 0.0100 rad.
+  Suspected cause (not tested): per-tick noise of 0.01 rad averages out (about 0.05 rad over a second) and the
+  deviation replan pulls the arm back, so noisy episodes almost never find a detour around an in-the-way object.
+  Proposed check (waiting for Yuxuan): a scripted correction away from the named object within the 0.2 rad bound on
+  the 20 in-the-way evaluation scenes, to see whether any residual can save them.
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.

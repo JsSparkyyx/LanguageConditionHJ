@@ -363,6 +363,8 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
 - [ ] Second run (Yuxuan 11-15): noise 0.01 rad (init_std 0.05), lr 1e-4, KL checked per mini-batch, completion only on
   success, 350 updates as 1-hour pieces: `runs/residual/residual_dev_success_s05_lr1e4_mbkl_1115`, feeder log
   `tmp/residual/chain_train_residual_dev_success_s05_lr1e4_mbkl_1115.log`.
+  11-15 17:10, update 100: stable updates (clip 0.21-0.30, KL ~0.02) but no gain, in the way broken 0.55-0.75
+  against baseline 0.60; proposed to stop it and test whether a scripted detour can save the scenes (PLAN 7).
 - [x] 11-12 Rerun of the train check stage (job 23823793): the end-of-run evaluation round completes (summary,
   videos; a video episode takes ~110 s against 13 s); the 9 non-simulator tests pass (RoboTwin conda python).
 - [ ] Later: fixed vs deviation trigger, completion "success" vs "always".
