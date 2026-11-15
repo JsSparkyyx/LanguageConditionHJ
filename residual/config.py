@@ -81,6 +81,9 @@ class ResidualConfig:
     entropy_coef: float = 0.0
     max_grad_norm: float = 0.5
     target_kl: float = 0.03             # stop the epochs early past this
+    # "epoch": mean KL checked after each full pass (run 1); "minibatch": before every mini-batch step, stop when the
+    # KL to the collecting policy passes 1.5 x target_kl (run 2, 11-15: run 1 clipped 45% of samples in its one epoch)
+    kl_check: str = "epoch"
     max_policy_lag: int = 1             # episodes collected with weights older than this many versions are dropped
 
     # ------------------------------------------------------------ eval ----
@@ -128,6 +131,8 @@ class ResidualConfig:
     def validate(self) -> None:
         if self.replan_trigger not in ("deviation", "fixed", "none"):
             raise ValueError(f"replan_trigger must be deviation / fixed / none, got {self.replan_trigger!r}")
+        if self.kl_check not in ("epoch", "minibatch"):
+            raise ValueError(f"kl_check must be epoch / minibatch, got {self.kl_check!r}")
         if self.completion not in ("success", "always"):
             raise ValueError(f"completion must be success / always, got {self.completion!r}")
         if self.replan_trigger == "deviation" and not (0.0 < self.replan_threshold < self.delta_bound):

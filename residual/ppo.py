@@ -81,6 +81,8 @@ def ppo_update(model, opt, batch: dict, cfg, rng: np.random.Generator) -> dict:
     mb = max(1, min(int(cfg.minibatch), n))
     stopped_early = False
     epochs_done = 0
+    steps = 0
+    per_mb = getattr(cfg, "kl_check", "epoch") == "minibatch"
     for _epoch in range(int(cfg.epochs)):
         perm = rng.permutation(n)
         kls = []
@@ -89,6 +91,12 @@ def ppo_update(model, opt, batch: dict, cfg, rng: np.random.Generator) -> dict:
             logp, ent, v_s = model.evaluate(obs[idx], u[idx])
             log_ratio = logp - old_logp[idx]
             ratio = torch.exp(log_ratio)
+            if per_mb and cfg.target_kl:
+                with torch.no_grad():
+                    kl_now = float(((ratio - 1) - log_ratio).mean())
+                if kl_now > 1.5 * float(cfg.target_kl):
+                    stopped_early = True
+                    break
             a = adv[idx]
             loss_pi = -torch.min(ratio * a, torch.clamp(ratio, 1 - cfg.clip_eps, 1 + cfg.clip_eps) * a).mean()
             # clipped value loss (PPO2 style), in critic units
@@ -99,6 +107,7 @@ def ppo_update(model, opt, batch: dict, cfg, rng: np.random.Generator) -> dict:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
             opt.step()
+            steps += 1
             with torch.no_grad():
                 kl = float(((ratio - 1) - log_ratio).mean())
                 kls.append(kl)
@@ -107,8 +116,10 @@ def ppo_update(model, opt, batch: dict, cfg, rng: np.random.Generator) -> dict:
                 stats["entropy"].append(float(ent.mean()))
                 stats["kl"].append(kl)
                 stats["clipfrac"].append(float(((ratio - 1).abs() > cfg.clip_eps).float().mean()))
+        if stopped_early:
+            break
         epochs_done += 1
-        if cfg.target_kl and np.mean(kls) > cfg.target_kl:
+        if not per_mb and cfg.target_kl and np.mean(kls) > cfg.target_kl:
             stopped_early = True
             break
     with torch.no_grad():
@@ -116,6 +127,6 @@ def ppo_update(model, opt, batch: dict, cfg, rng: np.random.Generator) -> dict:
         val = batch["value"].astype(np.float64)
         ev = 1.0 - np.var(ret - val) / max(np.var(ret), 1e-8)
     out = {k: float(np.mean(v)) if v else float("nan") for k, v in stats.items()}
-    out.update({"explained_var": float(ev), "epochs": epochs_done, "kl_stop": float(stopped_early),
+    out.update({"explained_var": float(ev), "epochs": epochs_done, "kl_stop": float(stopped_early), "steps": steps,
                 "adv_raw_std": float(np.std(batch["adv"])), "ret_mean": float(np.mean(ret)), "n": n})
     return out

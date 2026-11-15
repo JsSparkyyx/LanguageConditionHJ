@@ -452,7 +452,7 @@ class Learner:
                     self._log(wb, logs)
                     print(f"[residual-train] update {self.update}: {len(buf)} eps {n_buf} steps in {dt:.0f}s | "
                           f"{self.hooks.update_line(tstats)} "
-                          f"std {tstats['std_rad']:.4f} rad | kl {stats['kl']:.4f} ev {stats['explained_var']:.2f}",
+                          f"std {tstats['std_rad']:.4f} rad | kl {stats['kl']:.4f} steps {stats['steps']} clip {stats['clipfrac']:.2f} ev {stats['explained_var']:.2f}",
                           flush=True)
                     buf, n_buf = [], 0
                     self.save(pool)

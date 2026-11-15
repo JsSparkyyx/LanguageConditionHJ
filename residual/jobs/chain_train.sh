@@ -1,15 +1,17 @@
 #!/bin/bash
 # Feeder: runs a PPO run as a chain of 1-hour gpuA40x4-interactive jobs (residual/jobs/train_chunk.sbatch) until
 # <run>/done exists. Start it over ssh on a login node, never from a Claude shell:
-#   ssh dt-login02 "nohup bash $REPO/residual/jobs/chain_train.sh <RUN> [UPDATES] > /dev/null 2>&1 &"
+#   ssh dt-login03 "nohup setsid bash $REPO/residual/jobs/chain_train.sh <RUN> [UPDATES] ['k=v k=v'] > /dev/null 2>&1 < /dev/null &"
 # The chain stops when three pieces in a row end without a new checkpoint (no progress).
 RUN=${1:?run name}; UPDATES=${2:-350}
+# optional 3rd argument: the --set overrides of a new run (train_chunk.sbatch reads SETS; --export=ALL passes it)
+[ -n "${3:-}" ] && export SETS="$3"
 REPO=/work/nvme/bifq/project/LanguageConditionHJ
 DIR=$REPO/runs/residual/$RUN
 LOG=/work/nvme/bifq/project/tmp/residual/chain_train_$RUN.log
 mkdir -p "$(dirname "$LOG")"
 cd $REPO
-echo "$(date '+%F %T') feeder pid $$ on $(hostname) for $RUN ($UPDATES updates)" >> $LOG
+echo "$(date '+%F %T') feeder pid $$ on $(hostname) for $RUN ($UPDATES updates) sets: ${SETS:-default}" >> $LOG
 sq() { local o; o=$(squeue --me -h -n residual-train -o %i 2>/dev/null) || return 2; [[ -z "$o" || "$o" =~ ^[0-9[:space:]]+$ ]] || return 2; echo "$o"; }
 ckpt_stamp() { stat -c %Y "$DIR/checkpoint.pt" 2>/dev/null || echo 0; }
 stale=0; last=$(ckpt_stamp); submitted=0

@@ -390,6 +390,10 @@ Defaults chosen in the session (change in `residual/config.py`):
   Diagnosis: every update stops after one epoch on the KL limit, and 42-47% of the samples are clipped in that one
   epoch (healthy: 0.1-0.2). With std 0.005 rad a small move of the mean is a large probability ratio, so each step is
   large and noisy relative to the exploration, and the std never moved (0.0252 -> 0.0262 of the bound).
+- Second run (Yuxuan, 2026-11-15): start noise 0.01 rad (init_std 0.05 of the bound, 2x run 1), learning rate 1e-4
+  (was 3e-4), KL checked before every mini-batch step (`kl_check="minibatch"`: stop when the KL to the collecting
+  policy passes 1.5 x target_kl); completion still only on success, deviation trigger, 350 updates, 1-hour interactive
+  pieces. Run `runs/residual/residual_dev_success_s05_lr1e4_mbkl_1115`.
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.

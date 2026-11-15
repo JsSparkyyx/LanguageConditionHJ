@@ -191,3 +191,36 @@ def test_empty_transitions_arrays():
     a = _Transitions(0.99).arrays()
     assert a["obs"].shape[0] == 0 and a["rew"].shape == (0,)
     assert make_batch([{**a, "end": "truncated", "boot": 0.0, "last_value": 0.0}], 0.95)["n"] == 0
+
+
+def test_kl_check_per_minibatch():
+    """kl_check="minibatch" stops before the step that would pass 1.5 x target_kl (run 2, 11-15); "epoch" keeps
+    run 1's check after a full pass."""
+    rng = np.random.default_rng(3)
+
+    def batch_for(model):
+        T = 64
+        eps = []
+        for _ in range(8):
+            o = rng.normal(size=(T, 20)).astype(np.float32)
+            us, lps, vs = zip(*[model.act(x) for x in o])
+            eps.append({"obs": o, "u": np.array(us, dtype=np.float32), "logp": np.array(lps, dtype=np.float32),
+                        "value": np.array(vs, dtype=np.float32), "rew": rng.normal(size=T).astype(np.float32),
+                        "disc": np.full(T, 0.99, dtype=np.float32), "end": "truncated", "boot": 0.0,
+                        "last_value": 0.0})
+        return make_batch(eps, 0.95)
+
+    for check in ("minibatch", "epoch"):
+        cfg = ResidualConfig(minibatch=64, epochs=5, target_kl=0.01, kl_check=check, init_std=0.05)
+        model = build_model(cfg, 20, N_ACT)
+        opt = torch.optim.Adam(model.parameters(), lr=3e-2)          # far too large: the KL limit must stop it
+        st = ppo_update(model, opt, batch_for(model), cfg, np.random.default_rng(4))
+        assert st["kl_stop"] == 1.0 and st["steps"] < 5 * 8, (check, st)
+        if check == "minibatch":
+            assert st["epochs"] == 0                                 # stopped inside the first pass
+        cfg_ok = ResidualConfig(minibatch=64, epochs=2, target_kl=10.0, kl_check=check)
+        m2 = build_model(cfg_ok, 20, N_ACT)
+        st2 = ppo_update(m2, torch.optim.Adam(m2.parameters(), lr=1e-5), batch_for(m2), cfg_ok, np.random.default_rng(5))
+        assert st2["kl_stop"] == 0.0 and st2["steps"] == 2 * 8 and st2["epochs"] == 2
+    with pytest.raises(ValueError):
+        apply_sets(ResidualConfig(), ['kl_check="sometimes"'])
