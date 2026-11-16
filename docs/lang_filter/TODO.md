@@ -360,7 +360,7 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   equally in and out of the way; every update stops after one epoch on the KL limit (0.03), std unchanged.
   Finished 11-13 20:23: no lasting gain (in the way broken: baseline 0.65, best block 0.51 at updates 110-200, last
   0.60); clip fraction 0.45 per update, std unchanged. Results and diagnosis in PLAN section 7.
-- [ ] Second run (Yuxuan 11-15): noise 0.01 rad (init_std 0.05), lr 1e-4, KL checked per mini-batch, completion only on
+- [x] Second run (Yuxuan 11-15): noise 0.01 rad (init_std 0.05), lr 1e-4, KL checked per mini-batch, completion only on
   success, 350 updates as 1-hour pieces: `runs/residual/residual_dev_success_s05_lr1e4_mbkl_1115`, feeder log
   `tmp/residual/chain_train_residual_dev_success_s05_lr1e4_mbkl_1115.log`.
   11-15 17:10, update 100: stable updates (clip 0.21-0.30, KL ~0.02) but no gain, in the way broken 0.55-0.75
@@ -369,6 +369,9 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   Feeder stopped and the last piece cancelled (A40 interactive slot handed to the VLA T1 tests for ~8 h). A100 is
   not an option as is: cuRobo in robot-sim_cu128.sif has no A100 kernels (smoke 11-16: mplib fallback, T1 host plans
   fail; rasterized video works). Restart chain_train.sh with the same three arguments for the last 11 updates.
+  11-16 15:12 done on an A100 (own cuRobo build, PLAN 7): no gain, in the way broken 0.58-0.64 per block vs 0.60.
+- [ ] Next (waiting for Yuxuan): scripted-detour check first, or the trigger / completion comparisons (commands in PLAN 7,
+  now on gpuA100x4-interactive).
 - [x] 11-12 Rerun of the train check stage (job 23823793): the end-of-run evaluation round completes (summary,
   videos; a video episode takes ~110 s against 13 s); the 9 non-simulator tests pass (RoboTwin conda python).
 - [ ] Later: fixed vs deviation trigger, completion "success" vs "always".

@@ -427,6 +427,23 @@ Defaults chosen in the session (change in `residual/config.py`):
   `PYTHONPATH=$CUROBO_SRC`: `PART=gpuA100x4-interactive bash residual/jobs/chain_train.sh ...` sets it. The full smoke
   test passes on an A100 with it (0 failed, `runs/residual/smoke_a100_curobo80`); the video comes from rasterization
   (no RT cores). Run 2's last 11 updates were restarted on gpuA100x4-interactive on 11-16 (job 24047121).
+- Result of the second run (finished 2026-11-16 15:12, 350 updates in 16 one-hour pieces, the last on an A100 at about
+  the A40's speed, 105-115 s per update; same 40 evaluation scenes, deterministic policy):
+
+  | evaluation rounds | in the way: broken | in the way: success | in the way: safe success | out of the way: broken | out of the way: success | out of the way: correction |
+  |---|---|---|---|---|---|---|
+  | delta = 0 baseline (20 + 20) | 0.60 | 0.60 | 0.25 | 0.05 | 0.60 | 0 |
+  | updates 10-100 (10 rounds) | 0.64 | 0.66 | 0.23 | 0.05 | 0.65 | 0.019 |
+  | updates 110-200 (8 rounds) | 0.63 | 0.65 | 0.22 | 0.05 | 0.70 | 0.033 |
+  | updates 210-300 (9 rounds) | 0.58 | 0.66 | 0.23 | 0.06 | 0.60 | 0.043 |
+  | updates 310-350 (5 rounds) | 0.58 | 0.55 | 0.24 | 0.05 | 0.67 | 0.053 |
+
+  (Rounds 120, 170, 240 and 290 are missing from metrics.jsonl: open rounds at a piece's deadline.) Training: KL
+  0.016-0.028, clip fraction 0.21 -> 0.30-0.34 by the end, nearly every update all 25 steps, std 0.0100 -> 0.0098 rad;
+  in the way broken 0.73 (first updates) -> about 0.64. Same outcome as run 1 with healthy update sizes: no
+  protection learned, and the correction grows the same in and out of the way (training 0.048 -> 0.07 of the bound in
+  both). The step size was not the cause; the open question is whether any residual within the bound can save these
+  scenes (proposed scripted-detour check) before the plan's trigger and completion comparisons.
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.
