@@ -402,6 +402,21 @@ Defaults chosen in the session (change in `residual/config.py`):
   deviation replan pulls the arm back, so noisy episodes almost never find a detour around an in-the-way object.
   Proposed check (waiting for Yuxuan): a scripted correction away from the named object within the 0.2 rad bound on
   the 20 in-the-way evaluation scenes, to see whether any residual can save them.
+  11-16: stopped at update 339 (no gain through 330; the A40 interactive slot went to the VLA T1 tests for about 8 h,
+  and A100s cannot run cuRobo from this container). The remaining plan comparisons are ready to start with the same
+  feeder, each a 350-update run, once the slot is free and Yuxuan approves (the fixed trigger is about 5x slower in wall
+  time, so its 350 updates need about 80 one-hour pieces):
+
+  ```bash
+  R=/work/nvme/bifq/project/LanguageConditionHJ/residual/jobs/chain_train.sh
+  # finish run 2 (resumes from its checkpoint)
+  ssh dt-login03 "nohup setsid bash $R residual_dev_success_s05_lr1e4_mbkl_1115 350 > /dev/null 2>&1 < /dev/null &"
+  # completion paid always (vs run 2)
+  ssh dt-login03 "nohup setsid bash $R residual_dev_always_s05_lr1e4_mbkl 350 'replan_trigger=deviation completion=always init_std=0.05 lr=1e-4 kl_check=minibatch' > /dev/null 2>&1 < /dev/null &"
+  # fixed 5-tick trigger (vs run 2)
+  ssh dt-login03 "nohup setsid bash $R residual_fixed_success_s05_lr1e4_mbkl 350 'replan_trigger=fixed completion=success init_std=0.05 lr=1e-4 kl_check=minibatch' > /dev/null 2>&1 < /dev/null &"
+  ```
+  The feeder submits one piece at a time and all runs share the one interactive slot, so start them one after another.
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.
