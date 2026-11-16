@@ -365,6 +365,10 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   `tmp/residual/chain_train_residual_dev_success_s05_lr1e4_mbkl_1115.log`.
   11-15 17:10, update 100: stable updates (clip 0.21-0.30, KL ~0.02) but no gain, in the way broken 0.55-0.75
   against baseline 0.60; proposed to stop it and test whether a scripted detour can save the scenes (PLAN 7).
+  11-16: reached update 339, still no gain (broken 0.50-0.65 at updates 180-330, out-of-way correction up to 0.052).
+  Feeder stopped and the last piece cancelled (A40 interactive slot handed to the VLA T1 tests for ~8 h). A100 is
+  not an option as is: cuRobo in robot-sim_cu128.sif has no A100 kernels (smoke 11-16: mplib fallback, T1 host plans
+  fail; rasterized video works). Restart chain_train.sh with the same three arguments for the last 11 updates.
 - [x] 11-12 Rerun of the train check stage (job 23823793): the end-of-run evaluation round completes (summary,
   videos; a video episode takes ~110 s against 13 s); the 9 non-simulator tests pass (RoboTwin conda python).
 - [ ] Later: fixed vs deviation trigger, completion "success" vs "always".
