@@ -10,8 +10,12 @@
 # piece. Exit 0 = all UPDATES done: the script writes <run>/done. SETS applies to the first piece only (a resumed run
 # keeps its config.json).
 #   sbatch --export=ALL,RUN=residual_dev_success_s025_1112,UPDATES=350 residual/jobs/train_chunk.sbatch
+# On an A100 (sbatch -p gpuA100x4-interactive, Yuxuan 11-16: keep the A40s for rendering jobs) set CUROBO_SRC to the
+# sm_80 + sm_86 cuRobo build (the container's cuRobo has A40 kernels only, so cuRobo fails on an A100 and T1 host
+# plans fail): CUROBO_SRC=/work/nvme/bifq/project/tmp/curobo_sm80/src (built 11-16, PLAN section 7).
 set -u
 REPO=/work/nvme/bifq/project/LanguageConditionHJ
+CUROBO_SRC=${CUROBO_SRC:-}
 RUN=${RUN:?unset}; WPG=${WPG:-8}; UPDATES=${UPDATES:-350}; DEADLINE=${DEADLINE:-50}
 SETS=${SETS:-"replan_trigger=\"deviation\" completion=\"success\" init_std=0.025"}
 cd "$REPO"
@@ -19,7 +23,7 @@ source scripts/lang/wandb_env.sh >/dev/null 2>&1 || true
 echo "[train-chunk] $RUN on $(hostname) job ${SLURM_JOB_ID:-local} $(date '+%F %T')"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader || true
 timeout --signal=TERM --kill-after=60 57m scripts/lang/in_container.sh bash -c \
-  "python -m residual.train --run $REPO/runs/residual/$RUN --updates $UPDATES --workers-per-gpu $WPG \
+  "${CUROBO_SRC:+PYTHONPATH=$CUROBO_SRC} python -m residual.train --run $REPO/runs/residual/$RUN --updates $UPDATES --workers-per-gpu $WPG \
    --deadline-min $DEADLINE --set $SETS"
 rc=$?
 echo "[train-chunk] rc=$rc $(date '+%F %T')"

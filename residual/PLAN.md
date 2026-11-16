@@ -278,8 +278,9 @@ meta, err = r.run()
   apptainer image `/work/nvme/bifq/robot-sim_cu128.sif` and the RoboTwin conda env's python, with cwd = repo root
   and the caches and TMPDIR set. cuRobo needs a writable TMPDIR, otherwise it silently falls back to the mplib
   planner. Grep logs for "CuRobo init failed".
-- **GPUs.** Account `bifq-delta-gpu`. Use A40s only (46 GB, with RT cores for the video frames). cuRobo fails on
-  Delta's A100s (GPU architecture), and they have no RT cores.
+- **GPUs.** Account `bifq-delta-gpu`. Training runs on A100s from 11-16 with the A100 cuRobo copy (section 7, keep
+  the A40s for rendering jobs). The container's own cuRobo fails on Delta's A100s (GPU architecture), and they have
+  no RT cores.
   - `gpuA40x4-interactive`: 1-hour jobs. `scripts/lang/stage.sbatch` (1 GPU, 16 CPUs, 64 GB), e.g.
     `sbatch --export=ALL,STAGENAME=<name>,STAGECMD='python -m residual.<module> ...' scripts/lang/stage.sbatch`.
     `scripts/lang/gpu_stage.sbatch` takes 1 to 4 GPUs, sets STAGE_DEADLINE, and treats exit code 75 as "stopped in
@@ -417,6 +418,15 @@ Defaults chosen in the session (change in `residual/config.py`):
   ssh dt-login03 "nohup setsid bash $R residual_fixed_success_s05_lr1e4_mbkl 350 'replan_trigger=fixed completion=success init_std=0.05 lr=1e-4 kl_check=minibatch' > /dev/null 2>&1 < /dev/null &"
   ```
   The feeder submits one piece at a time and all runs share the one interactive slot, so start them one after another.
+- **A100s (Yuxuan 11-16: keep the A40s for rendering jobs).** The container's cuRobo was compiled for the A40 only
+  (sm_86), so on an A100 it fails ("no kernel image") and the mplib fallback cannot plan T1's host moves. A second
+  copy with A100 and A40 kernels (sm_80 + sm_86) lives at `/work/nvme/bifq/project/tmp/curobo_sm80` (source copied
+  from `RoboTwin/envs/curobo`, built 11-16 inside the container with CUDA_HOME=/usr/local/cuda, CC=gcc,
+  TORCH_CUDA_ARCH_LIST="8.0;8.6", SETUPTOOLS_SCM_PRETEND_VERSION=0.7.8, `apptainer exec --cleanenv`; build log
+  `tmp/residual/curobo_sm80_build.log`). The shared install is untouched. A job uses the copy through
+  `PYTHONPATH=$CUROBO_SRC`: `PART=gpuA100x4-interactive bash residual/jobs/chain_train.sh ...` sets it. The full smoke
+  test passes on an A100 with it (0 failed, `runs/residual/smoke_a100_curobo80`); the video comes from rasterization
+  (no RT cores). Run 2's last 11 updates were restarted on gpuA100x4-interactive on 11-16 (job 24047121).
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.
