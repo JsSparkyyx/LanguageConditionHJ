@@ -16,7 +16,8 @@ LOG=/work/nvme/bifq/project/tmp/residual/chain_train_$RUN.log
 mkdir -p "$(dirname "$LOG")"
 cd $REPO
 echo "$(date '+%F %T') feeder pid $$ on $(hostname) for $RUN ($UPDATES updates) on $PART sets: ${SETS:-default}" >> $LOG
-sq() { local o; o=$(squeue --me -h -n residual-train -o %i 2>/dev/null) || return 2; [[ -z "$o" || "$o" =~ ^[0-9[:space:]]+$ ]] || return 2; echo "$o"; }
+# only this partition's pieces count: two feeders on different partitions run side by side
+sq() { local o; o=$(squeue --me -h -n residual-train -p "$PART" -o %i 2>/dev/null) || return 2; [[ -z "$o" || "$o" =~ ^[0-9[:space:]]+$ ]] || return 2; echo "$o"; }
 ckpt_stamp() { stat -c %Y "$DIR/checkpoint.pt" 2>/dev/null || echo 0; }
 stale=0; last=$(ckpt_stamp); submitted=0
 while true; do

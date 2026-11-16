@@ -444,6 +444,11 @@ Defaults chosen in the session (change in `residual/config.py`):
   protection learned, and the correction grows the same in and out of the way (training 0.048 -> 0.07 of the bound in
   both). The step size was not the cause; the open question is whether any residual within the bound can save these
   scenes (proposed scripted-detour check) before the plan's trigger and completion comparisons.
+- The plan's comparisons started 2026-11-16 15:15, both against run 2 (same noise, lr and KL check, 350 updates, 1-hour
+  pieces on A100s, the feeder counting only its own partition's pieces):
+  - completion paid always: `runs/residual/residual_dev_always_s05_lr1e4_mbkl`, gpuA100x4-interactive;
+  - fixed 5-tick trigger: `runs/residual/residual_fixed_success_s05_lr1e4_mbkl`, gpuA100x8-interactive (about 5x
+    slower per update, so this one takes days).
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.
