@@ -404,6 +404,9 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         smeta = scene_meta(env, runner)   # before run(): run() closes the env (actor poses gone)
         # the nominal's named behaviour (tray_slide's risk knob; its designations follow it), only where a task has one
         behaviour = (getattr(env.task, "risk_knobs", None) or {}).get("behaviour")
+        # its drag-profile overrides, if the mix gave any (config.behaviour_risk, e.g. a late, sharp recovery)
+        b_knobs = {k: v for k, v in (getattr(env.task, "risk_knobs", None) or {}).items() if k != "behaviour"} \
+            if behaviour is not None else {}
         named, sentence, cf_sentence, cf_rule = None, None, None, None
         from .vlm_prompts import allowed_consequences
 
@@ -504,6 +507,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
         violated, hmin = _rule_outcomes(sidecar, rows, len(record["rules"]))
         line = {
             **({"behaviour": behaviour} if behaviour is not None else {}),
+            **({"behaviour_knobs": b_knobs} if b_knobs else {}),
             "episode_id": seed, "task": task, "host": runner.host if task == "selective_avoid" else None,
             "embodiment": emb, "seed": seed, "filter": bool(use_filter and named is not None),
             **({"actor": actor_kind} if use_filter and named is not None else {}),
@@ -689,7 +693,12 @@ TRAIN_ONLY_FIELDS = frozenset({
 # collection does, so collect_hash leaves them out and every shard written before them keeps its hash
 # (qwen_attn matters only with the Qwen encoder)
 NEUTRAL_COLLECT_FIELDS = {"encoder": "holobrain_gd", "spawn_pool": "current", "vocab": "current",
-                          "rule_consequences": "all", "agent_view_every": 0}
+                          "rule_consequences": "all", "agent_view_every": 0,
+                          # 2026-11-15 / 17 (the boundary actor, the 3-tick decision): rounds-only settings. The T8
+                          # shards collected on 11-15 / 16 stored a hash WITH the boundary fields, so resuming one of
+                          # them reports collect_hash (they are complete; collect into a new shard instead)
+                          "boundary_actor": False, "boundary_lo": 0.0, "boundary_hi": 0.1,
+                          "boundary_actor_frac": 0.5, "decision_ticks": 1}
 
 
 def collect_fields(cfg) -> dict:
@@ -1021,6 +1030,11 @@ def plan_shard(args, kind: str):
         # 10/60). T8 data uses 0.001 (Yuxuan, 2026-11-15: at 0.05 a kick while the arm holds the tray tipped both
         # items in slow drags). In collect_hash, so the shard records it
         cfg = dataclasses.replace(cfg, perturb_prob=float(args.perturb_prob))
+    if getattr(args, "behaviour_mix", None):
+        # one task's nominal-behaviour mix (config.behaviour_risk keys may carry drag knobs), e.g. the T8 recovery
+        # warmup (2026-11-16). In collect_hash, so the shard records it
+        tmix = json.loads(args.behaviour_mix)
+        cfg = dataclasses.replace(cfg, behaviour_mix={**cfg.behaviour_mix, **tmix})
     frames = getattr(args, "frames", None)
     frames = cfg.qwen if frames is None else bool(frames)
     if frames and not cfg.qwen:
@@ -1244,6 +1258,9 @@ def main(argv=None) -> int:
         p.add_argument("--g-base", type=int, default=0, help="added to the shard's g (its episode-id offset)")
         p.add_argument("--perturb-prob", type=float, default=None,
                        help="the nominal's random-kick probability (default: the config's, 0.05)")
+        p.add_argument("--behaviour-mix", default=None, metavar="JSON",
+                       help='{task: {behaviour[|knob=value...]: weight}} replacing those tasks\' mix, e.g. '
+                            '\'{"tray_slide": {"recover_glass": 1, "recover_glass|slow_at=0.6|change_dist=0.05": 1}}\'')
         if kind == "validation":
             p.add_argument("--stream", choices=("default", "grounding"), default="default",
                            help="grounding: the 20-per-task ur5-wsg validation ids (config.valg_offset; T1 / T7 at "

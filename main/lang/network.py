@@ -581,6 +581,41 @@ def make_critic_head(cfg) -> LangCriticHead:
     return ActionCriticHead(cfg)
 
 
+# --- the decision of LangConfig.decision_ticks H (1 = one tick, CrossSafe) -------------------------------------------
+
+
+def decision_ticks(cfg) -> int:
+    return int(getattr(cfg, "decision_ticks", 1))
+
+
+def stored_decision(cfg, dtheta, dtheta_seq=None):
+    """The critic's action of a stored row: its own command (H = 1), or the sum of the commands of rows
+    t .. t+H-1 ([B, H, A] -> [B, A]), the joint displacement over the decision."""
+    if decision_ticks(cfg) == 1:
+        return dtheta
+    if dtheta_seq is None:
+        raise ValueError(f"decision_ticks {decision_ticks(cfg)}: the batch has no dtheta_seq (a sampler built with "
+                         "another decision_ticks)")
+    return dtheta_seq.sum(1)
+
+
+def policy_decision(cfg, a):
+    """The critic's action of a per-tick actor output a: executed as H equal ticks, the displacement is H x a."""
+    return a * decision_ticks(cfg)
+
+
+def decision_target(h_seq, q_end, gamma: float):
+    """The HJ target over one decision: y_H = q_end (the target twins' mean at s_t+H), then
+    y_k = (1 - g) h_k + g min(h_k, y_k+1) for k = H-1 .. 0. h_seq [B, H] = h of rows t .. t+H-1. With H = 1 it is
+    CrossSafe's y = (1 - g) h + g min(h, q_next). Example (g = 0.95, H = 3): h = (1, 1, -1), q_end = 1 gives
+    y_2 = 0.05 * -1 + 0.95 * -1 = -1, y_1 = 0.05 + 0.95 * -1 = -0.9, y_0 = 0.05 + 0.95 * -0.9 = -0.805."""
+    y = q_end
+    for k in range(h_seq.shape[1] - 1, -1, -1):
+        hk = h_seq[:, k]
+        y = (1 - gamma) * hk + gamma * torch.minimum(hk, y)
+    return y
+
+
 class LangTwinCritic(nn.Module):
     """Two critic heads (make_critic_head: LangCriticHead, or ActionCriticHead for a chunk critic / the revised
     injection) on the same LangEncoded (TwinCritic's interface: forward -> (q1, q2, v1, v2), qmin) so SafetyFilter

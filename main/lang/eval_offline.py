@@ -265,7 +265,8 @@ class Evaluator:
         self.dev = device
         self.tasks = None if tasks in (None, "all") else tuple(tasks)
         self.sources = [LangSource(r, self.cfg.k_prev, self.cfg.recall_ticks,
-                                   drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True)) for r in val_roots]
+                                   drop_stale_bead=getattr(self.cfg, "drop_stale_bead_rows", True),
+                                   decision_ticks=int(getattr(self.cfg, "decision_ticks", 1))) for r in val_roots]
         # V5: the checkpoint read fused scene tokens; they are fused here from the validation shards' neck rows
         self.fusion = None
         if getattr(self.cfg, "scene_fusion", False):
@@ -555,8 +556,10 @@ class Evaluator:
                 c, v = named_centers(src.rs.buf.arrays, rec, rec["rules"][int(col)], (rows["row"], rows["first_row"]))
                 err[n] = np.where(v, np.linalg.norm(pred[n] - c, axis=-1) * 100.0, np.nan)
             self._aux_err = err
-        q = self.critics.qmin(enc, _t(b["dtheta"], dev=d), _t(b["Jlin"], dev=d), _t(b["Jang"], dev=d),
-                              _t(b["joint_index"], torch.int64, d))
+        from .network import stored_decision
+
+        act = stored_decision(self.cfg, _t(b["dtheta"], dev=d), _t(b["dtheta_seq"], dev=d) if "dtheta_seq" in b else None)
+        q = self.critics.qmin(enc, act, _t(b["Jlin"], dev=d), _t(b["Jang"], dev=d), _t(b["joint_index"], torch.int64, d))
         return q.float().cpu().numpy()
 
     def run_items(self, items, cache) -> np.ndarray:

@@ -545,6 +545,34 @@ class LangRolloutController(RolloutController):
         tr["held"].append([int(x) for x in np.asarray(held).reshape(-1)] if held is not None else [-1, -1])
 
     # ------------------------------------------------------------------ hook --
+    def _decision_ticks(self) -> int:
+        return int(getattr(self.cfg, "decision_ticks", 1))
+
+    def _anom_decision(self, ctx):
+        """The nominal's decision (LangConfig.decision_ticks H): its displacement over the next H ticks from the LIVE
+        joint state, pos[min(i + H spt - 1, T-1)] - qpos per arm (= the sum of its H per-tick commands). H = 1 is
+        CrossSafe's _anom. The per-tick command the buffer stores stays _anom's."""
+        H = self._decision_ticks()
+        if H == 1:
+            return self._anom(ctx)
+        import torch
+
+        from main.envs.controller import _path_arrays
+
+        i, spt = ctx["i"], self.ctrl.steps_per_tick
+        qraw = self.extractor.raw_qpos().astype(np.float64)
+        nj = self.extractor.spec.n_joints
+        n_arm = nj - 2
+        a = np.zeros(self._n_act, dtype=np.float64)
+        for arm_i, key in ((0, "left_arm"), (1, "right_arm")):
+            plan = ctx.get(key)
+            if plan is None:
+                continue
+            pos, _ = _path_arrays(plan)
+            i_end = min(i + H * spt - 1, len(pos) - 1)
+            a[arm_i * nj: arm_i * nj + n_arm] = pos[i_end] - qraw[arm_i * nj: arm_i * nj + n_arm]
+        return torch.from_numpy(a.astype(np.float32))[None].cuda()
+
     def _tick_hook(self, ctx) -> bool:
         if self.cf_text_out is not None and self.flt is not None and self.filter_active:
             import torch
@@ -552,13 +580,63 @@ class LangRolloutController(RolloutController):
             body, enc = self._policy_inputs_cached()
             shim = self.policy_enc
             if shim.enc_cf is not None:
-                a = self._anom(ctx)
+                a = self._anom_decision(ctx)
                 with torch.no_grad():
                     qcf = self.flt.critics.qmin(shim.enc_cf, a, body["Jlin"][None].cuda(), body["Jang"][None].cuda(),
                                                 self.flt.joint_index)
                 self.trace["Q_cf"].append(float(qcf))
                 self.trace["Q_cf_t"].append(self._n_physics / self.env.PHYSICS_FREQ)
-        return super()._tick_hook(ctx)
+        if self._decision_ticks() == 1:
+            return super()._tick_hook(ctx)
+        return self._tick_hook_decision(ctx)
+
+    def _tick_hook_decision(self, ctx) -> bool:
+        """CrossSafe's tick hook (main/train/rollout.py) with a decision of H = decision_ticks ticks
+        (T8_3TICK_PLAN.md): every tick Q(s, the nominal's H-tick displacement) is scored and the filter engages when
+        it is below the margin (Q < 0), as before; an engaged block queries the actor ONCE and holds its per-tick
+        action for the block's H ticks (hj_hold_ticks = H), which is the action the critic scored as H x a. The
+        release test runs at the next hook, after the block. Stored per tick: the commanded displacement (_anom for
+        the planner, a for the actor)."""
+        import torch
+
+        from main.train.rollout import SRC_ACTOR, SRC_PLANNER
+
+        self._tick_source = SRC_PLANNER
+        self._tick_action = self._anom(ctx).cpu().numpy()[0].astype(np.float64)
+        dmax = np.asarray(self.extractor.delta_theta_max, dtype=np.float64)
+        self._last_ratio = float(np.abs(self._tick_action).max() / max(dmax.max(), 1e-9))
+        if self.mode == "collect" and (self.flt is None or not self.filter_active):
+            self._perturb_maybe()
+            return False
+        if self.flt is None or not self.filter_active:
+            return False
+        body, enc = self._policy_inputs_cached()
+        a_nom_t = self._anom_decision(ctx)
+        with torch.no_grad():
+            q_nom = float(self.flt.q_nom(enc, a_nom_t, body["Jlin"][None].cuda(), body["Jang"][None].cuda()))
+        self.trace["V_t"].append(self._n_physics / self.env.PHYSICS_FREQ)
+        self.trace["V"].append(q_nom)
+        engaged = q_nom < (self.flt.release_margin if self.flt._was_engaged else self.flt.margin)
+        self.trace["intervened"].append(engaged)
+        self.flt.track(engaged)
+        if not engaged:
+            self._block_info = None
+            return False
+        if self.flt.hold_ticks != self._decision_ticks():
+            raise RuntimeError(f"decision_ticks {self._decision_ticks()} needs hj_hold_ticks of the same length, "
+                               f"got {self.flt.hold_ticks}")
+        with torch.no_grad():
+            a = self.flt.actor_action(enc)
+        a_np = a[0].cpu().numpy()
+        self._engaged_ticks = getattr(self, "_engaged_ticks", 0)
+        for k in range(self.flt.hold_ticks):
+            self._tick_source = SRC_ACTOR
+            self._tick_action = a_np.astype(np.float64)
+            self._last_ratio = float(np.abs(a_np).max() / max(dmax.max(), 1e-9))
+            self._engaged_ticks += 1
+            self._block_info = (k + 1, self.flt.hold_ticks, self._engaged_ticks * self.env.control_dt)
+            self.env.step_dtheta(a_np)
+        return True
 
     def run(self, max_steps: int | None = None):
         env = self.env

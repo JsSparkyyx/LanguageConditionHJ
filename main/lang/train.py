@@ -57,7 +57,8 @@ ensure_item_path()
 
 from .config import CANON_EMBODIMENTS, CANON_TASKS, CANON_TASKS_7, LangConfig, task_list  # noqa: E402
 from .neck_buffer import ROW_FIELDS  # noqa: E402
-from .network import LangPolicyEncoder, LangTwinCritic, make_actor, n_params, param_groups, set_probe  # noqa: E402
+from .network import (LangPolicyEncoder, LangTwinCritic, decision_target, decision_ticks, make_actor,  # noqa: E402
+                      n_params, param_groups, policy_decision, set_probe, stored_decision)
 
 EXIT_RESUME = 75
 LOG_EVERY = 20
@@ -304,6 +305,15 @@ class LangTrainer:
         self.policy_enc = LangPolicyEncoder(cfg, n_tok=n_tok).to(device)
         self.actor = make_actor(cfg).to(device)
         self.critics = LangTwinCritic(cfg).to(device)
+        self.action_ref = None
+        if str(getattr(cfg, "critic_injection", "linear")) == "revised":
+            # the revised injection's bounds (ACTION_SENSITIVITY_PLAN 3.4), set once from this run's data (a resume or
+            # --init-from restores the saved ones with the weights): one decision's own-joint bound, link translation
+            # and rotation references are decision_ticks x one tick's
+            self.action_ref = action_reference(self.sampler, decision_ticks(cfg), seed)
+            self.critics.set_action_ref(self.action_ref["dtheta_max_decision"], self.action_ref["s_p_decision"],
+                                        self.action_ref["s_w_decision"])
+            (self.run / "action_ref.json").write_text(json.dumps(self.action_ref, indent=1))
         self.policy_enc_targ = copy.deepcopy(self.policy_enc)
         self.critics_targ = copy.deepcopy(self.critics)
         self.target_pairs = list(zip(list(self.policy_enc_targ.parameters()) + list(self.critics_targ.parameters()),
@@ -562,13 +572,17 @@ class LangTrainer:
         enc, Jlin, Jang, ji = self.encode(b, words, wmask)
         d = self.dev
         h = _t(b["h"], dev=d)
-        dtheta, dmax = _t(b["dtheta"], dev=d), _t(b["dtheta_max"], dev=d)
+        dmax = _t(b["dtheta_max"], dev=d)
+        # the stored decision: row t's command, or the summed commands of rows t .. t+H-1 (decision_ticks H)
+        dtheta = stored_decision(cfg, _t(b["dtheta"], dev=d), _t(b["dtheta_seq"], dev=d) if "dtheta_seq" in b else None)
         gamma, alpha = self.gamma(), self.alpha()
         with torch.no_grad():
+            # "_next" is row t+H (data.LangSource); the actor's per-tick output, held for H ticks
             enc_n, Jlin_n, Jang_n, ji_n = self.encode(b, words, wmask, "_next", target=True)
             a_n, _, _, _ = self.actor(enc_n.body, ji_n, _t(b["dtheta_max_next"], dev=d))
-            q1_t, q2_t, _, _ = self.critics_targ(enc_n, a_n, Jlin_n, Jang_n, ji_n)
-            y = (1 - gamma) * h + gamma * torch.minimum(h, 0.5 * (q1_t + q2_t))
+            q1_t, q2_t, _, _ = self.critics_targ(enc_n, policy_decision(cfg, a_n), Jlin_n, Jang_n, ji_n)
+            h_seq = _t(b["h_seq"], dev=d) if decision_ticks(cfg) > 1 else h[:, None]
+            y = decision_target(h_seq, 0.5 * (q1_t + q2_t), gamma)
         q1, q2, _, _ = self.critics(enc, dtheta, Jlin, Jang, ji)
         loss_q = F.mse_loss(q1, y) + F.mse_loss(q2, y)
         loss = loss_q
@@ -626,7 +640,7 @@ class LangTrainer:
             p.requires_grad_(False)
         enc_d = enc.detach()
         a_pi, logp, n_act, pre = self.actor(enc_d.body, ji, dmax)
-        q1p, q2p, _, _ = self.critics(enc_d, a_pi, Jlin, Jang, ji)
+        q1p, q2p, _, _ = self.critics(enc_d, policy_decision(cfg, a_pi), Jlin, Jang, ji)
         jv = (ji >= 0)
         pen = (pre.pow(2) * jv).sum(-1) / jv.sum(-1).clamp_min(1)
         loss_pi = (-torch.minimum(q1p, q2p) + alpha * logp + 1e-3 * pen).mean()
@@ -659,7 +673,7 @@ class LangTrainer:
         a hinge of 0.3 and a gradient toward actions with lower Q."""
         lo, hi = float(self.cfg.boundary_lo), float(self.cfg.boundary_hi)
         a_b, logp_b, _, pre_b = self.actor_b(enc_d.body, ji, dmax)
-        q1b, q2b, _, _ = self.critics(enc_d, a_b, Jlin, Jang, ji)
+        q1b, q2b, _, _ = self.critics(enc_d, policy_decision(self.cfg, a_b), Jlin, Jang, ji)
         qb = torch.minimum(q1b, q2b)
         hinge = F.relu(qb - hi) + F.relu(lo - qb)
         pen_b = (pre_b.pow(2) * jv).sum(-1) / jv.sum(-1).clamp_min(1)
@@ -687,6 +701,7 @@ class LangTrainer:
         out["data/action_std"] = float((dtheta.std(0) * jm).sum() / jm.sum().clamp_min(1))
         r1 = (torch.rand_like(dtheta) * 2 - 1) * dmax
         r2 = (torch.rand_like(dtheta) * 2 - 1) * dmax
+        r1, r2 = policy_decision(self.cfg, r1), policy_decision(self.cfg, r2)   # random per-tick actions, held
         sens = (self.critics.qmin(enc_d, r1, Jlin, Jang, ji) - self.critics.qmin(enc_d, r2, Jlin, Jang, ji)).abs().mean()
         out["critic/action_sens_rel"] = float(sens / torch.minimum(q1, q2).abs().mean().clamp_min(1e-9))
         out.update(self.sampler.health())
@@ -755,7 +770,9 @@ class LangTrainer:
                 blk = self.policy_enc.blocks[-1]
                 last["geo_A"] = geo_attention_weights(blk.geo, y, x, enc.scene, enc.scene_pos, enc.scene_mask)
         set_probe(self.policy_enc, False)
-        q = self.critics.qmin(enc, _t(sub["dtheta"], dev=self.dev), Jlin, Jang, ji)
+        q = self.critics.qmin(enc, stored_decision(self.cfg, _t(sub["dtheta"], dev=self.dev),
+                                                   _t(sub["dtheta_seq"], dev=self.dev) if "dtheta_seq" in sub else None),
+                              Jlin, Jang, ji)
         self.policy_enc.train(was), self.critics.train(was)
         return q, enc, stores
 
@@ -998,6 +1015,29 @@ def load_policy(policy_enc: LangPolicyEncoder, ck: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+def action_reference(sampler, H: int, seed: int, n: int = 256) -> dict:
+    """The revised injection's bounds from a run's data (critic_retrain.compute_norm's rule, 2026-11-17): s_p, s_w =
+    95th percentiles of the per-link |J_lin a|, |J_ang a| at a saturated random action a = dtheta_max x sign(u),
+    over n training states (their own sampler stream, so the training draws are not shifted), the valid body links.
+    A decision of H ticks gets H x each bound (the summed displacement of H saturated ticks). Example: s_p = 0.02 m
+    per tick gives 0.06 m for a 3-tick decision."""
+    rng = np.random.default_rng([int(seed), 0xAC7])
+    b = sampler.sample(n, rng=rng)
+    dmax = np.asarray(b["dtheta_max"], np.float64)
+    a = dmax * np.sign(rng.uniform(-1, 1, dmax.shape))
+    Jl, Ja = np.asarray(b["Jlin"], np.float32), np.asarray(b["Jang"], np.float32)        # [n, L, 3, A]
+    dp = np.linalg.norm(np.einsum("nlca,na->nlc", Jl, a.astype(np.float32)), axis=-1)
+    dw = np.linalg.norm(np.einsum("nlca,na->nlc", Ja, a.astype(np.float32)), axis=-1)
+    m = np.asarray(b["body_mask"])[:, :dp.shape[1]].astype(bool) & (dp > 0)
+    dm = dmax.max(0)
+    s_p, s_w = float(np.percentile(dp[m], 95)), float(np.percentile(dw[m], 95))
+    return {"decision_ticks": int(H), "dtheta_max": dm.tolist(), "s_p": s_p, "s_w": s_w,
+            "dtheta_max_decision": (H * dm).tolist(), "s_p_decision": H * s_p, "s_w_decision": H * s_w,
+            "n_states": int(n), "n_links": int(m.sum()),
+            "rule": "own dtheta / (H dtheta_max); dp / (H s_p); dw / (H s_w); s_* = 95th pct of per-link |dp|, |dw| "
+                    "at a = dtheta_max * sign(u) over n training states (body_mask links)"}
+
+
 def target_rank_acc(q: np.ndarray, y: np.ndarray, pair: np.ndarray) -> float:
     ok = []
     for p in np.unique(pair[pair >= 0]):
@@ -1042,12 +1082,15 @@ def run_sanity(args) -> int:
                 words, wmask = tr.text.lookup(b["sentence"])
             b = tr.fused(b, words, wmask)
             enc, Jlin, Jang, ji = tr.encode(b, words, wmask)
-            q1, q2, _, _ = tr.critics(enc, _t(b["dtheta"], dev=tr.dev), Jlin, Jang, ji)
+            act = stored_decision(cfg, _t(b["dtheta"], dev=tr.dev),
+                                  _t(b["dtheta_seq"], dev=tr.dev) if "dtheta_seq" in b else None)
+            q1, q2, _, _ = tr.critics(enc, act, Jlin, Jang, ji)
             h = _t(b["h"], dev=tr.dev)
             enc_n, Jn, An, jn = tr.encode(b, words, wmask, "_next", target=True)
             a_n, _, _, _ = tr.actor(enc_n.body, jn, _t(b["dtheta_max_next"], dev=tr.dev))
-            t1, t2, _, _ = tr.critics_targ(enc_n, a_n, Jn, An, jn)
-            y = (1 - cfg.gamma) * h + cfg.gamma * torch.minimum(h, 0.5 * (t1 + t2))
+            t1, t2, _, _ = tr.critics_targ(enc_n, policy_decision(cfg, a_n), Jn, An, jn)
+            h_seq = _t(b["h_seq"], dev=tr.dev) if decision_ticks(cfg) > 1 else h[:, None]
+            y = decision_target(h_seq, 0.5 * (t1 + t2), cfg.gamma)
         qm = torch.minimum(q1, q2).cpu().numpy()
         # label-based: P[Q(harmful) < Q(benign)] over the pairs; unlike the target-rank score it does
         # not depend on the sentence through the target critic, so it is exactly chance when shuffled

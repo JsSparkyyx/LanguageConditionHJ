@@ -72,6 +72,33 @@ CACHES = [REPO / "data/lang_1023/warmup/text_cache.pt", REPO / "data/lang_1023/v
 # production episodes: (seed, time_scale); a mix of cruise speeds, 0.5 never tips (calibration), 0.75 sometimes
 DEFAULT_EPISODES = [(5001, 1.3), (5002, 1.15), (5003, 1.0), (5004, 1.3), (5005, 1.15), (5006, 1.0), (5007, 0.75),
                     (5008, 1.3), (5009, 1.15), (5010, 1.0), (5011, 0.75), (5012, 0.5)]
+# --task (2026-11-16): the same check on T8 tray_slide. Inside this file "tall" is the NAMED item (T5's tall block,
+# T8's wine glass) and "short" the counterfactual one (T5's short block, T8's can); KINDS maps them to the task's item
+# kinds. A T8 episode is "seed:behaviour" (the task's BEHAVIOURS, e.g. medium) instead of "seed:time_scale".
+TASKS = {
+    "tray_transport": {"kinds": {"tall": "tall", "short": "short"}, "ref_env": "ITEM_T5_REFERENT", "out": OUT,
+                       "van": VAN, "ckpts": CKPTS, "caches": CACHES, "episodes": DEFAULT_EPISODES},
+    "tray_slide": {"kinds": {"tall": "glass", "short": "can"}, "ref_env": "ITEM_T8_REFERENT",
+                   "out": REPO / "runs/lang/t8_branch", "van": REPO / "runs/lang/rounds_t8_argmax_1115",
+                   "ckpts": ["checkpoint_round10.pt", "checkpoint.pt"],
+                   "caches": [REPO / "data/lang_t8/warmup/text_cache.pt", REPO / "data/lang_t8/val/text_cache.pt"],
+                   "episodes": [(8200 + i, b) for i, b in enumerate(["medium"] * 6 + ["fast"] * 4)]},
+}
+TASK_NAME = "tray_transport"
+KINDS = TASKS[TASK_NAME]["kinds"]
+
+
+def set_task(name: str):
+    global TASK_NAME, KINDS, CACHES, VAN
+    TASK_NAME, KINDS = name, TASKS[name]["kinds"]
+    CACHES, VAN = TASKS[name]["caches"], TASKS[name]["van"]
+
+
+def risk_tag(risk) -> str:
+    """The episode-name part of a risk: ts<time_scale> (T5) or the behaviour name (T8)."""
+    return risk if isinstance(risk, str) else f"ts{risk:g}"
+
+
 SPT = 10
 TICK_DT = 0.04
 SETTLE_TICKS = 50
@@ -271,12 +298,13 @@ def make_controller_class():
 
 class Episode:
     def __init__(self, args, seed: int, ts: float, models: list, encoder, kin, worker_tag: str, actor: bool = True):
-        self.args, self.seed, self.ts = args, int(seed), float(ts)
+        self.args, self.seed = args, int(seed)
+        self.ts = ts if isinstance(ts, str) else float(ts)   # a T8 behaviour name, or a T5 time scale
         self.actor_leads = list(args.actor_leads) if actor else []   # no actor continuations when False
         self.models = models            # Model list; the last one is the final checkpoint (drives the continuations)
         self.final = models[-1]
         self.encoder, self.kin = encoder, kin
-        self.name = f"s{self.seed}_ts{self.ts:g}"
+        self.name = f"s{self.seed}_{risk_tag(self.ts)}"
         self.dir = Path(args.out) / "episodes" / self.name
         self.worker_tag = worker_tag
         self.ticks = []                 # per hook tick of the nominal episode
@@ -298,10 +326,11 @@ class Episode:
         from main.lang.eval_closed import hsel, set_global_seeds
         from main.lang.rollout import wire_item_eval
 
-        os.environ["ITEM_T5_REFERENT"] = "tall"
+        os.environ[TASKS[TASK_NAME]["ref_env"]] = KINDS["tall"]
         cfg = self.final.cfg
-        cfg_ep = dataclasses.replace(cfg, task="tray_transport", embodiment="ur5-wsg", item_host=None,
-                                     item_active_rule=None, item_risk={"time_scale": self.ts},
+        risk = {"behaviour": self.ts} if isinstance(self.ts, str) else {"time_scale": self.ts}
+        cfg_ep = dataclasses.replace(cfg, task=TASK_NAME, embodiment="ur5-wsg", item_host=None,
+                                     item_active_rule=None, item_risk=risk,
                                      item_out_root=str(Path(self.args.out) / "_runner" / self.worker_tag))
         set_global_seeds(self.seed)
         Ctl = make_controller_class()
@@ -321,8 +350,8 @@ class Episode:
         kind_of = {it["item_id"]: it["kind"] for it in task.standing}
         self.upr = [r for r in self.runner.rules if r.consequence.value == "upright"]
         self.rule_kind = [kind_of[r.item_ids[0]] for r in self.upr]
-        tall = next(r for r, k in zip(self.upr, self.rule_kind) if k == "tall")
-        short = next(r for r, k in zip(self.upr, self.rule_kind) if k == "short")
+        tall = next(r for r, k in zip(self.upr, self.rule_kind) if k == KINDS["tall"])
+        short = next(r for r, k in zip(self.upr, self.rule_kind) if k == KINDS["short"])
         self.i_tall, self.i_short = self.upr.index(tall), self.upr.index(short)
         rr = {r["rule_id"]: r for r in rec["rules"]}
         self.sent_tall = hsel(language.sentences(rr[tall.rule_id], rec, "train", bank), (self.seed, "train"))
@@ -332,7 +361,12 @@ class Episode:
             m.set_text("short", self.sent_short)
         wire_item_eval(ro, tall.rule_id)
         ro.set_instruction(self.sent_tall, self.sent_short, rule_id=tall.rule_id, cf_rule_id=short.rule_id)
-        self.meta = {"seed": self.seed, "time_scale": self.ts, "cruise_speed": 0.30 * self.ts,
+        if isinstance(self.ts, str):   # T8: the behaviour's first cruise (and its slow-down speed, if any)
+            ts0, ts1, stop = sys.modules[type(task).__module__].behaviour_scales(self.ts)
+            beh = {"behaviour": self.ts, "slow_to_speed": None if ts1 is None else 0.30 * ts1, "stop_dist": stop}
+        else:
+            ts0, beh = self.ts, {}
+        self.meta = {"seed": self.seed, "time_scale": ts0, "cruise_speed": 0.30 * ts0, "task": TASK_NAME, **beh,
                      "tall_rule": tall.rule_id, "short_rule": short.rule_id, "sentence_tall": self.sent_tall,
                      "sentence_short": self.sent_short, "items": task.episode_info.get("items"),
                      "carry_arm": task.carry_arm, "start_xy": task.start_xy.tolist(),
@@ -393,8 +427,8 @@ class Episode:
             bv = max(bv, float(np.linalg.norm(c.get_linear_velocity())))
             bw = max(bw, float(np.linalg.norm(c.get_angular_velocity())))
         ee = np.asarray(task.get_arm_pose(task.carry_arm), np.float64).reshape(-1)[:3]
-        return {"h_tall": h[self.i_tall], "h_short": h[self.i_short], "tilt_tall": tilts["tall"],
-                "tilt_short": tilts["short"], "tray_p": np.asarray(task.tray.get_pose().p, np.float64),
+        return {"h_tall": h[self.i_tall], "h_short": h[self.i_short], "tilt_tall": tilts[KINDS["tall"]],
+                "tilt_short": tilts[KINDS["short"]], "tray_p": np.asarray(task.tray.get_pose().p, np.float64),
                 "tray_v": np.asarray(comp.get_linear_velocity(), np.float64), "ee": ee, "blk_v": bv, "blk_w": bw}
 
     # ------------------------------------------------------------ captures ----
@@ -601,7 +635,7 @@ class Episode:
         import sapien
 
         rng = np.random.RandomState(int(seed))
-        it = next(it for it in self.task.standing if it["kind"] == "tall")
+        it = next(it for it in self.task.standing if it["kind"] == KINDS["tall"])
         c = getattr(it["entity"], "actor", it["entity"]).find_component_by_type(sapien.physx.PhysxRigidDynamicComponent)
         c.set_angular_velocity(np.asarray(c.get_angular_velocity(), np.float64) + rng.normal(0, PERT_W, 3))
         c.set_linear_velocity(np.asarray(c.get_linear_velocity(), np.float64) + rng.normal(0, PERT_V, 3))
@@ -1031,7 +1065,7 @@ def worker(args) -> int:
     out = Path(args.out)
     tag = f"{os.uname().nodename}_{os.getpid()}"
     eps = parse_episodes(args.episodes)
-    todo = [(s, ts, a) for s, ts, a in eps if not (out / "episodes" / f"s{s}_ts{ts:g}" / "result.json").exists()]
+    todo = [(s, ts, a) for s, ts, a in eps if not (out / "episodes" / f"s{s}_{risk_tag(ts)}" / "result.json").exists()]
     if not todo:
         print("[t5_branch] nothing to do", flush=True)
         return 0
@@ -1048,7 +1082,7 @@ def worker(args) -> int:
           f"GPU mem {torch.cuda.memory_allocated() / 1e9:.2f} GB", flush=True)
     n_done = 0
     for s, ts, act in todo:
-        name = f"s{s}_ts{ts:g}"
+        name = f"s{s}_{risk_tag(ts)}"
         if (out / "episodes" / name / "result.json").exists() or not claim(out, name):
             continue
         lock = out / "locks" / name
@@ -1094,13 +1128,14 @@ def worker(args) -> int:
 
 
 def parse_episodes(spec):
-    """seed:time_scale[:n] (n = no actor continuations), comma separated."""
+    """seed:time_scale[:n] (T5) or seed:behaviour[:n] (T8) (n = no actor continuations), comma separated."""
     if not spec:
-        return [(s, ts, True) for s, ts in DEFAULT_EPISODES]
+        return [(s, ts, True) for s, ts in TASKS[TASK_NAME]["episodes"]]
     out = []
     for tok in str(spec).split(","):
         f = tok.split(":")
-        out.append((int(f[0]), float(f[1]), not (len(f) > 2 and f[2] == "n")))
+        risk = f[1] if TASK_NAME == "tray_slide" else float(f[1])
+        out.append((int(f[0]), risk, not (len(f) > 2 and f[2] == "n")))
     return out
 
 
@@ -1245,9 +1280,15 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--episodes", default="", help="seed:time_scale,... (default: the 12 production episodes)")
-    r.add_argument("--out", default=str(OUT))
-    r.add_argument("--ckpts", nargs="+", default=CKPTS, help="vanilla checkpoints; the LAST drives the continuations")
+    a = sub.add_parser("aggregate")
+    for p in (r, a):
+        p.add_argument("--task", choices=sorted(TASKS), default="tray_transport")
+        p.add_argument("--out", default=None, help="default: the task's (T5 runs/lang/diag_1030/t5_branch, "
+                                                    "T8 runs/lang/t8_branch)")
+    r.add_argument("--episodes", default="", help="seed:time_scale,... (T8: seed:behaviour,...; default: the task's "
+                                                  "episode list)")
+    r.add_argument("--ckpts", nargs="+", default=None,
+                   help="checkpoints (relative: under the task's run); the LAST drives the continuations")
     r.add_argument("--branch-every", type=int, default=3)
     r.add_argument("--max-branch-ticks", type=int, default=0, help="smoke: this many drag branch ticks only")
     r.add_argument("--actor-leads", type=float, nargs="*", default=[0.8, 0.5, 0.25],
@@ -1258,10 +1299,11 @@ def main(argv=None) -> int:
     r.add_argument("--workers", type=int, default=1)
     r.add_argument("--stagger", type=float, default=20.0)
     r.add_argument("--max-episodes", type=int, default=0)
-    a = sub.add_parser("aggregate")
-    a.add_argument("--out", default=str(OUT))
     args = ap.parse_args(argv)
-    args.out = str(Path(args.out).resolve())   # the env build chdirs into RoboTwin: every path must be absolute
+    set_task(args.task)
+    args.out = str(Path(args.out or TASKS[args.task]["out"]).resolve())   # the env build chdirs into RoboTwin
+    if args.cmd == "run" and args.ckpts is None:
+        args.ckpts = list(TASKS[args.task]["ckpts"])
     if args.cmd == "run":
         import main.lang  # noqa: F401  (main.item_envs on the path)
 

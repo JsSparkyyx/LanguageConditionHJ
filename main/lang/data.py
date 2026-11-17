@@ -167,8 +167,11 @@ class LangSource:
 
     def __init__(self, root, k_prev: int = 2, recall_horizon: int = 7, name: str | None = None,
                  max_n: int | None = None, drop_stale_bead: bool = True, drop_old_t6: bool = True,
-                 h_source: str = "sim", rule_consequences: str = "all"):
+                 h_source: str = "sim", rule_consequences: str = "all", decision_ticks: int = 1):
         self.root = Path(root).resolve()
+        # decision_ticks H (LangConfig.decision_ticks): the "next" frames are those of row t+H, a row is usable only
+        # when t+H is in its episode, and a batch also carries the commands and h of rows t .. t+H-1
+        self.H = int(decision_ticks)
         # written before the bead-count h: its bead-task rows hold the old bead h, never train on them
         self.old_bead_h = not (self.root / "item_buffer" / "n_violating.npy").exists()
         self.stale_bead = bool(drop_stale_bead) and self.old_bead_h
@@ -332,6 +335,14 @@ class LangSource:
                 self.n_old_t6_dropped = int((~keep).sum())
                 for f in ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb"):
                     setattr(self, f, getattr(self, f)[keep])
+        if self.H > 1 and self.rows.size:
+            C = rs.buf.capacity
+            nh = (self.rows + self.H) % C
+            ok = (np.asarray(A["episode_id"])[nh].astype(np.int64) == self.eid) & \
+                 (np.asarray(A["t_in_ep"])[nh].astype(np.int64) == self.t + self.H)
+            self.next = nh
+            for f in ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb"):
+                setattr(self, f, getattr(self, f)[ok])
         self.recall = recall_labels(np.asarray(A["h_rules"]), np.asarray(A["episode_id"]),
                                     np.asarray(A["t_in_ep"]).astype(np.int64), rs.buf.n, self.recall_horizon)
         # drop cached frame 0 of episodes no longer in the ring
@@ -351,13 +362,13 @@ class LangSource:
     def read(self, i: int) -> dict:
         """Frames and robot fields of index row i (rows t-k ... t+1 in one slice when possible)."""
         S, C, k = self.step, self.capacity, self.k
-        slot, nxt, t = int(self.rows[i]), int(self.next[i]), int(self.t[i])
-        kk, kn = min(k, t), min(k, t + 1)
+        slot, nxt, t, H = int(self.rows[i]), int(self.next[i]), int(self.t[i]), self.H
+        kk, kn = min(k, t), min(k, t + H)
         lo = slot - kk
-        if lo >= 0 and slot + 1 < C:
-            tok = np.array(S["scene_tokens"][lo:slot + 2])
-            pos = np.array(S["scene_pos"][lo:slot + 2])
-            it, ip, inx, inp = kk, 0, kk + 1, kk + 1 - kn
+        if lo >= 0 and slot + H < C:
+            tok = np.array(S["scene_tokens"][lo:slot + H + 1])
+            pos = np.array(S["scene_pos"][lo:slot + H + 1])
+            it, ip, inx, inp = kk, 0, kk + H, kk + H - kn
         else:  # crosses the physical array end: per-row (ring modulo)
             idx = [(slot) % C, (slot - kk) % C, nxt % C, (nxt - kn) % C]
             tok = np.stack([np.array(S["scene_tokens"][j]) for j in idx])
@@ -371,6 +382,8 @@ class LangSource:
             "scene_pos_next": np.stack([pos[inx], pos[inp], f_pos]),
             "dtheta": np.array(S["dtheta"][slot]),
         }
+        if H > 1:
+            out["dtheta_seq"] = np.stack([np.array(S["dtheta"][(slot + j) % C]) for j in range(H)])
         for f in ROBOT_FIELDS:
             out[f] = np.array(S[f][slot])
             out[f + "_next"] = np.array(S[f][nxt])
@@ -381,6 +394,8 @@ class LangSource:
         sh = {"scene_tokens": ((3,) + S["scene_tokens"].shape[1:], np.float16),
               "scene_pos": ((3,) + S["scene_pos"].shape[1:], np.float32),
               "dtheta": (S["dtheta"].shape[1:], np.float32)}
+        if self.H > 1:
+            sh["dtheta_seq"] = ((self.H,) + S["dtheta"].shape[1:], np.float32)
         sh["scene_tokens_next"], sh["scene_pos_next"] = sh["scene_tokens"], sh["scene_pos"]
         for f in ROBOT_FIELDS:
             sh[f] = sh[f + "_next"] = (S[f].shape[1:], S[f].dtype)
@@ -391,7 +406,7 @@ class LangSource:
         frame from the memmap (rows t, t-k, t+1, t+1-k), frame 0 from the RAM cache."""
         S, C, k = self.step, self.capacity, self.k
         slot, nxt, t = int(self.rows[i]), int(self.next[i]), int(self.t[i])
-        prev, nprev = (slot - min(k, t)) % C, (nxt - min(k, t + 1)) % C
+        prev, nprev = (slot - min(k, t)) % C, (nxt - min(k, t + self.H)) % C
         f_tok, f_pos = self.first_frame(int(self.eid[i]), int(self.first[i]))
         b0 = bs[0]
         T, P, Tn, Pn = out["scene_tokens"], out["scene_pos"], out["scene_tokens_next"], out["scene_pos_next"]
@@ -400,6 +415,9 @@ class LangSource:
         Tn[b0, 0], Tn[b0, 1], Tn[b0, 2] = S["scene_tokens"][nxt], S["scene_tokens"][nprev], f_tok
         Pn[b0, 0], Pn[b0, 1], Pn[b0, 2] = S["scene_pos"][nxt], S["scene_pos"][nprev], f_pos
         out["dtheta"][b0] = S["dtheta"][slot]
+        if self.H > 1:
+            for j in range(self.H):
+                out["dtheta_seq"][b0, j] = S["dtheta"][(slot + j) % C]
         for f in ROBOT_FIELDS:
             out[f][b0] = S[f][slot]
             out[f + "_next"][b0] = S[f][nxt]
@@ -412,7 +430,7 @@ class LangSource:
         C, k = self.capacity, self.k
         nxt = int(self.next[i])
         return {"row": slot, "next_row": nxt, "prev_row": (slot - min(k, t)) % C, "first_row": int(self.first[i]),
-                "next_prev_row": (nxt - min(k, t + 1)) % C}
+                "next_prev_row": (nxt - min(k, t + self.H)) % C}
 
     # --------------------------------------------------------- neck rows ----
     def neck_first(self, eid: int, first_slot: int) -> dict:
@@ -501,7 +519,8 @@ class LangSampler:
         """Each source's h and rule set (VLM_FAILURE_PLAN): the probe sampler measures against the simulator's h,
         on the run's rules."""
         return {"h_source": "sim" if self.probe else getattr(self.cfg, "h_source", "sim"),
-                "rule_consequences": getattr(self.cfg, "rule_consequences", "all")}
+                "rule_consequences": getattr(self.cfg, "rule_consequences", "all"),
+                "decision_ticks": int(getattr(self.cfg, "decision_ticks", 1))}
 
     def agreement(self) -> dict:
         """VLM vs simulator h on the labelled training cells, summed over sources per task (hsource.py)."""
@@ -778,7 +797,7 @@ class LangSampler:
         meta = {k: [] for k in ("sentence", "rule_id", "consequence", "task", "host", "embodiment", "source",
                                 "episode_id", "rule_col", "row", "next_row", "prev_row", "first_row", "next_prev_row",
                                 "t_in_ep")}
-        h, hn, fs, fsr, pair = [], [], [], [], []
+        h, hn, fs, fsr, pair, hseq = [], [], [], [], [], []
         tag = {k: [] for k in ("ref_center", "ref_center_valid", "ref_center_next", "ref_center_valid_next")} \
             if getattr(self.cfg, "oracle_ref_tag", False) else None
         aux = ({"aux_target": [], "aux_valid": []} if (getattr(self.cfg, "aux_target_loss", False)
@@ -804,6 +823,8 @@ class LangSampler:
             for k2, v in rows.items():
                 meta[k2].append(v)
             h.append(float(A["h_rules"][rows["row"], col])), hn.append(float(A["h_rules"][rows["next_row"], col]))
+            if s.H > 1:   # h of rows t .. t+H-1 (the decision's ticks; h_seq[:, 0] = h)
+                hseq.append([float(A["h_rules"][(rows["row"] + j) % s.capacity, col]) for j in range(s.H)])
             fs.append(bool(A["fails_soon"][rows["row"], col])), fsr.append(bool(s.recall[rows["row"], col]))
             pair.append(int(p))
             if aux is not None:   # V4: the named item's centre at frames t and 0
@@ -823,6 +844,8 @@ class LangSampler:
                         ref[b, f] = np.asarray(tm[slot, rr]).max(0).reshape(-1).astype(np.float16) / 255.0
         out.update({"h": np.asarray(h, np.float32), "h_next": np.asarray(hn, np.float32),
                     "fails_soon": np.asarray(fs), "fails_soon_recall": np.asarray(fsr), "pair": np.asarray(pair)})
+        if hseq:
+            out["h_seq"] = np.asarray(hseq, np.float32)
         for k2, v in meta.items():
             out[k2] = np.asarray(v) if k2 in ("episode_id", "rule_col", "row", "next_row", "prev_row", "first_row",
                                               "next_prev_row", "t_in_ep") else v

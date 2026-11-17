@@ -59,6 +59,20 @@ TASK_SHORT = {t: f"T{i + 1}" for i, t in enumerate(CANON_TASKS)}
 BEHAVIOUR_MIX = {"tray_slide": {"medium": 0.5, "fast": 0.25, "slow": 0.25}}
 
 
+def behaviour_risk(key: str) -> dict:
+    """A behaviour-mix key as risk knobs: a behaviour name, optionally followed by '|knob=value' overrides of the
+    task's drag profile (2026-11-16, recovery data; tray_slide reads slow_at, change_dist, stop_dist, accel_dist).
+    Example: "recover_glass|slow_at=0.6|change_dist=0.05" -> {"behaviour": "recover_glass", "slow_at": 0.6,
+    "change_dist": 0.05}: the 0.45 -> 0.15 m/s slow-down starts 60% along the drag (clamped to where it still fits
+    before the brake) and takes 5 cm instead of 12."""
+    name, *knobs = str(key).split("|")
+    out = {"behaviour": name}
+    for kv in knobs:
+        k, v = kv.split("=", 1)
+        out[k.strip()] = float(v)
+    return out
+
+
 def task_list(spec: str) -> tuple:
     """A --tasks value as a task tuple: a comma list of CANON_TASKS names, where "all" stands for TRAIN_TASKS.
     Examples: "all" -> the five training tasks; "tray_slide" -> T8 alone; "all,tray_slide" -> the five plus T8."""
@@ -154,7 +168,7 @@ def episode_risk(cfg, task: str, seed: int) -> dict | None:
     names = sorted(mix)
     w = np.asarray([float(mix[n]) for n in names])
     rng = np.random.default_rng([int(seed), 0xBE4A])
-    return {"behaviour": names[int(rng.choice(len(names), p=w / w.sum()))]}
+    return behaviour_risk(names[int(rng.choice(len(names), p=w / w.sum()))])
 
 
 
@@ -283,6 +297,15 @@ class LangConfig(FrozenConfig):
     # "linear" / 1, so its checkpoint rebuilds the head it trained
     critic_injection: str = "linear"
     critic_chunk: int = 1
+    # One decision = decision_ticks control ticks (ACTION_SENSITIVITY_PLAN 3.2, Yuxuan 2026-11-11; in rounds training
+    # and the filter from 2026-11-17, T8_3TICK_PLAN.md). The critic's action is the joint displacement over the
+    # decision: the sum of the stored per-tick commands of ticks t .. t+H-1, or H x the actor's per-tick output (the
+    # actor's action is executed as H equal ticks). Target: y_H = mean of the target twins at (s_t+H, H x actor), then
+    # y_k = (1 - g) h_k + g min(h_k, y_k+1) for k = H-1 .. 0 (g per tick, so the horizon and the in-between ticks'
+    # h count as before). The filter scores Q(s, the planner's displacement over the next H ticks) every tick, and an
+    # engaged block holds the actor's action for its H ticks (hj_hold_ticks must equal H). 1 = one tick (CrossSafe).
+    # Example: H = 3 at 25 Hz is one action per 120 ms
+    decision_ticks: int = 1
     # E6 scene-count curve: train on the first N episodes per (task, embodiment) of a fixed nested order (0 = all).
     # Training sampler only (the validation / probe sampler always sees every episode)
     train_episodes_per_task: int = 0
@@ -373,6 +396,10 @@ class LangConfig(FrozenConfig):
             "critic_chunk is 1 or a multiple of 3 (three summary points)"
         assert (self.critic_injection == "linear" and int(self.critic_chunk) == 1) or self.critic_readout == "mlp", \
             "the revised injection and the chunk critic use the MLP readout"
+        assert int(self.decision_ticks) >= 1, self.decision_ticks
+        assert int(self.decision_ticks) == 1 or (int(self.critic_chunk) == 1
+                                                  and int(self.decision_ticks) == int(self.hj_hold_ticks)), \
+            "decision_ticks > 1: one summed action (critic_chunk 1) and a filter block of the same length"
         assert self.train_episodes_per_task >= 0, self.train_episodes_per_task
         # the frozen fusion reads HoloBrain's text_feat_map words (256-d); other backends cannot feed it
         assert not self.scene_fusion or self.text_backend == "holobrain_bert", \
