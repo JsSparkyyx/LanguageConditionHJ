@@ -261,6 +261,38 @@ class LangPolicyShim:
         return enc
 
 
+def nominal_decision(pos, q, i: int, spt: int, H: int, stale: bool = False) -> np.ndarray:
+    """The planner's decision of H ticks for one arm, at plan row i with the live joint state q: the sum of the H
+    per-tick commands it is about to issue, the quantity training reads from the stored rows (network.stored_decision).
+
+    A stored planner command is CrossSafe's a_k = pos[i_k + spt - 1] - q_k (the target at the tick's end minus the
+    live joint state at its start), so it is the planned step of tick k plus the arm's tracking lag at its start,
+    lag_k = pos[i_k - 1] - q_k. The sum over H ticks therefore holds the lag H times, not once. Only q_0 is known
+    when the filter decides, so the later lags are taken as the current one:
+
+        sum_k a_k  ~  (pos[min(i + H spt - 1, T - 1)] - q) + (H - 1) lag_0,   lag_0 = pos[clip(i - 1, 0, T - 1)] - q
+
+    After the plan's last row the controller keeps commanding pos[T - 1] - q_k (the hook's a_nom while a gripper
+    still moves), which is the lag again, so the same formula holds at a plan's end. Measured on the stored nominal
+    T8 episodes (2026-11-17): within 1-2 % of the summed stored commands (median; 7-8 % at the 90th percentile of the
+    fast rows), where the bare endpoint, pos[..] - q, is 20-43 % smaller. Example: a cruise of 0.06 rad per tick
+    with a lag of 0.02 rad gives per-tick commands of 0.08 rad and a 3-tick decision of 0.24 rad; the endpoint
+    alone would be 0.20 rad.
+
+    stale: the release test after an engaged block. The controller calls the hook again with the SAME plan and row
+    cursor while the actor moved the arm, so pos[i - 1] - q is the arm's offset from a frozen cursor, not a tracking
+    lag, and the plan will be replanned from the live state on release. The offset is then counted once, as in
+    CrossSafe's a_nom on the stale plan: pos[min(i + H spt - 1, T - 1)] - q."""
+    pos = np.asarray(pos, dtype=np.float64)
+    q = np.asarray(q, dtype=np.float64)
+    T = len(pos)
+    end = pos[min(int(i) + int(H) * int(spt) - 1, T - 1)] - q
+    if stale:
+        return end
+    lag0 = pos[min(max(int(i) - 1, 0), T - 1)] - q
+    return end + (int(H) - 1) * lag0
+
+
 class LangRolloutController(RolloutController):
     def __init__(self, *args, text_store=None, monitor_only: bool = False, fusion=None, keep_neck: bool = False,
                  qwen=None, keep_kv: bool = False, keep_frames: bool = False, **kwargs):
@@ -549,9 +581,9 @@ class LangRolloutController(RolloutController):
         return int(getattr(self.cfg, "decision_ticks", 1))
 
     def _anom_decision(self, ctx):
-        """The nominal's decision (LangConfig.decision_ticks H): its displacement over the next H ticks from the LIVE
-        joint state, pos[min(i + H spt - 1, T-1)] - qpos per arm (= the sum of its H per-tick commands). H = 1 is
-        CrossSafe's _anom. The per-tick command the buffer stores stays _anom's."""
+        """The nominal's decision (LangConfig.decision_ticks H) as training sees a stored planner decision: the SUM of
+        its next H per-tick commands (nominal_decision, per arm). H = 1 is CrossSafe's _anom. The per-tick command
+        the buffer stores stays _anom's."""
         H = self._decision_ticks()
         if H == 1:
             return self._anom(ctx)
@@ -564,13 +596,15 @@ class LangRolloutController(RolloutController):
         nj = self.extractor.spec.n_joints
         n_arm = nj - 2
         a = np.zeros(self._n_act, dtype=np.float64)
+        # the last hook was an engaged block: this one is its release test, on the stale plan (nominal_decision)
+        stale = bool(getattr(self.flt, "_was_engaged", False))
         for arm_i, key in ((0, "left_arm"), (1, "right_arm")):
             plan = ctx.get(key)
             if plan is None:
                 continue
             pos, _ = _path_arrays(plan)
-            i_end = min(i + H * spt - 1, len(pos) - 1)
-            a[arm_i * nj: arm_i * nj + n_arm] = pos[i_end] - qraw[arm_i * nj: arm_i * nj + n_arm]
+            a[arm_i * nj: arm_i * nj + n_arm] = nominal_decision(pos, qraw[arm_i * nj: arm_i * nj + n_arm], i, spt, H,
+                                                                 stale=stale)
         return torch.from_numpy(a.astype(np.float32))[None].cuda()
 
     def _tick_hook(self, ctx) -> bool:
@@ -593,8 +627,8 @@ class LangRolloutController(RolloutController):
     def _tick_hook_decision(self, ctx) -> bool:
         """CrossSafe's tick hook (main/train/rollout.py) with a decision of H = decision_ticks ticks
         (T8_3TICK_PLAN.md): every tick Q(s, the nominal's H-tick displacement) is scored and the filter engages when
-        it is below the margin (Q < 0), as before; an engaged block queries the actor ONCE and holds its per-tick
-        action for the block's H ticks (hj_hold_ticks = H), which is the action the critic scored as H x a. The
+        it is below the margin (Q < 0), as before; an engaged block holds the actor's per-tick action of this hook
+        (queried once) for the block's H ticks (hj_hold_ticks = H), which is the action the critic scored as H x a. The
         release test runs at the next hook, after the block. Stored per tick: the commanded displacement (_anom for
         the planner, a for the actor)."""
         import torch
@@ -612,8 +646,21 @@ class LangRolloutController(RolloutController):
             return False
         body, enc = self._policy_inputs_cached()
         a_nom_t = self._anom_decision(ctx)
+        H = self._decision_ticks()
+        Jl, Ja = body["Jlin"][None].cuda(), body["Jang"][None].cuda()
         with torch.no_grad():
-            q_nom = float(self.flt.q_nom(enc, a_nom_t, body["Jlin"][None].cuda(), body["Jang"][None].cuda()))
+            q_nom = float(self.flt.q_nom(enc, a_nom_t, Jl, Ja))
+            # collapse monitors (metrics.hook_collapse_stats, Yuxuan 2026-11-17): at every decision also the actor's
+            # action and Q of its decision and of a stop. The actor is deterministic, so an engaged block below uses
+            # this same action
+            a = self.flt.actor_action(enc)
+            q_pi = float(self.flt.q_nom(enc, H * a, Jl, Ja))
+            q_stop = float(self.flt.q_nom(enc, torch.zeros_like(a_nom_t), Jl, Ja))
+        a_np = a[0].cpu().numpy()
+        cols = dmax > 0
+        for k, v in (("Q_pi", q_pi), ("Q_stop", q_stop), ("a_pi", (a_np[cols] / dmax[cols]).astype(np.float32)),
+                     ("a_nom", (self._tick_action[cols] / dmax[cols]).astype(np.float32))):
+            self.trace.setdefault(k, []).append(v)
         self.trace["V_t"].append(self._n_physics / self.env.PHYSICS_FREQ)
         self.trace["V"].append(q_nom)
         engaged = q_nom < (self.flt.release_margin if self.flt._was_engaged else self.flt.margin)
@@ -625,9 +672,6 @@ class LangRolloutController(RolloutController):
         if self.flt.hold_ticks != self._decision_ticks():
             raise RuntimeError(f"decision_ticks {self._decision_ticks()} needs hj_hold_ticks of the same length, "
                                f"got {self.flt.hold_ticks}")
-        with torch.no_grad():
-            a = self.flt.actor_action(enc)
-        a_np = a[0].cpu().numpy()
         self._engaged_ticks = getattr(self, "_engaged_ticks", 0)
         for k in range(self.flt.hold_ticks):
             self._tick_source = SRC_ACTOR

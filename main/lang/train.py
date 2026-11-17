@@ -698,12 +698,37 @@ class LangTrainer:
         out["actor/action_std"] = float((a_det.std(0) * jm).sum() / jm.sum().clamp_min(1))
         out["actor/sat_frac"] = float(((a_det.abs() / dmax.clamp_min(1e-9)) > 0.95).float().mul(jm).sum()
                                       / jm.sum().clamp_min(1))
-        out["data/action_std"] = float((dtheta.std(0) * jm).sum() / jm.sum().clamp_min(1))
-        r1 = (torch.rand_like(dtheta) * 2 - 1) * dmax
-        r2 = (torch.rand_like(dtheta) * 2 - 1) * dmax
-        r1, r2 = policy_decision(self.cfg, r1), policy_decision(self.cfg, r2)   # random per-tick actions, held
-        sens = (self.critics.qmin(enc_d, r1, Jlin, Jang, ji) - self.critics.qmin(enc_d, r2, Jlin, Jang, ji)).abs().mean()
+        # the stored per-tick command, the unit of actor/action_std (dtheta here is the H-tick decision)
+        d_tick = _t(b["dtheta"], dev=dmax.device)
+        out["data/action_std"] = float((d_tick.std(0) * jm).sum() / jm.sum().clamp_min(1))
+        # collapse monitors (metrics.critic_collapse_stats / actor_collapse_stats, Yuxuan 2026-11-17): is the critic
+        # action-agnostic (over random actions, and over stop / half / stored / faster versions of the stored
+        # decision, on all rows and on the boundary rows), is the actor observation-agnostic. Their random actions
+        # come from their own generator (seeded by the step), so logging draws nothing from the training stream
+        from .metrics import SCALES, actor_collapse_stats, critic_collapse_stats
+
+        gen = torch.Generator(device=dmax.device).manual_seed(0xC0117 + int(self.step))
+        q_rand = []
+        for _ in range(8):   # random per-tick actions in the actor's box, held for the decision
+            r = (torch.rand(dmax.shape, generator=gen, device=dmax.device, dtype=dmax.dtype) * 2 - 1) * dmax
+            q_rand.append(self.critics.qmin(enc_d, policy_decision(self.cfg, r), Jlin, Jang, ji))
+        q_rand = torch.stack(q_rand)
+        sens = (q_rand[0] - q_rand[1]).abs().mean()
         out["critic/action_sens_rel"] = float(sens / torch.minimum(q1, q2).abs().mean().clamp_min(1e-9))
+        q_scale = torch.stack([self.critics.qmin(enc_d, c * dtheta, Jlin, Jang, ji) for c in SCALES])
+        q_pi = self.critics.qmin(enc_d, policy_decision(self.cfg, a_det), Jlin, Jang, ji)
+        boundary = np.asarray(b["fails_soon"], bool) & (h.detach().float().cpu().numpy() > 0)
+        out.update(critic_collapse_stats(q_rand.float().cpu().numpy(), q_scale.float().cpu().numpy(),
+                                         q_pi.float().cpu().numpy(), boundary))
+        valid = (dmax > 0).cpu().numpy()
+        bound = dmax.clamp_min(1e-9)
+        data_frac = (_t(b["dtheta"], dev=dmax.device) / bound).float().cpu().numpy()   # the row's own per-tick command
+        pair = np.asarray(b["pair"])
+        out.update(actor_collapse_stats((a_det / bound).float().cpu().numpy(), valid, data_frac, pair, boundary))
+        if self.actor_b is not None:
+            ab_det, _, _, _ = self.actor_b(enc_d.body, ji, dmax, deterministic=True)
+            out.update(actor_collapse_stats((ab_det / bound).float().cpu().numpy(), valid, data_frac, pair, boundary,
+                                            name="actor_b"))
         out.update(self.sampler.health())
         if self.text is not None:
             miss = self.text.miss_frac()
@@ -879,6 +904,10 @@ class LangTrainer:
         if readout != self.cfg.critic_readout:
             raise ValueError(f"{path}: critic readout {readout}, this run has {self.cfg.critic_readout} "
                              "(--set 'critic_readout=\"softmin\"' to continue a softmin model)")
+        theirs_h = int((ck.get("lang_config") or {}).get("decision_ticks", 1))
+        if theirs_h != decision_ticks(self.cfg):
+            # the critic's action is a decision of that many ticks, and the revised injection's bounds are saved for it
+            raise ValueError(f"{path}: trained with decision_ticks {theirs_h}, this run has {decision_ticks(self.cfg)}")
         load_policy(self.policy_enc, ck)
         self.actor.load_state_dict(ck["actor"])
         if self.actor_b is not None:
@@ -1022,7 +1051,9 @@ def action_reference(sampler, H: int, seed: int, n: int = 256) -> dict:
     A decision of H ticks gets H x each bound (the summed displacement of H saturated ticks). Example: s_p = 0.02 m
     per tick gives 0.06 m for a 3-tick decision."""
     rng = np.random.default_rng([int(seed), 0xAC7])
+    stats = dict(sampler.stats)
     b = sampler.sample(n, rng=rng)
+    sampler.stats.update(stats)   # these draws are not training samples: keep them out of data/harm_frac etc.
     dmax = np.asarray(b["dtheta_max"], np.float64)
     a = dmax * np.sign(rng.uniform(-1, 1, dmax.shape))
     Jl, Ja = np.asarray(b["Jlin"], np.float32), np.asarray(b["Jang"], np.float32)        # [n, L, 3, A]

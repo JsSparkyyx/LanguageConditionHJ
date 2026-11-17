@@ -59,6 +59,137 @@ def pair_stats(qmin: np.ndarray, y: np.ndarray, fails_soon: np.ndarray, pair: np
             "lang/n_pairs": len(rank), "lang/n_target_pairs": len(tgt)}
 
 
+# --- collapse monitors (Yuxuan, 2026-11-17) --------------------------------------------------------------------------
+# Two failures to watch during training: the critic ignoring the action (Q(s, a) the same for every a) and the actor
+# ignoring the observation (the same action in every state). Both are measured on the training batch every LOG_EVERY
+# steps (LangTrainer._diagnostics) and at the filter's own decisions in rounds collection (LangRoundMetrics).
+# "Boundary" rows of a batch: the sampled rule is not broken yet (h > 0) but breaks within the next 25 ticks
+# (fails_soon): the last second before harm, where the choice of action decides the outcome.
+
+SCALES = (0.0, 0.5, 1.0, 1.5)   # the stored decision times these: stop, half, as stored, 50% more
+
+
+def _nanmean(x) -> float:
+    x = np.asarray(x, np.float64)
+    return float(x.mean()) if x.size else float("nan")
+
+
+def critic_collapse_stats(q_rand, q_scale, q_pi, boundary, scales=SCALES) -> dict:
+    """Does Q change with the action? q_rand [K, B]: Q of K random held actions per state; q_scale [C, B]: Q of the
+    stored decision times each of `scales`; q_pi [B]: Q of the actor's decision; boundary [B] bool.
+
+      critic_rand_range             mean over states of (max - min) of Q over the K random actions. 0 = action-agnostic
+      critic_rand_over_state        std of Q over actions / std of Q over states: how much of Q's variation the action
+                                    explains next to the state. Example: 0.01 = the action moves Q 1% as much as the
+                                    state does
+      critic_scale_range            mean (max - min) of Q over the scaled stored decision (stop / half / stored / faster)
+      critic_stop_minus_data        mean Q(stop) - Q(stored decision): > 0 = the critic prefers stopping
+      critic_half_minus_data, critic_pi_minus_data   the same for half the stored decision and the actor's decision
+      *_boundary                    the same quantities on the boundary rows only (nan without any); boundary_rows = count
+    """
+    q_rand, q_scale = np.asarray(q_rand, np.float64), np.asarray(q_scale, np.float64)
+    q_pi, bd = np.asarray(q_pi, np.float64), np.asarray(boundary, bool)
+    i0, ih, i1 = scales.index(0.0), scales.index(0.5), scales.index(1.0)
+    rr = q_rand.max(0) - q_rand.min(0)
+    sr = q_scale.max(0) - q_scale.min(0)
+    state_std = float(q_rand.mean(0).std())
+    out = {"collapse/critic_rand_range": _nanmean(rr),
+           "collapse/critic_rand_over_state": float(q_rand.std(0).mean() / max(state_std, 1e-9)),
+           "collapse/critic_scale_range": _nanmean(sr),
+           "collapse/critic_stop_minus_data": _nanmean(q_scale[i0] - q_scale[i1]),
+           "collapse/critic_half_minus_data": _nanmean(q_scale[ih] - q_scale[i1]),
+           "collapse/critic_pi_minus_data": _nanmean(q_pi - q_scale[i1]),
+           "collapse/boundary_rows": float(bd.sum()),
+           "collapse/critic_rand_range_boundary": _nanmean(rr[bd]),
+           "collapse/critic_scale_range_boundary": _nanmean(sr[bd]),
+           "collapse/critic_stop_minus_data_boundary": _nanmean((q_scale[i0] - q_scale[i1])[bd]),
+           "collapse/critic_half_minus_data_boundary": _nanmean((q_scale[ih] - q_scale[i1])[bd]),
+           "collapse/critic_pi_minus_data_boundary": _nanmean((q_pi - q_scale[i1])[bd])}
+    return out
+
+
+def _cos_rows(a, b, eps: float = 1e-9):
+    return (a * b).sum(-1) / np.maximum(np.linalg.norm(a, axis=-1) * np.linalg.norm(b, axis=-1), eps)
+
+
+def actor_collapse_stats(frac, valid, data_frac, pair, boundary, name: str = "actor") -> dict:
+    """Does the actor's action change with the observation? frac [B, A]: its deterministic per-tick action divided
+    by the per-joint bound (in [-1, 1]); valid [B, A]: the real arm joints; data_frac [B, A]: the stored per-tick
+    command of the same rows, divided by the bound; pair [B]: pair ids (two rows of one id = the same transition with
+    two sentences, -1 = unpaired); boundary [B] bool.
+
+      <name>_obs_std        std of the action over the batch's states, mean over joints, in units of the bound.
+                            0 = the same action whatever the observation
+      <name>_abs            mean |action| / bound. With obs_std ~ 0 it tells WHICH constant: ~0 = always stop
+      <name>_pair_diff      mean |action(sentence 1) - action(sentence 2)| / bound on the same transition:
+                            0 = the action ignores the sentence
+      <name>_cos_data       mean cosine between the action and the stored command, on rows where the stored command
+                            moves (max > 5% of the bound): 1 = it moves the way the data did, 0 = unrelated
+      <name>_norm_ratio_data  median |action| / |stored command| on those rows: 0 = stop, 1 = the data's speed
+      *_boundary            obs_std, abs and cos_data on the boundary rows only
+    """
+    frac, data = np.asarray(frac, np.float64), np.asarray(data_frac, np.float64)
+    valid, bd, pair = np.asarray(valid, bool), np.asarray(boundary, bool), np.asarray(pair)
+    cols = valid.any(0)
+    f, d = frac[:, cols], data[:, cols]
+    moving = np.abs(d).max(-1) > 0.05
+
+    def obs_std(x):
+        return float(x.std(0).mean()) if x.shape[0] > 1 else float("nan")
+
+    diffs = []
+    for pid in np.unique(pair[pair >= 0]):
+        rows = np.nonzero(pair == pid)[0]
+        if rows.size == 2:
+            diffs.append(np.abs(f[rows[0]] - f[rows[1]]).mean())
+    cos = _cos_rows(f, d)
+    ratio = np.linalg.norm(f, axis=-1) / np.maximum(np.linalg.norm(d, axis=-1), 1e-9)
+    k = f"collapse/{name}"
+    return {f"{k}_obs_std": obs_std(f), f"{k}_abs": _nanmean(np.abs(f)), f"{k}_pair_diff": _nanmean(diffs),
+            f"{k}_cos_data": _nanmean(cos[moving]),
+            f"{k}_norm_ratio_data": float(np.median(ratio[moving])) if moving.any() else float("nan"),
+            f"{k}_obs_std_boundary": obs_std(f[bd]), f"{k}_abs_boundary": _nanmean(np.abs(f[bd])),
+            f"{k}_cos_data_boundary": _nanmean(cos[bd & moving])}
+
+
+Q_BOUNDARY = 0.25   # a filter decision counts as a boundary decision when |Q(s, a_nom)| is below this (h units)
+
+
+def hook_collapse_stats(trace: dict) -> dict:
+    """The same two questions at the filter's own decisions of one episode (rollout._tick_hook_decision records, per
+    hook, Q of the nominal's decision ("V"), of a stop ("Q_stop") and of the actor's decision ("Q_pi"), and the
+    actor's and the nominal's per-tick actions over the bound ("a_pi", "a_nom")). nan where the episode recorded none
+    (one-tick runs, nominal-only episodes).
+
+      q_decision_range            mean over hooks of (max - min) of Q over {nominal, stop, actor}
+      q_decision_range_boundary   the same over the hooks with |Q(s, a_nom)| < Q_BOUNDARY; n_boundary_hooks = count
+      q_stop_minus_nom, q_pi_minus_nom (and _boundary)   mean Q(stop) - Q(nominal), Q(actor) - Q(nominal)
+      actor_obs_std               std of the actor's action over the episode's hooks, mean over joints, / bound
+      actor_abs                   mean |actor action| / bound
+      actor_cos_nom               mean cosine between the actor's and the nominal's per-tick action where the
+                                  nominal moves (max > 5% of the bound)
+    """
+    keys = ("q_decision_range", "q_decision_range_boundary", "n_boundary_hooks", "q_stop_minus_nom", "q_pi_minus_nom",
+            "q_stop_minus_nom_boundary", "q_pi_minus_nom_boundary", "actor_obs_std", "actor_abs", "actor_cos_nom")
+    out = {k: float("nan") for k in keys}
+    qn, qs, qp = (np.asarray(trace.get(k, []), np.float64) for k in ("V", "Q_stop", "Q_pi"))
+    if qs.size == 0 or not (qn.size == qs.size == qp.size):
+        return out
+    Q = np.stack([qn, qs, qp])
+    rng = Q.max(0) - Q.min(0)
+    bd = np.abs(qn) < Q_BOUNDARY
+    out.update({"q_decision_range": _nanmean(rng), "q_decision_range_boundary": _nanmean(rng[bd]),
+                "n_boundary_hooks": float(bd.sum()), "q_stop_minus_nom": _nanmean(qs - qn),
+                "q_pi_minus_nom": _nanmean(qp - qn), "q_stop_minus_nom_boundary": _nanmean((qs - qn)[bd]),
+                "q_pi_minus_nom_boundary": _nanmean((qp - qn)[bd])})
+    a, an = np.asarray(trace.get("a_pi", []), np.float64), np.asarray(trace.get("a_nom", []), np.float64)
+    if a.ndim == 2 and a.shape == an.shape and a.shape[0]:
+        moving = np.abs(an).max(-1) > 0.05
+        out.update({"actor_obs_std": float(a.std(0).mean()) if a.shape[0] > 1 else float("nan"),
+                    "actor_abs": _nanmean(np.abs(a)), "actor_cos_nom": _nanmean(_cos_rows(a, an)[moving])})
+    return out
+
+
 def prec_rec(pred: np.ndarray, true: np.ndarray) -> tuple[float, float]:
     tp = float((pred & true).sum())
     return tp / max(float(pred.sum()), 1e-9), tp / max(float(true.sum()), 1e-9)
@@ -70,6 +201,9 @@ def batch_metrics(b: dict, q1, q2, y, h) -> dict:
     yv = y.detach().float().cpu().numpy()
     hv = h.detach().float().cpu().numpy()
     hn = np.asarray(b["h_next"], dtype=np.float32)
+    if "h_seq" in b and np.asarray(b["h_seq"]).shape[1] > 1:
+        # decision_ticks H > 1: "broken next" = broken at any of rows t+1 .. t+H (h_next is row t+H)
+        hn = np.minimum(hn, np.asarray(b["h_seq"], dtype=np.float32)[:, 1:].min(1))
     out = {"q/mean": float(qmin.mean()), "h/mean": float(hv.mean()), "h/min": float(hv.min()),
            "gap/mean": float((hv - qmin).mean()), "y/mean": float(yv.mean())}
     pred = qmin < 0
@@ -308,6 +442,11 @@ class Prober:
 # ---------------------------------------------------------------------------
 
 
+HOOK_COLLAPSE_KEYS = ("q_decision_range", "q_decision_range_boundary", "n_boundary_hooks", "q_stop_minus_nom",
+                      "q_pi_minus_nom", "q_stop_minus_nom_boundary", "q_pi_minus_nom_boundary", "actor_obs_std",
+                      "actor_abs", "actor_cos_nom")
+
+
 class LangRoundMetrics:
     """Per filter episode of a round, keyed by (round, task, host, embodiment,
     consequence, designation). Writes <run>/eval/rounds.jsonl and heatmaps."""
@@ -368,6 +507,7 @@ class LangRoundMetrics:
             # the actor of the interventions (T8_BOUNDARY_PLAN.md): "argmax", or "boundary" in runs that train one
             "actor": line.get("actor", "argmax"),
         }
+        row.update(hook_collapse_stats(trace))   # the collapse monitors at the filter's decisions (nan if none)
         return row
 
     def add(self, row: dict) -> None:
@@ -403,6 +543,9 @@ class LangRoundMetrics:
                 for k in ("harm_named", "any_intervention", "intervention_rate", "task_success", "v_le_h_frac"):
                     vals = [float(r[k]) for r in sel if r.get(k) is not None and r[k] == r[k]]
                     out[f"round_overview/actor_{kind}/{k}"] = float(np.mean(vals)) if vals else float("nan")
+        for k in HOOK_COLLAPSE_KEYS:   # the collapse monitors at the filter's decisions, mean over the filter episodes
+            vals = [float(r[k]) for r in rows if r.get(k) is not None and r[k] == r[k]]
+            out[f"collapse_round/{k}"] = float(np.mean(vals)) if vals else float("nan")
         out["round_overview/n_filter_episodes"] = len(rows)
         out["round_overview/n_not_run"] = len(all_rows) - len(rows)
         out["round_overview/n_exception_scored"] = sum(1 for r in rows if r.get("status") == "exception")

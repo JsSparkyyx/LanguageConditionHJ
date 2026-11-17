@@ -27,9 +27,20 @@ linear injection, and data with one action per state.
 - **Revised injection** (`critic_injection="revised"`, MLP readout): the bounds come from the run's own data at the
   start (`train.action_reference`, `<run>/action_ref.json`): 3 × one tick's.
 - **Filter** (`rollout.LangRolloutController._tick_hook_decision`): every tick it scores Q(s, the planner's
-  displacement over the next 3 ticks from the live joint state) and engages when Q < 0 (unchanged). An engaged block
-  queries the actor once and holds its action for the 3 ticks (`hj_hold_ticks` = 3). The release test runs at the
-  next hook. The buffer still stores each tick's own command.
+  3-tick decision) and engages when Q < 0 (unchanged). An engaged block queries the actor once and holds its action
+  for the 3 ticks (`hj_hold_ticks` = 3). The release test runs at the next hook. The buffer still stores each tick's
+  own command.
+- **The planner's 3-tick decision in the filter** (`rollout.nominal_decision`, fixed 2026-11-17 before any run used
+  it for a result): the sum of the 3 per-tick commands the planner is about to issue, because that is what training
+  reads from the stored rows. A stored planner command is the target at the tick's end minus the live joint state
+  at its start, so it holds the planned step plus the arm's tracking lag. In the T8 data the arm realizes about 80%
+  of each command, so the lag is about a quarter of a step, and the sum over 3 ticks holds it 3 times. The filter
+  knows only the current lag, lag = pos[i − 1] − q, and uses it for all 3 ticks:
+  decision = (pos[i + 3·10 − 1] − q) + 2·lag. On the stored nominal episodes this is within 1-2% of the summed
+  commands (median; 7-8% at the 90th percentile of the fast rows). The first version used the endpoint alone,
+  pos[i + 29] − q, which is 20-43% smaller than what the critic was trained on. Example: a cruise of 0.06 rad per
+  tick with a lag of 0.02 rad gives stored commands of 0.08 rad and a decision of 0.24 rad; the endpoint alone
+  would be 0.20 rad.
 - Probes, the offline evaluation and the counterfactual-sentence trace use the same decision.
 - Old configs read `decision_ticks = 1`; nothing changes for them.
 

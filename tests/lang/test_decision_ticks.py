@@ -146,7 +146,7 @@ def _controller(q, monkeypatch):
 def test_filter_holds_the_actor_for_the_decision(monkeypatch):
     ro, steps = _controller(-0.2, monkeypatch)
     assert ro._tick_hook({"i": 0}) is True
-    assert ro.flt.n_actor == 1 and len(steps) == 3              # one query, held for 3 ticks
+    assert ro.flt.n_actor == 1 and len(steps) == 3              # one query per hook, held for 3 ticks
     assert all(np.allclose(s, 0.01) for s in steps)
     assert np.allclose(ro.flt.scored[0], 0.3)                   # scored the nominal's 3-tick displacement
     assert ro.trace["intervened"] == [True]
@@ -155,5 +155,44 @@ def test_filter_holds_the_actor_for_the_decision(monkeypatch):
 def test_filter_free_when_q_is_safe(monkeypatch):
     ro, steps = _controller(0.4, monkeypatch)
     assert ro._tick_hook({"i": 0}) is False
-    assert ro.flt.n_actor == 0 and not steps
+    assert ro.flt.n_actor == 1 and not steps                    # the actor is only scored (collapse monitors)
+    # per hook: Q of the nominal's decision, of a stop and of the actor's decision, and both per-tick actions / bound
+    assert len(ro.trace["V"]) == len(ro.trace["Q_stop"]) == len(ro.trace["Q_pi"]) == 1
+    assert np.allclose(ro.flt.scored[1], 3 * 0.01) and np.allclose(ro.flt.scored[2], 0.0)
+    assert np.allclose(ro.trace["a_pi"][0], 0.01) and np.allclose(ro.trace["a_nom"][0], 0.1)
     assert np.allclose(ro._tick_action, 0.1)                    # the stored command stays the per-tick one
+
+
+def test_nominal_decision_is_the_sum_of_the_per_tick_commands():
+    """A planner arm that tracks its plan with a constant lag: the filter's nominal decision equals the sum of the
+    H per-tick commands the buffer would store (each = the target at the tick's end minus the live joint state)."""
+    from main.lang.rollout import nominal_decision
+
+    spt, H, v, lag = 10, 3, np.array([0.006, -0.002]), np.array([0.02, -0.01])
+    pos = np.arange(200)[:, None] * v[None]                       # plan rows, constant speed
+    q_at = lambda row: pos[row - 1] - lag                         # live state at the tick that starts at `row`
+    for i in (10, 40, 150):
+        cmds = [pos[min(i + k * spt + spt - 1, len(pos) - 1)] - q_at(i + k * spt) for k in range(H)]
+        assert np.allclose(nominal_decision(pos, q_at(i), i, spt, H), np.sum(cmds, 0))
+        assert np.allclose(nominal_decision(pos, q_at(i), i, spt, 1), cmds[0])        # H = 1: CrossSafe's a_nom
+        # the bare endpoint misses (H - 1) lags
+        assert np.allclose(pos[i + H * spt - 1] - q_at(i), np.sum(cmds, 0) - (H - 1) * lag)
+    # a new plan from the live state (row 0, no lag yet): the endpoint itself
+    assert np.allclose(nominal_decision(pos, pos[0], 0, spt, H), pos[H * spt - 1] - pos[0])
+    # the plan ends inside the decision: the later ticks command the remaining lag to its last row
+    T = len(pos)
+    i = T - 1 - spt - 3                                           # tick 0 and tick 1 start inside the plan, tick 2 after it
+    q0 = q_at(i)
+    cmds = [pos[i + spt - 1] - q0, pos[T - 1] - q_at(i + spt), lag]
+    assert np.allclose(nominal_decision(pos, q0, i, spt, H), np.sum(cmds, 0))
+    # the hook also runs after the plan's last row (a gripper still moving): rows clip to the plan's end
+    assert np.allclose(nominal_decision(pos, pos[T - 1] - lag, T + 5, spt, H), H * lag)
+
+
+def test_release_test_counts_the_offset_from_the_stale_plan_once():
+    from main.lang.rollout import nominal_decision
+
+    pos = np.arange(200)[:, None] * np.array([0.006, -0.002])[None]
+    q = pos[30] - np.array([0.05, -0.02])            # the actor held the arm back while the cursor stayed at row 40
+    assert np.allclose(nominal_decision(pos, q, 40, 10, 3, stale=True), pos[69] - q)
+    assert not np.allclose(nominal_decision(pos, q, 40, 10, 3), pos[69] - q)

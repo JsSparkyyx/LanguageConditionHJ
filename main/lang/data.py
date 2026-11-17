@@ -340,6 +340,10 @@ class LangSource:
             nh = (self.rows + self.H) % C
             ok = (np.asarray(A["episode_id"])[nh].astype(np.int64) == self.eid) & \
                  (np.asarray(A["t_in_ep"])[nh].astype(np.int64) == self.t + self.H)
+            # ... and a WRITTEN row: slots past the rows in use can still hold a killed attempt of the same episode
+            # id (a rounds resume collects it again from the same start row; review 2026-11-17)
+            n_used, head = int(rs.buf.n), int(getattr(rs.buf, "head", rs.buf.n))
+            ok &= (self.rows + self.H < n_used) if n_used < C else (((head - 1 - self.rows) % C) >= self.H)
             self.next = nh
             for f in ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb"):
                 setattr(self, f, getattr(self, f)[ok])

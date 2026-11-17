@@ -683,6 +683,9 @@ TRAIN_ONLY_FIELDS = frozenset({
     # subset are training-side only. lang_version stays IN the hash: a version-2 shard is a different collection
     "scene_fusion", "fusion_words", "fusion_dtype", "fusion_chunk", "critic_readout", "critic_mlp_hidden",
     "train_episodes_per_task",
+    # 2026-11-10 (ACTION_SENSITIVITY_PLAN): how the action enters the critic; model only (review 2026-11-17: they
+    # were left in the hash, which changed it for every shard collected before them)
+    "critic_injection", "critic_chunk",
     # V6 (2026-10-14): which prefix the words read is decided at training time (the shard stores every frame's)
     "qwen_words_prefix",
     # VLM failure function (2026-10-26): the labels are read at training time, next to the rows
