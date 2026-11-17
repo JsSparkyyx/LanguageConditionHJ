@@ -279,7 +279,7 @@ def child(args) -> int:
         from ..evaluate import HoloBrainPolicy
 
         policy = HoloBrainPolicy(Path(args.model_dir), args.chunk)
-    prompts = SCRIPTED_PROMPTS if args.agent == "scripted" else PROMPTS
+    prompts = [p for p in (SCRIPTED_PROMPTS if args.agent == "scripted" else PROMPTS) if p in args.prompts]
     times = []
     for sc in scenes:
         for pr in prompts:
@@ -431,6 +431,8 @@ def main(argv=None) -> int:
     ap.add_argument("--make-scenes", action="store_true", help="only draw the scene lists (no policy)")
     ap.add_argument("--part", type=int, default=0, help="this process runs the scenes with index %% parts == part")
     ap.add_argument("--parts", type=int, default=1)
+    ap.add_argument("--prompts", nargs="*", default=list(PROMPTS), choices=PROMPTS,
+                    help="run only these prompts (Yuxuan 11-17: A B C, no B2 / C2)")
     ap.add_argument("--child", action="store_true")
     args = ap.parse_args(argv)
     if args.summary:

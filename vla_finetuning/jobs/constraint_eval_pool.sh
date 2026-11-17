@@ -16,6 +16,8 @@ TASKS=${EVAL_TASKS:-$(python -m vla_finetuning.items.constraint --active)}
 # a model tested on some tasks only (Yuxuan 11-06, the T1-only Qwen run): results_constraint/<name>/TASKS lists them
 # prompt-B videos (video_constraint.py, Yuxuan 11-17): the models listed in $RES/videos/NAMES, before the tests
 VNAMES=$(cat $RES/videos/NAMES 2>/dev/null)
+# the prompts to run (Yuxuan 11-17: "no need b2 c2"): $RES/PROMPTS, else all five
+PR=$(cat $RES/PROMPTS 2>/dev/null)
 tasks_of() { if [ -f $RES/$1/TASKS ]; then cat $RES/$1/TASKS; else echo $TASKS; fi; }
 parts() { [ -n "${PARTS:-}" ] && { echo $PARTS; return; }; case "$2:$1" in scripted:*) echo 1;; *:clean_pour) echo 4;; *:push_zone|*:selective_avoid) echo 2;; *) echo 1;; esac; }
 items() {
@@ -42,7 +44,7 @@ run_item() {   # name task part parts -> rc
     return $?
   fi
   python -m vla_finetuning.items.evaluate_constraint --agent $agent $md --model-name $name --out $RES/$name \
-    --tasks $t --child --part $k --parts $n $SC < /dev/null >> $RES/_logs/${name}_${t}_p$k.log 2>&1
+    --tasks $t --child --part $k --parts $n $SC ${PR:+--prompts $PR} < /dev/null >> $RES/_logs/${name}_${t}_p$k.log 2>&1
 }
 marker() { if [ "$1" = scenes ]; then echo $RES/scenes/DONE_$2; elif [ "${1#video:}" != "$1" ]; then
   echo $RES/videos/${1#video:}/DONE; else echo $RES/$1/DONE_$2.p$3; fi; }
