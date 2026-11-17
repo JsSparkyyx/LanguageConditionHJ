@@ -112,6 +112,7 @@ class _Flt:
         self.q, self.margin, self.release_margin, self.hold_ticks, self._was_engaged = q, 0.0, 0.0, 3, False
         self.n_actor = 0
         self.scored = []
+        self.joint_index = torch.tensor([0, 1, 2, 3, -1])
 
     def q_nom(self, enc, a, Jl, Ja):
         self.scored.append(a.cpu().numpy().copy())

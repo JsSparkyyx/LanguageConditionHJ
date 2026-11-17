@@ -543,9 +543,16 @@ class LangRoundMetrics:
                 for k in ("harm_named", "any_intervention", "intervention_rate", "task_success", "v_le_h_frac"):
                     vals = [float(r[k]) for r in sel if r.get(k) is not None and r[k] == r[k]]
                     out[f"round_overview/actor_{kind}/{k}"] = float(np.mean(vals)) if vals else float("nan")
-        for k in HOOK_COLLAPSE_KEYS:   # the collapse monitors at the filter's decisions, mean over the filter episodes
-            vals = [float(r[k]) for r in rows if r.get(k) is not None and r[k] == r[k]]
-            out[f"collapse_round/{k}"] = float(np.mean(vals)) if vals else float("nan")
+        # the collapse monitors at the filter's decisions, mean over the round's filter episodes. An episode's
+        # monitors describe the actor that episode rolled out, so the plain keys are the ARGMAX actor's episodes (the
+        # deployed actor) and a run with a boundary actor gets its episodes under their own keys
+        kinds = sorted({r.get("actor", "argmax") for r in rows})
+        for kind in kinds or ["argmax"]:
+            sel = [r for r in rows if r.get("actor", "argmax") == kind]
+            pre = "collapse_round/" if kind == "argmax" else f"collapse_round/actor_{kind}/"
+            for k in HOOK_COLLAPSE_KEYS:
+                vals = [float(r[k]) for r in sel if r.get(k) is not None and r[k] == r[k]]
+                out[f"{pre}{k}"] = float(np.mean(vals)) if vals else float("nan")
         out["round_overview/n_filter_episodes"] = len(rows)
         out["round_overview/n_not_run"] = len(all_rows) - len(rows)
         out["round_overview/n_exception_scored"] = sum(1 for r in rows if r.get("status") == "exception")

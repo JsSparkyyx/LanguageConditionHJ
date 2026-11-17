@@ -306,6 +306,13 @@ class LangConfig(FrozenConfig):
     # engaged block holds the actor's action for its H ticks (hj_hold_ticks must equal H). 1 = one tick (CrossSafe).
     # Example: H = 3 at 25 Hz is one action per 120 ms
     decision_ticks: int = 1
+    # Branch data in the batch (T8_BRANCH_PLAN.md, 2026-11-17; the action-sensitivity study's "new mix"): shares of
+    # every batch drawn from the branch shards' continuation rows and decision rows (data.LangSource.group), the
+    # rest from normal rows. A decision row's action window is the branch's decision: several branches of one saved
+    # state show the same state with different actions and outcomes. 0 / 0 = no shares (rows drawn alike).
+    # Example: 0.25 / 0.25 with a batch of 64 = 32 normal, 16 continuation, 16 decision rows
+    branch_cont_frac: float = 0.0
+    branch_decision_frac: float = 0.0
     # E6 scene-count curve: train on the first N episodes per (task, embodiment) of a fixed nested order (0 = all).
     # Training sampler only (the validation / probe sampler always sees every episode)
     train_episodes_per_task: int = 0
@@ -367,6 +374,11 @@ class LangConfig(FrozenConfig):
     # A second, boundary-seeking actor (T8_BOUNDARY_PLAN.md, Yuxuan 2026-11-15): trained so that Q(s, beta(s)) lies in
     # [boundary_lo, boundary_hi] (h units), never in the critic's target, never deployed. Each filter episode of
     # rounds collection uses it with probability boundary_actor_frac (episode_actor), the argmax actor otherwise
+    # After a filter release inside a via path (a drag), the nominal continues the path from where the arm is and
+    # at its current speed (main/lang/controller.py ResumeViaController, 2026-11-17). False = RiskTickController's
+    # replan, which runs every original waypoint again (the tray goes back to the start) on the original time law
+    # (faster): the runs before this field trained and were evaluated with that
+    resume_via_replan: bool = False
     boundary_actor: bool = False
     boundary_lo: float = 0.0
     boundary_hi: float = 0.1
@@ -397,6 +409,8 @@ class LangConfig(FrozenConfig):
         assert (self.critic_injection == "linear" and int(self.critic_chunk) == 1) or self.critic_readout == "mlp", \
             "the revised injection and the chunk critic use the MLP readout"
         assert int(self.decision_ticks) >= 1, self.decision_ticks
+        assert 0.0 <= self.branch_cont_frac and 0.0 <= self.branch_decision_frac \
+            and self.branch_cont_frac + self.branch_decision_frac < 1.0, "branch shares: each >= 0, their sum < 1"
         assert int(self.decision_ticks) == 1 or (int(self.critic_chunk) == 1
                                                   and int(self.decision_ticks) == int(self.hj_hold_ticks)), \
             "decision_ticks > 1: one summed action (critic_chunk 1) and a filter block of the same length"

@@ -102,7 +102,11 @@ def test_round_summary_carries_the_hook_stats(tmp_path):
         line = {"task": "tray_slide", "embodiment": "ur5-wsg", "named_consequence": "upright", "designation": "harm",
                 "episode_id": i, "status": "ok", "success": True, "n_ticks": 10}
         rm.add(LangRoundMetrics.episode_row(1, line, tr))
+    line = {"task": "tray_slide", "embodiment": "ur5-wsg", "named_consequence": "upright", "designation": "harm",
+            "episode_id": 9, "status": "ok", "success": True, "n_ticks": 10, "actor": "boundary"}
+    rm.add(LangRoundMetrics.episode_row(1, line, dict(trace, Q_stop=[0.9, 0.6])))   # a boundary-actor episode
     out = rm.round_summary(1)
+    assert out["collapse_round/actor_boundary/q_stop_minus_nom"] == pytest.approx(0.7)   # kept apart
     assert out["collapse_round/q_stop_minus_nom"] == pytest.approx(0.2)
     assert out["collapse_round/n_boundary_hooks"] == 2
     assert out["collapse_round/actor_obs_std"] == pytest.approx(0.1)

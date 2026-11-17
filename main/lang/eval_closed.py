@@ -333,7 +333,7 @@ def filter_run(models: Models, cfg: LangConfig, nom: dict, rule: dict, kind: str
     import torch
 
     from main.item_envs import language
-    from main.item_envs.controller import RiskTickController
+    from .controller import controller_for
     from main.train.collect import CKPT_DIR, make_kinematics
 
     from .rollout import LangRolloutController, wire_item_eval
@@ -351,7 +351,7 @@ def filter_run(models: Models, cfg: LangConfig, nom: dict, rule: dict, kind: str
                                policy_enc=models.pe, actor=models.actor, critics=models.critics,
                                filter_active=bool(filter_active),
                                episode_id=seed, rng=np.random.RandomState(seed),
-                               max_steps=10 * int(cfg.max_steps_per_episode), controller_cls=RiskTickController,
+                               max_steps=10 * int(cfg.max_steps_per_episode), controller_cls=controller_for(cfg),
                                text_store=models.text, fusion=fusion)
     runner = ro.env._item_runner
     rec = language.episode_record(runner, seed)

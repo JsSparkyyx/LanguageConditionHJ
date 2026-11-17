@@ -51,6 +51,8 @@ from .kv_buffer import KvBuffer  # noqa: E402
 from .neck_buffer import NeckBuffer  # noqa: E402
 from .scene_roles import ref_rows  # noqa: E402
 
+# LangSource arrays aligned with its sample rows (filtered together)
+ROW_FIELDS = ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb", "branch", "t_branch")
 ROBOT_FIELDS = ("state_tokens", "body_tokens", "link_pos", "body_mask", "joint_index", "Jlin", "Jang", "dtheta_max")
 STEP_FIELDS = ROBOT_FIELDS + ("scene_tokens", "scene_pos", "dtheta", "episode_id")
 # the 5 frames of a sample in neck_idx column order (t, t-k, 0, t+1, t+1-k): keys of LangSource.rows_of
@@ -309,7 +311,28 @@ class LangSource:
         self.mixed = mixed[keep]
         self.eid = np.asarray(A["episode_id"])[self.rows].astype(np.int64)
         self.t = np.asarray(A["t_in_ep"])[self.rows].astype(np.int64)
+        # branch shards (scripts/lang/action_sens/collect_branches.py; T8_BRANCH_PLAN.md): an episode line with
+        # "branch" starts with n_ctx copied context rows, which give the first real row its frames t-k and 0 but
+        # are not transitions themselves; episodes marked held out (branch states kept for the probes, and their
+        # planner episodes) never train. t_branch = ticks since the branch state (-1 for a normal row)
+        nctx = np.zeros(self.rows.size, np.int64)
+        held = np.zeros(self.rows.size, bool)
+        self.branch = np.zeros(self.rows.size, bool)
+        for e in np.unique(self.eid):
+            ln = self.lines.get(int(e)) or {}
+            br = ln.get("branch")
+            if br is None and not ln.get("held_out"):
+                continue
+            m = self.eid == e
+            held[m] = bool((br or {}).get("held_out") or ln.get("held_out"))
+            if br is not None:
+                self.branch[m], nctx[m] = True, int(ln.get("n_ctx", 0))
+        self.t_branch = np.where(self.branch, self.t - nctx, -1)
+        keep_b = (self.t >= nctx) & ~held
+        for f in ("rows", "next", "first", "mixed", "eid", "t", "branch", "t_branch"):
+            setattr(self, f, getattr(self, f)[keep_b])
         tasks, hosts, embs = [], [], []
+        self.group = np.zeros(0, np.int64)
         if not self.rows.size:
             self.task, self.host, self.emb = np.zeros(0, np.int64), np.zeros(0, object), np.zeros(0, object)
             self.recall = np.zeros((rs.buf.capacity, rs.buf.r_max), dtype=bool)
@@ -323,7 +346,7 @@ class LangSource:
         if self.stale_bead:
             fresh = ~np.isin(self.task, [CANON_TASKS.index(x) for x in BEAD_TASKS])
             self.n_stale_dropped = int((~fresh).sum())
-            for f in ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb"):
+            for f in ROW_FIELDS:
                 setattr(self, f, getattr(self, f)[fresh])
         if self.drop_old_t6:
             old = [int(e) for e in np.unique(self.eid) if old_t6_record(rs.records[int(e)])]
@@ -333,7 +356,7 @@ class LangSource:
                     print(f"[data] {self.name}: {len(old)} T6 episodes of the 2026-10-04 design (bins / plates) "
                           "skipped (drop_old_t6_rows)", flush=True)
                 self.n_old_t6_dropped = int((~keep).sum())
-                for f in ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb"):
+                for f in ROW_FIELDS:
                     setattr(self, f, getattr(self, f)[keep])
         if self.H > 1 and self.rows.size:
             C = rs.buf.capacity
@@ -345,8 +368,12 @@ class LangSource:
             n_used, head = int(rs.buf.n), int(getattr(rs.buf, "head", rs.buf.n))
             ok &= (self.rows + self.H < n_used) if n_used < C else (((head - 1 - self.rows) % C) >= self.H)
             self.next = nh
-            for f in ("rows", "next", "first", "mixed", "eid", "t", "task", "host", "emb"):
+            for f in ROW_FIELDS:
                 setattr(self, f, getattr(self, f)[ok])
+        # row groups for the batch mix (LangConfig.branch_cont_frac / branch_decision_frac): 0 normal, 1 branch
+        # continuation, 2 branch decision = the first max(H, 1) rows from the branch state, whose action window
+        # holds the branch's decision
+        self.group = np.where(self.branch, np.where(self.t_branch < max(self.H, 1), 2, 1), 0).astype(np.int64)
         self.recall = recall_labels(np.asarray(A["h_rules"]), np.asarray(A["episode_id"]),
                                     np.asarray(A["t_in_ep"]).astype(np.int64), rs.buf.n, self.recall_horizon)
         # drop cached frame 0 of episodes no longer in the ring
@@ -611,6 +638,15 @@ class LangSampler:
         self.by_task = {int(t): np.flatnonzero(ok & (self.task_of == t)) for t in np.unique(self.task_of[ok])}
         self.mixed_by_task = {t: idx[self.mixed_of[idx]] for t, idx in self.by_task.items()}
         self.mixed_by_task = {t: v for t, v in self.mixed_by_task.items() if v.size}
+        # the batch mix by row group (0 normal / 1 branch continuation / 2 branch decision), used when the config
+        # sets branch shares: each group has its own task pools and pair pools
+        self.group_of = cat([s.group for s in self.sources], np.int64)
+        self.group_pools = {}
+        for g in (0, 1, 2):
+            by = {int(t): np.flatnonzero(ok & (self.task_of == t) & (self.group_of == g))
+                  for t in np.unique(self.task_of[ok & (self.group_of == g)])}
+            mx = {t: idx[self.mixed_of[idx]] for t, idx in by.items()}
+            self.group_pools[g] = (by, {t: v for t, v in mx.items() if v.size})
         self.all_ok = np.flatnonzero(ok)
         # episodes per (source) for the shuffled control (the same subset as the drawn rows when one is set)
         self.episodes = [(j, int(e)) for j, s in enumerate(self.sources) for e in np.unique(s.eid)
@@ -700,17 +736,33 @@ class LangSampler:
         rng = rng or self.rng
         cfg = self.cfg
         pf = cfg.pair_frac if pair_frac is None else pair_frac
-        picks = []
-        if cfg.relabel == "paired":
-            n_pair = int(round(pf * B / 2.0))
-            for p, gi in enumerate(self._draw(n_pair, self.mixed_by_task, rng)):
+        f_cont, f_dec = float(getattr(cfg, "branch_cont_frac", 0.0)), float(getattr(cfg, "branch_decision_frac", 0.0))
+        if f_cont <= 0 and f_dec <= 0:   # no branch shares: every row drawn alike (branch rows by their count)
+            parts = [(B, self.by_task, self.mixed_by_task)]
+        else:
+            # T8_BRANCH_PLAN: fixed shares of the batch from the branch continuation and decision rows (the study's
+            # mix: 0.25 each), the rest normal rows. Example: B = 64 -> 32 normal, 16 continuation, 16 decision
+            n_dec, n_cont = int(round(f_dec * B)), int(round(f_cont * B))
+            parts = [(B - n_dec - n_cont, *self.group_pools[0]), (n_cont, *self.group_pools[1]),
+                     (n_dec, *self.group_pools[2])]
+            for (n, by, _), name in zip(parts, ("normal", "branch continuation", "branch decision")):
+                if n > 0 and not by:
+                    raise RuntimeError(f"the batch mix wants {n} {name} rows and the data has none")
+        picks, p = [], 0
+        for n, by, mixed in parts:
+            part = []
+            if cfg.relabel == "paired":
+                n_pair = int(round(pf * n / 2.0))
+                for gi in self._draw(n_pair, mixed, rng):
+                    s, i = self.sources[self.sid[gi]], int(self.loc[gi])
+                    part.append((int(gi), self._pick(s, i, rng, True), p))
+                    part.append((int(gi), self._pick(s, i, rng, False), p))
+                    p += 1
+            for gi in self._draw(n - len(part), by, rng):
                 s, i = self.sources[self.sid[gi]], int(self.loc[gi])
-                picks.append((int(gi), self._pick(s, i, rng, True), p))
-                picks.append((int(gi), self._pick(s, i, rng, False), p))
-        for gi in self._draw(B - len(picks), self.by_task, rng):
-            s, i = self.sources[self.sid[gi]], int(self.loc[gi])
-            col = self._fixed_col(s, i) if cfg.relabel == "fixed" else self._pick(s, i, rng)
-            picks.append((int(gi), col, -1))
+                col = self._fixed_col(s, i) if cfg.relabel == "fixed" else self._pick(s, i, rng)
+                part.append((int(gi), col, -1))
+            picks += part[:n]
         return picks[:B]
 
     # ------------------------------------------------------------- sample ----
@@ -846,6 +898,7 @@ class LangSampler:
                     tm = A["token_masks"]
                     for f, slot in enumerate((rows["row"], rows["prev_row"], rows["first_row"])):
                         ref[b, f] = np.asarray(tm[slot, rr]).max(0).reshape(-1).astype(np.float16) / 255.0
+        out["group"] = np.asarray([int(self.group_of[gi]) for gi, _, _ in picks], np.int64)   # 0 / 1 / 2 (refresh)
         out.update({"h": np.asarray(h, np.float32), "h_next": np.asarray(hn, np.float32),
                     "fails_soon": np.asarray(fs), "fails_soon_recall": np.asarray(fsr), "pair": np.asarray(pair)})
         if hseq:

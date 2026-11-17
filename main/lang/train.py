@@ -720,7 +720,11 @@ class LangTrainer:
         boundary = np.asarray(b["fails_soon"], bool) & (h.detach().float().cpu().numpy() > 0)
         out.update(critic_collapse_stats(q_rand.float().cpu().numpy(), q_scale.float().cpu().numpy(),
                                          q_pi.float().cpu().numpy(), boundary))
-        valid = (dmax > 0).cpu().numpy()
+        valid = np.zeros(tuple(dmax.shape), bool)     # the arm joints' action columns (grippers are never driven)
+        ji_np = ji.cpu().numpy()
+        ji_np = ji_np if ji_np.ndim == 2 else np.broadcast_to(ji_np, (valid.shape[0], ji_np.shape[-1]))
+        for r in range(valid.shape[0]):
+            valid[r, ji_np[r][ji_np[r] >= 0]] = True
         bound = dmax.clamp_min(1e-9)
         data_frac = (_t(b["dtheta"], dev=dmax.device) / bound).float().cpu().numpy()   # the row's own per-tick command
         pair = np.asarray(b["pair"])

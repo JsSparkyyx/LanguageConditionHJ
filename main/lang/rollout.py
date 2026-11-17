@@ -657,7 +657,8 @@ class LangRolloutController(RolloutController):
             q_pi = float(self.flt.q_nom(enc, H * a, Jl, Ja))
             q_stop = float(self.flt.q_nom(enc, torch.zeros_like(a_nom_t), Jl, Ja))
         a_np = a[0].cpu().numpy()
-        cols = dmax > 0
+        ji = np.asarray(self.flt.joint_index.cpu().numpy()).reshape(-1)
+        cols = np.unique(ji[ji >= 0])            # the arm joints (the gripper columns are never driven)
         for k, v in (("Q_pi", q_pi), ("Q_stop", q_stop), ("a_pi", (a_np[cols] / dmax[cols]).astype(np.float32)),
                      ("a_nom", (self._tick_action[cols] / dmax[cols]).astype(np.float32))):
             self.trace.setdefault(k, []).append(v)

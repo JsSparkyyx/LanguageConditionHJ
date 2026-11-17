@@ -283,7 +283,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
     import torch
 
     from main.item_envs import language
-    from main.item_envs.controller import RiskTickController
+    from .controller import controller_for   # RiskTickController, or its via-resume subclass (cfg.resume_via_replan)
     from main.item_envs.margin_hook import wire_item_episode
     from main.train.collect import CKPT_DIR, make_kinematics
 
@@ -364,7 +364,7 @@ def run_episodes(cfg: LangConfig, out_root: Path, slots: list[tuple], episode_of
                     filter_active=use_filter, buf=buf, episode_id=seed,
                     perturb_prob=cfg.perturb_prob, rng=np.random.RandomState(seed),
                     max_steps=10 * int(cfg.max_steps_per_episode),
-                    controller_cls=RiskTickController, text_store=text_store, keep_neck=neck_buf is not None,
+                    controller_cls=controller_for(cfg), text_store=text_store, keep_neck=neck_buf is not None,
                     qwen=qwen, keep_kv=kv_buf is not None, keep_frames=frames_buf is not None,
                 )
             except Exception as exc:
@@ -686,6 +686,8 @@ TRAIN_ONLY_FIELDS = frozenset({
     # 2026-11-10 (ACTION_SENSITIVITY_PLAN): how the action enters the critic; model only (review 2026-11-17: they
     # were left in the hash, which changed it for every shard collected before them)
     "critic_injection", "critic_chunk",
+    # 2026-11-17: the batch mix with branch rows
+    "branch_cont_frac", "branch_decision_frac",
     # V6 (2026-10-14): which prefix the words read is decided at training time (the shard stores every frame's)
     "qwen_words_prefix",
     # VLM failure function (2026-10-26): the labels are read at training time, next to the rows
@@ -701,7 +703,9 @@ NEUTRAL_COLLECT_FIELDS = {"encoder": "holobrain_gd", "spawn_pool": "current", "v
                           # shards collected on 11-15 / 16 stored a hash WITH the boundary fields, so resuming one of
                           # them reports collect_hash (they are complete; collect into a new shard instead)
                           "boundary_actor": False, "boundary_lo": 0.0, "boundary_hi": 0.1,
-                          "boundary_actor_frac": 0.5, "decision_ticks": 1}
+                          "boundary_actor_frac": 0.5, "decision_ticks": 1,
+                          # 2026-11-17: how a via path is replanned after a filter release (main/lang/controller.py)
+                          "resume_via_replan": False}
 
 
 def collect_fields(cfg) -> dict:
