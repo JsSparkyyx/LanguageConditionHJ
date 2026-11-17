@@ -449,6 +449,21 @@ Defaults chosen in the session (change in `residual/config.py`):
   - completion paid always: `runs/residual/residual_dev_always_s05_lr1e4_mbkl`, gpuA100x4-interactive;
   - fixed 5-tick trigger: `runs/residual/residual_fixed_success_s05_lr1e4_mbkl`, gpuA100x8-interactive (about 5x
     slower per update, so this one takes days).
+- **Paused 2026-11-17 16:22 (Yuxuan: leave the residual training aside for now).** Feeders stopped, queued pieces
+  cancelled; both runs keep their checkpoints. Completion always: 96 of 350 updates, in the way broken 0.50-0.65 against
+  its baseline 0.55, success unchanged (about 0.58), no sign of missed grasps. Fixed trigger: 21 of 350 updates, broken
+  0.45-0.55 against 0.50, success about 0.3 (the arm crawls). Resume either with its chain_train.sh line above (same
+  three arguments, PART set; it resumes from the checkpoint).
+  Video check (run 2, update 350): the correction stays small (RMS about 9 % of the per-tick speed limit, about 0.6 cm
+  at the hand) and never makes a detour; in the bottle scene the carried container hits instead of the arm, in the
+  apple scene (safe for the planner alone) the arm gets stuck replanning from update 150 on. Side-by-side videos:
+  `runs/residual/residual_dev_success_s05_lr1e4_mbkl_1115/eval/compare/`.
+  Paper check (arXiv 2610.37652, read 11-17): it never reports this problem. Differences that likely matter: start
+  noise 0.4 of the action limit plus an entropy bonus 0.0005 (ours about 0.08 and none), about 790 M steps per run
+  (ours 5.8 M), a learned nominal that continues from the corrected state (ours pulls back to a fixed plan), and saves
+  that need only small finger corrections. Their noise level would trip our 0.1 rad replan rule on many ticks.
+  Open cheap checks if the work resumes: the scripted detour within the 0.2 rad bound on the 20 in-the-way scenes, and
+  re-testing run 2's model at w = 0.
 - A link's position in the state is the centre of its collision spheres (13 links per arm); its distance to the
   named object is the exact minimum over its spheres (the rule's own code); its direction points to the closest
   point of the object's box.
