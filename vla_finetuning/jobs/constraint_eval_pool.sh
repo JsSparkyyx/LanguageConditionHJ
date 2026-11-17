@@ -14,11 +14,14 @@ cd $R
 TASKS=${EVAL_TASKS:-$(python -m vla_finetuning.items.constraint --active)}
 [ -n "$TASKS" ] || { echo "[eval pool] task lookup failed"; exit 75; }
 # a model tested on some tasks only (Yuxuan 11-06, the T1-only Qwen run): results_constraint/<name>/TASKS lists them
+# prompt-B videos (video_constraint.py, Yuxuan 11-17): the models listed in $RES/videos/NAMES, before the tests
+VNAMES=$(cat $RES/videos/NAMES 2>/dev/null)
 tasks_of() { if [ -f $RES/$1/TASKS ]; then cat $RES/$1/TASKS; else echo $TASKS; fi; }
 parts() { [ -n "${PARTS:-}" ] && { echo $PARTS; return; }; case "$2:$1" in scripted:*) echo 1;; *:clean_pour) echo 4;; *:push_zone|*:selective_avoid) echo 2;; *) echo 1;; esac; }
 items() {
   local t n k name
   for t in $TASKS; do echo "scenes $t 0 1"; done
+  for name in $VNAMES; do echo "video:$name selective_avoid 0 1"; done
   for name in $NAMES; do for t in $(tasks_of $name); do
     n=$(parts $t $name); for k in $(seq 0 $((n - 1))); do echo "$name $t $k $n"; done
   done; done
@@ -31,12 +34,18 @@ run_item() {   # name task part parts -> rc
       < /dev/null >> $RES/_logs/scenes_$t.log 2>&1
     return $?
   fi
-  local agent=model md=""
-  if [ "$name" = scripted ]; then agent=scripted; else md="--model-dir $R/vla_finetuning/models/$name/model"; fi
+  local agent=model md="" v=${name#video:}
+  if [ "$v" = scripted ]; then agent=scripted; else md="--model-dir $R/vla_finetuning/models/$v/model"; fi
+  if [ "$v" != "$name" ]; then
+    python -m vla_finetuning.items.video_constraint --agent $agent $md --model-name $v --results $RES/$v \
+      --out $RES/videos/$v $SC < /dev/null >> $RES/_logs/video_$v.log 2>&1
+    return $?
+  fi
   python -m vla_finetuning.items.evaluate_constraint --agent $agent $md --model-name $name --out $RES/$name \
     --tasks $t --child --part $k --parts $n $SC < /dev/null >> $RES/_logs/${name}_${t}_p$k.log 2>&1
 }
-marker() { if [ "$1" = scenes ]; then echo $RES/scenes/DONE_$2; else echo $RES/$1/DONE_$2.p$3; fi; }
+marker() { if [ "$1" = scenes ]; then echo $RES/scenes/DONE_$2; elif [ "${1#video:}" != "$1" ]; then
+  echo $RES/videos/${1#video:}/DONE; else echo $RES/$1/DONE_$2.p$3; fi; }
 slot() {
   local work name t k n m rc
   while true; do

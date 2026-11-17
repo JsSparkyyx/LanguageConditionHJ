@@ -151,9 +151,11 @@ def scene_list(task: str, n: int, sdir: Path) -> list[dict]:
 
 
 # ------------------------------------------------------------------ one episode ----
-def run_prompt(sc: dict, prompt: str, agent: str, policy, out_root: Path, cap_per_action: float = 150.0) -> dict:
+def run_prompt(sc: dict, prompt: str, agent: str, policy, out_root: Path, cap_per_action: float = 150.0,
+               recorder_fn=None) -> dict:
     """One episode of a scene under one prompt: the model (HoloBrain in place of play_once) or the scripted
-    controller (A / C careless, B careful for X), scored on X's named rule (and Y's)."""
+    controller (A / C careless, B careful for X), scored on X's named rule (and Y's). recorder_fn(task_obj): a
+    DemoMonitor recorder for the episode's frames (video_constraint.py), default none."""
     from .monitor import DemoMonitor
     from .evaluate_items import _NoRecorder, _DEVNULL
 
@@ -228,7 +230,9 @@ def run_prompt(sc: dict, prompt: str, agent: str, policy, out_root: Path, cap_pe
         from .collect_items import MAX_STEPS
 
         runner.max_steps = MAX_STEPS[task]
-    DemoMonitor(task_obj, recorder=_NoRecorder(), joint_fn=lambda: np.zeros(1), contact_fn=contacts,
+    # with a recorder the real joint vector, so frames are skipped only during pure waits (zeros: none recorded)
+    DemoMonitor(task_obj, recorder=recorder_fn(task_obj) if recorder_fn else _NoRecorder(),
+                joint_fn=None if recorder_fn else (lambda: np.zeros(1)), contact_fn=contacts,
                 abort_on_touch=False).install()
     t0 = time.time()
     meta, err = runner.run()
