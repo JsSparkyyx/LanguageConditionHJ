@@ -90,3 +90,24 @@ def test_controller_choice():
 
     assert controller_for(LangConfig()) is RiskTickController
     assert controller_for(dataclasses.replace(LangConfig(), resume_via_replan=True)) is ResumeViaController
+
+
+def test_capped_finish_never_exceeds_the_cap():
+    """d_*_finish (2026-11-18): the resumed drag cruises at most at the cap, with the original peak acceleration and a
+    brake over the original stop distance, so it brakes gently; an arm handed over faster than the cap slows to it."""
+    from main.lang.controller import capped_profile
+
+    for prof in (MEDIUM, RECOVER):
+        cp = capped_profile(prof, 0.15)
+        assert cp["v"] == pytest.approx(0.15) and cp["kind"] == "hard_stop" and "v2" not in cp
+        for R, v0 in ((0.20, 0.0), (0.20, 0.10), (0.12, 0.30), (0.03, 0.05)):
+            segs = resume_segments(R, v0, cp, 0.15)
+            assert max(max(a, b) for _, a, b, _ in segs) <= max(0.15, v0) + 1e-9
+            assert sum(x[3] for x in segs) == pytest.approx(R)
+            s = resume_law(R, v0, cp, 0.15)
+            v = np.diff(s) / PHYSICS_DT
+            assert v[2:].max() <= max(0.15, v0) * 1.02 and s[-1] == pytest.approx(R)
+            if v0 <= 0.15 and R >= 0.1:                     # the brake: 0.75 v^2 / stop_dist, 0.42 m/s^2 for medium
+                assert np.abs(accel(s)[-200:]).max() <= 0.75 * 0.15 ** 2 / prof["stop_dist"] * 1.05
+    fast = resume_segments(0.20, 0.30, capped_profile(MEDIUM, 0.15), 0.15)   # handed over at 0.30 m/s: down to 0.15
+    assert fast[0][1:3] == (0.30, 0.15) and fast[1][1:3] == (0.15, 0.15)

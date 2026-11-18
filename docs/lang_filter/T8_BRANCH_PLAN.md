@@ -63,6 +63,32 @@ the pad. These rows show the critic exactly that. They are collected for the mai
 its re-collected parents duplicate the main ones); the YOLO branch data collects all 10 continuations in one pass.
 Branch episode ids come from a fixed registry of the 10 names, so a subset run gives the same ids.
 
+### 2.2 Finishing continuations: slow down, then finish slowly (Yuxuan, 2026-11-18)
+
+The recovery continuations of 2.1 save the task, not the glass: over the 90 drags the glass fell in 96 % (medium) and
+100 % (fast) of `d_slow12_resume` and `d_half_resume`, as often as under the plan (97 %, 100 %). The resumed planner
+climbs back to the profile's cruise speed and brakes hard at the pad, which is what tips the glass; the slow-down
+alone works when it starts early (`d_slow12`, held: 9 of 60 medium glasses fell 0.75 s before the brake, the plan
+58 of 60). The continuations that kept the glass up all stop short of the pad. So no branch showed a real recovery.
+The recovery warmup does (`recover_glass`: 0.45 -> 0.15 m/s over 12 cm, then slow to the pad: 2 of 14 fell, all
+finished), but as planner-only episodes, one action per state, its slow-down planned from the start.
+
+Three more continuations slow down with actor-style commands, then hand back to the planner capped at
+`FINISH_SPEED` = 0.15 m/s (the `slow` behaviour's cruise speed, `recover_glass`'s second speed;
+`controller.capped_profile`: the original peak acceleration, the original 4 cm stop distance, so the pad brake peaks
+at 0.42 m/s^2 instead of 3.8; an arm handed over faster than 0.15 m/s first slows to it):
+
+| name | what the arm does |
+|---|---|
+| `d_slow12_finish` | actor-style slow-down to rest over 12 ticks, then the planner finishes at <= 0.15 m/s |
+| `d_slow25_finish` | the same over 25 ticks (1 s) |
+| `d_half_finish` | actor-style half speed for 6 ticks, quarter speed for 6, then the planner finishes at <= 0.15 m/s |
+
+Up to 130 ticks are stored per finishing continuation (to the pad at 0.15 m/s). Collected as a supplement over the
+same 90 drags (`data/lang_t8_branch_finish`, `--decisions d_slow12_finish,d_slow25_finish,d_half_finish`, with the
+YOLO detector's target masks so the YOLO run can use the same rows; only `branches/` trains), after a check on 4
+drags with videos (`data/lang_t8_branch_finish_check`).
+
 ## 3. Training mix (`main/lang/data.py`, `LangConfig.branch_cont_frac`, `branch_decision_frac`)
 
 - Rows of a branch episode: the 3 context rows are never sample rows; the first 3 rows from the branch state are

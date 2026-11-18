@@ -126,11 +126,22 @@ SCRIPTS = {
     # does when it engages and releases
     "d_slow12_resume": (12, lambda k: ("dtheta", _blocks(k, 12)), "resume"),
     "d_half_resume": (12, lambda k: ("dtheta", 0.5 if k <= 6 else 0.25), "resume"),
+    # real recovery (Yuxuan, 2026-11-18): the same slow-downs, then the planner finishes the drag at most at
+    # FINISH_SPEED (the slow behaviour's cruise speed, recover_glass's second speed), so its brake at the pad is
+    # gentle: the resumed planner of *_resume climbs back to the profile's speed and tips the glass at its own brake
+    # (96-100 % of medium / fast drags)
+    "d_slow12_finish": (12, lambda k: ("dtheta", _blocks(k, 12)), "finish"),
+    "d_slow25_finish": (25, lambda k: ("dtheta", _blocks(k, 25)), "finish"),
+    "d_half_finish": (12, lambda k: ("dtheta", 0.5 if k <= 6 else 0.25), "finish"),
 }
+FINISH_SPEED = 0.15   # m/s
 # the recovery continuations, chosen with --decisions (not in the default set); their ticks run to the pad, so up to
 # 100 are stored
 DECISIONS_T8_RESUME = [("d_slow12_resume", 12, 0.75), ("d_half_resume", 12, 0.5)]
-STORE_CAP = {"d_slow12_resume": 100, "d_half_resume": 100}
+# the finishing ones run to the pad at <= FINISH_SPEED: up to 130 ticks stored
+DECISIONS_T8_FINISH = [("d_slow12_finish", 12, 0.75), ("d_slow25_finish", 25, 0.88), ("d_half_finish", 12, 0.5)]
+STORE_CAP = {"d_slow12_resume": 100, "d_half_resume": 100, "d_slow12_finish": 130, "d_slow25_finish": 130,
+             "d_half_finish": 130}
 T8_CYCLE = ("medium", "medium", "fast", "medium", "slow", "medium")
 TASKS = {
     "tray_transport": {"kinds": {"tall": "tall", "short": "short"}, "ref_env": "ITEM_T5_REFERENT", "up": [0.0, 0.0, 1.0],
@@ -166,7 +177,7 @@ def decision_registry() -> list:
     """Every decision --decisions can name, in a fixed order: a branch episode's id holds its index here, so a run with
     a subset of decisions gives the same ids as the full set (T5's list stays as it was)."""
     if TASK_NAME == "tray_slide":
-        return list(DECISIONS_T8) + list(DECISIONS_T8_RESUME)
+        return list(DECISIONS_T8) + list(DECISIONS_T8_RESUME) + list(DECISIONS_T8_FINISH)
     return list(TASKS[TASK_NAME]["decisions"])
 
 
@@ -440,9 +451,9 @@ class Episode:
                 in_dec = (n_script is None and not all(done)) or (n_script is not None and tick <= n_script)
                 if in_dec:
                     mode, r = fn(tick)
-                elif after == "resume":
+                elif after in ("resume", "finish"):
                     if resumed is None:          # the first tick after the script: replan from the live state
-                        plans = self._resume_plans(ctx)
+                        plans = self._resume_plans(ctx, FINISH_SPEED if after == "finish" else None)
                         cur, done = [-1.0 for _ in plans], [False for _ in plans]
                         resumed = bool(plans)
                     mode, r = ("rate", 1.0) if plans else ("rate", 0.0)   # a failed replan holds the arm
@@ -520,9 +531,10 @@ class Episode:
                 "resumed": resumed,
                 "capped": bool(n_store is None and len(tr) - 1 >= cap)}
 
-    def _resume_plans(self, ctx):
+    def _resume_plans(self, ctx, speed_cap=None):
         """Recovery: the controller replans every arm's drag from the live state to its target (ResumeViaController:
-        the waypoints ahead, from the arm's current speed) -> [(arm_i, arm, pos, vel)], [] if a replan failed."""
+        the waypoints ahead, from the arm's current speed; speed_cap: cruising at most that fast, capped_profile)
+        -> [(arm_i, arm, pos, vel)], [] if a replan failed."""
         from main.envs.controller import _path_arrays
 
         out = []
@@ -530,7 +542,14 @@ class Episode:
             p = ctx.get(f"{arm}_arm")
             if p is None:
                 continue
-            new = self.ro.ctrl._replan_arm(arm, p)
+            if speed_cap is not None and not hasattr(self.ro.ctrl, "resume_speed_cap"):
+                raise RuntimeError("a capped finish needs ResumeViaController (resume_via_replan)")
+            old_cap = getattr(self.ro.ctrl, "resume_speed_cap", None)
+            self.ro.ctrl.resume_speed_cap = speed_cap
+            try:
+                new = self.ro.ctrl._replan_arm(arm, p)
+            finally:
+                self.ro.ctrl.resume_speed_cap = old_cap
             if new is None:
                 print(f"[asens] {self.name}: the recovery replan of the {arm} arm failed: holding", flush=True)
                 return []
@@ -1067,7 +1086,8 @@ def main(argv=None) -> int:
     r.add_argument("--rows-per-episode", type=int, default=4500, help="room a new episode needs in the shard")
     r.add_argument("--episode-est", type=float, default=1500.0, help="seconds per episode before one is measured")
     r.add_argument("--decisions", default="", help="comma list of decision names (default: the task's set); T8 adds "
-                                                   "the recovery ones d_slow12_resume, d_half_resume")
+                                                   "the recovery ones d_slow12_resume, d_half_resume and the "
+                                                   "finishing ones d_slow12_finish, d_slow25_finish, d_half_finish")
     r.add_argument("--video-seeds", type=int, nargs="*", default=[],
                    help="episodes whose branch states get a tiled video of all continuations (<out>/videos)")
     t = sub.add_parser("table")

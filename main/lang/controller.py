@@ -102,7 +102,7 @@ def resume_segments(R: float, v0: float, profile: dict, travelled: float) -> lis
         v, pending = float(v2), False
         da = da * (v / float(profile["v"])) ** 2     # the same peak acceleration for the lower cruise speed
         ds = float(profile.get("stop_dist", 0.02))   # the profile brakes from v2 over stop_dist
-    v0 = float(np.clip(v0, 0.0, 1.5 * max(v, 1e-9)))
+    v0 = float(np.clip(v0, 0.0, 1.5 * max(float(profile.get("v_ref", v)), v, 1e-9)))
     a_acc = 0.75 * v * v / max(da, 1e-9)             # the profile's peak accelerations
     v_brake = float(v2) if pending else v
     a_stop = 0.75 * v_brake * v_brake / max(ds, 1e-9)
@@ -128,6 +128,20 @@ def resume_segments(R: float, v0: float, profile: dict, travelled: float) -> lis
             vp = float(np.sqrt(vp2))
             return [("ramp", v0, vp, d_ramp(v0, vp, a_acc)), ("ramp", vp, 0.0, d_ramp(vp, 0.0, a_stop))]
     return [("ramp", v0, 0.0, R)]                    # even braking from v0 needs all of R: brake over it
+
+
+def capped_profile(profile: dict, cap: float) -> dict:
+    """The drag profile with its cruise speed capped at ``cap`` m/s (2026-11-18, "slow down, then finish slowly"):
+    one cruise speed v' = min(v, v2, cap), the original peak acceleration (speed-up distance x (v' / v)^2), the
+    original stop distance (so the brake is gentler: 0.75 v'^2 / stop_dist). v_ref keeps the original speed, so an
+    arm handed over faster than v' slows to it (resume_segments) instead of being clipped. Example: medium (0.45 m/s,
+    15 cm speed-up, 4 cm brake) capped at 0.15 m/s: speed-up 1.7 cm, brake peak 0.42 m/s^2 instead of 3.8."""
+    v = float(profile["v"])
+    vc = min(v, float(profile.get("v2") or v), float(cap))
+    out = {k: x for k, x in profile.items() if k not in ("v2", "switch", "change_dist")}
+    out.update({"kind": "hard_stop", "v": vc, "v_ref": v,
+                "accel_dist": float(profile.get("accel_dist", 0.05)) * (vc / max(v, 1e-9)) ** 2})
+    return out
 
 
 def resume_law(R: float, v0: float, profile: dict, travelled: float, dt: float = PHYSICS_DT) -> np.ndarray:
@@ -180,6 +194,7 @@ class ResumeViaController(RiskTickController):
     """RiskTickController whose replans inside a via path continue it (module docstring)."""
 
     controller_name = "risk_tick_resume"
+    resume_speed_cap = None   # m/s: a resumed drag cruises at most this fast (capped_profile); None = the profile's
 
     def _plan_via(self, arm: str, target_pose, task, plan_kw):
         via0 = getattr(task, "plan_via", None)
@@ -212,15 +227,19 @@ class ResumeViaController(RiskTickController):
         qvel = np.asarray(entity.get_qvel(), dtype=np.float64)[idx]
         v0 = path_speed(pos, lam, qvel, R)
         travelled = max(float(prof0["length"]) - R, 0.0)
-        s = resume_law(R, v0, prof0, travelled, PHYSICS_DT)
+        cap = self.resume_speed_cap
+        prof = prof0 if cap is None else capped_profile(prof0, float(cap))
+        s = resume_law(R, v0, prof, travelled, PHYSICS_DT)
         new_pos, new_vel = retime(pos, lam, s, R, PHYSICS_DT)
         info = getattr(task, "episode_info", None)
         if isinstance(info, dict):
             info.setdefault("via_resumes", []).append(
                 {"remaining": round(R, 4), "travelled": round(travelled, 4), "v0": round(v0, 4),
-                 "kept_via": len(via), "of": len(via0), "duration": round(len(new_pos) * PHYSICS_DT, 3)})
+                 "kept_via": len(via), "of": len(via0), "duration": round(len(new_pos) * PHYSICS_DT, 3),
+                 "speed_cap": cap})
         print(f"[risk_tick] plan #{self._n_plan} {arm} via path RESUMED: {len(via)} of {len(via0)} waypoints ahead, "
-              f"{R:.3f} m left of {float(prof0['length']):.3f}, from {v0:.2f} m/s, {len(new_pos) * PHYSICS_DT:.2f}s")
+              f"{R:.3f} m left of {float(prof0['length']):.3f}, from {v0:.2f} m/s, {len(new_pos) * PHYSICS_DT:.2f}s"
+              + (f", capped at {float(cap):.2f} m/s" if cap is not None else ""))
         return {"status": "Success", "position": new_pos, "velocity": new_vel, "_item_profiled": True}
 
 
