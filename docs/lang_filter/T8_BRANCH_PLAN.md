@@ -43,6 +43,26 @@ and the revised injection but no branch rows.
   `states/<episode>.pt` (encoder inputs, the first 12 commands of every continuation, the truths),
   `branch_table.json`.
 
+### 2.1 Recovery continuations (Yuxuan, 2026-11-17)
+
+The continuations above that slow down then hold the arm: the tray stops short of the pad and the task never
+finishes. Two more continuations slow down with actor-style commands and then hand back to the planner, which replans
+from the live state and finishes the drag (`main/lang/controller.py` ResumeViaController: the waypoints ahead, the
+remaining length, from the arm's current speed), as the filter does when it engages and releases:
+
+| name | what the arm does |
+|---|---|
+| `d_slow12_resume` | actor-style slow-down to rest over 12 ticks (0.48 s), then the planner finishes the drag |
+| `d_half_resume` | actor-style half speed for 6 ticks, quarter speed for 6, then the planner takes over while moving |
+
+Up to 100 ticks are stored per recovery continuation, so the planner's brake at the pad is in the stored rows. In the
+release check (`scripts/lang/t8_release_check.py`) the resumed medium drag still tipped the glass at its own hard
+brake or when it sped back up: releasing during a medium drag is harmful unless the filter takes over again before
+the pad. These rows show the critic exactly that. They are collected for the main data as a supplement over the same
+90 drags (`data/lang_t8_branch_resume`, `--decisions d_slow12_resume,d_half_resume`; only its `branches/` train,
+its re-collected parents duplicate the main ones); the YOLO branch data collects all 10 continuations in one pass.
+Branch episode ids come from a fixed registry of the 10 names, so a subset run gives the same ids.
+
 ## 3. Training mix (`main/lang/data.py`, `LangConfig.branch_cont_frac`, `branch_decision_frac`)
 
 - Rows of a branch episode: the 3 context rows are never sample rows; the first 3 rows from the branch state are
