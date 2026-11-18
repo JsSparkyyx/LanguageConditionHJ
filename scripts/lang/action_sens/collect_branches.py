@@ -120,7 +120,16 @@ SCRIPTS = {
     "d_slow25": (25, lambda k: ("dtheta", _blocks(k, 25)), "hold"),
     "d_slow12": (12, lambda k: ("dtheta", _blocks(k, 12)), "hold"),
     "d_half": (12, lambda k: ("dtheta", 0.5 if k <= 6 else 0.25), "hold"),
+    # recovery (Yuxuan, 2026-11-17): slow down with actor-style commands, then hand back to the planner, which
+    # replans from the live state and finishes the drag (main/lang/controller.py ResumeViaController), as the filter
+    # does when it engages and releases
+    "d_slow12_resume": (12, lambda k: ("dtheta", _blocks(k, 12)), "resume"),
+    "d_half_resume": (12, lambda k: ("dtheta", 0.5 if k <= 6 else 0.25), "resume"),
 }
+# the recovery continuations, chosen with --decisions (not in the default set); their ticks run to the pad, so up to
+# 100 are stored
+DECISIONS_T8_RESUME = [("d_slow12_resume", 12, 0.75), ("d_half_resume", 12, 0.5)]
+STORE_CAP = {"d_slow12_resume": 100, "d_half_resume": 100}
 T8_CYCLE = ("medium", "medium", "fast", "medium", "slow", "medium")
 TASKS = {
     "tray_transport": {"kinds": {"tall": "tall", "short": "short"}, "ref_env": "ITEM_T5_REFERENT", "up": [0.0, 0.0, 1.0],
@@ -149,6 +158,14 @@ def set_task(name: str) -> None:
 
 def risk_tag(risk) -> str:
     return risk if isinstance(risk, str) else f"ts{risk:g}"
+
+
+def decision_registry() -> list:
+    """Every decision --decisions can name, in a fixed order: a branch episode's id holds its index here, so a run with
+    a subset of decisions gives the same ids as the full set (T5's list stays as it was)."""
+    if TASK_NAME == "tray_slide":
+        return list(DECISIONS_T8) + list(DECISIONS_T8_RESUME)
+    return list(TASKS[TASK_NAME]["decisions"])
 
 
 def branch_eid(seed: int, state: int, dec: int) -> int:
@@ -197,6 +214,8 @@ class Episode:
         (self.pbuf, self.pside), (self.bbuf, self.bside) = pairs
         self.name = f"s{self.seed}_{risk_tag(self.ts)}"
         self._q_last, self.a0 = None, None     # live joints at the last drag hook; the last tick's displacement
+        self.video = int(seed) in set(getattr(args, "video_seeds", None) or [])   # --video-seeds: tiled clips
+        self.frames = None
         self.dir = Path(args.out) / "episodes" / self.name
         self.tag = tag
         self.in_branch = False
@@ -215,6 +234,7 @@ class Episode:
 
         from main.item_envs import language
         from main.item_envs.controller import RiskTickController
+        from main.lang.controller import ResumeViaController
         from main.item_envs.margin_hook import wire_item_episode
 
         os.environ[TASKS[TASK_NAME]["ref_env"]] = KINDS["tall"]
@@ -227,7 +247,8 @@ class Episode:
         ro = Ctl(cfg_ep, self.seed, mode="collect", encoder=self.encoder, kin=self.kin, policy_enc=None, actor=None,
                  critics=None, filter_active=False, buf=self.pbuf, episode_id=self.seed, perturb_prob=0.0,
                  rng=np.random.RandomState(self.seed), max_steps=10 * int(self.cfg.max_steps_per_episode),
-                 controller_cls=RiskTickController, text_store=None)
+                 controller_cls=ResumeViaController if TASK_NAME == "tray_slide" else RiskTickController,
+                 text_store=None)
         self.ro, self.env = ro, ro.env
         self.task, self.runner = self.env.task, self.env._item_runner
         self.build_s = time.perf_counter() - t0
@@ -399,6 +420,7 @@ class Episode:
         prev_tilt = (tr[0]["tilt_tall"], tr[0]["tilt_short"])
         zero = np.zeros(2 * self.nj)
         script = SCRIPTS.get(name) if name is not None else None
+        resumed = None   # recovery continuations: True / False once the replan ran
         a0 = np.zeros(2 * self.nj) if self.a0 is None else np.asarray(self.a0, np.float64)[: 2 * self.nj].copy()
         for arm_i in range(2):   # the actor never drives the grippers: their columns stay zero
             a0[arm_i * self.nj + self.n_arm: (arm_i + 1) * self.nj] = 0.0
@@ -414,8 +436,18 @@ class Episode:
             else:
                 n_script, fn, after = script
                 in_dec = (n_script is None and not all(done)) or (n_script is not None and tick <= n_script)
-                mode, r = fn(tick) if in_dec else (("rate", 1.0) if after == "plan" else ("rate", 0.0))
-                if not in_dec and after == "hold":
+                if in_dec:
+                    mode, r = fn(tick)
+                elif after == "resume":
+                    if resumed is None:          # the first tick after the script: replan from the live state
+                        plans = self._resume_plans(ctx)
+                        cur, done = [-1.0 for _ in plans], [False for _ in plans]
+                        resumed = bool(plans)
+                    mode, r = ("rate", 1.0) if plans else ("rate", 0.0)   # a failed replan holds the arm
+                elif after == "plan":
+                    mode, r = "rate", 1.0
+                else:
+                    mode, r = "rate", 0.0
                     done = [True for _ in plans]      # the plan is given up: the settle rule stops waiting for it
             cmd = np.zeros(2 * self.nj, np.float64)
             if mode == "dtheta":
@@ -483,7 +515,26 @@ class Episode:
                 "tray_p": np.stack([p["tray_p"] for p in tr]).astype(np.float32),
                 "ee": np.stack([p["ee"] for p in tr]).astype(np.float32), "cmds": np.stack(cmds),
                 "V95": vrec(h_tall, GAMMA), "min_h": float(h_tall.min()), "fell": bool(h_tall.min() < 0),
+                "resumed": resumed,
                 "capped": bool(n_store is None and len(tr) - 1 >= cap)}
+
+    def _resume_plans(self, ctx):
+        """Recovery: the controller replans every arm's drag from the live state to its target (ResumeViaController:
+        the waypoints ahead, from the arm's current speed) -> [(arm_i, arm, pos, vel)], [] if a replan failed."""
+        from main.envs.controller import _path_arrays
+
+        out = []
+        for arm_i, arm in enumerate(("left", "right")):
+            p = ctx.get(f"{arm}_arm")
+            if p is None:
+                continue
+            new = self.ro.ctrl._replan_arm(arm, p)
+            if new is None:
+                print(f"[asens] {self.name}: the recovery replan of the {arm} arm failed: holding", flush=True)
+                return []
+            pos, vel = _path_arrays(new)
+            out.append((arm_i, arm, pos, vel))
+        return out
 
     def _ctx_pairs(self, offset: int):
         """(entry, sidecar row) copies for the 3 context rows: the parent's first capture and the 2 captures before
@@ -506,6 +557,66 @@ class Episode:
             e["done"] = np.bool_(False)
             out.append((e, r))
         return out
+
+    def _frame(self, source):
+        """The observer camera now, 320 x 240, with the tick's item h written on it (--video)."""
+        from PIL import Image, ImageDraw
+
+        task = self.task
+        task._update_render()
+        cam = task.cameras.observer_camera
+        cam.take_picture()
+        img = Image.fromarray((cam.get_picture("Color") * 255).clip(0, 255).astype(np.uint8)[:, :, :3])
+        img = img.resize((320, 240))
+        p = self.phys()
+        d = ImageDraw.Draw(img)
+        d.rectangle([0, 214, 320, 240], fill=(255, 255, 255))
+        src = {None: "state", 0: "planner", 1: "actor-style", 2: "planner (scaled)"}.get(source, str(source))
+        d.text((4, 216), f"glass h {p['h_tall']:+.2f}  can h {p['h_short']:+.2f}  {src}", fill=(0, 0, 0))
+        return {"img": img, "h": (p["h_tall"], p["h_short"]), "src": source}
+
+    def write_video(self, state: int, lead: float, clips: dict, p1: dict) -> None:
+        """One mp4 per branch state: every continuation's stored ticks side by side (4 columns), 10 fps, each tile
+        titled with its decision, the tick since the state, and the truth over the whole continuation (V95, fell);
+        a tile turns red at the first tick the glass is below 0 and grey after its stored ticks end."""
+        import imageio.v2 as imageio
+        from PIL import Image, ImageDraw
+
+        names = [n for n, _, _ in DECISIONS if n in clips]
+        cols = 4
+        rows = (len(names) + cols - 1) // cols
+        W, Hh, top = 320, 240, 30
+        n = max(len(clips[k]) for k in names)
+        out = Path(self.args.out) / "videos"
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"{self.name}_state{state}_lead{lead:.2f}s.mp4"
+        w = imageio.get_writer(str(path), fps=10, codec="libx264", quality=7, macro_block_size=1)
+        try:
+            for t in range(n):
+                canvas = Image.new("RGB", (cols * W, rows * (Hh + top) + 24), (255, 255, 255))
+                d = ImageDraw.Draw(canvas)
+                d.text((6, rows * (Hh + top) + 6),
+                       f"{self.name}  state {state}: {lead:.2f} s before the planner's brake   tick {t} "
+                       f"({t * TICK_DT:.2f} s)   decision = the first 3 ticks", fill=(0, 0, 0))
+                for k, name in enumerate(names):
+                    fr = clips[name]
+                    x, y = (k % cols) * W, (k // cols) * (Hh + top)
+                    f = fr[min(t, len(fr) - 1)]
+                    img = f["img"].copy()
+                    if t >= len(fr):
+                        img = Image.blend(img, Image.new("RGB", img.size, (200, 200, 200)), 0.5)
+                    fell_now = any(g["h"][0] < 0 for g in fr[: t + 1])
+                    canvas.paste(img, (x, y + top))
+                    col = (200, 0, 0) if fell_now else (0, 0, 0)
+                    d.rectangle([x, y + top, x + W - 1, y + top + Hh - 1], outline=col, width=3 if fell_now else 1)
+                    tr = p1[name]
+                    d.text((x + 4, y + 2), f"{name}  {'DECISION' if 0 < t <= 3 else ''}", fill=(0, 0, 160))
+                    d.text((x + 4, y + 15), f"V95 {tr['V95']:+.2f}  glass {'FELL' if tr['fell'] else 'up'}"
+                                             f"  ({len(fr) - 1} stored ticks)", fill=col)
+                w.append_data(np.asarray(canvas))
+        finally:
+            w.close()
+        print(f"[asens] video {path.name}", flush=True)
 
     def record_branch(self, ctx, state: int, di: int, H: int, c: float, n_store: int, ctx_pairs, name=None) -> dict:
         """Pass 2: the continuation again, every tick captured into the branch shard as one episode."""
@@ -545,6 +656,8 @@ class Episode:
             RolloutController._collect_tick(ro, obs, h, diag, encoded)
             if cmd is None:
                 first_entry["e"] = ro._pending
+            if self.frames is not None:   # --video: the observer camera on every stored tick
+                self.frames.append(self._frame(source if cmd is not None else None))
 
         with swapped(ro, buf=lock, episode_id=int(beid), _pending=None, trace=scratch,
                      _tick_action=ro._tick_action, _tick_source=ro._tick_source):
@@ -569,6 +682,7 @@ class Episode:
         saved = (ro._tick_action.copy(), ro._tick_source)
         n_b_before = len(self.bbuf)
         checks, p1, p2 = {}, {}, {}
+        clips = {}
         try:
             t0 = time.perf_counter()
             for name, H, c in DECISIONS:               # pass 1: physics only, the truth
@@ -580,11 +694,19 @@ class Episode:
             for di, (name, H, c) in enumerate(DECISIONS):   # pass 2: recorded
                 snap.restore(env)
                 n_store = min(p1[name]["n_ticks"], p1[name]["last_move"] + TAIL,
-                              int(TASKS[TASK_NAME].get("store_cap", CAP_TICKS)))
+                              int(STORE_CAP.get(name, TASKS[TASK_NAME].get("store_cap", CAP_TICKS))))
+                self.frames = [] if self.video else None
+                reg = [x[0] for x in decision_registry()]
                 with torch.no_grad():
-                    p2[name] = self.record_branch(ctx, state, di, H, c, n_store, ctx_pairs, name=name)
+                    p2[name] = self.record_branch(ctx, state, reg.index(name) if name in reg else di, H, c, n_store,
+                                                  ctx_pairs, name=name)
+                if self.video:
+                    clips[name] = self.frames
+                self.frames = None
                 self.timing["n_pass2_ticks"] += p2[name]["n_ticks"]
             self.timing["pass2"] += time.perf_counter() - t0
+            if self.video:
+                self.write_video(state, lead, clips, p1)
         except Exception:
             # the pairing of a half-written branch episode is broken: roll this state's branch rows back
             self.bbuf.discard_to(n_b_before)
@@ -935,6 +1057,10 @@ def main(argv=None) -> int:
     r.add_argument("--parent-capacity", type=int, default=6000)
     r.add_argument("--rows-per-episode", type=int, default=4500, help="room a new episode needs in the shard")
     r.add_argument("--episode-est", type=float, default=1500.0, help="seconds per episode before one is measured")
+    r.add_argument("--decisions", default="", help="comma list of decision names (default: the task's set); T8 adds "
+                                                   "the recovery ones d_slow12_resume, d_half_resume")
+    r.add_argument("--video-seeds", type=int, nargs="*", default=[],
+                   help="episodes whose branch states get a tiled video of all continuations (<out>/videos)")
     t = sub.add_parser("table")
     t.add_argument("--out", default="")
     t.add_argument("--round", type=int, default=1, choices=sorted(N_ROUND))
@@ -942,6 +1068,13 @@ def main(argv=None) -> int:
         q.add_argument("--task", choices=sorted(TASKS), default="tray_transport")
     args = ap.parse_args(argv)
     set_task(args.task)
+    if getattr(args, "decisions", ""):
+        global DECISIONS
+        reg = {x[0]: x for x in decision_registry()}
+        bad = [n for n in args.decisions.split(",") if n not in reg]
+        if bad:
+            raise SystemExit(f"--decisions: unknown {bad}; known {sorted(reg)}")
+        DECISIONS = [reg[n] for n in args.decisions.split(",")]
     args.out = args.out or str(TASKS[args.task].get("out") or OUT_ROUND[int(args.round)])
     args.out = str(Path(args.out).resolve())   # the env build chdirs into RoboTwin: every path must be absolute
     if args.cmd == "run":
