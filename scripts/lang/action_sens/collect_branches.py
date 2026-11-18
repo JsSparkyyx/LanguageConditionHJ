@@ -717,7 +717,10 @@ class Episode:
             ro._tick_action, ro._tick_source = saved
         # the state's encoder inputs, buffer layout: frames [t, t-2, 0] = the branch state's capture (planner
         # branch, pass 2), the context row two captures before it, the parent's first capture
-        e0 = p2["plan"]["state_entry"]
+        # the branch state's capture is the same row in every continuation: any decision's (a --decisions run may
+        # have no "plan")
+        ref = "plan" if "plan" in p2 else next(iter(p2))
+        e0 = p2[ref]["state_entry"]
         st = {f: np.asarray(e0[f]) for f in ROBOT_FIELDS}
         st["scene_tokens"] = np.stack([e0["scene_tokens"], ctx_pairs[1][0]["scene_tokens"],
                                        ctx_pairs[0][0]["scene_tokens"]])
@@ -730,7 +733,7 @@ class Episode:
         st.update(cmds=cm, V95=np.array([p1[n]["V95"] for n, _, _ in DECISIONS], np.float32),
                   min_h=np.array([p1[n]["min_h"] for n, _, _ in DECISIONS], np.float32),
                   fell=np.array([p1[n]["fell"] for n, _, _ in DECISIONS]),
-                  lead=np.float32(lead), tick=np.int64(i // SPT), h0=np.float32(p1["plan"]["h_tall"][0]))
+                  lead=np.float32(lead), tick=np.int64(i // SPT), h0=np.float32(p1[ref]["h_tall"][0]))
         self.states.append(st)
         for di, (name, H, c) in enumerate(DECISIONS):
             a, b = p1[name], p2[name]
@@ -756,7 +759,8 @@ class Episode:
                                                                  "lead_to_brake_s", "decision", "H", "c", "V95",
                                                                  "min_h", "fell", "held_out")}})
         fid = {"state_checks": {k: max(v.values()) for k, v in checks.items()}, "cap_offset_steps": offset,
-               "plan_trace": {k: p1["plan"][k] for k in ("h_tall", "tilt_tall", "tray_p", "ee")},
+               "plan_trace": ({k: p1["plan"][k] for k in ("h_tall", "tilt_tall", "tray_p", "ee")}
+                              if "plan" in p1 else None),
                "hook_idx": len(self.ticks) - 1}
         self.fid = getattr(self, "fid", []) + [fid]
         wall = time.perf_counter() - t_start
@@ -773,6 +777,9 @@ class Episode:
         for st_i, f in enumerate(self.fid if hasattr(self, "fid") else []):
             real = self.ticks[f.pop("hook_idx"):]
             pt = f.pop("plan_trace")
+            if pt is None:   # no planner continuation in this run (--decisions)
+                f["vs_real"] = None
+                continue
             L = min(len(real), len(pt["h_tall"]))
             f["vs_real"] = {k: float(np.abs(np.asarray([r[k] for r in real[:L]], np.float64)
                                             - np.asarray(pt[k][:L], np.float64)).max()) if L else None
@@ -1010,8 +1017,8 @@ def table(args) -> int:
                     "n_states": d["n_states"], "tipped": d["tipped"], "wall_s": d.get("wall_s"),
                     "s_per_stored_tick": tm["pass2"] / max(tm["n_pass2_ticks"], 1),
                     "stored_ticks": tm["n_pass2_ticks"],
-                    "vs_real_h": [f["vs_real"]["h_tall"] for f in d["fidelity"]],
-                    "vs_real_ee": [f["vs_real"]["ee"] for f in d["fidelity"]],
+                    "vs_real_h": [f["vs_real"]["h_tall"] for f in d["fidelity"] if f.get("vs_real")],
+                    "vs_real_ee": [f["vs_real"]["ee"] for f in d["fidelity"] if f.get("vs_real")],
                     "restore_err": max(max(f["state_checks"].values()) for f in d["fidelity"]) if d["fidelity"] else None})
     R = {"episodes": eps, "rows": rows, "decisions": DECISIONS, "held_out_seeds": sorted(HELD_OUT)}
     tmp = out / ".branch_table.json.tmp"
