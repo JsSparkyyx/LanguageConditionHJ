@@ -73,3 +73,16 @@ def test_shares_without_branch_data_fail(roots):
         LangSampler([normal], cfg, seed=0).sample(16)
     with pytest.raises(AssertionError):
         dataclasses.replace(LangConfig(), branch_cont_frac=0.6, branch_decision_frac=0.5)
+
+
+def test_probe_sampler_has_no_branch_shares(roots):
+    """The validation data has no branch rows: the probe sampler's config drops the training batch's branch shares
+    (the round-0 probe of 2026-11-17 raised "the batch mix wants 128 branch continuation rows")."""
+    from main.lang.train import probe_config
+
+    normal, _ = roots
+    cfg = dataclasses.replace(LangConfig(), branch_cont_frac=0.25, branch_decision_frac=0.25, relabel="paired")
+    pc = probe_config(cfg)
+    assert pc.branch_cont_frac == 0.0 and pc.branch_decision_frac == 0.0 and pc.relabel == "random"
+    smp = LangSampler([normal], pc, seed=0, probe=True)
+    assert len(smp.plan(512)) == 512

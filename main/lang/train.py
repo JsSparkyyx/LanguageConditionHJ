@@ -339,7 +339,7 @@ class LangTrainer:
         # probes measure the Section 8.2 quantities whatever the run's own sentence control is: real sentences
         # (no --shuffle-text) and a random rule per sample (no --relabel fixed) (review M3), on every validation
         # episode (no E6 subset)
-        probe_cfg = dataclasses.replace(cfg, shuffle_text=False, relabel="random", train_episodes_per_task=0)
+        probe_cfg = probe_config(cfg)
         self.val_sampler = LangSampler(val_roots, probe_cfg, tasks=tasks, embodiments=embodiments, seed=seed + 2,
                                        probe=True, neck=bool(cfg.scene_fusion), kv=cfg.qwen) if val_roots else None
         self.qwen = None
@@ -1277,6 +1277,16 @@ def code_identity(tasks, roots) -> dict:
     # h_code over the seven tasks before tray_slide (config.CANON_TASKS_7): the value older states recorded
     return {"h_code": h_code_hash(CANON_TASKS_7), "h_code_v2": h_code_hash_v2(tasks or CANON_TASKS),
             "git_head": head, "git_dirty": dirty, "data_roots": sorted(str(Path(r).resolve()) for r in roots)}
+
+
+def probe_config(cfg: LangConfig) -> LangConfig:
+    """The validation sampler's config: probes measure the Section 8.2 quantities whatever the run's own sentence
+    control is: real sentences (no --shuffle-text) and a random rule per sample (no --relabel fixed) (review M3), on
+    every validation episode (no E6 subset), and with no branch shares: the batch mix of branch rows
+    (branch_cont_frac, branch_decision_frac) is a training-batch policy, and the validation data has no branch rows
+    (with the shares the round-0 probe raised "the batch mix wants 128 branch continuation rows", 2026-11-17)."""
+    return dataclasses.replace(cfg, shuffle_text=False, relabel="random", train_episodes_per_task=0,
+                               branch_cont_frac=0.0, branch_decision_frac=0.0)
 
 
 def check_resume_identity(st: dict, ident: dict, run, accept_code_change: bool = False) -> None:
