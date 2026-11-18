@@ -370,8 +370,10 @@ Yuxuan 11-03 ("you may start now"); the old-model videos stopped the same day (2
   not an option as is: cuRobo in robot-sim_cu128.sif has no A100 kernels (smoke 11-16: mplib fallback, T1 host plans
   fail; rasterized video works). Restart chain_train.sh with the same three arguments for the last 11 updates.
   11-16 15:12 done on an A100 (own cuRobo build, PLAN 7): no gain, in the way broken 0.58-0.64 per block vs 0.60.
-- [ ] Plan comparisons running from 11-16 15:15 on A100s: completion always (`residual_dev_always_s05_lr1e4_mbkl`,
-  A100x4) and fixed trigger (`residual_fixed_success_s05_lr1e4_mbkl`, A100x8). Proposed scripted-detour check still open.
+- [ ] PAUSED 11-17 16:22 (Yuxuan: leave residual training aside): the plan comparisons, completion always
+  (`residual_dev_always_s05_lr1e4_mbkl`, 96/350 updates) and fixed trigger (`residual_fixed_success_s05_lr1e4_mbkl`,
+  21/350), both no gain so far; feeders stopped, checkpoints kept (resume: PLAN 7). Open if resumed: scripted-detour
+  check, run 2 model at w = 0; paper comparison in PLAN 7.
 - [x] 11-12 Rerun of the train check stage (job 23823793): the end-of-run evaluation round completes (summary,
   videos; a video episode takes ~110 s against 13 s); the 9 non-simulator tests pass (RoboTwin conda python).
 - [ ] Fixed vs deviation trigger, completion "success" vs "always": running (see above).
