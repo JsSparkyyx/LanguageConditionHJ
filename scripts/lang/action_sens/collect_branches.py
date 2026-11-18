@@ -100,6 +100,7 @@ ROBOT_FIELDS = ("state_tokens", "body_tokens", "link_pos", "body_mask", "joint_i
 #                               tick (its speed), g falling from 1 to 0 over 25 / 12 ticks, or 0.5 for 6 ticks then
 #                               0.25 for 6; then the zero command. They show what the actor's own commands can do
 # (slow12 and d_half stay in SCRIPTS: the 2026-11-17 smoke ran them; left out of the collection for disk space)
+DATA_REPO = Path(os.environ.get("LCHJ_REPO") or REPO)
 DECISIONS_T8 = [("plan", 0, 1.0), ("t3_c0", 3, 0.0), ("t3_c50", 3, 0.5), ("half", 0, 0.5), ("slow25", 25, 0.96),
                 ("stop", 0, 0.0), ("d_slow25", 25, 0.88), ("d_slow12", 12, 0.75)]
 
@@ -135,13 +136,14 @@ TASKS = {
     "tray_transport": {"kinds": {"tall": "tall", "short": "short"}, "ref_env": "ITEM_T5_REFERENT", "up": [0.0, 0.0, 1.0],
                        "config": VAN / "lang_config.json", "decisions": DECISIONS, "leads": LEADS, "jitter": 0.0},
     "tray_slide": {"kinds": {"tall": "glass", "short": "can"}, "ref_env": "ITEM_T8_REFERENT", "up": [0.0, 1.0, 0.0],
-                   "config": REPO / "runs/lang/rounds_t8_3tick_boundary_1117/lang_config.json",
+                   # run and data folders live in the main repo; a worktree's code finds them through LCHJ_REPO
+                   "config": DATA_REPO / "runs/lang/rounds_t8_3tick_boundary_1117/lang_config.json",
                    "decisions": DECISIONS_T8, "leads": (0.75, 0.5, 0.25), "jitter": 0.08,
                    "cap_ticks": 160, "moving_by_pose": True,
                    # rows stored per continuation: 60 ticks (2.4 s) cover the planner's brake and any fall from
                    # every branch state; the truth (pass 1) still runs each continuation to its end
                    "store_cap": 60,
-                   "out": REPO / "data/lang_t8_branch",
+                   "out": DATA_REPO / "data/lang_t8_branch",
                    "episodes": [(7001 + k, T8_CYCLE[k % 6]) for k in range(90)],
                    "held_out": {7001 + k for k in range(90) if k % 5 == 4}},
 }
