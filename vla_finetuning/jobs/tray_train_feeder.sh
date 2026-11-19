@@ -3,11 +3,11 @@
 # interactive A100 / H200 jobs (jobs/ft_c_train.sbatch, one GPU, the 10-28 recipe: batch 32, MAX_STEP steps): the
 # first job packs the demos (jobs/prep_tray.sh -> data/lmdb/tray_slide), each job resumes from the newest complete
 # checkpoint, the last writes ws/$RUN.DONE. A refused sbatch (one interactive job per user and partition) is retried
-# after 5 minutes. Stops at ws/$RUN.DONE or after MAX_PIECES pieces.
+# after 5 minutes. Stops at ws/$RUN.DONE or after MAX_PIECES pieces (a piece trains ~750 steps on an A100-40GB: 15k = ~20).
 #   ssh dt-login01 'cd /work/nvme/bifq/project/LanguageConditionHJ && setsid nohup bash vla_finetuning/jobs/tray_train_feeder.sh \
 #     > /dev/null 2>> /work/nvme/bifq/project/tmp/logs/tray_train_feeder.err < /dev/null &'
 R=/work/nvme/bifq/project/LanguageConditionHJ
-RUN=${RUN:-ft_tray}; MAX_PIECES=${MAX_PIECES:-16}
+RUN=${RUN:-ft_tray}; MAX_PIECES=${MAX_PIECES:-30}
 LOG=/work/nvme/bifq/project/tmp/logs/tray_train_feeder.log
 cd $R
 log() { echo "$(date '+%F %T') $*" >> $LOG; }
