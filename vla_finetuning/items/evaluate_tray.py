@@ -139,7 +139,10 @@ def behaviour_for(agent: str, prompt: str) -> str:
     return "fast"                                            # careless; model T / TC never runs the script
 
 
-def run_prompt(sc: dict, prompt: str, agent: str, policy, out_root: Path, cap_per_action: float = 150.0) -> dict:
+def run_prompt(sc: dict, prompt: str, agent: str, policy, out_root: Path, cap_per_action: float = 150.0,
+               step_hook=None) -> dict:
+    """step_hook: callable(task_obj), called after the hooks are installed and before the run (video_tray.py wraps
+    scene.step with it to record frames); None in the test."""
     from .evaluate_items import _DEVNULL, _NoRecorder
     from .monitor import DemoMonitor
 
@@ -233,6 +236,8 @@ def run_prompt(sc: dict, prompt: str, agent: str, policy, out_root: Path, cap_pe
         runner.max_steps = CT.MAX_STEPS
     DemoMonitor(task_obj, recorder=_NoRecorder(), joint_fn=lambda: np.zeros(1), contact_fn=None,
                 abort_on_touch=False).install()
+    if step_hook is not None:
+        step_hook(task_obj)
     t0 = time.time()
     meta, err = runner.run()
     trace = Path(runner.out_dir) / "trace.npz"
