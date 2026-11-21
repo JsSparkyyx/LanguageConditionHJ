@@ -36,9 +36,12 @@ while true; do
   log "collect piece $piece job $j ended: $(sacct -j $j -X -n -o State,Elapsed | tr -s ' ')"
 done
 
-piece=0
+# A piece ends with rc 75 (go on in the next piece) or 0; any other rc in under 10 minutes is a real error (11-21: a
+# stray file in the demo root failed all 30 pieces in 8 s each), and 3 of those in a row stop the feeder.
+piece=0; bad=0
 while [ ! -f vla_finetuning/ws/$RUN.DONE ]; do
   [ $piece -ge $MAX_TRAIN ] && { log "train: stopped after $MAX_TRAIN pieces"; exit 1; }
+  [ $bad -ge 3 ] && { log "train: 3 quick errors in a row, stopped (see tmp/logs/vf_ctrain_<job>.out)"; exit 1; }
   j=$(mine vf-nominal-train)
   if [ -z "$j" ]; then
     j=$(RUN=$RUN TASKS="$TASKS" LMDBS=$LMDBS PREP=vla_finetuning/jobs/prep_nominal.sh PRUNE_OLD_CKPT=1 \
@@ -47,6 +50,9 @@ while [ ! -f vla_finetuning/ws/$RUN.DONE ]; do
   fi
   piece=$((piece + 1)); log "train piece $piece job $j"
   wait_job $j
-  log "train piece $piece job $j ended: $(sacct -j $j -X -n -o State,Elapsed,Partition | tr -s ' ')"
+  log "train piece $piece job $j ended: $(sacct -j $j -X -n -o State,ExitCode,Elapsed,Partition | tr -s ' ')"
+  read -r rc secs <<< "$(sacct -j $j -X -n -P -o ExitCode,ElapsedRaw | head -1 | tr '|' ' ')"
+  rc=${rc%%:*}
+  if [ -n "$rc" ] && [ "$rc" != 0 ] && [ "$rc" != 75 ] && [ "${secs:-0}" -lt 600 ]; then bad=$((bad + 1)); else bad=0; fi
 done
 log "$RUN DONE: $(cat vla_finetuning/ws/$RUN.DONE)"

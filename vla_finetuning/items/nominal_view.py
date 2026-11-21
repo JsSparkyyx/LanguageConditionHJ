@@ -12,7 +12,8 @@ success window + 1.5 cm), the T1 / T3 ones the tasks as built.
 
 <out>/<task>/<config>/ mirrors the source config: seed.txt copied (the packer indexes it by episode number), data/
 symlinks to the chosen episodes, instructions/ new files, attempts.jsonl their rows. Each task is built into
-<out>/<task>.tmp and renamed, so an existing <out>/<task> is complete (kept as is). Counts: <out>/view.json.
+<out>/<task>.tmp and renamed, so an existing <out>/<task> is complete (kept as is). Counts: <out>_logs/view.json (pack.py
+wants task directories only in <out>).
 """
 
 from __future__ import annotations
@@ -105,10 +106,15 @@ def task_only(instr: dict, suffixes: list[str]) -> tuple[dict, dict]:
     return out, n
 
 
+def view_json(out: Path) -> Path:
+    return out.parent / f"{out.name}_logs" / "view.json"
+
+
 def build_task(task: str, out: Path) -> dict:
     dst_t, tmp = out / task, out / f"{task}.tmp"
     if dst_t.exists():
-        return json.loads((out / "view.json").read_text()).get(task, {}) if (out / "view.json").exists() else {}
+        v = view_json(out)
+        return json.loads(v.read_text()).get(task, {}) if v.exists() else {}
     if tmp.exists():
         shutil.rmtree(tmp)
     picks = choose(task)
@@ -159,7 +165,8 @@ def main(argv=None) -> int:
     for t in TASKS:
         counts[t] = build_task(t, out)
         print(f"[nominal_view] {t}: {counts[t]}")
-    C.atomic_write(out / "view.json", json.dumps(counts, indent=1))
+    view_json(out).parent.mkdir(parents=True, exist_ok=True)
+    C.atomic_write(view_json(out), json.dumps(counts, indent=1))
     return 0
 
 
