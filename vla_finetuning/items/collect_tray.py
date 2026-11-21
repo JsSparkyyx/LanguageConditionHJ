@@ -192,9 +192,10 @@ def handover(rec: TrayRecorder, v1: float, ref: str) -> int | None:
     return None
 
 
-def run_demo(seed: int, kind: str, out_root: Path, max_steps: int, frames: bool = True):
+def run_demo(seed: int, kind: str, out_root: Path, max_steps: int, frames: bool = True, behaviour: str | None = None):
     """One run of a demo kind. A failed episode never raises. -> (row, frames, scene: {"ref", "task_instr",
-    "constraints"} | None); row["reason"] = "kept" or why not."""
+    "constraints"} | None); row["reason"] = "kept" or why not. behaviour: the drag in place of the kind's
+    (collect_nominal.py: kind "N", a careless medium / fast drag, kept on success alone)."""
     row = {"task": TASK, "seed": int(seed), "kind": kind}
     runner = None
     try:
@@ -226,7 +227,7 @@ def run_demo(seed: int, kind: str, out_root: Path, max_steps: int, frames: bool 
         try:
             task_obj = runner.env.task
             ref = str(task_obj.referent_id)
-            beh = behaviour_of(kind, ref)
+            beh = behaviour or behaviour_of(kind, ref)
             task_obj.risk_knobs = {**(getattr(task_obj, "risk_knobs", None) or {}), "behaviour": beh}
             runner.risk_params.task["behaviour"] = beh               # meta.risk records it
             row.update(ref=ref, behaviour=beh)
